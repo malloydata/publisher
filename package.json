@@ -16,6 +16,7 @@
     "scripts": {
         "clean": "rimraf -g **/node_modules **/dist",
         "build": "npm run -ws build",
+        "test": "npm run -ws test",
         "start": "cd packages/server && npm run start",
         "generate-api-types": "npm run -ws generate-api-types",
         "lint": "npm run -ws lint",
@@ -29,6 +30,7 @@
         "chai-as-promised": "^8.0.1",
         "mocha": "^11.0.1",
         "rimraf": "^6.0.1",
-        "ts-node": "^10.9.2"
+        "ts-node": "^10.9.2",
+        "typescript": "^5.7.2"
     }
 }
