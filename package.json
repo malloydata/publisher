@@ -23,14 +23,15 @@
         "format": "npm run -ws format"
     },
     "devDependencies": {
-        "@types/chai": "^5.0.1",
-        "@types/chai-as-promised": "^8.0.1",
-        "@types/mocha": "^10.0.10",
-        "chai": "^5.1.2",
-        "chai-as-promised": "^8.0.1",
-        "mocha": "^11.0.1",
-        "rimraf": "^6.0.1",
-        "ts-node": "^10.9.2",
-        "typescript": "^5.7.2"
+        "@types/chai": "^4.3.5",
+        "@types/chai-as-promised": "^7.1.5",
+        "@types/mocha": "^10.0.1",
+        "@types/node": "^20.3.3",
+        "chai": "^4.3.7",
+        "chai-as-promised": "^7.1.1",
+        "mocha": "^10.2.0",
+        "rimraf": "^5.0.1",
+        "ts-node": "^10.9.1",
+        "typescript": "5.7.2"
     }
 }

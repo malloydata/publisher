@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ESNext", // Specifies the JavaScript version to target when transpiling code.
     "lib": ["ESNext", "DOM", "DOM.Iterable"], // Specifies the libraries available for the code.
-    "module": "ESNext", // Defines the module system to use for code generation.
+    "module": "CommonJS", // Defines the module system to use for code generation.
     "skipLibCheck": true, // Skips type checking of declaration files.
     "useDefineForClassFields": true, // Enables the use of 'define' for class fields.
 
@@ -11,7 +11,7 @@
     "isolatedModules": true, // Ensures each file is treated as a separate module.
     "noEmit": false, // Prevents TypeScript from emitting output files.
     "jsx": "react-jsx", // Configures JSX support for React.
-    "esModuleInterop": false,
+    "esModuleInterop": true,
 
     /* Linting */
     "strict": true,

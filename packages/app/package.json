@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc && vite build --mode ${NODE_ENV:=development}",
+    "test": "",
     "lint": "eslint ./src --ext .ts,.tsx --ignore-path .gitignore --fix",
     "format": "prettier --write --parser typescript '**/*.{ts,tsx}'",
     "dev": "vite",
