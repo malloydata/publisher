@@ -14,11 +14,21 @@
         "npm": ">=10"
     },
     "scripts": {
-        "clean": "npm run -ws clean && rm -rf ./node_modules",
+        "clean": "rimraf -g **/node_modules **/dist",
         "build": "npm run -ws build",
         "start": "cd packages/server && npm run start",
         "generate-api-types": "npm run -ws generate-api-types",
         "lint": "npm run -ws lint",
         "format": "npm run -ws format"
+    },
+    "devDependencies": {
+        "@types/chai": "^5.0.1",
+        "@types/chai-as-promised": "^8.0.1",
+        "@types/mocha": "^10.0.10",
+        "chai": "^5.1.2",
+        "chai-as-promised": "^8.0.1",
+        "mocha": "^11.0.1",
+        "rimraf": "^6.0.1",
+        "ts-node": "^10.9.2"
     }
 }
