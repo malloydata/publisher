@@ -197,8 +197,7 @@ function getNotebookCodeSnippet(
    notebookPath: string,
    expandedCodeCells: boolean,
 ): string {
-   return `
-<Notebook
+   return `<Notebook
    server="${server}"
    packageName="${packageName}"
    notebookPath="${notebookPath}"
