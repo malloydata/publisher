@@ -50,7 +50,7 @@ type ApiConnection = components["schemas"]["Connection"];
 
 const MALLOY_VERSION = malloyPackage.version;
 
-type ModelType = "model" | "notebook";
+export type ModelType = "model" | "notebook";
 
 interface RunnableNotebookCell {
    type: "code" | "markdown";
@@ -70,7 +70,7 @@ export class Model {
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: string | undefined;
 
-   private constructor(
+   constructor(
       packageName: string,
       modelPath: string,
       dataStyles: DataStyles,
@@ -243,7 +243,7 @@ export class Model {
                   try {
                      const rowLimit = cell.runnable
                         ? (await cell.runnable.getPreparedResult())
-                           .resultExplore.limit
+                             .resultExplore.limit
                         : undefined;
                      const result = await cell.runnable.run({ rowLimit });
                      const query = (await cell.runnable.getPreparedQuery())
@@ -287,7 +287,7 @@ export class Model {
       } as ApiCompiledModel;
    }
 
-   private static async getModelRuntime(
+   static async getModelRuntime(
       packageName: string,
       modelPath: string,
       connectionConfig: ApiConnection[] | undefined,
@@ -306,7 +306,6 @@ export class Model {
             throw new ModelNotFoundError(`${modelPath} is not a file.`);
          }
       } catch (error) {
-         console.log(error);
          throw new ModelNotFoundError(`${modelPath} does not exist.`);
       }
 
@@ -365,8 +364,10 @@ export class Model {
                         port: connection.postgresConnection.port,
                         username: connection.postgresConnection.userName,
                         password: connection.postgresConnection.password,
-                        databaseName: connection.postgresConnection.databaseName,
-                        connectionString: connection.postgresConnection.connectionString,
+                        databaseName:
+                           connection.postgresConnection.databaseName,
+                        connectionString:
+                           connection.postgresConnection.connectionString,
                      };
                   };
                   const postgresConnection = new PostgresConnection(
@@ -385,15 +386,25 @@ export class Model {
 
                   // BigQuery requires a service account key file.  We persist it to disk
                   // and pass the path to the BigQueryConnection.
-                  const serviceAccountKeyPath = path.join("/tmp", `${connection.name}-${uuidv4()}-service-account-key.json`);
-                  await fs.writeFile(serviceAccountKeyPath, connection.bigqueryConnection.serviceAccountKeyJson as string);
+                  const serviceAccountKeyPath = path.join(
+                     "/tmp",
+                     `${connection.name}-${uuidv4()}-service-account-key.json`,
+                  );
+                  await fs.writeFile(
+                     serviceAccountKeyPath,
+                     connection.bigqueryConnection
+                        .serviceAccountKeyJson as string,
+                  );
                   const bigqueryConnectionOptions = {
                      projectId: connection.bigqueryConnection.defaultProjectId,
                      serviceAccountKeyPath: serviceAccountKeyPath,
                      location: connection.bigqueryConnection.location,
-                     maximumBytesBilled: connection.bigqueryConnection.maximumBytesBilled,
-                     timeoutMs: connection.bigqueryConnection.queryTimeoutMilliseconds,
-                     billingProjectId: connection.bigqueryConnection.billingProjectId,
+                     maximumBytesBilled:
+                        connection.bigqueryConnection.maximumBytesBilled,
+                     timeoutMs:
+                        connection.bigqueryConnection.queryTimeoutMilliseconds,
+                     billingProjectId:
+                        connection.bigqueryConnection.billingProjectId,
                   };
                   const bigqueryConnection = new BigQueryConnection(
                      connection.name,
@@ -417,7 +428,9 @@ export class Model {
                }
 
                default: {
-                  throw new Error(`Unsupported connection type: ${connection.type}`);
+                  throw new Error(
+                     `Unsupported connection type: ${connection.type}`,
+                  );
                }
             }
          });
@@ -479,7 +492,7 @@ export class Model {
          );
    }
 
-   private static async getModelMaterializer(
+   static async getModelMaterializer(
       runtime: Runtime,
       importBaseURL: URL,
       modelURL: URL,
