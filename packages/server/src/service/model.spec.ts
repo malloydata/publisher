@@ -1,8 +1,8 @@
-import { Model, ModelType } from "./model";
 import { expect } from "chai";
 import { Runtime } from "@malloydata/malloy";
 import fs from "fs/promises";
 import sinon from "sinon";
+import { Model, ModelType } from "./model";
 import {
    BadRequestError,
    ModelCompilationError,
