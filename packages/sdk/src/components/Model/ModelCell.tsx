@@ -13,7 +13,7 @@ import {
 } from "@mui/material";
 import { QueryResult } from "../QueryResult";
 import AnalyticsOutlinedIcon from "@mui/icons-material/AnalyticsOutlined";
-import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
+import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { useEffect } from "react";
 import { highlight } from "../highlighter";
@@ -119,7 +119,7 @@ export function ModelCell({
                               setEmbeddingExpanded(!embeddingExpanded);
                            }}
                         >
-                           <LinkOutlinedIcon/>
+                           <LinkOutlinedIcon />
                         </IconButton>
                      </Tooltip>
                   )}
