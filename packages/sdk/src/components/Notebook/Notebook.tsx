@@ -199,8 +199,7 @@ function getQueryResultCodeSnippet(
    modelPath: string,
    query: string,
 ): string {
-   return `
-<QueryResult
+   return `<QueryResult
    server="${server}"
    accessToken={accessToken}
    packageName="${packageName}"
@@ -217,8 +216,7 @@ function getNotebookCodeSnippet(
    notebookPath: string,
    expandedCodeCells: boolean,
 ): string {
-   return `
-<Notebook
+   return `<Notebook
    server="${server}"
    packageName="${packageName}"
    notebookPath="${notebookPath}"
