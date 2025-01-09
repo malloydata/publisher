@@ -26,7 +26,7 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private scheduler: Scheduler | undefined;
 
-   private constructor(
+   constructor(
       packageName: string,
       packageMetadata: ApiPackage,
       databases: ApiDatabase[],
@@ -52,7 +52,13 @@ export class Package {
          const databases = await Package.readDatabases(packageName);
          const models = await Package.loadModels(packageName, connectionConfig);
          const scheduler = Scheduler.create(models);
-         return new Package(packageName, packageConfig, databases, models, scheduler);
+         return new Package(
+            packageName,
+            packageConfig,
+            databases,
+            models,
+            scheduler,
+         );
       } catch (error) {
          console.error(error);
          return new Package(

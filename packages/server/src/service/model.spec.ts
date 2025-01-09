@@ -14,7 +14,7 @@ describe("server/service/model", () => {
    const mockPackageName = "mockPackage";
    const mockModelPath = "mockModel.malloy";
 
-   beforeEach(() => {
+   afterEach(() => {
       sinon.restore();
    });
 
