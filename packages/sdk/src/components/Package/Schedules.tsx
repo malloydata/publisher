@@ -33,7 +33,7 @@ export default function Package({
    versionId,
    accessToken,
 }: PackageProps) {
-   const { data, isSuccess, isError, error } = useQuery(
+   const { data, isError, isLoading, error } = useQuery(
       {
          queryKey: ["databases", server, packageName, versionId],
          queryFn: () =>
@@ -49,6 +49,26 @@ export default function Package({
       queryClient,
    );
 
+   if (isLoading) {
+      return (
+         <Typography variant="body2" sx={{ p: "20px", m: "auto" }}>
+            Fetching Schedules...
+         </Typography>
+      );
+   }
+
+   if (isError) {
+      return (
+         <Typography variant="body2" sx={{ p: "10px", m: "auto" }}>
+            {`${packageName} > ${versionId} - ${error.message}`}
+         </Typography>
+      );
+   }
+
+   if (!data.data.length) {
+      return null;
+   }
+
    return (
       <StyledCard variant="outlined" sx={{ padding: "10px", width: "100%" }}>
          <StyledCardContent>
@@ -63,68 +83,45 @@ export default function Package({
                   overflowY: "auto",
                }}
             >
-               {!isSuccess && !isError && (
-                  <Typography variant="body2" sx={{ p: "20px", m: "auto" }}>
-                     Fetching Schedules...
-                  </Typography>
-               )}
-               {isSuccess && data.data.length > 0 && (
-                  <TableContainer component={Paper}>
-                     <Table sx={{ minWidth: 300 }} size="small">
-                        <TableHead>
-                           <TableRow>
-                              <TableCell align="left">Resource</TableCell>
-                              <TableCell align="left">Schedule</TableCell>
-                              <TableCell align="left">Action</TableCell>
-                              <TableCell align="left">Connection</TableCell>
-                              <TableCell align="left">Last Run</TableCell>
-                              <TableCell align="left">Status</TableCell>
+               <TableContainer component={Paper}>
+                  <Table sx={{ minWidth: 300 }} size="small">
+                     <TableHead>
+                        <TableRow>
+                           <TableCell align="left">Resource</TableCell>
+                           <TableCell align="left">Schedule</TableCell>
+                           <TableCell align="left">Action</TableCell>
+                           <TableCell align="left">Connection</TableCell>
+                           <TableCell align="left">Last Run</TableCell>
+                           <TableCell align="left">Status</TableCell>
+                        </TableRow>
+                     </TableHead>
+                     <TableBody>
+                        {data.data.map((m) => (
+                           <TableRow
+                              key={m.resource}
+                              sx={{
+                                 "&:last-child td, &:last-child th": {
+                                    border: 0,
+                                 },
+                              }}
+                           >
+                              <TableCell align="left">{m.resource}</TableCell>
+                              <TableCell align="left">{m.schedule}</TableCell>
+                              <TableCell align="left">{m.action}</TableCell>
+                              <TableCell align="left">{m.connection}</TableCell>
+                              <TableCell align="left">
+                                 {m.lastRunTime
+                                    ? new Date(m.lastRunTime).toLocaleString()
+                                    : "n/a"}
+                              </TableCell>
+                              <TableCell align="left">
+                                 {m.lastRunStatus}
+                              </TableCell>
                            </TableRow>
-                        </TableHead>
-                        <TableBody>
-                           {data.data.map((m) => (
-                              <TableRow
-                                 key={m.resource}
-                                 sx={{
-                                    "&:last-child td, &:last-child th": {
-                                       border: 0,
-                                    },
-                                 }}
-                              >
-                                 <TableCell align="left">
-                                    {m.resource}
-                                 </TableCell>
-                                 <TableCell align="left">
-                                    {m.schedule}
-                                 </TableCell>
-                                 <TableCell align="left">{m.action}</TableCell>
-                                 <TableCell align="left">
-                                    {m.connection}
-                                 </TableCell>
-                                 <TableCell align="left">
-                                    {m.lastRunTime
-                                       ? new Date(
-                                            m.lastRunTime,
-                                         ).toLocaleString()
-                                       : "n/a"}
-                                 </TableCell>
-                                 <TableCell align="left">
-                                    {m.lastRunStatus}
-                                 </TableCell>
-                              </TableRow>
-                           ))}
-                        </TableBody>
-                     </Table>
-                  </TableContainer>
-               )}
-               {isSuccess && data.data.length === 0 && (
-                  <Typography variant="body2">Nothing Scheduled</Typography>
-               )}
-               {isError && (
-                  <Typography variant="body2" sx={{ p: "10px", m: "auto" }}>
-                     {`${packageName} > ${versionId} - ${error.message}`}
-                  </Typography>
-               )}
+                        ))}
+                     </TableBody>
+                  </Table>
+               </TableContainer>
             </Box>
          </StyledCardContent>
       </StyledCard>
