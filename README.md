@@ -1,5 +1,7 @@
 # Malloy Publisher
 
+[![build](https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg)](https://github.com/malloydata/publisher/actions/workflows/build.yml)
+
 The Malloy Publisher is a basic semantic model server and web application for exploring Malloy packages.  The goals of the Publisher project are:
 1. Create a local development environment for Malloy data app development.
 1. Develop & standardize Malloy's package format and serving APIs.

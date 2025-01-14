@@ -1,0 +1,23 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# self contained tests
+jobs:
+  build:
+    name: Build
+    runs-on: Ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+      - name: Spin-up services
+        run: docker compose --profile ci up -d
+      - name: Install dependencies
+        run: docker exec -t publisher-ci npm install
+      - name: Build code
+        run: docker exec -t publisher-ci npm run build
+      - name: Run tests
+        run: docker exec -t publisher-ci npm run test

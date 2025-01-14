@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  publisher.ci:
+    container_name: publisher-ci
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.ci
+    networks:
+      - canary_net 
+    profiles:
+      - ci
+    # volumes:
+    #   - .:/usr/src/app
+
+networks:
+  canary_net:
+    name: canary_net 
