@@ -16,6 +16,7 @@
       "build-duckdb-wasm": "tsx scripts/build-duckdb-wasm"
    },
    "dependencies": {
+      "@faker-js/faker": "^9.4.0",
       "@eslint/compat": "^1.1.1",
       "@eslint/eslintrc": "^3.1.0",
       "@malloydata/db-bigquery": "^0.0.220",
@@ -44,6 +45,8 @@
       "commander": "^9.4.0",
       "concurrently": "^6.2.1",
       "cors": "^2.8.5",
+      "class-transformer": "^0.5.1",
+      "class-validator": "^0.14.1",
       "esbuild": "0.14.13",
       "esbuild-plugin-svgr": "^1.0.1",
       "eslint": "^9.16.0",
