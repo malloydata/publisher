@@ -1,29 +1,32 @@
 {
-  "compilerOptions": {
-    "target": "ESNext", // Specifies the JavaScript version to target when transpiling code.
-    "lib": ["ESNext", "DOM", "DOM.Iterable"], // Specifies the libraries available for the code.
-    "module": "CommonJS", // Defines the module system to use for code generation.
-    "skipLibCheck": true, // Skips type checking of declaration files.
-    "useDefineForClassFields": true, // Enables the use of 'define' for class fields.
+   "compilerOptions": {
+      "target": "ESNext", // Specifies the JavaScript version to target when transpiling code.
+      "lib": ["ESNext", "DOM", "DOM.Iterable"], // Specifies the libraries available for the code.
+      "module": "CommonJS", // Defines the module system to use for code generation.
+      "skipLibCheck": true, // Skips type checking of declaration files.
+      "useDefineForClassFields": true, // Enables the use of 'define' for class fields.
+      "experimentalDecorators": true,
+      "emitDecoratorMetadata": true,
+      "strictPropertyInitialization": false,
 
-    "moduleResolution": "Node", // Specifies how modules are resolved when bundling.
-    "resolveJsonModule": true, // Enables importing JSON modules.
-    "isolatedModules": true, // Ensures each file is treated as a separate module.
-    "noEmit": false, // Prevents TypeScript from emitting output files.
-    "jsx": "react-jsx", // Configures JSX support for React.
-    "esModuleInterop": true,
+      "moduleResolution": "Node", // Specifies how modules are resolved when bundling.
+      "resolveJsonModule": true, // Enables importing JSON modules.
+      "isolatedModules": true, // Ensures each file is treated as a separate module.
+      "noEmit": false, // Prevents TypeScript from emitting output files.
+      "jsx": "react-jsx", // Configures JSX support for React.
+      "esModuleInterop": true,
 
-    /* Linting */
-    "strict": true,
-    "allowJs": false,
-    "allowSyntheticDefaultImports": true,
-    "noUnusedLocals": true, // Flags unused local variables.
-    "noUnusedParameters": true, // Flags unused function parameters.
-    "noFallthroughCasesInSwitch": true, // Requires handling all cases in a switch statement.
-    "declaration": true, // Generates declaration files for TypeScript.
-    "forceConsistentCasingInFileNames": true,
+      /* Linting */
+      "strict": true,
+      "allowJs": false,
+      "allowSyntheticDefaultImports": true,
+      "noUnusedLocals": true, // Flags unused local variables.
+      "noUnusedParameters": true, // Flags unused function parameters.
+      "noFallthroughCasesInSwitch": true, // Requires handling all cases in a switch statement.
+      "declaration": true, // Generates declaration files for TypeScript.
+      "forceConsistentCasingInFileNames": true,
 
-    "outDir": "./dist",
-  },
-  "include": ["src"],
+      "outDir": "./dist"
+   },
+   "include": ["src"]
 }
