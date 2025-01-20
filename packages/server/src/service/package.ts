@@ -16,7 +16,7 @@ import { Scheduler } from "./scheduler";
 type ApiConnection = components["schemas"]["Connection"];
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
-type ApiPackage = components["schemas"]["Package"];
+export type ApiPackage = components["schemas"]["Package"];
 type ApiSchedule = components["schemas"]["Schedule"];
 
 export class Package {
