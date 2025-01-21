@@ -9,7 +9,7 @@ import {
    ModelNotFoundError,
 } from "../errors";
 
-describe("server/service/model", () => {
+describe("service/model", () => {
    const packageName = "test-package";
    const mockPackageName = "mockPackage";
    const mockModelPath = "mockModel.malloy";

@@ -1,0 +1,117 @@
+import "reflect-metadata";
+import {
+   IsOptional,
+   IsString,
+   IsEnum,
+   IsNumber,
+   ValidateNested,
+} from "class-validator";
+import { Type } from "class-transformer";
+import { ApiConnection } from "../service/model";
+
+export class PostgresConnectionDto {
+   @IsOptional()
+   @IsString()
+   host?: string;
+
+   @IsOptional()
+   @IsNumber()
+   port?: number;
+
+   @IsOptional()
+   @IsString()
+   databaseName?: string;
+
+   @IsOptional()
+   @IsString()
+   userName?: string;
+
+   @IsOptional()
+   @IsString()
+   password?: string;
+
+   @IsOptional()
+   @IsString()
+   connectionString?: string;
+}
+
+export class BigqueryConnectionDto {
+   @IsOptional()
+   @IsString()
+   defaultProjectId?: string;
+
+   @IsOptional()
+   @IsString()
+   billingProjectId?: string;
+
+   @IsOptional()
+   @IsString()
+   location?: string;
+
+   @IsOptional()
+   @IsString()
+   serviceAccountKeyJson?: string;
+
+   @IsOptional()
+   @IsString()
+   maximumBytesBilled?: string;
+
+   @IsOptional()
+   @IsString()
+   queryTimeoutMilliseconds?: string;
+}
+
+export class SnowflakeConnectionDto {
+   @IsOptional()
+   @IsString()
+   account?: string;
+
+   @IsOptional()
+   @IsString()
+   username?: string;
+
+   @IsOptional()
+   @IsString()
+   password?: string;
+
+   @IsOptional()
+   @IsString()
+   warehouse?: string;
+
+   @IsOptional()
+   @IsString()
+   database?: string;
+
+   @IsOptional()
+   @IsString()
+   schema?: string;
+
+   @IsOptional()
+   @IsNumber()
+   responseTimeoutMilliseconds?: number;
+}
+
+export class ConnectionDto implements ApiConnection {
+   @IsOptional()
+   @IsString()
+   name?: string;
+
+   @IsOptional()
+   @IsEnum(["postgres", "bigquery", "snowflake"])
+   type?: "postgres" | "bigquery" | "snowflake";
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => PostgresConnectionDto)
+   postgresConnection?: PostgresConnectionDto;
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => BigqueryConnectionDto)
+   bigqueryConnection?: BigqueryConnectionDto;
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => SnowflakeConnectionDto)
+   snowflakeConnection?: SnowflakeConnectionDto;
+}

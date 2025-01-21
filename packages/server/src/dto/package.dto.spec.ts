@@ -4,7 +4,7 @@ import { validate } from "class-validator";
 import { PackageDto } from "./package.dto";
 import { faker } from "@faker-js/faker";
 
-describe("server/dto/package", () => {
+describe("dto/package", () => {
    it("should not throw when valid object is provided", async () => {
       const errors = await validate(
          plainToInstance(PackageDto, {

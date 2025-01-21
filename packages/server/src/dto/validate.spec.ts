@@ -12,7 +12,7 @@ app.post("/packages", validateSchema(PackageDto), (req, res) => {
    res.status(201).json({ message: "Package created", data: req.body });
 });
 
-describe("server/dto/validate", () => {
+describe("dto/validate", () => {
    describe("validateSchema", () => {
       it("should pass validation for a valid request", async () => {
          const dummyPayload = {

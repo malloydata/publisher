@@ -46,7 +46,7 @@ type ApiNotebookCell = components["schemas"]["NotebookCell"];
 type ApiSource = components["schemas"]["Source"];
 type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
-type ApiConnection = components["schemas"]["Connection"];
+export type ApiConnection = components["schemas"]["Connection"];
 
 const MALLOY_VERSION = malloyPackage.version;
 

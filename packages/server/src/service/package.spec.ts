@@ -8,7 +8,7 @@ import { PackageNotFoundError } from "../errors";
 import { join } from "path";
 import { getWorkingDirectory } from "../utils";
 
-describe("server/service/package", () => {
+describe("service/package", () => {
    const testPackageDirectory = join(getWorkingDirectory(), "testPackage");
 
    beforeEach(async () => {
