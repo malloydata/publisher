@@ -1,42 +1,42 @@
 {
-    "version": "0.0.1",
-    "license": "MIT",
-    "name": "malloy-publisher",
-    "workspaces": {
-        "packages": [
-            "packages/sdk",
-            "packages/app",
-            "packages/server"
-        ]
-    },
-    "engines": {
-        "node": ">=20",
-        "npm": ">=10"
-    },
-    "scripts": {
-        "clean": "rimraf -g **/node_modules **/dist",
-        "build": "npm run -ws build",
-        "test": "npm run -ws test",
-        "start": "cd packages/server && npm run start",
-        "generate-api-types": "npm run -ws generate-api-types",
-        "lint": "npm run -ws lint",
-        "format": "npm run -ws format"
-    },
-    "devDependencies": {
-        "@types/chai": "^4.3.5",
-        "@types/chai-as-promised": "^7.1.5",
-        "@types/mocha": "^10.0.1",
-        "@types/node": "^20.3.3",
-        "@types/sinon": "^17.0.3",
-        "chai": "^4.3.7",
-        "chai-as-promised": "^7.1.1",
-        "mocha": "^10.2.0",
-        "rimraf": "^5.0.1",
-        "sinon": "^19.0.2",
-        "ts-node": "^10.9.1",
-        "typescript": "5.7.2"
-    },
-    "dependencies": {
-        "reflect-metadata": "^0.2.2"
-    }
+  "version": "0.0.1",
+  "license": "MIT",
+  "name": "malloy-publisher",
+  "workspaces": {
+    "packages": [
+      "packages/sdk",
+      "packages/app",
+      "packages/server"
+    ]
+  },
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "clean": "rimraf -g **/node_modules **/dist",
+    "build": "npm run -ws build",
+    "test": "npm run -ws test",
+    "start": "cd packages/server && npm run start",
+    "generate-api-types": "npm run -ws generate-api-types",
+    "lint": "npm run -ws lint",
+    "format": "npm run -ws format"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.5",
+    "@types/chai-as-promised": "^7.1.5",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "^20.3.3",
+    "@types/sinon": "^17.0.3",
+    "chai": "^4.3.7",
+    "chai-as-promised": "^7.1.1",
+    "mocha": "^10.2.0",
+    "rimraf": "^5.0.1",
+    "sinon": "^19.0.2",
+    "ts-node": "^10.9.1",
+    "typescript": "5.7.2"
+  },
+  "dependencies": {
+    "reflect-metadata": "^0.2.2"
+  }
 }
