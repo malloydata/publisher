@@ -18,7 +18,7 @@ describe("service/model", () => {
       sinon.restore();
    });
 
-   it("should create a Model instance successfully", async () => {
+   it("should create a Model instance", async () => {
       sinon.stub(Model, "getModelRuntime").resolves({
          runtime: sinon.createStubInstance(Runtime),
          modelURL: new URL("file://mockModelPath"),
