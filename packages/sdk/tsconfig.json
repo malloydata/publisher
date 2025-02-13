@@ -1,11 +1,11 @@
 {
-    "compilerOptions": {
+   "compilerOptions": {
       "target": "ESNext", // Specifies the JavaScript version to target when transpiling code.
       "lib": ["ESNext", "DOM", "DOM.Iterable"], // Specifies the libraries available for the code.
       "module": "ESNext", // Defines the module system to use for code generation.
       "skipLibCheck": true, // Skips type checking of declaration files.
       "useDefineForClassFields": true, // Enables the use of 'define' for class fields.
-  
+
       /* Bundler mode */
       "moduleResolution": "bundler", // Specifies how modules are resolved when bundling.
       "allowImportingTsExtensions": true, // Allows importing TypeScript files with extensions.
@@ -14,7 +14,7 @@
       "noEmit": true, // Prevents TypeScript from emitting output files.
       "jsx": "react-jsx", // Configures JSX support for React.
       "esModuleInterop": false,
-  
+
       /* Linting */
       // Can not set strict due to malloy renderer. Fix Malloy rendered or get rid of dep.
       "strict": false, // Enables strict type checking.
@@ -25,10 +25,8 @@
       "noUnusedParameters": true, // Flags unused function parameters.
       "noFallthroughCasesInSwitch": true, // Requires handling all cases in a switch statement.
       "declaration": true, // Generates declaration files for TypeScript.
-      "forceConsistentCasingInFileNames": true,
-    },
-    "include": ["src"], // Specifies the directory to include when searching for TypeScript files.
-    "exclude": [
-      "src/**/__docs__","src/**/__test__"
-    ]
-  }
+      "forceConsistentCasingInFileNames": true
+   },
+   "include": ["src"], // Specifies the directory to include when searching for TypeScript files.
+   "exclude": ["src/**/__docs__", "src/**/__test__", "**/*.spec.ts"]
+}
