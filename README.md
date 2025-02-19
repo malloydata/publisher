@@ -2,12 +2,15 @@
 
 [![build](https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg)](https://github.com/malloydata/publisher/actions/workflows/build.yml)
 
-The Malloy Publisher is a basic semantic model server and web application for exploring Malloy packages.  The goals of the Publisher project are:
-1. Create a local development environment for Malloy data app development.
-1. Develop & standardize Malloy's package format and serving APIs.
-1. Activate the Malloy open source community!
+Malloy Publisher is an open-source project designed to simplify the development and deployment of data applications built on semantic models programmed in [Malloy](link to main malloy repo). We aim for it to provide a comprehensive ecosystem for exploring, managing, and serving Malloy packages, empowering developers to build rich, data-driven experiences with ease.
 
-The diagram below illustrates the Publisher's basic components: Publisher App, Publisher SDK, and Publisher Server. 
+**The Power of Semantic Modeling**
+In today's data-rich environment, raw data alone is often insufficient. To unlock its true potential, data needs to be refined, organized, and understood in a meaningful context. This is where semantic modeling comes in.
+Semantic models act as a crucial intermediary layer between raw data and data consumers (applications, analysts, etc.). They provide:
+Abstraction: Hiding the complexities of underlying data storage and query languages, allowing users to focus on business logic and data relationships.
+Governance: Enforcing consistent definitions, business rules, and access controls across your data landscape.
+Reusability: Defining data entities and relationships that can be reused across multiple applications and analyses, reducing redundancy and promoting consistency.
+Clarity: Providing a clear, human-understandable representation of your data, making it easier for both technical and non-technical users to understand and work with.
 
 <img src="publisher.png" width=400>
 
