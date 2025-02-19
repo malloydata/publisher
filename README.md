@@ -1,4 +1,4 @@
-# Malloy Publisher
+# Malloy Publisher: A Semantic Model Serving and Development Platform
 
 [![build](https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg)](https://github.com/malloydata/publisher/actions/workflows/build.yml)
 
