@@ -21,7 +21,7 @@ Malloy, an open-source semantic modeling language, provides a powerful foundatio
 Malloy Publisher is comprised of three core components:
 
 * [Publisher Server](packages/sdk): A robust, lightweight server that hosts and serves Malloy packages via a well-defined [APIs](api-doc.yaml). It acts as a semantic layer, providing access to model definitions, package metadata, and query execution capabilities.
-* Publisher [SDK](packages/sdk): A React component library (@malloy-publisher/sdk) that simplifies embedding Malloy models and query results into data applications. It provides pre-built UI components for exploring and visualizing Malloy data.
+* [Publisher SDK](packages/sdk): A React component library (@malloy-publisher/sdk) that simplifies embedding Malloy models and query results into data applications. It provides pre-built UI components for exploring and visualizing Malloy data.
 * [Publisher App](packages/app/): A user-friendly web application built with the SDK, providing a visual interface for browsing packages, exploring models and notebooks, and generating embeddable code snippets for the SDK.
 
 <img src="publisher.png" width=400>
@@ -53,20 +53,79 @@ Currently, a Malloy package consists of a set of files in a directory with a pub
 * **Embeddable SDK Components:** Utilize the @malloy-publisher/sdk React library to seamlessly embed interactive Malloy components into your own data applications. Easily display query results, models, and notebooks with minimal code.
 * **API-Driven Access:** Interact with the Publisher Server programmatically via its comprehensive REST API. This allows you to build custom integrations and data applications that leverage the power of Malloy semantic models.
 
-## Build and Run Instructions
+## Getting Started
 
-To build and run the package server, first load the malloy-samples.
+To build and run the Malloy Publisher, follow these steps:
+
+**Prerequisites**
+
+* Install Node.js and npm: Ensure you have Node.js (version >=20) and npm (version >=10) installed on your system.
+
+* Clone the Repository:
+```
+git clone https://github.com/malloydata/publisher.git
+cd publisher
+```
+
+* Initialize Submodules: Load the malloy-samples submodule:
+
 ```
 git submodule init
 git submodule update
 ```
 
-Then build and run the package server:
+**Building and Running the Publisher**
+
+* Install Dependencies:
+
 ```
 npm install
+```
+
+* Build the Codebase:
+
+```
 npm run build
+```
+
+* Start the Publisher Server:
+
+```
+cd packages/server
 npm run start
 ```
+
+The server will start and be accessible at http://localhost:4000. The Publisher App will be served at the same address.
+
+## Using the SDK in Your Application
+
+* Install the SDK Package:
+
+```
+npm install @malloy-publisher/sdk
+```
+
+* Import Components: Import the desired components from @malloy-publisher/sdk in your React application:
+
+```
+import { QueryResult } from '@malloy-publisher/sdk';
+```
+
+* Embed Components: The publisher UI generates embeddable links. Use these components in your JSX to display Malloy content. For example, to embed a QueryResult:
+
+```
+<QueryResult
+           server="http://localhost:4000/api/v0" // Replace with your Publisher Server URL if different
+           projectName="your-project-name"
+           packageName="your-package-name"
+           modelPath="path/to/your/model.malloy"
+           queryName="your_query_name"
+           />
+```
+
+Refer to the SDK documentation for more detailed usage instructions and component options.
+
+
 > **_NOTE:_**  Note that the Publisher repository currently points to a [fork](https://github.com/pathwaysdata/malloy-samples) of the [malloy-samples](https://github.com/malloydata/malloy-samples) repo.  The fork contains minor changes to turn each Malloy sample directory into a package.  Once the package format solidifies, we intend to merge the changes into the main malloy-samples repo.
 
 ## Coming Soon
