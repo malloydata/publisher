@@ -2,33 +2,44 @@
 
 [![build](https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg)](https://github.com/malloydata/publisher/actions/workflows/build.yml)
 
-Malloy Publisher is an open-source project designed to simplify the development and deployment of data applications built on semantic models programmed in [Malloy](link to main malloy repo). We aim for it to provide a comprehensive ecosystem for exploring, managing, and serving Malloy packages, empowering developers to build rich, data-driven experiences with ease.
+Malloy Publisher is an open-source project designed to simplify the development and deployment of data applications built on semantic models programmed in [**Malloy**](https://github.com/malloydata/malloy). We aim for it to provide a comprehensive ecosystem for exploring, managing, and serving Malloy packages, empowering developers to build rich, data-driven experiences with ease.
 
-**The Power of Semantic Modeling**
+## The Power of Semantic Modeling
+
 In today's data-rich environment, raw data alone is often insufficient. To unlock its true potential, data needs to be refined, organized, and understood in a meaningful context. This is where semantic modeling comes in.
 Semantic models act as a crucial intermediary layer between raw data and data consumers (applications, analysts, etc.). They provide:
-Abstraction: Hiding the complexities of underlying data storage and query languages, allowing users to focus on business logic and data relationships.
-Governance: Enforcing consistent definitions, business rules, and access controls across your data landscape.
-Reusability: Defining data entities and relationships that can be reused across multiple applications and analyses, reducing redundancy and promoting consistency.
-Clarity: Providing a clear, human-understandable representation of your data, making it easier for both technical and non-technical users to understand and work with.
+
+* Abstraction: Hiding the complexities of underlying data storage and query languages, allowing users to focus on business logic and data relationships.
+* Governance: Enforcing consistent definitions, business rules, and access controls across your data landscape.
+* Reusability: Defining data entities and relationships that can be reused across multiple applications and analyses, reducing redundancy and promoting consistency.
+* Clarity: Providing a clear, human-understandable representation of your data, making it easier for both technical and non-technical users to understand and work with.
+
+Malloy, an open-source semantic modeling language, provides a powerful foundation for building these models. Malloy Publisher builds upon this foundation to offer a semantic layer for leveraging semantic models in real-world applications.
+
+## Introducing Malloy Publisher
+
+Malloy Publisher is comprised of three core components:
+
+* [Publisher Server](packages/sdk): A robust, lightweight server that hosts and serves Malloy packages via a well-defined [APIs](api-doc.yaml). It acts as a semantic layer, providing access to model definitions, package metadata, and query execution capabilities.
+* Publisher [SDK](packages/sdk): A React component library (@malloy-publisher/sdk) that simplifies embedding Malloy models and query results into data applications. It provides pre-built UI components for exploring and visualizing Malloy data.
+* [Publisher App](packages/app/): A user-friendly web application built with the SDK, providing a visual interface for browsing packages, exploring models and notebooks, and generating embeddable code snippets for the SDK.
 
 <img src="publisher.png" width=400>
 
-The [Publisher app](packages/app/) allows you to browse packages, their contents, and generate code snippets that can be embedded into a data application. See the screenshots below.
-
-The Publisher app is composed of a set React components. The React components form an [SDK](packages/sdk) that can be embedded in other data applications.  The SDK's React components call the Publisher server's [APIs](api-doc.yaml) to fetch package metadata and query results.
-
-The [Publisher server](packages/sdk) is a simple semantic layer.  While its primary purpose currently is to facilitate local data app development, it can easily be bundled with a set of Malloy packages in a docker image in order to serve Malloy models and packages (coming soon).  We also imagine running the Publisher in-browser in the future to enable folks to easily share and analyze Malloy packages just about anywhere.
-
 Currently, a Malloy package consists of a set of files in a directory with a publisher.json file.  The publisher.json only supports two fields at the moment (name & description).  We intend to add more fields as we build out Publisher functionality.
 
-## Screenshots
+## Key Features and Benefits
+
+* **Package Exploration:** Browse and explore loaded Malloy packages, their models, notebooks, and embedded databases through the intuitive Publisher App
 
 <center>
     <figcaption>Browse loaded packages</figcaption>
     <img src="project-screenshot.png" width=800>
 </center>
 <br>
+
+* **Model and Notebook Visualization:** Render Malloy models and notebooks directly in the browser, gaining insights into their structure and queries.
+
 <center>
     <figcaption>Explore a package's contents</figcaption>
     <img src="package-screenshot.png" width=800>
@@ -38,6 +49,9 @@ Currently, a Malloy package consists of a set of files in a directory with a pub
     <figcaption>Explore Malloy models and notebooks</figcaption>
     <img src="notebook-screenshot.png" width=800>
 </center>
+
+* **Embeddable SDK Components:** Utilize the @malloy-publisher/sdk React library to seamlessly embed interactive Malloy components into your own data applications. Easily display query results, models, and notebooks with minimal code.
+* **API-Driven Access:** Interact with the Publisher Server programmatically via its comprehensive REST API. This allows you to build custom integrations and data applications that leverage the power of Malloy semantic models.
 
 ## Build and Run Instructions
 
