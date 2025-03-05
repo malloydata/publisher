@@ -167,10 +167,11 @@ export interface components {
     Connection: {
       name?: string;
       /** @enum {string} */
-      type?: "postgres" | "bigquery" | "snowflake";
+      type?: "postgres" | "bigquery" | "snowflake" | "trino";
       postgresConnection?: components["schemas"]["PostgresConnection"];
       bigqueryConnection?: components["schemas"]["BigqueryConnection"];
       snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+      trinoConnection?: components["schemas"]["TrinoConnection"];
     };
     PostgresConnection: {
       host?: string;
@@ -196,6 +197,14 @@ export interface components {
       database?: string;
       schema?: string;
       responseTimeoutMilliseconds?: number;
+    };
+    TrinoConnection: {
+      server?: string;
+      port?: number;
+      catalog?: string;
+      schema?: string;
+      user?: string;
+      password?: string;
     };
     Error: {
       code?: string;

@@ -26,6 +26,5 @@
       "declaration": true, // Generates declaration files for TypeScript.
       "forceConsistentCasingInFileNames": true
    },
-   "include": ["src"],
-   "exclude": ["**/*.spec.ts"]
+   "include": ["src"]
 }

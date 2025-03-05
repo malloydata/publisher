@@ -27,6 +27,5 @@
 
       "outDir": "./dist"
    },
-   "include": ["src"],
-   "exclude": ["**/*.spec.ts"]
+   "include": ["src"]
 }

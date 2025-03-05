@@ -622,13 +622,15 @@ components:
           type: string
         type:
           type: string
-          enum: [postgres, bigquery, snowflake]
+          enum: [postgres, bigquery, snowflake, trino]
         postgresConnection:
           $ref: "#/components/schemas/PostgresConnection"
         bigqueryConnection:
           $ref: "#/components/schemas/BigqueryConnection"
         snowflakeConnection:
           $ref: "#/components/schemas/SnowflakeConnection"
+        trinoConnection:
+          $ref: "#/components/schemas/TrinoConnection"
   
     PostgresConnection:
       type: object
@@ -679,6 +681,22 @@ components:
           type: string
         responseTimeoutMilliseconds:
           type: integer
+
+    TrinoConnection:
+      type: object
+      properties:
+        server:
+          type: string
+        port:
+          type: string
+        catalog:
+          type: string
+        schema:
+          type: string
+        user:
+          type: string
+        password:
+          type: string
 
     Error:
       type: object

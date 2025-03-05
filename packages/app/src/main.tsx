@@ -4,12 +4,11 @@ import { ThemeProvider } from "@mui/material/styles";
 import { CssBaseline } from "@mui/material";
 import theme from "./theme";
 import MainPage from "./components/MainPage";
-import { HomePage } from "./components/HomePage";
 import { RouteError } from "./components/RouteError";
 import { PackagePage } from "./components/PackagePage";
 import { ProjectPage } from "./components/ProjectPage";
 import { ModelPage } from "./components/ModelPage";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, RouterProvider, Navigate } from "react-router-dom";
 
 const server = `${window.location.protocol}//${window.location.host}/api/v0`;
 const router = createBrowserRouter([
@@ -26,7 +25,7 @@ const router = createBrowserRouter([
       children: [
          {
             path: "",
-            element: <HomePage server={server} />,
+            element: <Navigate to="/home/" />,
          },
          {
             path: ":projectName",
