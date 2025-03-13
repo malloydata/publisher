@@ -431,6 +431,11 @@ export class Model {
                   if (!connection.snowflakeConnection.password) {
                      throw new Error("Snowflake password is required.");
                   }
+
+                  if (!connection.snowflakeConnection.warehouse) {
+                     throw new Error("Snowflake warehouse is required.");
+                  }
+
                   const snowflakeConnectionOptions = {
                      connOptions: {
                         account: connection.snowflakeConnection.account,    
