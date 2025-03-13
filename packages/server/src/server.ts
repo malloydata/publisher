@@ -34,6 +34,15 @@ const queryController = new QueryController(packageService);
 const scheduleController = new ScheduleController(packageService);
 
 app.use(cors());
+/*
+app.use(
+   cors({
+      origin: "http://localhost:3000", // Allow only the frontend origin
+      credentials: true, // Allow cookies and authentication headers
+      allowedHeaders: ["Content-Type", "Authorization"], // Allow specific headers
+      methods: ["GET", "POST", "OPTIONS"], // Allow specific HTTP methods
+   })
+);*/
 app.use(bodyParser.json());
 app.use(express.json());
 app.use("/", express.static(path.join(ROOT, "/")));
@@ -50,13 +59,15 @@ const setVersionIdError = (res: express.Response) => {
    const { json, status } = internalErrorToHttpError(
       new NotImplementedError("Version IDs not implemented."),
    );
+   console.log("Exiting api call: version id should not be provided");
    res.status(status).json(json);
 };
 
 const setProjectNameError = (res: express.Response) => {
    const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Project names other than 'default' not implemented."),
+      new NotImplementedError(`Project names other than ${PROJECT_NAME} not implemented.`),
    );
+   console.log(`Exiting api call: project name should be "${PROJECT_NAME}"`);
    res.status(status).json(json);
 };
 
