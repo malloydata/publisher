@@ -5,13 +5,13 @@
 
 
 export interface paths {
-  "/about": {
-    /** Returns metadata about the publisher service. */
-    get: operations["about"];
-  };
   "/projects": {
     /** Returns a list of the Projects hosted on this server. */
     get: operations["list-projects"];
+  };
+  "/projects/{projectName}/about": {
+    /** Returns metadata about the publisher service. */
+    get: operations["about"];
   };
   "/projects/{projectName}/packages": {
     /** Returns a list of the Packages hosted on this server. */
@@ -167,10 +167,11 @@ export interface components {
     Connection: {
       name?: string;
       /** @enum {string} */
-      type?: "postgres" | "bigquery" | "snowflake";
+      type?: "postgres" | "bigquery" | "snowflake" | "trino";
       postgresConnection?: components["schemas"]["PostgresConnection"];
       bigqueryConnection?: components["schemas"]["BigqueryConnection"];
       snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+      trinoConnection?: components["schemas"]["TrinoConnection"];
     };
     PostgresConnection: {
       host?: string;
@@ -196,6 +197,14 @@ export interface components {
       database?: string;
       schema?: string;
       responseTimeoutMilliseconds?: number;
+    };
+    TrinoConnection: {
+      server?: string;
+      port?: number;
+      catalog?: string;
+      schema?: string;
+      user?: string;
+      password?: string;
     };
     Error: {
       code?: string;
@@ -246,19 +255,6 @@ export type external = Record<string, never>;
 
 export interface operations {
 
-  /** Returns metadata about the publisher service. */
-  about: {
-    responses: {
-      /** @description Metadata about the publisher service. */
-      200: {
-        content: {
-          "application/json": components["schemas"]["About"];
-        };
-      };
-      401: components["responses"]["UnauthorizedError"];
-      500: components["responses"]["InternalServerError"];
-    };
-  };
   /** Returns a list of the Projects hosted on this server. */
   "list-projects": {
     responses: {
@@ -266,6 +262,25 @@ export interface operations {
       200: {
         content: {
           "application/json": components["schemas"]["Project"][];
+        };
+      };
+      401: components["responses"]["UnauthorizedError"];
+      500: components["responses"]["InternalServerError"];
+    };
+  };
+  /** Returns metadata about the publisher service. */
+  about: {
+    parameters: {
+      path: {
+        /** @description Name of project */
+        projectName: string;
+      };
+    };
+    responses: {
+      /** @description Metadata about the publisher service. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["About"];
         };
       };
       401: components["responses"]["UnauthorizedError"];
