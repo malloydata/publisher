@@ -91,14 +91,40 @@ export class SnowflakeConnectionDto {
    responseTimeoutMilliseconds?: number;
 }
 
+export class TrinoConnectionDto {
+   @IsOptional()
+   @IsString()
+   server?: string;
+
+   @IsOptional()
+   @IsString()
+   port?: number;
+
+   @IsOptional()
+   @IsString()
+   catalog?: string;
+
+   @IsOptional()
+   @IsString()
+   schema?: string;
+
+   @IsOptional()
+   @IsString()
+   user?: string;
+
+   @IsOptional()
+   @IsString()
+   password?: string;
+}
+
 export class ConnectionDto implements ApiConnection {
    @IsOptional()
    @IsString()
    name?: string;
 
    @IsOptional()
-   @IsEnum(["postgres", "bigquery", "snowflake"])
-   type?: "postgres" | "bigquery" | "snowflake";
+   @IsEnum(["postgres", "bigquery", "snowflake", "trino"])
+   type?: "postgres" | "bigquery" | "snowflake" | "trino";
 
    @IsOptional()
    @ValidateNested()
@@ -114,4 +140,9 @@ export class ConnectionDto implements ApiConnection {
    @ValidateNested()
    @Type(() => SnowflakeConnectionDto)
    snowflakeConnection?: SnowflakeConnectionDto;
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => TrinoConnectionDto)
+   TrinoConnection?: TrinoConnectionDto;
 }

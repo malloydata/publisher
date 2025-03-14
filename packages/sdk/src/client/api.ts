@@ -184,12 +184,19 @@ export interface Connection {
      * @memberof Connection
      */
     'snowflakeConnection'?: SnowflakeConnection;
+    /**
+     * 
+     * @type {TrinoConnection}
+     * @memberof Connection
+     */
+    'trinoConnection'?: TrinoConnection;
 }
 
 export const ConnectionTypeEnum = {
     Postgres: 'postgres',
     Bigquery: 'bigquery',
-    Snowflake: 'snowflake'
+    Snowflake: 'snowflake',
+    Trino: 'trino'
 } as const;
 
 export type ConnectionTypeEnum = typeof ConnectionTypeEnum[keyof typeof ConnectionTypeEnum];
@@ -539,6 +546,49 @@ export interface Source {
      * @memberof Source
      */
     'views'?: Array<View>;
+}
+/**
+ * 
+ * @export
+ * @interface TrinoConnection
+ */
+export interface TrinoConnection {
+    /**
+     * 
+     * @type {string}
+     * @memberof TrinoConnection
+     */
+    'server'?: string;
+    /**
+     * 
+     * @type {number}
+     * @memberof TrinoConnection
+     */
+    'port'?: number;
+    /**
+     * 
+     * @type {string}
+     * @memberof TrinoConnection
+     */
+    'catalog'?: string;
+    /**
+     * 
+     * @type {string}
+     * @memberof TrinoConnection
+     */
+    'schema'?: string;
+    /**
+     * 
+     * @type {string}
+     * @memberof TrinoConnection
+     */
+    'user'?: string;
+    /**
+     * 
+     * @type {string}
+     * @memberof TrinoConnection
+     */
+    'password'?: string;
 }
 /**
  * Named model view.
