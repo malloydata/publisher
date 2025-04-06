@@ -55,13 +55,15 @@ npm run start
 ## Coming Soon
 
 * Developer mode that automatically recompiles models and refreshes the publisher app as you make changes
-* Embed Composer's [Explore UI](https://github.com/malloydata/malloy-composer) to enable ad hoc anslysis of packages via a UI
+* Notebook Builder - embed [Explore UI](https://github.com/malloydata/malloy-composer) to enable ad hoc anslysis of packages via a UI
 * Scheduled transform pipelines
 * Scheduled report generation
 * Dockerfile
 * In-browser
 * DBT integration
 * Ariflow integration
+* Fine grain ACLs
+* Pre-aggregation and query caching
 
 ---
 
