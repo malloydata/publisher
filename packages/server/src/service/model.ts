@@ -18,6 +18,8 @@ import {
    StructDef,
    TurtleDef,
    isSourceDef,
+   InMemoryModelCache,
+   CacheManager,
 } from "@malloydata/malloy";
 import {
    MalloySQLParser,
@@ -324,6 +326,8 @@ export class Model {
       const importBaseURL = new URL(
          "file://" + path.dirname(fullModelPath) + "/",
       );
+      const modelCache = new InMemoryModelCache();
+      const cacheManager = new CacheManager(modelCache);
       const modelURL = new URL("file://" + fullModelPath);
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
       const modelDirectory = path.dirname(fileURLToPath(modelURL));
@@ -331,7 +335,7 @@ export class Model {
          modelDirectory,
          connectionConfig,
       );
-      const runtime = new Runtime({ urlReader, connections });
+      const runtime = new Runtime({ urlReader, connections, cacheManager });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
    }
