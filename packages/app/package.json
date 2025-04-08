@@ -4,12 +4,11 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "build": "tsc && vite build --mode ${NODE_ENV:=development}",
-    "test": "",
-    "lint": "eslint ./src --ext .ts,.tsx --ignore-path .gitignore --fix",
-    "format": "prettier --write --parser typescript '**/*.{ts,tsx}'",
-    "dev": "vite",
-    "preview": "vite preview",
+    "build": "bunx vite build --mode development",
+    "dev": "bunx vite",
+    "preview": "bunx vite preview",
+    "lint": "bunx eslint ./src --ext .ts,.tsx --ignore-path .gitignore --fix",
+    "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
     "generate-api-types": ""
   },
   "dependencies": {

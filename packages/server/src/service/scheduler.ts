@@ -52,14 +52,16 @@ class Schedule {
    }
 
    public get(): ApiSchedule {
-      const query = this.source ? `${this.source.name} > ${this.view?.name}` : this.query?.name;
+      const query = this.source
+         ? `${this.source.name} > ${this.view?.name}`
+         : this.query?.name;
       return {
          resource: `${this.model.getPath()}  > ${query}`,
          schedule: this.schedule,
          action: this.action,
          connection: this.connection,
          lastRunTime: this.lastRunTime,
-         lastRunStatus: this.lastRunStatus
+         lastRunStatus: this.lastRunStatus,
       };
    }
 
@@ -91,10 +93,13 @@ class Schedule {
          );
       }
 
-      var standardCron = Schedule.translateNonStandardCron(annotationSplit[2]);
+      const standardCron = Schedule.translateNonStandardCron(
+         annotationSplit[2],
+      );
       if (!cron.validate(standardCron)) {
          throw new Error(
-            "Invalid annotation string does not have valid cron schedule: " + standardCron,
+            "Invalid annotation string does not have valid cron schedule: " +
+               standardCron,
          );
       }
 
@@ -118,7 +123,7 @@ class Schedule {
    }
 
    public static translateNonStandardCron(schedule: string): string {
-      var standardCron = schedule;
+      let standardCron = schedule;
       switch (schedule) {
          case "@yearly":
          case "@anually":
@@ -133,14 +138,14 @@ class Schedule {
          case "@daily":
          case "@midnight":
             standardCron = "0 0 * * *";
-            break;  
+            break;
          case "@hourly":
             standardCron = "0 * * * *";
             break;
          case "@minutely":
-            standardCron = "* * * * *";    
+            standardCron = "* * * * *";
       }
-      return standardCron; 
+      return standardCron;
    }
 }
 
@@ -151,25 +156,15 @@ export class Scheduler {
       this.schedules = schedules;
    }
 
-   public static create(
-      models: Map<string, Model>,
-   ): Scheduler {
-      const schedules: Schedule[] = new Array();
+   public static create(models: Map<string, Model>): Scheduler {
+      const schedules: Schedule[] = [];
 
       models.forEach((m) => {
          m.getSources()?.forEach((s) => {
             s.views?.forEach((v) => {
                v.annotations?.forEach((a) => {
                   if (a.startsWith(SCHEDULE_ANNOTATION)) {
-                     schedules.push(
-                        new Schedule(
-                           m,
-                           s,
-                           v,
-                           undefined,
-                           a,
-                        ),
-                     );
+                     schedules.push(new Schedule(m, s, v, undefined, a));
                   }
                });
             });
@@ -178,15 +173,7 @@ export class Scheduler {
          m.getQueries()?.forEach((q) => {
             q.annotations?.forEach((a) => {
                if (a.startsWith(SCHEDULE_ANNOTATION)) {
-                  schedules.push(
-                     new Schedule(
-                        m,
-                        undefined,
-                        undefined,
-                        q,
-                        a,
-                     ),
-                  );
+                  schedules.push(new Schedule(m, undefined, undefined, q, a));
                }
             });
          });

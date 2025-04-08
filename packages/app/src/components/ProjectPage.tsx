@@ -9,8 +9,18 @@ export function ProjectPage({ server }: ProjectPageProps) {
    const navigate = useNavigate();
    const { projectName } = useParams();
    if (!projectName) {
-      return (<div><h2>Missing project name</h2></div>);
+      return (
+         <div>
+            <h2>Missing project name</h2>
+         </div>
+      );
    } else {
-      return <Project server={server} projectName={projectName} navigate={navigate} />;
+      return (
+         <Project
+            server={server}
+            projectName={projectName}
+            navigate={navigate}
+         />
+      );
    }
 }

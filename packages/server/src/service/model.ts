@@ -2,6 +2,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { BigQueryConnection } from "@malloydata/db-bigquery";
 import { SnowflakeConnection } from "@malloydata/db-snowflake";
+import { TrinoConnection } from "@malloydata/db-trino";
 import { v4 as uuidv4 } from "uuid";
 import {
    Connection,
@@ -245,7 +246,7 @@ export class Model {
                   try {
                      const rowLimit = cell.runnable
                         ? (await cell.runnable.getPreparedResult())
-                             .resultExplore.limit
+                           .resultExplore.limit
                         : undefined;
                      const result = await cell.runnable.run({ rowLimit });
                      const query = (await cell.runnable.getPreparedQuery())
@@ -388,17 +389,21 @@ export class Model {
                      throw "Invalid connection configuration.  No bigquery connection.";
                   }
 
-                  // BigQuery requires a service account key file.  We persist it to disk
+                  // If a service account key file is provided, we persist it to disk
                   // and pass the path to the BigQueryConnection.
-                  const serviceAccountKeyPath = path.join(
-                     "/tmp",
-                     `${connection.name}-${uuidv4()}-service-account-key.json`,
-                  );
-                  await fs.writeFile(
-                     serviceAccountKeyPath,
-                     connection.bigqueryConnection
-                        .serviceAccountKeyJson as string,
-                  );
+                  let serviceAccountKeyPath = undefined;
+                  if (connection.bigqueryConnection.serviceAccountKeyJson) {
+                     serviceAccountKeyPath = path.join(
+                        "/tmp",
+                        `${connection.name}-${uuidv4()}-service-account-key.json`,
+                     );
+                     await fs.writeFile(
+                        serviceAccountKeyPath,
+                        connection.bigqueryConnection
+                           .serviceAccountKeyJson as string,
+                     );
+                  }
+
                   const bigqueryConnectionOptions = {
                      projectId: connection.bigqueryConnection.defaultProjectId,
                      serviceAccountKeyPath: serviceAccountKeyPath,
@@ -420,14 +425,68 @@ export class Model {
                }
 
                case "snowflake": {
+                  if (!connection.snowflakeConnection) {
+                     throw new Error(
+                        "Snowflake connection configuration is missing.",
+                     );
+                  }
+                  if (!connection.snowflakeConnection.account) {
+                     throw new Error("Snowflake account is required.");
+                  }
+
+                  if (!connection.snowflakeConnection.username) {
+                     throw new Error("Snowflake username is required.");
+                  }
+
+                  if (!connection.snowflakeConnection.password) {
+                     throw new Error("Snowflake password is required.");
+                  }
+
+                  if (!connection.snowflakeConnection.warehouse) {
+                     throw new Error("Snowflake warehouse is required.");
+                  }
+
                   const snowflakeConnectionOptions = {
-                     // TODO: Add snowflake connection options.
+                     connOptions: {
+                        account: connection.snowflakeConnection.account,
+                        username: connection.snowflakeConnection.username,
+                        password: connection.snowflakeConnection.password,
+                        warehouse: connection.snowflakeConnection.warehouse,
+                        database: connection.snowflakeConnection.database,
+                        schema: connection.snowflakeConnection.schema,
+                        timeout:
+                           connection.snowflakeConnection
+                              .responseTimeoutMilliseconds,
+                     },
                   };
                   const snowflakeConnection = new SnowflakeConnection(
                      connection.name,
                      snowflakeConnectionOptions,
                   );
                   connectionMap.set(connection.name, snowflakeConnection);
+                  break;
+               }
+
+               case "trino": {
+                  if (!connection.trinoConnection) {
+                     throw new Error(
+                        "Trino connection configuration is missing.",
+                     );
+                  }
+                  const trinoConnectionOptions = {
+                     server: connection.trinoConnection.server,
+                     port: connection.trinoConnection.port,
+                     catalog: connection.trinoConnection.catalog,
+                     schema: connection.trinoConnection.schema,
+                     user: connection.trinoConnection.user,
+                     password: connection.trinoConnection.password,
+                  };
+                  const trinoConnection: Connection = new TrinoConnection(
+                     connection.name,
+                     {},
+                     trinoConnectionOptions,
+                  );
+                  connectionMap.set(connection.name, trinoConnection);
                   break;
                }
 

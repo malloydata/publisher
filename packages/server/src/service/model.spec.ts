@@ -1,7 +1,8 @@
-import { expect } from "chai";
+import { expect, it, describe } from "bun:test";
 import { Runtime } from "@malloydata/malloy";
-import fs from "fs/promises";
 import sinon from "sinon";
+import fs from "fs/promises";
+
 import { Model, ModelType } from "./model";
 import {
    BadRequestError,
@@ -13,10 +14,6 @@ describe("service/model", () => {
    const packageName = "test-package";
    const mockPackageName = "mockPackage";
    const mockModelPath = "mockModel.malloy";
-
-   afterEach(() => {
-      sinon.restore();
-   });
 
    it("should create a Model instance", async () => {
       sinon.stub(Model, "getModelRuntime").resolves({
@@ -33,14 +30,18 @@ describe("service/model", () => {
       });
 
       const model = await Model.create(mockPackageName, mockModelPath, []);
-      expect(model).to.be.an.instanceOf(Model);
-      expect(model.getPath()).to.equal(mockModelPath);
+      expect(model).toBeInstanceOf(Model);
+      expect(model.getPath()).toBe(mockModelPath);
+
+      sinon.restore();
    });
 
    it("should handle ModelNotFoundError correctly", async () => {
-      await expect(
-         Model.create(mockPackageName, mockModelPath, []),
-      ).to.eventually.be.rejectedWith(`${mockModelPath} does not exist.`);
+      await expect(async () => {
+         await Model.create(mockPackageName, mockModelPath, []);
+      }).toThrowError(`${mockModelPath} does not exist.`);
+
+      sinon.restore();
    });
 
    describe("instance methods", () => {
@@ -59,7 +60,9 @@ describe("service/model", () => {
                undefined,
             );
 
-            expect(model.getPath()).to.equal(mockModelPath);
+            expect(model.getPath()).toBe(mockModelPath);
+
+            sinon.restore();
          });
       });
 
@@ -79,7 +82,9 @@ describe("service/model", () => {
                undefined,
             );
 
-            expect(model.getType()).to.equal(modelType);
+            expect(model.getType()).toBe(modelType);
+
+            sinon.restore();
          });
       });
 
@@ -98,9 +103,11 @@ describe("service/model", () => {
                "Compilation error",
             );
 
-            await expect(model.getModel()).to.be.rejectedWith(
-               ModelCompilationError,
-            );
+            await expect(async () => {
+               await model.getModel();
+            }).toThrowError(ModelCompilationError);
+
+            sinon.restore();
          });
 
          it("should throw ModelNotFoundError for invalid modelType", async () => {
@@ -117,9 +124,11 @@ describe("service/model", () => {
                undefined,
             );
 
-            await expect(model.getModel()).to.be.rejectedWith(
-               ModelNotFoundError,
-            );
+            await expect(async () => {
+               await model.getModel();
+            }).toThrowError(ModelNotFoundError);
+
+            sinon.restore();
          });
       });
 
@@ -138,9 +147,11 @@ describe("service/model", () => {
                "Compilation error",
             );
 
-            await expect(model.getQueryResults()).to.be.rejectedWith(
-               ModelCompilationError,
-            );
+            await expect(async () => {
+               await model.getQueryResults();
+            }).toThrowError(ModelCompilationError);
+
+            sinon.restore();
          });
 
          it("should throw BadRequestError if no queryable entities exist", async () => {
@@ -157,19 +168,25 @@ describe("service/model", () => {
                undefined,
             );
 
-            await expect(model.getQueryResults()).to.be.rejectedWith(
-               BadRequestError,
-            );
+            await expect(async () => {
+               await model.getQueryResults();
+            }).toThrowError(BadRequestError);
+
+            sinon.restore();
          });
       });
+   });
 
+   describe("static methods", () => {
       describe("getModelRuntime", () => {
          it("should throw ModelNotFoundError for invalid modelPath", async () => {
             sinon.stub(fs, "stat").rejects(new Error("File not found"));
 
-            await expect(
-               Model.getModelRuntime(packageName, mockModelPath, []),
-            ).to.be.rejectedWith(ModelNotFoundError);
+            await expect(async () => {
+               await Model.getModelRuntime(packageName, mockModelPath, []);
+            }).toThrowError(ModelNotFoundError);
+
+            sinon.restore();
          });
       });
    });

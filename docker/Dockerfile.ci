@@ -1,7 +1,7 @@
-FROM node:20-alpine
+FROM oven/bun:1.2
 
-RUN apk add bash
-RUN apk add libc6-compat
+RUN apt-get update && apt-get install -y bash libc6
+
 
 WORKDIR /usr/src/app
 COPY . /usr/src/app

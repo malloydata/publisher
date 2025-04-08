@@ -16,8 +16,8 @@ jobs:
       - name: Spin-up services
         run: docker compose --profile ci up -d
       - name: Install dependencies
-        run: docker exec -t publisher-ci npm install
+        run: docker exec -t publisher-ci bun install
       - name: Build code
-        run: docker exec -t publisher-ci npm run build
+        run: docker exec -t publisher-ci bun run build
       - name: Run tests
-        run: docker exec -t publisher-ci npm run test
+        run: docker exec -t publisher-ci bun run test

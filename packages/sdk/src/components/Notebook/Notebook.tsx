@@ -62,7 +62,7 @@ export default function Notebook({
       highlight(notebookCodeSnippet, "typescript").then((code) => {
          setHighlightedEmbedCode(code);
       });
-   }, [embeddingExpanded]);
+   }, [embeddingExpanded, notebookCodeSnippet]);
 
    const {
       data: notebook,
@@ -71,15 +71,28 @@ export default function Notebook({
       error,
    } = useQuery(
       {
-         queryKey: ["notebook", server, projectName, packageName, notebookPath, versionId],
+         queryKey: [
+            "notebook",
+            server,
+            projectName,
+            packageName,
+            notebookPath,
+            versionId,
+         ],
          queryFn: () =>
-            modelsApi.getModel(projectName, packageName, notebookPath, versionId, {
-               baseURL: server,
-               withCredentials: !accessToken,
-               headers: {
-                  Authorization: accessToken && `Bearer ${accessToken}`,
+            modelsApi.getModel(
+               projectName,
+               packageName,
+               notebookPath,
+               versionId,
+               {
+                  baseURL: server,
+                  withCredentials: !accessToken,
+                  headers: {
+                     Authorization: accessToken && `Bearer ${accessToken}`,
+                  },
                },
-            }),
+            ),
          retry: false,
       },
       queryClient,
@@ -172,7 +185,7 @@ export default function Notebook({
                         queryResultCodeSnippet={getQueryResultCodeSnippet(
                            server,
                            projectName,
-                        packageName,
+                           packageName,
                            notebookPath,
                            cell.text,
                         )}

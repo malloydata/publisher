@@ -15,7 +15,11 @@ interface AboutProps {
    accessToken?: string;
 }
 
-export default function About({ server, projectName, accessToken }: AboutProps) {
+export default function About({
+   server,
+   projectName,
+   accessToken,
+}: AboutProps) {
    const { data, isSuccess, isError, error } = useQuery(
       {
          queryKey: ["about", server, projectName],

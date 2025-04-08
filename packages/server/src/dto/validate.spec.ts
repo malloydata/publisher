@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect, it, describe } from "bun:test";
 import request from "supertest";
 import express from "express";
 import { validateSchema } from "./validate";
@@ -24,9 +24,9 @@ describe("dto/validate", () => {
             .post("/packages")
             .send(dummyPayload);
 
-         expect(response.status).to.equal(201);
-         expect(response.body.message).to.equal("Package created");
-         expect(response.body.data).to.deep.equal(dummyPayload);
+         expect(response.status).toBe(201);
+         expect(response.body.message).toBe("Package created");
+         expect(response.body.data).toEqual(dummyPayload);
       });
 
       it("should return 400 for missing required fields", async () => {
@@ -35,9 +35,10 @@ describe("dto/validate", () => {
             description: "",
          });
 
-         expect(response.status).to.equal(400);
-         expect(response.body.errors).to.be.an("array");
-         expect(response.body.errors).to.deep.include.members([
+         expect(response.status).toBe(400);
+         expect(Array.isArray(response.body.errors)).toBe(true);
+
+         const expectedErrors = [
             {
                property: "name",
                constraints: { isNotEmpty: "name should not be empty" },
@@ -48,7 +49,10 @@ describe("dto/validate", () => {
                   isNotEmpty: "description should not be empty",
                },
             },
-         ]);
+         ];
+         expect(response.body.errors).toEqual(
+            expect.arrayContaining(expectedErrors),
+         );
       });
 
       it("should return 400 for invalid description format", async () => {
@@ -57,13 +61,16 @@ describe("dto/validate", () => {
             description: false,
          });
 
-         expect(response.status).to.equal(400);
-         expect(response.body.errors).to.deep.include.members([
+         expect(response.status).toBe(400);
+         const expectedErrors = [
             {
                property: "description",
                constraints: { isString: "description must be a string" },
             },
-         ]);
+         ];
+         expect(response.body.errors).toEqual(
+            expect.arrayContaining(expectedErrors),
+         );
       });
    });
 });

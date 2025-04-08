@@ -10,9 +10,17 @@ export function ModelPage({ server }: ModelPageProps) {
    const modelPath = params["*"];
 
    if (!params.projectName) {
-      return (<div><h2>Missing project name</h2></div>);
+      return (
+         <div>
+            <h2>Missing project name</h2>
+         </div>
+      );
    } else if (!params.packageName) {
-      return (<div><h2>Missing package name</h2></div>);
+      return (
+         <div>
+            <h2>Missing package name</h2>
+         </div>
+      );
    } else if (modelPath?.endsWith(".malloy")) {
       return (
          <Model
@@ -32,6 +40,10 @@ export function ModelPage({ server }: ModelPageProps) {
          />
       );
    } else {
-      return (<div><h2>Unrecognized file type: {modelPath}</h2></div>);
+      return (
+         <div>
+            <h2>Unrecognized file type: {modelPath}</h2>
+         </div>
+      );
    }
 }

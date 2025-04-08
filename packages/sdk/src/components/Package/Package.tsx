@@ -77,7 +77,7 @@ export default function Package({
          <Grid2 size={{ md: 12 }}>
             <Notebook
                server={server}
-                     projectName={projectName}
+               projectName={projectName}
                packageName={packageName}
                notebookPath={README_NOTEBOOK}
                versionId={versionId}

@@ -14,7 +14,6 @@ import { QueryClient, useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import { Configuration, SchedulesApi } from "../../client";
 import { StyledCard, StyledCardContent } from "../styles";
-import { FileTreeView } from "./FileTreeView";
 
 axios.defaults.baseURL = "http://localhost:4000";
 const schedulesApi = new SchedulesApi(new Configuration());

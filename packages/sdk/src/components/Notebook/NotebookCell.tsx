@@ -17,7 +17,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { highlight } from "../highlighter";
 import { useEffect } from "react";
 import CodeIcon from "@mui/icons-material/Code";
-import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
+import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 
@@ -75,9 +75,7 @@ export function NotebookCell({
          <StyledCard variant="outlined">
             {(!hideCodeCellIcon ||
                (!hideEmbeddingIcon && cell.queryResult)) && (
-               <Stack
-                  sx={{ flexDirection: "row", justifyContent: "right" }}
-               >
+               <Stack sx={{ flexDirection: "row", justifyContent: "right" }}>
                   <CardActions
                      sx={{
                         padding: "0px 10px 0px 10px",
@@ -113,7 +111,7 @@ export function NotebookCell({
                                  setEmbeddingExpanded(!embeddingExpanded);
                               }}
                            >
-                              <LinkOutlinedIcon  />
+                              <LinkOutlinedIcon />
                            </IconButton>
                         </Tooltip>
                      )}

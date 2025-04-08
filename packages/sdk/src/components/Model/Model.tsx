@@ -58,11 +58,18 @@ export default function Model({
       highlight(modelCodeSnippet, "typescript").then((code) => {
          setHighlightedEmbedCode(code);
       });
-   }, [embeddingExpanded]);
+   }, [embeddingExpanded, modelCodeSnippet]);
 
    const { data, isError, isLoading, error } = useQuery(
       {
-         queryKey: ["package", server, projectName, packageName, modelPath, versionId],
+         queryKey: [
+            "package",
+            server,
+            projectName,
+            packageName,
+            modelPath,
+            versionId,
+         ],
          queryFn: () =>
             modelsApi.getModel(projectName, packageName, modelPath, versionId, {
                baseURL: server,

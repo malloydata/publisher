@@ -7,12 +7,12 @@
   "module": "dist/index.es.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc && vite build --mode ${NODE_ENV:=development}",
+    "build": "bunx vite build --mode development",
     "test": "",
-    "lint": "eslint ./src --ext .ts,.tsx --ignore-path .gitignore --fix",
-    "format": "prettier --write --parser typescript '**/*.{ts,tsx}'",
-    "analyze": "vite-bundle-visualizer",
-    "generate-api-types": "openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/client/"
+    "lint": "bunx eslint ./src --ext .ts,.tsx --ignore-path .gitignore --fix",
+    "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
+    "analyze": "bunx vite-bundle-visualizer",
+    "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/client/"
   },
   "peerDependencies": {
     "@emotion/react": "^11.13.3",
@@ -21,36 +21,30 @@
     "react-dom": "^18.3.0"
   },
   "dependencies": {
-    "@malloydata/malloy": "^0.0.220",
-    "@malloydata/render": "^0.0.220",
+    "@malloydata/render": "^0.0.240",
     "@mui/icons-material": "^6.0.1",
     "@mui/material": "^6.0.1",
     "@mui/x-tree-view": "^7.16.0",
     "@react-spring/web": "^9.7.4",
     "@tanstack/react-query": "^5.59.16",
-    "@vitejs/plugin-react": "^4.3.1",
     "axios": "^1.7.7",
     "markdown-to-jsx": "^7.5.0",
-    "mdast-comment-marker": "^2.1.2",
-    "unified": "^11.0.5",
-    "vite": "^6.0.1",
-    "vite-plugin-dts": "^4.0.0",
-    "vite-plugin-svgr": "^4.2.0"
+    "react-router-dom": "^6.26.1"
   },
   "devDependencies": {
     "@openapitools/openapi-generator-cli": "^2.13.5",
     "@types/react": "^18.3.1",
     "@typescript-eslint/eslint-plugin": "8.16.0",
     "@typescript-eslint/parser": "8.16.0",
-    "eslint": "9.16.0",
+    "@vitejs/plugin-react": "^4.3.1",
     "eslint-config-prettier": "9.1.0",
     "eslint-plugin-prettier": "5.2.1",
     "eslint-plugin-react": "7.37.2",
     "eslint-plugin-react-hooks": "5.0.0",
-    "openapi-typescript": "^6.7.6",
-    "prettier": "^3.3.3",
+    "eslint-plugin-storybook": "^0.11.4",
     "shiki": "^1.16.3",
-    "styled-components": "^6.1.12",
-    "vite-bundle-visualizer": "^1.2.1"
+    "vite": "^6.0.1",
+    "vite-plugin-dts": "^4.0.0",
+    "vite-plugin-svgr": "^4.2.0"
   }
 }

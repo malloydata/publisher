@@ -5,6 +5,6 @@ interface HomePageProps {
 }
 
 export function HomePage({ server }: HomePageProps) {
-    const navigate = useNavigate();
-    return <Home server={server} navigate={navigate} />
+   const navigate = useNavigate();
+   return <Home server={server} navigate={navigate} />;
 }

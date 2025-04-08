@@ -55,14 +55,16 @@ const setVersionIdError = (res: express.Response) => {
 
 const setProjectNameError = (res: express.Response) => {
    const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Project names other than 'default' not implemented."),
+      new NotImplementedError(
+         "Project names other than 'default' not implemented.",
+      ),
    );
    res.status(status).json(json);
 };
 
 app.get(`${API_PREFIX}/projects`, async (_req, res) => {
    try {
-      res.status(200).json([{"name": PROJECT_NAME}]);
+      res.status(200).json([{ name: PROJECT_NAME }]);
    } catch (error) {
       console.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -104,140 +106,162 @@ app.get(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
    }
 });
 
-app.get(`${API_PREFIX}/projects/:projectName/packages/:packageName`, async (req, res) => {
-   if (req.params.projectName !== PROJECT_NAME) {
-      setProjectNameError(res);
-      return;
-   }
-   if (req.query.versionId) {   
-      setVersionIdError(res);
-      return;
-   }
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName`,
+   async (req, res) => {
+      if (req.params.projectName !== PROJECT_NAME) {
+         setProjectNameError(res);
+         return;
+      }
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
 
-   try {
-      res.status(200).json(await packageController.getPackage(req.params.packageName));
-   } catch (error) {
-      console.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+      try {
+         res.status(200).json(
+            await packageController.getPackage(req.params.packageName),
+         );
+      } catch (error) {
+         console.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
-app.get(`${API_PREFIX}/projects/:projectName/packages/:packageName/models`, async (req, res) => {
-   if (req.params.projectName !== PROJECT_NAME) {
-      setProjectNameError(res);
-      return;
-   }
-   if (req.query.versionId) {
-      setVersionIdError(res);
-      return;
-   }
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/models`,
+   async (req, res) => {
+      if (req.params.projectName !== PROJECT_NAME) {
+         setProjectNameError(res);
+         return;
+      }
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
 
-   try {
-      res.status(200).json(await modelController.listModels(req.params.packageName));
-   } catch (error) {
-      console.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+      try {
+         res.status(200).json(
+            await modelController.listModels(req.params.packageName),
+         );
+      } catch (error) {
+         console.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
-app.get(`${API_PREFIX}/projects/:projectName/packages/:packageName/models/*?`, async (req, res) => {
-   if (req.params.projectName !== PROJECT_NAME) {
-      setProjectNameError(res);
-      return;
-   }
-   if (req.query.versionId) {
-      setVersionIdError(res);
-      return;
-   }
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/*?`,
+   async (req, res) => {
+      if (req.params.projectName !== PROJECT_NAME) {
+         setProjectNameError(res);
+         return;
+      }
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
 
-   try {
-      // Need to do some fancy typing to prevent typescript from complaning about indexing params with 0.
-      const zero = 0 as unknown;
-      res.status(200).json(
-         await modelController.getModel(
-            req.params.packageName,
-            req.params[zero as keyof typeof req.params],
-         ),
-      );
-   } catch (error) {
-      console.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+      try {
+         // Need to do some fancy typing to prevent typescript from complaning about indexing params with 0.
+         const zero = 0 as unknown;
+         res.status(200).json(
+            await modelController.getModel(
+               req.params.packageName,
+               req.params[zero as keyof typeof req.params],
+            ),
+         );
+      } catch (error) {
+         console.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
-app.get(`${API_PREFIX}/projects/:projectName/packages/:packageName/queryResults/*?`, async (req, res) => {
-   if (req.params.projectName !== PROJECT_NAME) {
-      setProjectNameError(res);
-      return;
-   }
-   if (req.query.versionId) {
-      setVersionIdError(res);
-      return;
-   }
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/queryResults/*?`,
+   async (req, res) => {
+      if (req.params.projectName !== PROJECT_NAME) {
+         setProjectNameError(res);
+         return;
+      }
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
 
-   try {
-      // Need to do some fancy typing to prevent typescript from complaning about indexing params with 0.
-      const zero = 0 as unknown;
-      res.status(200).json(
-         await queryController.getQuery(
-            req.params.packageName,
-            req.params[zero as keyof typeof req.params],
-            req.query.sourceName as string,
-            req.query.queryName as string,
-            req.query.query as string,
-         ),
-      );
-   } catch (error) {
-      console.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+      try {
+         // Need to do some fancy typing to prevent typescript from complaning about indexing params with 0.
+         const zero = 0 as unknown;
+         res.status(200).json(
+            await queryController.getQuery(
+               req.params.packageName,
+               req.params[zero as keyof typeof req.params],
+               req.query.sourceName as string,
+               req.query.queryName as string,
+               req.query.query as string,
+            ),
+         );
+      } catch (error) {
+         console.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
-app.get(`${API_PREFIX}/projects/:projectName/packages/:packageName/schedules`, async (req, res) => {
-   if (req.params.projectName !== PROJECT_NAME) {
-      setProjectNameError(res);
-      return;
-   }
-   if (req.query.versionId) {
-      setVersionIdError(res);
-      return;
-   }
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/schedules`,
+   async (req, res) => {
+      if (req.params.projectName !== PROJECT_NAME) {
+         setProjectNameError(res);
+         return;
+      }
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
 
-   try {
-      res.status(200).json(
-         await scheduleController.listSchedules(req.params.packageName),
-      );
-   } catch (error) {
-      console.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+      try {
+         res.status(200).json(
+            await scheduleController.listSchedules(req.params.packageName),
+         );
+      } catch (error) {
+         console.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
-app.get(`${API_PREFIX}/projects/:projectName/packages/:packageName/databases`, async (req, res) => {
-   if (req.params.projectName !== PROJECT_NAME) {
-      setProjectNameError(res);
-      return;
-   }
-   if (req.query.versionId) {
-      setVersionIdError(res);
-      return;
-   }
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/databases`,
+   async (req, res) => {
+      if (req.params.projectName !== PROJECT_NAME) {
+         setProjectNameError(res);
+         return;
+      }
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
 
-   try {
-      res.status(200).json(
-         await databaseController.listDatabases(req.params.packageName),
-      );
-   } catch (error) {
-      console.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+      try {
+         res.status(200).json(
+            await databaseController.listDatabases(req.params.packageName),
+         );
+      } catch (error) {
+         console.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
 app.get("*", (_req, res) => res.sendFile(path.resolve(ROOT, "index.html")));
 

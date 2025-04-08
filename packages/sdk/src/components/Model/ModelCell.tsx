@@ -80,7 +80,15 @@ export function ModelCell({
       ).then((code) => {
          setHighlightedEmbedCode(code);
       });
-   }, [server, projectName, packageName, modelPath, versionId, sourceName, queryName]);
+   }, [
+      server,
+      projectName,
+      packageName,
+      modelPath,
+      versionId,
+      sourceName,
+      queryName,
+   ]);
 
    useEffect(() => {
       if (annotations) {
@@ -88,7 +96,7 @@ export function ModelCell({
             setHighlightedAnnotations(code);
          });
       }
-   }, []);
+   }, [annotations]);
 
    return (
       <>

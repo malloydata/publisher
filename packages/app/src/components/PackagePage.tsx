@@ -9,9 +9,17 @@ export function PackagePage({ server }: PackagePageProps) {
    const { projectName, packageName } = useParams();
    const navigate = useNavigate();
    if (!projectName) {
-      return (<div><h2>Missing project name</h2></div>);
+      return (
+         <div>
+            <h2>Missing project name</h2>
+         </div>
+      );
    } else if (!packageName) {
-      return (<div><h2>Missing package name</h2></div>);
+      return (
+         <div>
+            <h2>Missing package name</h2>
+         </div>
+      );
    } else {
       return (
          <Package

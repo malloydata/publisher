@@ -2,41 +2,39 @@
   "version": "0.0.1",
   "license": "MIT",
   "name": "malloy-publisher",
-  "workspaces": {
-    "packages": [
-      "packages/sdk",
-      "packages/app",
-      "packages/server"
-    ]
-  },
+  "workspaces": ["packages/*"],
   "engines": {
-    "node": ">=20",
-    "npm": ">=10"
+    "bun": ">=1.2.2"
   },
   "scripts": {
     "clean": "rimraf -g **/node_modules **/dist",
-    "build": "npm run -ws build",
-    "test": "npm run -ws test",
-    "start": "cd packages/server && npm run start",
-    "generate-api-types": "npm run -ws generate-api-types",
-    "lint": "npm run -ws lint",
-    "format": "npm run -ws format"
+    "build:sdk": "cd packages/sdk && bun run build",
+    "build:app": "cd packages/app && bun run build ",
+    "build:server": "cd packages/server && bun run build",
+    "build": "bun run build:sdk && bun run build:app && bun run build:server",
+    "start": "cd packages/server && bun run start",
+
+    "test:server": "cd packages/server && bun test",
+    "test": "bun run test:server",
+
+    "generate-api-types:sdk": "cd packages/sdk && bun run generate-api-types",
+    "generate-api-types:server": "cd packages/server && bun run generate-api-types",
+    "generate-api-types": "bun run generate-api-types:sdk && bun run generate-api-types:server",
+
+    "lint:sdk": "cd packages/sdk && bun run lint",
+    "lint:app": "cd packages/app && bun run lint",
+    "lint:server": "cd packages/server && bun run lint",
+    "lint": "bun run lint:sdk && bun run lint:app && bun run lint:server",
+
+    "format:sdk": "cd packages/sdk && bun run format",
+    "format:app": "cd packages/app && bun run format",
+    "format:server": "cd packages/server && bun run format",
+    "format": "bun run format:sdk && bun run format:app && bun run format:server"
   },
   "devDependencies": {
-    "@types/chai": "^4.3.5",
-    "@types/chai-as-promised": "^7.1.5",
-    "@types/mocha": "^10.0.1",
-    "@types/node": "^20.3.3",
-    "@types/sinon": "^17.0.3",
-    "chai": "^4.3.7",
-    "chai-as-promised": "^7.1.1",
-    "mocha": "^10.2.0",
     "rimraf": "^5.0.1",
-    "sinon": "^19.0.2",
-    "ts-node": "^10.9.1",
-    "typescript": "5.7.2"
-  },
-  "dependencies": {
-    "reflect-metadata": "^0.2.2"
+    "eslint": "^8.50.0",
+    "sinon": "^19.0.4",
+    "prettier": "^3.0.0"
   }
 }

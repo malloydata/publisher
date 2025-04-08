@@ -1,4 +1,5 @@
-import { expect } from "chai";
+import { expect, it, describe } from "bun:test";
+
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
 import { PackageDto } from "./package.dto";
@@ -13,7 +14,7 @@ describe("dto/package", () => {
          }),
       );
 
-      expect(errors).to.be.empty;
+      expect(errors).toBe.empty;
    });
 
    it("should throw when no name is specified", async () => {
@@ -24,8 +25,8 @@ describe("dto/package", () => {
          }),
       );
 
-      expect(errors).to.not.be.empty;
-      expect(errors).to.have.lengthOf(1);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors).toHaveLength(1);
    });
 
    it("should throw when no description is specified", async () => {
@@ -35,7 +36,7 @@ describe("dto/package", () => {
          }),
       );
 
-      expect(errors).to.not.be.empty;
-      expect(errors).to.have.lengthOf(1);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors).toHaveLength(1);
    });
 });

@@ -22,9 +22,9 @@ export default ({ mode }) => {
                if (warning.code === "MODULE_LEVEL_DIRECTIVE") {
                   return;
                }
-               if (warning.code === 'SOURCEMAP_ERROR') {
-                  return
-                }
+               if (warning.code === "SOURCEMAP_ERROR") {
+                  return;
+               }
                warn(warning);
             },
             external: [...Object.keys(peerDependencies)], // Defines external dependencies for Rollup bundling.
