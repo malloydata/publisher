@@ -385,7 +385,27 @@ paths:
         500:
           $ref: "#/components/responses/InternalServerError"
         501:
-          $ref: "#/components/responses/NotImplementedError"
+
+   /env_config:
+    get:
+      tags:
+      - env_config
+      operationId: get-env-config
+      summary: 
+        Returns the current environment configuration.
+      responses:
+        200:
+          description: List of connections corresponding to the current environment (if any)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: 
+                  $ref: "#/components/schemas/Connection"
+        404:
+          $ref: "#/components/responses/NotFoundError"
+        500:
+          $ref: "#/components/responses/InternalServerError"
 
 components:
   responses:
