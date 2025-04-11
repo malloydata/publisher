@@ -1,3 +1,3 @@
 node_modules
-env_files/*
-!env_files/.env.sample.json
+env/*
+!env/.env.sample.json
