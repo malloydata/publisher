@@ -12,6 +12,10 @@ import {
    getWorkingDirectory,
 } from "../utils";
 import { Scheduler } from "./scheduler";
+import {
+   FixedConnectionMap,
+} from "@malloydata/malloy";
+import { createConnections } from "./connection";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiDatabase = components["schemas"]["Database"];
@@ -49,8 +53,14 @@ export class Package {
          const packageConfig = await Package.readPackageConfig(packageName);
          const connectionConfig =
             await Package.readConnectionConfig(packageName);
+
+         const packagePath = Package.getPackagePath(packageName);
+         const connections = await createConnections(
+            packagePath,
+            connectionConfig,
+         );
          const databases = await Package.readDatabases(packageName);
-         const models = await Package.loadModels(packageName, connectionConfig);
+         const models = await Package.loadModels(packageName, connections);
          const scheduler = Scheduler.create(models);
          return new Package(
             packageName,
@@ -106,20 +116,23 @@ export class Package {
 
    private static async loadModels(
       packageName: string,
-      connectionConfig: ApiConnection[] | undefined,
+      connections: FixedConnectionMap,
    ): Promise<Map<string, Model>> {
       const modelPaths = await Package.getModelPaths(packageName);
       const models = await Promise.all(
          modelPaths.map((modelPath) =>
-            Model.create(packageName, modelPath, connectionConfig),
+            Model.create(packageName, modelPath, connections),
          ),
       );
       return new Map(models.map((model) => [model.getPath(), model]));
    }
 
+   private static getPackagePath(packageName: string): string {
+      return path.join(getWorkingDirectory(), packageName);
+   }
+
    private static async getModelPaths(packageName: string): Promise<string[]> {
-      const workingDirectory = getWorkingDirectory();
-      const packagePath = path.join(workingDirectory, packageName);
+      const packagePath = Package.getPackagePath(packageName);
       let files = undefined;
       try {
          files = await recursive(packagePath);
@@ -143,10 +156,8 @@ export class Package {
    private static async validatePackageManifestExistsOrThrowError(
       packageName: string,
    ) {
-      const workingDirectory = getWorkingDirectory();
       const packageConfigPath = path.join(
-         workingDirectory,
-         packageName,
+         Package.getPackagePath(packageName),
          PACKAGE_MANIFEST_NAME,
       );
       try {
@@ -161,10 +172,8 @@ export class Package {
    private static async readPackageConfig(
       packageName: string,
    ): Promise<ApiPackage> {
-      const workingDirectory = getWorkingDirectory();
       const packageConfigPath = path.join(
-         workingDirectory,
-         packageName,
+         Package.getPackagePath(packageName),
          PACKAGE_MANIFEST_NAME,
       );
       const packageConfigContents = await fs.readFile(packageConfigPath);
@@ -176,10 +185,8 @@ export class Package {
    public static async readConnectionConfig(
       packageName: string,
    ): Promise<ApiConnection[]> {
-      const workingDirectory = getWorkingDirectory();
       const fullPath = path.join(
-         workingDirectory,
-         packageName,
+         Package.getPackagePath(packageName),
          CONNECTIONS_MANIFEST_NAME,
       );
 
@@ -219,8 +226,7 @@ export class Package {
    private static async getDatabasePaths(
       packageName: string,
    ): Promise<string[]> {
-      const workingDirectory = getWorkingDirectory();
-      const packagePath = path.join(workingDirectory, packageName);
+      const packagePath = Package.getPackagePath(packageName);
       let files = undefined;
       files = await recursive(packagePath);
       return files
@@ -234,8 +240,7 @@ export class Package {
       packageName: string,
       databasePath: string,
    ): Promise<number> {
-      const workingDirectory = getWorkingDirectory();
-      const fullPath = path.join(workingDirectory, packageName, databasePath);
+      const fullPath = path.join(Package.getPackagePath(packageName), databasePath);
       return (await fs.stat(fullPath)).size;
    }
 }

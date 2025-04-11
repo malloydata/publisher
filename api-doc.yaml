@@ -59,6 +59,70 @@ paths:
         500:
           $ref: "#/components/responses/InternalServerError"
 
+  /projects/{projectName}/connections:
+    get:
+      tags:
+      - connections
+      operationId: list-connections
+      summary:
+        Returns a list of the connections in the project.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of project
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description:
+            A list of the connections in the project.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Connection"
+        401:
+          $ref: "#/components/responses/UnauthorizedError"
+        500:
+          $ref: "#/components/responses/InternalServerError"
+  
+  /projects/{projectName}/connections/{connectionName}:
+    get:
+      tags:
+      - connections
+      operationId: get-connection
+      summary:
+        Returns a connection.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of project
+          required: true
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          description: Name of connection
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description:
+            A connection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Connection"
+        401:
+          $ref: "#/components/responses/UnauthorizedError"
+        404:
+          $ref: "#/components/responses/NotFoundError"
+        500:
+          $ref: "#/components/responses/InternalServerError"
+
   /projects/{projectName}/packages:
     get:
       tags:
@@ -132,7 +196,7 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         501:
           $ref: "#/components/responses/NotImplementedError"
-  
+
   /projects/{projectName}/packages/{packageName}/models:
     get:
       tags:
@@ -623,6 +687,8 @@ components:
         type:
           type: string
           enum: [postgres, bigquery, snowflake, trino]
+        attributes:
+          $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:
           $ref: "#/components/schemas/PostgresConnection"
         bigqueryConnection:
@@ -631,7 +697,7 @@ components:
           $ref: "#/components/schemas/SnowflakeConnection"
         trinoConnection:
           $ref: "#/components/schemas/TrinoConnection"
-  
+        
     PostgresConnection:
       type: object
       properties:
@@ -697,6 +763,19 @@ components:
           type: string
         password:
           type: string
+
+    ConnectionAttributes:
+      type: object
+      properties:
+        isPool:
+          type: boolean
+        canPersist:
+          type: boolean
+        canStream:
+          type: boolean
+        supportsNesting:
+          type: boolean
+          
 
     Error:
       type: object
