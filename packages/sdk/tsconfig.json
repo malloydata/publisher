@@ -27,6 +27,6 @@
       "declaration": true, // Generates declaration files for TypeScript.
       "forceConsistentCasingInFileNames": true
    },
-   "include": ["src"], // Specifies the directory to include when searching for TypeScript files.
+   "include": ["src", "k6-tests"], // Specifies the directory to include when searching for TypeScript files.
    "exclude": ["src/**/__docs__", "src/**/__test__", "**/*.spec.ts"]
 }

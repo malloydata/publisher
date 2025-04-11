@@ -46,9 +46,9 @@ git submodule update
 
 Then build and run the package server:
 ```
-npm install
-npm run build
-npm run start
+bun install
+bun run build
+bun run start
 ```
 > **_NOTE:_**  Note that the Publisher repository currently points to a [fork](https://github.com/pathwaysdata/malloy-samples) of the [malloy-samples](https://github.com/malloydata/malloy-samples) repo.  The fork contains minor changes to turn each Malloy sample directory into a package.  Once the package format solidifies, we intend to merge the changes into the main malloy-samples repo.
 

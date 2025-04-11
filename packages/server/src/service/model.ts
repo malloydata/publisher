@@ -41,6 +41,7 @@ import {
    NOTEBOOK_FILE_SUFFIX,
    getWorkingDirectory,
 } from "../utils";
+import { metrics } from "@opentelemetry/api";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -70,6 +71,14 @@ export class Model {
    private queries: ApiQuery[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: string | undefined;
+   private meter = metrics.getMeter("publisher");
+   private queryExecutionHistogram = this.meter.createHistogram(
+      "malloy_model_query_duration",
+      {
+         description: "How long it takes to execute a Malloy model query",
+         unit: "ms",
+      },
+   );
 
    constructor(
       packageName: string,
@@ -192,6 +201,7 @@ export class Model {
       modelDef: ModelDef;
       dataStyles: DataStyles;
    }> {
+      const startTime = performance.now();
       if (this.compilationError) {
          throw new ModelCompilationError(this.compilationError);
       }
@@ -206,6 +216,15 @@ export class Model {
             `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
          );
       } else {
+         const endTime = performance.now();
+         const executionTime = endTime - startTime;
+         this.queryExecutionHistogram.record(executionTime, {
+            "malloy.model.path": this.modelPath,
+            "malloy.model.query.name": queryName,
+            "malloy.model.query.source": sourceName,
+            "malloy.model.query.query": query,
+            "malloy.model.query.status": "error",
+         });
          throw new BadRequestError(
             "Invalid query request. Query OR queryName must be defined.",
          );
@@ -214,8 +233,21 @@ export class Model {
          runnable instanceof QueryMaterializer
             ? (await runnable.getPreparedResult()).resultExplore.limit
             : undefined;
+      const endTime = performance.now();
+      const executionTime = endTime - startTime;
+      const queryResults = await runnable.run({ rowLimit });
+      this.queryExecutionHistogram.record(executionTime, {
+         "malloy.model.path": this.modelPath,
+         "malloy.model.query.name": queryName,
+         "malloy.model.query.source": sourceName,
+         "malloy.model.query.query": query,
+         "malloy.model.query.rows_limit": rowLimit,
+         "malloy.model.query.rows_total": queryResults.totalRows,
+         "malloy.model.query.connection": queryResults.connectionName,
+         "malloy.model.query.status": "success",
+      });
       return {
-         queryResults: await runnable.run({ rowLimit }),
+         queryResults: queryResults,
          modelDef: this.modelDef,
          dataStyles: this.dataStyles,
       };
@@ -244,7 +276,7 @@ export class Model {
                   try {
                      const rowLimit = cell.runnable
                         ? (await cell.runnable.getPreparedResult())
-                           .resultExplore.limit
+                             .resultExplore.limit
                         : undefined;
                      const result = await cell.runnable.run({ rowLimit });
                      const query = (await cell.runnable.getPreparedQuery())

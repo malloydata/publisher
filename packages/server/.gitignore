@@ -1,2 +1,3 @@
 node_modules
 dist
+k6-tests/packages

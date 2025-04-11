@@ -12,6 +12,7 @@ import {
    getWorkingDirectory,
 } from "../utils";
 import { Scheduler } from "./scheduler";
+import { metrics } from "@opentelemetry/api";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiDatabase = components["schemas"]["Database"];
@@ -25,6 +26,14 @@ export class Package {
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
    private scheduler: Scheduler | undefined;
+   private static meter = metrics.getMeter("publisher");
+   private static packageLoadHistogram = this.meter.createHistogram(
+      "malloy_package_load_duration",
+      {
+         description: "Time taken to load a Malloy package",
+         unit: "ms",
+      },
+   );
 
    constructor(
       packageName: string,
@@ -41,6 +50,7 @@ export class Package {
    }
 
    static async create(packageName: string): Promise<Package> {
+      const startTime = performance.now();
       // If package manifest does not exist, we throw a not found error.  If the package
       // manifest exists, we create a Package object and record errors in the object's fields.
       await Package.validatePackageManifestExistsOrThrowError(packageName);
@@ -52,6 +62,12 @@ export class Package {
          const databases = await Package.readDatabases(packageName);
          const models = await Package.loadModels(packageName, connectionConfig);
          const scheduler = Scheduler.create(models);
+         const endTime = performance.now();
+         const executionTime = endTime - startTime;
+         this.packageLoadHistogram.record(executionTime, {
+            malloy_package_name: packageName,
+            status: "success",
+         });
          return new Package(
             packageName,
             packageConfig,
@@ -61,6 +77,12 @@ export class Package {
          );
       } catch (error) {
          console.error(error);
+         const endTime = performance.now();
+         const executionTime = endTime - startTime;
+         this.packageLoadHistogram.record(executionTime, {
+            malloy_package_name: packageName,
+            status: "error",
+         });
          return new Package(
             packageName,
             {

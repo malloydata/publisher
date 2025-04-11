@@ -55,6 +55,9 @@ if (otelCollectorUrl) {
    logExporter = new ConsoleLogRecordExporter();
 }
 
+const metricReader = new PeriodicExportingMetricReader({
+   exporter: metricExporter,
+});
 const sdk = new NodeSDK({
    serviceName: "publisher",
    resource: resourceFromAttributes({
@@ -63,9 +66,7 @@ const sdk = new NodeSDK({
    }),
    autoDetectResources: true,
    traceExporter: traceExporter,
-   metricReader: new PeriodicExportingMetricReader({
-      exporter: metricExporter,
-   }),
+   metricReader: metricReader,
    instrumentations: [getNodeAutoInstrumentations()],
    spanProcessors: [new BatchSpanProcessor(traceExporter)],
    logRecordProcessors: [new BatchLogRecordProcessor(logExporter)],
