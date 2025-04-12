@@ -7,35 +7,44 @@ import { z } from "zod";
 import { 
     ServerCapabilities, 
     RequestSchema, 
-    ResultSchema 
+    ResultSchema, 
+    ErrorCode
 } from "../../../../node_modules/@modelcontextprotocol/sdk/dist/esm/types";
 
 // --- Reuse Existing Types --- 
 type Project = components["schemas"]["Project"]; // e.g., { name?: string }
 // We'll define Package, Model etc. when needed for getResource
 
-// --- Schemas for mcp/listResources --- 
+// --- Schemas Definitions (Shared between server and test) --- 
 
-const ListResourcesParamsSchema = z.object({
-  // TODO: Add filtering later (e.g., parentUri: z.string().optional())
-}).optional();
-
-const ListResourcesRequestSchema = RequestSchema.extend({
-  method: z.literal("mcp/listResources"),
-  params: ListResourcesParamsSchema,
-});
-
-// Define the structure for MCP resource descriptors
-const ResourceDescriptorSchema = z.object({
-    uri: z.string(), // Using basic string for now, could add validation
+// Resource Descriptor 
+export const ResourceDescriptorSchema = z.object({
+    uri: z.string(), 
     name: z.string().optional(),
     description: z.string().optional(),
-    // TODO: Add more fields like icon, actions, kind etc. based on MCP spec and needs
 });
 type ResourceDescriptor = z.infer<typeof ResourceDescriptorSchema>;
 
-const ListResourcesResultSchema = ResultSchema.extend({
+// mcp/listResources 
+const ListResourcesParamsSchema = z.object({}).optional();
+export const ListResourcesRequestSchema = RequestSchema.extend({
+  method: z.literal("mcp/listResources"),
+  params: ListResourcesParamsSchema,
+});
+export const ListResourcesResultSchema = ResultSchema.extend({
   resources: z.array(ResourceDescriptorSchema),
+});
+
+// mcp/getResource Schemas
+const GetResourceParamsSchema = z.object({
+    uri: z.string(),
+});
+export const GetResourceRequestSchema = RequestSchema.extend({
+    method: z.literal("mcp/getResource"),
+    params: GetResourceParamsSchema,
+});
+export const GetResourceResultSchema = ResultSchema.extend({
+    resource: ResourceDescriptorSchema, 
 });
 
 // --- End Schemas --- 
@@ -57,7 +66,7 @@ export const testServerInfo = {
 export const testCapabilities: ServerCapabilities = {
   resources: {
       listResources: true,
-      getResource: true, // Placeholder
+      getResource: true, 
   },
   tools: {},
 };
@@ -99,7 +108,14 @@ export function initializeMcpServer(): Server {
 
   console.log("Registered handler for mcp/listResources");
 
-  // TODO: Register mcp/getResource handler 
+  // --- Register mcp/getResource Handler (Placeholder) --- 
+  mcpServer.setRequestHandler(GetResourceRequestSchema, async (request): Promise<z.infer<typeof GetResourceResultSchema>> => {
+      console.log("Handling mcp/getResource request:", request.params);
+      // TODO: Implement actual logic to parse URI, find resource, and return it or throw error
+      throw new Error(`Resource not found (placeholder): ${request.params.uri}`); // Simulate not found for now
+  });
+  console.log("Registered handler for mcp/getResource (placeholder)");
+
   // TODO: Register malloy/executeQuery tool handler 
 
   return mcpServer;
