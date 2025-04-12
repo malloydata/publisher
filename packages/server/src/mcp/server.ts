@@ -17,6 +17,7 @@ import { Model } from "../service/model";
 import { PackageNotFoundError, ModelNotFoundError, ModelCompilationError } from "../errors"; 
 import * as path from 'path'; // Import path module
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../utils"; // Import suffixes
+import { MalloyError } from "@malloydata/malloy"; // Import MalloyError
 
 // --- Reuse Existing Types --- 
 type Project = components["schemas"]["Project"]; // e.g., { name?: string }
@@ -307,20 +308,30 @@ export function initializeMcpServer(packageService: PackageService): Server {
 
       } catch (error) {
           console.error(`Error during malloy/executeQuery for model ${params.modelPath}:`, error);
-          // Map known errors or provide a user-friendly message
           let errorMessage = "Error executing Malloy query.";
+          let errorCode = ErrorCode.InternalError; // Default to internal error
+
           if (error instanceof PackageNotFoundError || error instanceof ModelNotFoundError) {
               errorMessage = `Resource not found: Could not find package '${params.packageName}' or model '${params.modelPath}'.`;
-          } else if (error instanceof ModelCompilationError) {
-              // TODO: Improve AI-friendliness - Extract details?
+              // Consider a custom ResourceNotFound code if defined
+          } else if (error instanceof ModelCompilationError) { 
               errorMessage = `Malloy model compilation failed: ${error.message}`;
+              // Potentially use InvalidRequest or a custom CompilationError code
+          } else if (error instanceof MalloyError) { // Catch specific Malloy errors
+              // Extract user-friendly details if possible, otherwise use message
+              errorMessage = `Malloy query error: ${error.message}`;
+              // Could be InvalidRequest or InvalidParams depending on the cause
+              // errorCode = ErrorCode.InvalidRequest; 
           } else if (error instanceof Error) {
-              // TODO: Improve AI-friendliness - Sanitize?
               errorMessage = error.message; 
           }
-          // Let the base SDK handler wrap this in a JSON-RPC InternalError
-          // TODO: Define custom error codes (e.g., -32000 range) for more specific feedback
-          throw new Error(errorMessage);
+          // Throw a new error that the base handler will catch and format
+          // using the determined message and code.
+          // Note: Base handler might still override the code to InternalError (-32603)
+          // unless we customize error handling further.
+          throw new Error(errorMessage); // Pass message, let base handler set code
+          // Or, potentially define a custom error class extending Error with a 'code' property
+          // that the base handler might respect (SDK-dependent).
       }
   });
   console.log("Registered handler for malloy/executeQuery");

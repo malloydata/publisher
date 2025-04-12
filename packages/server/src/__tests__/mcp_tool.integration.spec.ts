@@ -167,30 +167,114 @@ describe("MCP Tool Handlers (Integration - Isolated)", () => {
 
     }, 15000); // Longer timeout for potential query execution
 
-    it.todo("should execute a valid named query successfully");
-    // Assuming 'flight_count' query exists in 'flights' source
-    // const namedQueryName = "flight_count"; 
-    // sendRequestAndWaitForResponse('malloy/executeQuery', { ...testParams, queryName: namedQueryName });
-    // Assert success, check result structure
+    it("should execute a valid named query successfully", async () => {
+        const namedQueryName = "by_month"; // From flights.malloy
+        const params = { 
+            ...testParamsBase, 
+            sourceName: testSourceName, // sourceName is required for named queries
+            queryName: namedQueryName 
+        };
 
-    it.todo("should return error for invalid Malloy query syntax");
-    // const invalidQuery = "query: flights -> { aggregate: count( }" // Syntax error
-    // sendRequestAndWaitForResponse('malloy/executeQuery', { ...testParams, query: invalidQuery });
-    // Assert error response, check code/message
+        const response = await sendRequestAndWaitForResponse('malloy/executeQuery', params);
 
-    it.todo("should return InvalidParams error for missing required parameter (modelPath)");
-    // const { modelPath, ...missingParams } = testParams; // Omit modelPath
-    // sendRequestAndWaitForResponse('malloy/executeQuery', { ...missingParams, query: adHocQuery });
-    // Assert error response, check code is InvalidParams (-32602)
+        expect(response.jsonrpc).toBe("2.0");
+        expect(response).not.toHaveProperty("error");
+        expect(response).toHaveProperty("result");
+        
+        // TODO: Define QueryResult schema and parse response.result
+        expect(response.result).toBeDefined();
+        // Add more specific checks once schema is defined:
+        // const parsedResult = QueryResultDataSchema.parse(response.result); 
+        // expect(parsedResult.queryResult).toBeDefined();
+        // expect(JSON.parse(parsedResult.queryResult).data.rows.length).toBeGreaterThan(0);
+        // expect(JSON.parse(parsedResult.queryResult).data.rows[0].dep_month).toBeDefined();
+        // expect(JSON.parse(parsedResult.queryResult).data.rows[0].flight_count).toBeDefined();
+    }, 15000);
 
-    it.todo("should return error if sourceName is required but missing for named query");
-    // const { sourceName, ...missingParams } = testParams;
-    // sendRequestAndWaitForResponse('malloy/executeQuery', { ...missingParams, queryName: namedQueryName });
-    // Assert error response, check code is InvalidParams or specific internal error
+    it("should return error for invalid Malloy query syntax", async () => {
+        const invalidQuery = "run: flights -> { aggregate: count( }" // Syntax error
+        const params = { 
+            ...testParamsBase, 
+            query: invalidQuery 
+        };
 
-    it.todo("should return error if package/model not found");
-    // sendRequestAndWaitForResponse('malloy/executeQuery', { ...testParams, packageName: 'invalid' });
-    // Assert error response, check code/message (e.g., ResourceNotFound/InternalError)
+        const response = await sendRequestAndWaitForResponse('malloy/executeQuery', params);
+
+        expect(response.jsonrpc).toBe("2.0");
+        expect(response).toHaveProperty("error");
+        expect(response).not.toHaveProperty("result");
+        
+        expect((response as any).error).toBeDefined(); 
+        expect((response as any).error).toHaveProperty("code");
+        expect((response as any).error).toHaveProperty("message");
+        // Check that the message indicates a Malloy query/compilation error
+        expect((response as any).error.message).toMatch(/Malloy query error: Error\(s\)? compiling model/i);
+    }, 15000);
+
+    it("should return InvalidParams error for missing required parameter (modelPath)", async () => {
+        const { modelPath, ...missingParams } = testParamsBase; // Omit modelPath
+        const params = { 
+            ...missingParams, 
+            query: `run: ${testSourceName} -> { aggregate: count() }` // Need a query
+        };
+
+        const response = await sendRequestAndWaitForResponse('malloy/executeQuery', params);
+
+        expect(response.jsonrpc).toBe("2.0");
+        expect(response).toHaveProperty("error");
+        expect(response).not.toHaveProperty("result");
+        
+        expect((response as any).error).toBeDefined(); 
+        // Expect InternalError as base SDK handler catches Zod errors
+        expect((response as any).error.code).toBe(ErrorCode.InternalError); 
+        // Check if message mentions the missing parameter (from Zod error)
+        expect((response as any).error.message).toMatch(/modelPath/i); 
+        expect((response as any).error.message).toMatch(/Required/i); 
+    }, 15000);
+
+    it("should return InvalidParams error if sourceName is required but missing for named query", async () => {
+        // Destructure only known properties from testParamsBase
+        const { projectName, packageName, modelPath } = testParamsBase;
+        const params = { 
+            // Reconstruct without sourceName
+            projectName,
+            packageName, 
+            modelPath, 
+            queryName: "by_month" // Provide queryName but not sourceName
+        };
+
+        const response = await sendRequestAndWaitForResponse('malloy/executeQuery', params);
+
+        expect(response.jsonrpc).toBe("2.0");
+        expect(response).toHaveProperty("error");
+        expect(response).not.toHaveProperty("result");
+        
+        expect((response as any).error).toBeDefined(); 
+        // Expect InternalError as base SDK handler catches Zod errors
+        expect((response as any).error.code).toBe(ErrorCode.InternalError); 
+        // Check if message mentions the refinement failure
+        expect((response as any).error.message).toMatch(/sourceName.*queryName/i);
+        expect((response as any).error.message).toMatch(/must be provided/i);
+    }, 15000);
+
+    it("should return error if package/model not found", async () => {
+         const params = { 
+            ...testParamsBase,
+            packageName: "invalidPackageName", // Use an invalid package
+            query: `run: ${testSourceName} -> { aggregate: count() }` 
+         };
+
+        const response = await sendRequestAndWaitForResponse('malloy/executeQuery', params);
+
+        expect(response.jsonrpc).toBe("2.0");
+        expect(response).toHaveProperty("error");
+        expect(response).not.toHaveProperty("result");
+        
+        expect((response as any).error).toBeDefined(); 
+        // Should be caught by our handler and mapped to InternalError with specific message
+        expect((response as any).error.code).toBe(ErrorCode.InternalError); 
+        expect((response as any).error.message).toMatch(/Resource not found/i); 
+    }, 15000);
 
   });
 
