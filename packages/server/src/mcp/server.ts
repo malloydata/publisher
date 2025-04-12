@@ -14,7 +14,7 @@ import {
 import { PackageService } from "../service/package.service";
 import { Package } from "../service/package";
 import { Model } from "../service/model";
-import { PackageNotFoundError } from "../errors"; 
+import { PackageNotFoundError, ModelNotFoundError, ModelCompilationError } from "../errors"; 
 import * as path from 'path'; // Import path module
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../utils"; // Import suffixes
 
@@ -22,6 +22,8 @@ import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../utils"; // Import su
 type Project = components["schemas"]["Project"]; // e.g., { name?: string }
 type ApiPackage = components["schemas"]["Package"];
 type ApiModel = components["schemas"]["Model"];
+// Type for the result expected by the REST API / OpenAPI spec
+type ApiQueryResult = components["schemas"]["QueryResult"]; 
 // We'll define Package, Model etc. when needed for getResource
 
 // --- Schemas Definitions (Shared between server and test) --- 
@@ -56,6 +58,40 @@ export const GetResourceResultSchema = ResultSchema.extend({
     resource: ResourceDescriptorSchema, 
 });
 
+// malloy/executeQuery Schemas
+const ExecuteQueryParamsSchema = z.object({
+    projectName: z.string().default("home"), // Add default project
+    packageName: z.string(),
+    modelPath: z.string(),
+    query: z.string().optional(),
+    sourceName: z.string().optional(),
+    queryName: z.string().optional(),
+}).refine(params => params.query || (params.sourceName && params.queryName), {
+    message: "Either 'query' or both 'sourceName' and 'queryName' must be provided",
+}).refine(params => !(params.query && params.queryName), {
+    message: "Cannot provide both 'query' and 'queryName'",
+});
+
+export const ExecuteQueryRequestSchema = RequestSchema.extend({
+    method: z.literal("malloy/executeQuery"),
+    params: ExecuteQueryParamsSchema,
+});
+
+// Schema for the RESULT of the tool call, mirroring ApiQueryResult
+// Note: The underlying Malloy types are complex, so we expect strings
+const QueryResultDataSchema = z.object({
+    queryResult: z.string(), // JSON string of Malloy Result._queryResult
+    modelDef: z.string(),    // JSON string of Malloy ModelDef
+    dataStyles: z.string(),  // JSON string of Malloy DataStyles
+});
+
+export const ExecuteQueryResultSchema = ResultSchema.extend({
+    // Match the existing ApiQueryResult structure used by REST API
+    queryResult: QueryResultDataSchema.shape.queryResult, 
+    modelDef: QueryResultDataSchema.shape.modelDef,
+    dataStyles: QueryResultDataSchema.shape.dataStyles,
+});
+
 // --- End Schemas --- 
 
 // Use existing project name constant (assuming it's accessible or redefined here)
@@ -77,7 +113,16 @@ export const testCapabilities: ServerCapabilities = {
       listResources: true,
       getResource: true, 
   },
-  tools: {},
+  tools: {
+      tools: [
+          {
+              name: "malloy/executeQuery",
+              description: "Executes a Malloy query (either ad-hoc or pre-defined) against a specified model and returns the results.",
+              inputSchema: ExecuteQueryParamsSchema, // Reference the Zod schema for params
+              // We might not need outputSchema here if returning standard Result
+          }
+      ]
+  },
 };
 
 // --- Helper: URI Parsing --- 
@@ -225,7 +270,60 @@ export function initializeMcpServer(packageService: PackageService): Server {
   });
   console.log("Registered handler for mcp/getResource");
 
-  // TODO: Register malloy/executeQuery tool handler 
+  // --- Register malloy/executeQuery Tool Handler --- 
+  mcpServer.setRequestHandler(ExecuteQueryRequestSchema, async (request): Promise<z.infer<typeof ExecuteQueryResultSchema>> => {
+      console.log("Handling malloy/executeQuery request:", request.params);
+      const params = request.params; // Already parsed by Zod
+
+      try {
+          // 1. Get Package
+          const pkg = await packageService.getPackage(params.packageName);
+
+          // 2. Get Model
+          const model = pkg.getModel(params.modelPath);
+          if (!model) {
+              // Use ModelNotFoundError for consistency, though we map to generic error below
+              throw new ModelNotFoundError(`Model not found at path: ${params.modelPath} in package ${params.packageName}`);
+          }
+
+          // 3. Execute Query
+          // Model.getQueryResults throws ModelCompilationError or potentially others
+          const { queryResults, modelDef, dataStyles } = await model.getQueryResults(
+              params.sourceName,
+              params.queryName,
+              params.query
+          );
+
+          // 4. Map to ApiQueryResult structure (stringifying complex objects)
+          const apiQueryResult: ApiQueryResult = {
+              queryResult: JSON.stringify(queryResults._queryResult), // Extract Malloy internal result
+              modelDef: JSON.stringify(modelDef),                   // Stringify ModelDef
+              dataStyles: JSON.stringify(dataStyles),                // Stringify DataStyles
+          };
+
+          // 5. Validate and return
+          // ExecuteQueryResultSchema expects properties directly on the result object
+          return ExecuteQueryResultSchema.parse(apiQueryResult);
+
+      } catch (error) {
+          console.error(`Error during malloy/executeQuery for model ${params.modelPath}:`, error);
+          // Map known errors or provide a user-friendly message
+          let errorMessage = "Error executing Malloy query.";
+          if (error instanceof PackageNotFoundError || error instanceof ModelNotFoundError) {
+              errorMessage = `Resource not found: Could not find package '${params.packageName}' or model '${params.modelPath}'.`;
+          } else if (error instanceof ModelCompilationError) {
+              // TODO: Improve AI-friendliness - Extract details?
+              errorMessage = `Malloy model compilation failed: ${error.message}`;
+          } else if (error instanceof Error) {
+              // TODO: Improve AI-friendliness - Sanitize?
+              errorMessage = error.message; 
+          }
+          // Let the base SDK handler wrap this in a JSON-RPC InternalError
+          // TODO: Define custom error codes (e.g., -32000 range) for more specific feedback
+          throw new Error(errorMessage);
+      }
+  });
+  console.log("Registered handler for malloy/executeQuery");
 
   return mcpServer;
 } 
