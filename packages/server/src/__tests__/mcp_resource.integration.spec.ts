@@ -238,7 +238,10 @@ describe("MCP Resource Handlers (Integration - Isolated)", () => {
          expect((response as any).error).toHaveProperty("message");
          // Check specific error code once implemented, using InternalError for now due to placeholder
          expect((response as any).error.code).toBe(ErrorCode.InternalError);
-         expect((response as any).error.message).toContain("Resource not found"); 
+         // Check for user-friendly message and suggestion
+         expect((response as any).error.message).toMatch(/Resource not found/i);
+         expect((response as any).error.message).toMatch(/Suggestion:/i);
+         expect((response as any).error.message).toMatch(/verify the URI/i);
       }, 10000);
   });
 

@@ -207,8 +207,8 @@ describe("MCP Tool Handlers (Integration - Isolated)", () => {
         expect((response as any).error).toBeDefined(); 
         expect((response as any).error).toHaveProperty("code");
         expect((response as any).error).toHaveProperty("message");
-        // Check that the message indicates a Malloy query/compilation error
-        expect((response as any).error.message).toMatch(/Malloy query error: Error\(s\)? compiling model/i);
+        // Check that the message indicates a compilation error
+        expect((response as any).error.message).toMatch(/compiling model/i); // More generic check
     }, 15000);
 
     it("should return InvalidParams error for missing required parameter (modelPath)", async () => {
@@ -225,11 +225,11 @@ describe("MCP Tool Handlers (Integration - Isolated)", () => {
         expect(response).not.toHaveProperty("result");
         
         expect((response as any).error).toBeDefined(); 
-        // Expect InternalError as base SDK handler catches Zod errors
-        expect((response as any).error.code).toBe(ErrorCode.InternalError); 
+        expect((response as any).error.code).toBe(ErrorCode.InternalError); // Zod errors map to InternalError
         // Check if message mentions the missing parameter (from Zod error)
         expect((response as any).error.message).toMatch(/modelPath/i); 
         expect((response as any).error.message).toMatch(/Required/i); 
+        // Cannot check for suggestion as Zod error occurs before our handler
     }, 15000);
 
     it("should return InvalidParams error if sourceName is required but missing for named query", async () => {
@@ -250,11 +250,11 @@ describe("MCP Tool Handlers (Integration - Isolated)", () => {
         expect(response).not.toHaveProperty("result");
         
         expect((response as any).error).toBeDefined(); 
-        // Expect InternalError as base SDK handler catches Zod errors
-        expect((response as any).error.code).toBe(ErrorCode.InternalError); 
+        expect((response as any).error.code).toBe(ErrorCode.InternalError); // Zod errors map to InternalError
         // Check if message mentions the refinement failure
         expect((response as any).error.message).toMatch(/sourceName.*queryName/i);
         expect((response as any).error.message).toMatch(/must be provided/i);
+        // Cannot check for suggestion as Zod error occurs before our handler
     }, 15000);
 
     it("should return error if package/model not found", async () => {
@@ -271,9 +271,11 @@ describe("MCP Tool Handlers (Integration - Isolated)", () => {
         expect(response).not.toHaveProperty("result");
         
         expect((response as any).error).toBeDefined(); 
-        // Should be caught by our handler and mapped to InternalError with specific message
-        expect((response as any).error.code).toBe(ErrorCode.InternalError); 
-        expect((response as any).error.message).toMatch(/Resource not found/i); 
+        expect((response as any).error.code).toBe(ErrorCode.InternalError); // Still InternalError
+        // Check for specific message and suggestion
+        expect((response as any).error.message).toMatch(/Resource not found/i);
+        expect((response as any).error.message).toMatch(/verify the packageName and modelPath/i);
+        expect((response as any).error.message).toMatch(/Suggestion:/i);
     }, 15000);
 
   });

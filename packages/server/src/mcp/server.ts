@@ -254,16 +254,29 @@ export function initializeMcpServer(packageService: PackageService): Server {
               }
           }
       } catch (error) {
+          let errorMessage = `Failed to retrieve resource '${requestedUri}'.`;
+          let suggestion = "Please ensure the URI is correctly formatted (e.g., malloy://project/home, malloy://project/home/package/faa) and the resource exists.";
+
           if (error instanceof PackageNotFoundError) {
               console.log(`Package not found for URI ${requestedUri}`);
+              // Specific message handled by the !resource check below
+          } else if (error instanceof ModelNotFoundError) { 
+               console.log(`Model not found for URI ${requestedUri}`);
+               // Specific message handled by the !resource check below
           } else {
               console.error(`Unexpected error fetching resource ${requestedUri}:`, error);
-              throw error;
+              errorMessage = `An unexpected error occurred while fetching resource '${requestedUri}': ${error instanceof Error ? error.message : String(error)}.`;
+              suggestion = "Check server logs for details.";
+              // Let base handler map this to InternalError
+              throw new Error(`${errorMessage} Suggestion: ${suggestion}`); 
           }
       }
 
       if (!resource) {
-          throw new Error(`Resource not found: ${requestedUri}`);
+          const errorMessage = `Resource not found at URI: ${requestedUri}.`;
+          const suggestion = "Verify the URI is correct and the requested project, package, or model exists. Use mcp/listResources to see available items.";
+           // Let base handler map this to InternalError
+          throw new Error(`${errorMessage} Suggestion: ${suggestion}`);
       }
 
       // Result schema expects { resource: ResourceDescriptor }
@@ -308,30 +321,29 @@ export function initializeMcpServer(packageService: PackageService): Server {
 
       } catch (error) {
           console.error(`Error during malloy/executeQuery for model ${params.modelPath}:`, error);
-          let errorMessage = "Error executing Malloy query.";
-          let errorCode = ErrorCode.InternalError; // Default to internal error
+          let errorMessage = "An unexpected error occurred while executing the Malloy query.";
+          let errorCode = ErrorCode.InternalError; 
+          let suggestion = "Please check the server logs for more details or contact support.";
 
           if (error instanceof PackageNotFoundError || error instanceof ModelNotFoundError) {
+              errorCode = ErrorCode.InvalidParams; 
               errorMessage = `Resource not found: Could not find package '${params.packageName}' or model '${params.modelPath}'.`;
-              // Consider a custom ResourceNotFound code if defined
-          } else if (error instanceof ModelCompilationError) { 
+              suggestion = "Please verify the packageName and modelPath parameters match existing resources. You can use mcp/listResources to discover available packages and models.";
+          } else if (error instanceof ModelCompilationError) { // Catch compilation first
+              errorCode = ErrorCode.InvalidRequest; 
               errorMessage = `Malloy model compilation failed: ${error.message}`;
-              // Potentially use InvalidRequest or a custom CompilationError code
-          } else if (error instanceof MalloyError) { // Catch specific Malloy errors
-              // Extract user-friendly details if possible, otherwise use message
+              // Add basic suggestion
+              suggestion = "Please check the Malloy syntax in your query or the model definition.";
+          } else if (error instanceof MalloyError) { // Catch other Malloy errors
+              errorCode = ErrorCode.InvalidRequest; 
               errorMessage = `Malloy query error: ${error.message}`;
-              // Could be InvalidRequest or InvalidParams depending on the cause
-              // errorCode = ErrorCode.InvalidRequest; 
+              suggestion = "Please check the query syntax, parameters, and ensure the data source is accessible.";
           } else if (error instanceof Error) {
-              errorMessage = error.message; 
+              errorMessage = `An internal error occurred: ${error.message}`; 
           }
-          // Throw a new error that the base handler will catch and format
-          // using the determined message and code.
-          // Note: Base handler might still override the code to InternalError (-32603)
-          // unless we customize error handling further.
-          throw new Error(errorMessage); // Pass message, let base handler set code
-          // Or, potentially define a custom error class extending Error with a 'code' property
-          // that the base handler might respect (SDK-dependent).
+          
+          const formattedMessage = `${errorMessage} Suggestion: ${suggestion}`;
+          throw new Error(formattedMessage); 
       }
   });
   console.log("Registered handler for malloy/executeQuery");
