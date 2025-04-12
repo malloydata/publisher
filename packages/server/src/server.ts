@@ -15,6 +15,8 @@ import cors from "cors";
 import * as fs from "fs";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
 import { PackageService } from "./service/package.service";
+import { initializeMcpServer } from "./mcp/server";
+import { handleMcpPost, handleMcpGetSse, mcpExpressTransport } from "./mcp/transport";
 
 const app = express();
 app.use(morgan("tiny"));
@@ -32,6 +34,15 @@ const packageController = new PackageController(packageService);
 const databaseController = new DatabaseController(packageService);
 const queryController = new QueryController(packageService);
 const scheduleController = new ScheduleController(packageService);
+
+// Initialize MCP Server
+const mcpServer = initializeMcpServer();
+
+// Connect the server to our transport
+mcpServer.connect(mcpExpressTransport).catch(err => {
+   console.error("Failed to connect MCP Server to transport:", err);
+   // Potentially exit or handle error appropriately
+});
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -263,12 +274,37 @@ app.get(
    },
 );
 
+app.post(`${API_PREFIX}/mcp`, (req, res) => {
+   // Pass only req and res, mcpServer is handled via transport connection
+   handleMcpPost(req, res).catch(error => {
+      // Catch unexpected errors in the handler
+      console.error("Unhandled error in handleMcpPost:", error);
+      // Avoid sending detailed errors back unless necessary
+      res.status(500).json({ message: "Internal Server Error" });
+   });
+});
+
+app.get(`${API_PREFIX}/mcp`, (req, res) => {
+   // Pass only req and res
+   handleMcpGetSse(req, res);
+});
+
 app.get("*", (_req, res) => res.sendFile(path.resolve(ROOT, "index.html")));
 
-const server = http.createServer(app);
-server.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
-   const address = server.address() as AddressInfo;
-   console.log(
-      `Server is running at http://${address.address}:${address.port}`,
-   );
-});
+const httpServer = http.createServer(app);
+
+// Attach mcpServer to httpServer context (optional, maybe not needed now)
+// (httpServer as any).mcpServer = mcpServer;
+
+// Only start listening if the script is run directly
+if (require.main === module) {
+   httpServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
+      const address = httpServer.address() as AddressInfo;
+      console.log(
+         `Server is running at http://${address.address}:${address.port}`,
+      );
+   });
+}
+
+// Export for testing
+export { httpServer, app };
