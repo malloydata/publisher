@@ -7,6 +7,7 @@ import http from 'http';
 import { AddressInfo } from 'net';
 import EventSource from 'eventsource';
 import { z } from "zod"; // Import Zod
+import { PackageService } from "../service/package.service"; // Import PackageService
 
 // MCP Imports
 import {
@@ -29,6 +30,7 @@ describe("MCP Resource Handlers (Integration - Isolated)", () => {
   let httpServer: http.Server;
   let serverUrl: string;
   let nextRequestId = 1;
+  let testPackageService: PackageService; // Declare instance
 
   // Helper to create a unique request ID
   const getRequestId = () => nextRequestId++;
@@ -47,7 +49,10 @@ describe("MCP Resource Handlers (Integration - Isolated)", () => {
       }
     });
 
-    testMcpServer = initializeMcpServer();
+    // Create PackageService instance for tests
+    testPackageService = new PackageService();
+    // Pass the service instance to the initializer
+    testMcpServer = initializeMcpServer(testPackageService);
 
     // Define MCP routes on the test app
     testApp.post("/api/v0/mcp", (req: Request, res: Response) => {
