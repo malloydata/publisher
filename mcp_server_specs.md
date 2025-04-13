@@ -111,6 +111,11 @@ The implementation should reuse existing logic from the REST API where possible 
 
 6.  **Error Handling Refinement:**
     *   **Identify common error types thrown by existing services (e.g., `PackageNotFoundError`, `MalloyCompilationError`, `QueryExecutionError`) and plan their specific mapping to user-friendly MCP error codes and messages.**
+    *   **Distinguish between Protocol and Application Errors:**
+        *   **Protocol Errors:** These occur when the client sends an invalid request according to the MCP specification or the tool's parameter schema *before* the main application logic runs. Examples include invalid JSON-RPC format, missing required parameters, or providing mutually exclusive parameters (like both `query` and `queryName` for `malloy/executeQuery`).
+            *   **Client Handling:** The MCP client's promise (e.g., from `client.callTool()`) will be **rejected**. The rejection error will typically be a `JSONRPCError` object containing an appropriate MCP `ErrorCode` (often `InvalidParams`) and a descriptive message.
+        *   **Application Errors:** These occur *during* the execution of the tool's requested operation, after the initial parameters have been validated. Examples include the requested package or model not being found, errors during query compilation or execution against the database, or internal server issues.
+            *   **Client Handling:** The MCP client's promise will be **resolved successfully**. However, the resolved `CallToolResult` object will indicate the error internally: `{ isError: true, content: [{ type: 'text', text: 'Specific application error message...' }] }`. The client must check the `isError` flag in the resolved object to detect application-level failures.
     *   **Implement the mapping of identified API/Malloy errors to MCP error responses. These errors must:**
         *   **Use clear, plain English descriptions of the problem.**
         *   **Avoid technical details like stack traces.**
