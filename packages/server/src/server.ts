@@ -16,7 +16,7 @@ import * as fs from "fs";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
 import { PackageService } from "./service/package.service";
 import { initializeMcpServer } from "./mcp/server";
-import { handleMcpPost, handleMcpGetSse, mcpExpressTransport } from "./mcp/transport";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 
 const app = express();
 app.use(morgan("tiny"));
@@ -36,13 +36,10 @@ const queryController = new QueryController(packageService);
 const scheduleController = new ScheduleController(packageService);
 
 // Initialize MCP Server
-const mcpServer = initializeMcpServer();
+const mcpServer = initializeMcpServer(packageService);
 
-// Connect the server to our transport
-mcpServer.connect(mcpExpressTransport).catch(err => {
-   console.error("Failed to connect MCP Server to transport:", err);
-   // Potentially exit or handle error appropriately
-});
+// Transport management object as in the example
+const transports: {[sessionId: string]: SSEServerTransport} = {};
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -274,19 +271,59 @@ app.get(
    },
 );
 
-app.post(`${API_PREFIX}/mcp`, (req, res) => {
-   // Pass only req and res, mcpServer is handled via transport connection
-   handleMcpPost(req, res).catch(error => {
-      // Catch unexpected errors in the handler
-      console.error("Unhandled error in handleMcpPost:", error);
-      // Avoid sending detailed errors back unless necessary
-      res.status(500).json({ message: "Internal Server Error" });
-   });
+// GET endpoint for establishing SSE connection
+// Using /mcp/sse suffix for clarity
+app.get(`${API_PREFIX}/mcp/sse`, async (req, res) => {
+   console.log(`SSE connection initiated from ${req.ip}`);
+   try {
+      const messagePath = `${API_PREFIX}/mcp/messages`; // Path for POST messages
+      const transport = new SSEServerTransport(messagePath, res);
+      transports[transport.sessionId] = transport;
+      console.log(`Transport created for session: ${transport.sessionId}`);
+
+      res.on("close", () => {
+         console.log(`SSE connection closed for session: ${transport.sessionId}`);
+         delete transports[transport.sessionId];
+         // Optionally call transport.close() or server.disconnect(transport) if needed
+      });
+
+      await mcpServer.connect(transport);
+      console.log(`MCP Server connected to transport for session: ${transport.sessionId}`);
+   } catch (error) {
+      console.error("Error setting up SSE connection:", error);
+      // Ensure response is ended if an error occurs before headers are sent
+      if (!res.headersSent) {
+         res.status(500).send("Failed to establish SSE connection");
+      }
+   }
 });
 
-app.get(`${API_PREFIX}/mcp`, (req, res) => {
-   // Pass only req and res
-   handleMcpGetSse(req, res);
+// POST endpoint for receiving client messages
+// Using /mcp/messages suffix and expecting sessionId query param
+app.post(`${API_PREFIX}/mcp/messages`, async (req, res) => {
+   const sessionId = req.query.sessionId as string;
+   console.log(`Received POST message for session: ${sessionId}`);
+   if (!sessionId) {
+      return res.status(400).send('sessionId query parameter is required');
+   }
+
+   const transport = transports[sessionId];
+   if (transport) {
+      console.log(`Found transport for session ${sessionId}, handling message.`);
+      try {
+         await transport.handlePostMessage(req, res);
+         console.log(`Successfully handled POST message for session ${sessionId}`);
+      } catch (error) {
+         console.error(`Error handling POST message for session ${sessionId}:`, error);
+         // transport.handlePostMessage might handle sending errors, but catch unexpected ones
+         if (!res.headersSent) {
+            res.status(500).send('Internal Server Error handling message');
+         }
+      }
+   } else {
+      console.warn(`No transport found for session ${sessionId}.`);
+      res.status(400).send(`No active SSE connection found for session ${sessionId}`);
+   }
 });
 
 app.get("*", (_req, res) => res.sendFile(path.resolve(ROOT, "index.html")));

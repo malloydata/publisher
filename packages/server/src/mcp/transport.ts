@@ -202,12 +202,19 @@ export function handleMcpGetSse(req: Request, res: Response) {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
+        "X-Accel-Buffering": "no", // Useful for nginx
     });
 
     const connectionId = crypto.randomUUID();
     mcpExpressTransport.addConnection(connectionId, res);
-    res.write(`: SSE connection open with ID ${connectionId}\n\n`);
+
+    // Send an initial *event* instead of just a comment to ensure client onopen fires.
+    res.write(`event: mcp-ready\ndata: ${JSON.stringify({ connectionId })}\n\n`);
+
+    // Attempt to flush the headers and initial event immediately.
+    if (typeof (res as any).flush === 'function') {
+        (res as any).flush();
+    }
 
     req.on("close", () => {
         mcpExpressTransport.removeConnection(connectionId);

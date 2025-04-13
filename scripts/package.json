@@ -1,0 +1,19 @@
+{
+  "name": "mcp-client-test-script",
+  "version": "1.0.0",
+  "description": "Simple MCP client for debugging",
+  "main": "test-mcp-client.js",
+  "type": "module",
+  "scripts": {
+    "start": "bun run ./test-mcp-client.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "eventsource": "^2.0.2",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "@types/eventsource": "latest"
+  }
+} 
