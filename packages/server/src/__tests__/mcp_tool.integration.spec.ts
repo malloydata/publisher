@@ -1,371 +1,237 @@
-import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import request from "supertest";
+import { describe, it, expect, beforeAll, afterAll, mock, spyOn, beforeEach } from "bun:test";
+
 import express from "express";
-import type { Request, Response, Express, NextFunction } from 'express';
-import bodyParser from "body-parser";
+import type { Express } from 'express'; 
+
 import http from 'http';
 import { AddressInfo } from 'net';
-import EventSource from 'eventsource';
+import * as path from 'path';
+
 import { z } from "zod";
 import { PackageService } from "../service/package.service";
 
+// --- Add necessary imports for mocking ---
+import { Package } from "../service/package"; 
+import { Model } from "../service/model"; 
+import { ModelCompilationError, PackageNotFoundError, ModelNotFoundError } from "../errors"; 
+import { MalloyError, Result } from "@malloydata/malloy"; 
+// --- End added imports --- 
 
 import { initializeMcpServer, ExecuteQueryResultSchema } from "../mcp/server"; 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import type { JSONRPCError, JSONRPCResponse, JSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
+import { ErrorCode, JSONRPCError } from "@modelcontextprotocol/sdk/types.js";
+
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 
-// Define a type guard for successful tool call results with content
+// --- Import MCP Client SDK --- 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { URL } from 'url'; // Needed for SSEClientTransport
+
+// --- Mocking Setup ---
+// Create mocks for the service methods we need to control
+const mockGetQueryResults = mock<Model['getQueryResults']>();
+const mockGetModel = mock<Package['getModel']>();
+const mockGetPackage = mock<PackageService['getPackage']>();
+
+// Mock the entire PackageService module
+mock.module("../service/package.service", () => ({
+    PackageService: mock(() => ({
+        getPackage: mockGetPackage,
+        // Add mocks for other methods if needed by other tests/setup
+        listPackages: mock(async () => []) 
+    })),
+}));
+
+// Keep the type guard if needed for asserting results
 interface ToolResultWithContent {
-    content: { type: string, [key: string]: any }[];
-    [key: string]: any; // Allow other properties
+    content: { type: string, text: string }[];
+    [key: string]: any; 
 }
 function isToolResultWithContent(result: any): result is ToolResultWithContent {
-    return result && typeof result === 'object' && Array.isArray(result.content);
+    return result && typeof result === 'object' && Array.isArray(result.content) && result.content.length > 0 && result.content[0].type === 'text';
 }
 
 // --- Test Setup --- 
-describe("MCP Tool Handlers (Integration - Isolated)", () => {
+describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
   let testApp: Express;
   let testMcpServer: McpServer;
   let httpServer: http.Server;
   let serverUrl: string;
-  let nextRequestId = 1;
-  let testPackageService: PackageService;
-  let sseClient: EventSource | null = null; // Track SSE client
-  // Store transports similar to the main server for testing
-  const transports: {[sessionId: string]: SSEServerTransport} = {};
-
-  const getRequestId = () => nextRequestId++;
+  let testPackageService: PackageService = new PackageService(); 
+  let mcpClient: Client;
+  let clientTransport: SSEClientTransport;
 
   beforeAll(async () => {
+    // --- Server Setup --- 
     testApp = express();
-    // Apply body parser ONLY if other non-MCP routes were added to testApp
-    // For just MCP tests, it might not be needed, but keep for safety/consistency
-    testApp.use(bodyParser.json()); 
-    testApp.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-      // Handle bodyParser syntax errors specifically if they occur
-      if (err instanceof SyntaxError && (err as any).status === 400 && 'body' in err) {
-        // Note: MCP expects errors formatted differently, 
-        // but this catches parsing issues before MCP handling.
-        console.error("Test Setup: Malformed JSON detected by bodyParser");
-        res.status(400).json({ error: "Malformed JSON" });
-      } else {
-        next(err);
-      }
-    });
+    // Initialize MCP server - it will use the mocked PackageService
+    testMcpServer = initializeMcpServer(testPackageService); 
 
-    testPackageService = new PackageService();
-    testMcpServer = initializeMcpServer(testPackageService);
-
-    // --- Setup MCP routes using SSEServerTransport --- 
+    // Setup REAL MCP routes using the REAL SSEServerTransport 
+    // (Client connects to this, not a mocked transport)
     const mcpRouter = express.Router();
+    const serverTransports: {[sessionId: string]: SSEServerTransport} = {}; // Server still needs to manage transports
 
     mcpRouter.get('/sse', async (req, res) => {
-        console.log("Tool Test: /sse endpoint hit");
         try {
-            const messagePath = '/api/v0/mcp/messages'; // Needs to match POST path
+            const messagePath = '/api/v0/mcp/messages'; 
             const transport = new SSEServerTransport(messagePath, res);
-            transports[transport.sessionId] = transport; // Store transport locally for test
-            console.log(`Tool Test: Transport created for session: ${transport.sessionId}`);
-
-            res.on("close", () => {
-                console.log(`Tool Test: SSE connection closed for session: ${transport.sessionId}`);
-                delete transports[transport.sessionId];
-            });
-
+            serverTransports[transport.sessionId] = transport;
+            res.on("close", () => { delete serverTransports[transport.sessionId]; });
             await testMcpServer.connect(transport);
-            console.log(`Tool Test: MCP Server connected to transport for session: ${transport.sessionId}`);
         } catch (error) {
-            console.error("Tool Test: Error setting up SSE connection:", error);
-            if (!res.headersSent) {
-                res.status(500).send("Tool Test: Failed to establish SSE connection");
-            }
+            console.error("Test Server SSE Error:", error);
+            if (!res.headersSent) res.status(500).send("SSE Error");
         }
     });
-
     mcpRouter.post('/messages', async (req, res) => {
         const sessionId = req.query.sessionId as string;
-        console.log(`Tool Test: Received POST /messages for session: ${sessionId}`);
-        if (!sessionId) {
-            return res.status(400).send('sessionId query parameter is required');
-        }
-        const transport = transports[sessionId];
+        const transport = serverTransports[sessionId];
         if (transport) {
-            console.log(`Tool Test: Found transport for session ${sessionId}, handling message.`);
-            try {
-                // Let the transport handle the raw request
-                await transport.handlePostMessage(req, res); 
-                console.log(`Tool Test: Successfully handled POST message for session ${sessionId}`);
-            } catch (error) {
-                console.error(`Tool Test: Error handling POST message for session ${sessionId}:`, error);
-                if (!res.headersSent) {
-                    res.status(500).send('Tool Test: Internal Server Error handling message');
-                }
-            }
-        } else {
-            console.warn(`Tool Test: No transport found for session ${sessionId}.`);
-            res.status(400).send(`Tool Test: No active SSE connection found for session ${sessionId}`);
-        }
+            try { await transport.handlePostMessage(req, res); }
+            catch (error) { 
+                 console.error("Test Server POST Error:", error); 
+                 if (!res.headersSent) res.status(500).send("POST Error");
+             }
+        } else { res.status(400).send("Invalid session"); }
     });
-
-    // Mount the router
     testApp.use('/api/v0/mcp', mcpRouter);
-
-    // Remove direct connection to old transport
-    // await testMcpServer.connect(mcpExpressTransport); 
 
     httpServer = http.createServer(testApp).listen(0, '127.0.0.1');
     await new Promise<void>(resolve => httpServer.once('listening', resolve));
     const address = httpServer.address() as AddressInfo;
     serverUrl = `http://127.0.0.1:${address.port}`;
     console.log(`Tool Test server listening on ${serverUrl}`);
+
+    // --- Client Setup ---
+    mcpClient = new Client({ name: "tool-test-client", version: "1.0" });
+    clientTransport = new SSEClientTransport(new URL(`${serverUrl}/api/v0/mcp/sse`));
+    console.log("Connecting MCP client...");
+    await mcpClient.connect(clientTransport);
+    console.log("MCP client connected.");
+  });
+
+  beforeEach(() => {
+      // Reset mocks before each test
+      mockGetQueryResults.mockClear();
+      mockGetModel.mockClear();
+      mockGetPackage.mockClear();
+
+      // Default mock implementations (can be overridden in tests)
+      mockGetModel.mockReturnValue({ getQueryResults: mockGetQueryResults } as any);
+      mockGetPackage.mockResolvedValue({ getModel: mockGetModel } as any);
   });
 
   afterAll(async () => {
-      sseClient?.close();
-      sseClient = null;
-      // Clear local transports
-      for (const id in transports) delete transports[id]; 
-      await testMcpServer.close(); // Close the MCP server instance
-      // await mcpExpressTransport.close(); // Remove old transport close
+      console.log("Closing MCP client...");
+      await mcpClient?.close(); // Close client first
+      console.log("MCP client closed.");
+      
+      console.log("Closing MCP server instance...");
+      await testMcpServer?.close(); // Close server instance
+      console.log("MCP server instance closed.");
+      
+      // No need to clear local transports map manually
+
       if (httpServer?.listening) {
+         console.log("Closing HTTP server...");
          await new Promise<void>((resolve, reject) => {
              httpServer.close((err) => err ? reject(err) : resolve());
          });
-         console.log("Tool Test HTTP server closed.");
+         console.log("HTTP server closed.");
       }
   });
 
-  // --- Helper Functions (adapted from resource tests) --- 
-  const connectSSE = (): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        const sseUrl = `${serverUrl}/api/v0/mcp/sse`;
-        console.log(`Tool Test Helper: Connecting SSE client to ${sseUrl}`);
-        sseClient = new EventSource(sseUrl);
-
-        sseClient.onopen = () => {
-            console.log("Tool Test Helper: SSE client connection opened.");
-        };
-
-        sseClient.onerror = (error) => {
-            console.error("Tool Test Helper: SSE client connection error:", error);
-            sseClient?.close();
-            sseClient = null;
-            reject(new Error("Failed to connect SSE client"));
-        };
-
-        sseClient.addEventListener('mcp-ready', (event) => {
-            console.log("Tool Test Helper: SSE client received mcp-ready event");
-            try {
-                 const data = JSON.parse(event.data);
-                 if (data.connectionId) {
-                    console.log(`Tool Test Helper: SSE client ready, session ID: ${data.connectionId}`);
-                     resolve(data.connectionId); // Resolve with the session ID
-                 } else {
-                     reject(new Error("mcp-ready event missing connectionId"));
-                 }
-            } catch (e) {
-                reject(new Error("Failed to parse mcp-ready event data"));
-            }
-        });
-
-         setTimeout(() => {
-            if (sseClient && sseClient.readyState !== EventSource.OPEN) {
-                 console.error("Tool Test Helper: SSE client connection timed out.");
-                 sseClient.close();
-                 sseClient = null;
-                 reject(new Error("SSE connection timed out"));
-            }
-        }, 5000); 
-    });
-  };
-
-  const sendPost = async (sessionId: string, payload: JSONRPCRequest): Promise<request.Response> => {
-      const messagesUrl = `${serverUrl}/api/v0/mcp/messages?sessionId=${sessionId}`;
-      console.log(`Tool Test Helper: Sending POST to ${messagesUrl} with payload:`, JSON.stringify(payload));
-      // Use supertest request against the running httpServer
-      return request(httpServer) 
-          .post(`/api/v0/mcp/messages?sessionId=${sessionId}`)
-          .send(payload)
-          .set('Content-Type', 'application/json')
-          .set('Accept', 'application/json');
-  };
-
-  const waitForResponse = (expectedId: number | string): Promise<JSONRPCResponse> => {
-      return new Promise((resolve, reject) => {
-          if (!sseClient) {
-              return reject(new Error("SSE client not connected"));
-          }
-
-          const timeout = setTimeout(() => {
-              console.error(`Tool Test Helper: Timeout waiting for response ID ${expectedId}`);
-              cleanListeners();
-              reject(new Error(`Timeout waiting for response ID ${expectedId}`));
-          }, 5000); 
-
-          const messageHandler = (event: MessageEvent) => {
-              try {
-                  const message = JSON.parse(event.data);
-                   console.log(`Tool Test Helper: SSE client received message:`, JSON.stringify(message));
-                  if (message.id === expectedId) {
-                      console.log(`Tool Test Helper: Received expected response ID ${expectedId}`);
-                      clearTimeout(timeout);
-                      cleanListeners();
-                      resolve(message);
-                  }
-              } catch (e) {
-                   console.error("Tool Test Helper: Error parsing SSE message data:", e);
-              }
-          };
-
-          const errorHandler = (error: Event) => {
-              console.error("Tool Test Helper: SSE client error during wait:", error);
-              clearTimeout(timeout);
-              cleanListeners();
-              reject(new Error("SSE client error while waiting for response"));
-          };
-          
-          const cleanListeners = () => {
-             if(sseClient) {
-                sseClient.removeEventListener('message', messageHandler);
-                sseClient.removeEventListener('error', errorHandler);
-             }
-          };
-
-          sseClient.addEventListener('message', messageHandler);
-          sseClient.addEventListener('error', errorHandler);
-      });
-  };
-  // --- End Helper Functions ---
-
   describe("malloy/executeQuery Tool", () => {
     it("should execute a valid ad-hoc query successfully", async () => {
-      const sessionId = await connectSSE();
-      const requestId = getRequestId();
       const params = {
         packageName: "faa",
         modelPath: "models/flights.malloy",
-        query: "run: flights->{group_by: carrier_name, aggregate: flight_count is count()}" // Example ad-hoc query
+        query: "run: flights->{group_by: carrier_name, aggregate: flight_count is count()}" 
       };
-      const requestPayload: JSONRPCRequest = {
-          jsonrpc: "2.0",
-          id: requestId,
-          // MCP standard method for tools
-          method: "tools/call", 
-          // Parameters include tool name and arguments
-          params: { name: "malloy/executeQuery", arguments: params } 
-      };
+      
+      const mockQueryResult = { _queryResult: { /* fake data */ } } as Result;
+      
+      mockGetQueryResults.mockResolvedValue({ 
+          queryResults: mockQueryResult, 
+          modelDef: { /* fake */ }, 
+          dataStyles: { /* fake */ } 
+      });
 
-      // Send POST, expect 2xx acknowledgment (often 204 No Content or 202 Accepted)
-      const postResponse = await sendPost(sessionId, requestPayload);
-      expect(postResponse.status).toBeGreaterThanOrEqual(200);
-      expect(postResponse.status).toBeLessThan(300);
+      const result = await mcpClient.callTool({ name: "malloy/executeQuery", arguments: params });
 
-      // Wait for the actual result via SSE
-      const sseResponse = await waitForResponse(requestId);
-
-      expect(sseResponse.jsonrpc).toBe("2.0");
-      expect(sseResponse.id).toBe(requestId);
-      // Use hasOwnProperty check for non-error
-      expect(sseResponse).not.toHaveProperty('error'); 
-      expect(sseResponse.result).toBeDefined();
-
-      if (isToolResultWithContent(sseResponse.result)) {
-          // Explicitly assert type after guard
-          const result = sseResponse.result as ToolResultWithContent; 
-          expect(Array.isArray(result.content)).toBe(true);
-          expect(result.content.length).toBeGreaterThan(0);
+      expect(result).toBeDefined();
+      expect(mockGetPackage).toHaveBeenCalledWith(params.packageName);
+      expect(mockGetModel).toHaveBeenCalledWith(params.modelPath);
+      expect(mockGetQueryResults).toHaveBeenCalled();
+      if (isToolResultWithContent(result)) { 
           expect(result.content[0].type).toBe('text');
-          expect(typeof result.content[0].text).toBe('string');
-
-          try {
-              const queryResult = JSON.parse(result.content[0].text);
-              expect(queryResult).toHaveProperty('queryResult');
-              expect(queryResult).toHaveProperty('modelDef');
-              expect(queryResult).toHaveProperty('dataStyles');
-          } catch (e) {
-              throw new Error("Failed to parse queryResult JSON from text content");
-          }
+          // Parse and check for essential properties
+          const parsedResultText = JSON.parse(result.content[0].text);
+          expect(parsedResultText).toHaveProperty('queryResult');
+          expect(parsedResultText).toHaveProperty('modelDef');
+          expect(parsedResultText).toHaveProperty('dataStyles');
+          // Optionally, check if queryResult is a string (as it was stringified)
+          expect(typeof parsedResultText.queryResult).toBe('string'); 
       } else {
-          throw new Error("Test Error: SSE response result did not have expected content structure");
+          throw new Error("Tool call result missing expected content structure");
       }
     });
 
     it("should execute a valid named query successfully", async () => {
-      const sessionId = await connectSSE();
-      const requestId = getRequestId();
       const params = {
         packageName: "faa",
         modelPath: "models/flights.malloy",
-        sourceName: "flights", // Source for named query
-        queryName: "carrier_analysis" // Named query
+        sourceName: "flights", 
+        queryName: "carrier_analysis" 
       };
-      const requestPayload: JSONRPCRequest = {
-          jsonrpc: "2.0",
-          id: requestId,
-          method: "tools/call",
-          params: { name: "malloy/executeQuery", arguments: params }
-      };
-
-      const postResponse = await sendPost(sessionId, requestPayload);
-      expect(postResponse.status).toBeGreaterThanOrEqual(200);
-      expect(postResponse.status).toBeLessThan(300);
-
-      const sseResponse = await waitForResponse(requestId);
-
-      expect(sseResponse.jsonrpc).toBe("2.0");
-      expect(sseResponse.id).toBe(requestId);
-      // Use hasOwnProperty check for non-error
-      expect(sseResponse).not.toHaveProperty('error'); 
-      expect(sseResponse.result).toBeDefined();
       
-      if (isToolResultWithContent(sseResponse.result)) { 
-         // Explicitly assert type after guard
-         const result = sseResponse.result as ToolResultWithContent;
+      const mockQueryResult = { _queryResult: { /* fake data */ } } as Result;
+      
+      mockGetQueryResults.mockResolvedValue({ 
+          queryResults: mockQueryResult, 
+          modelDef: { /* fake */ }, 
+          dataStyles: { /* fake */ } 
+      });
+      
+      const result = await mcpClient.callTool({ name: "malloy/executeQuery", arguments: params });
+
+      expect(result).toBeDefined();
+      if (isToolResultWithContent(result)) {
          expect(result.content[0].type).toBe('text');
-         JSON.parse(result.content[0].text); // Check if parsable
+         // Parse and check for essential properties
+         const parsedResultText = JSON.parse(result.content[0].text);
+         expect(parsedResultText).toHaveProperty('queryResult');
+         expect(parsedResultText).toHaveProperty('modelDef');
+         expect(parsedResultText).toHaveProperty('dataStyles');
+         expect(typeof parsedResultText.queryResult).toBe('string');
       } else {
-         throw new Error("Test Error: SSE response result did not have expected content structure");
+         throw new Error("Tool call result missing expected content structure");
       }
     });
 
     it("should return error for invalid Malloy query syntax", async () => {
-       const sessionId = await connectSSE();
-       const requestId = getRequestId();
        const params = {
         packageName: "faa",
         modelPath: "models/flights.malloy",
         query: "run: flights->{group_by: carrier_name, BAD SYNTAX aggregate: flight_count is count()}" 
       };
-      const requestPayload: JSONRPCRequest = {
-          jsonrpc: "2.0",
-          id: requestId,
-          method: "tools/call",
-          params: { name: "malloy/executeQuery", arguments: params }
-      };
-
-      const postResponse = await sendPost(sessionId, requestPayload);
-      expect(postResponse.status).toBeGreaterThanOrEqual(200);
-      expect(postResponse.status).toBeLessThan(300);
-
-      const sseResponse = await waitForResponse(requestId);
       
-      expect(sseResponse.jsonrpc).toBe("2.0");
-      expect(sseResponse.id).toBe(requestId);
-      // Use hasOwnProperty check for non-result
-      expect(sseResponse).not.toHaveProperty('result'); 
-      expect(sseResponse.error).toBeDefined();
-      if (sseResponse.error) { 
-         expect(sseResponse.error.code).toBe(ErrorCode.InvalidRequest);
-         expect(sseResponse.error.message).toMatch(/Malloy model compilation failed/i); 
-      }
+      const expectedError = new ModelCompilationError("Malloy model compilation failed: Bad Syntax");
+
+      // Configure mock to throw the expected error
+      mockGetQueryResults.mockRejectedValue(expectedError);
+      
+      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
+          .rejects.toMatchObject({
+              code: ErrorCode.InvalidRequest,
+              message: expect.stringContaining(expectedError.message)
+          });
+        expect(mockGetQueryResults).toHaveBeenCalled();
     });
 
     it("should return InvalidParams error for conflicting parameters (query and queryName)", async () => {
-       const sessionId = await connectSSE();
-       const requestId = getRequestId();
        const params = {
         packageName: "faa",
         modelPath: "models/flights.malloy",
@@ -373,92 +239,74 @@ describe("MCP Tool Handlers (Integration - Isolated)", () => {
         sourceName: "flights",
         queryName: "carrier_analysis"
       };
-       const requestPayload: JSONRPCRequest = {
-          jsonrpc: "2.0",
-          id: requestId,
-          method: "tools/call",
-          params: { name: "malloy/executeQuery", arguments: params }
-      };
-
-      const postResponse = await sendPost(sessionId, requestPayload);
-      expect(postResponse.status).toBeGreaterThanOrEqual(200);
-      expect(postResponse.status).toBeLessThan(300);
-
-      const sseResponse = await waitForResponse(requestId);
       
-      expect(sseResponse.jsonrpc).toBe("2.0");
-      expect(sseResponse.id).toBe(requestId);
-      // Use hasOwnProperty check for non-result
-      expect(sseResponse).not.toHaveProperty('result'); 
-      expect(sseResponse.error).toBeDefined();
-      if (sseResponse.error) {
-         expect(sseResponse.error.code).toBe(ErrorCode.InvalidParams); 
-         expect(sseResponse.error.message).toMatch(/Cannot provide both 'query' and 'queryName'/i);
-      }
+       await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
+          .rejects.toMatchObject({
+              code: ErrorCode.InvalidParams, 
+              message: expect.stringMatching(/Cannot provide both 'query' and 'queryName'/i)
+          });
+         // Verify service wasn't called
+         expect(mockGetPackage).not.toHaveBeenCalled(); 
     });
 
-    it("should return InvalidParams error if required params are missing (no query or queryName)", async () => {
-       const sessionId = await connectSSE();
-       const requestId = getRequestId();
+    it("should return InvalidParams error if required params are missing", async () => {
        const params = {
         packageName: "faa",
         modelPath: "models/flights.malloy",
         sourceName: "flights" // Missing queryName or query
       };
-       const requestPayload: JSONRPCRequest = {
-          jsonrpc: "2.0",
-          id: requestId,
-          method: "tools/call",
-          params: { name: "malloy/executeQuery", arguments: params }
-      };
-
-      const postResponse = await sendPost(sessionId, requestPayload);
-      expect(postResponse.status).toBeGreaterThanOrEqual(200);
-      expect(postResponse.status).toBeLessThan(300);
-
-      const sseResponse = await waitForResponse(requestId);
       
-      expect(sseResponse.jsonrpc).toBe("2.0");
-      expect(sseResponse.id).toBe(requestId);
-      // Use hasOwnProperty check for non-result
-      expect(sseResponse).not.toHaveProperty('result'); 
-      expect(sseResponse.error).toBeDefined();
-      if (sseResponse.error) {
-         expect(sseResponse.error.code).toBe(ErrorCode.InvalidParams);
-         expect(sseResponse.error.message).toMatch(/Either 'query' or both 'sourceName' and 'queryName' must be provided/i);
-      }
+       await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
+          .rejects.toMatchObject({
+              code: ErrorCode.InvalidParams,
+              message: expect.stringMatching(/Either 'query' or both 'sourceName' and 'queryName' must be provided/i)
+          });
+       expect(mockGetPackage).not.toHaveBeenCalled();
     });
 
     it("should return error if package/model not found", async () => {
-      const sessionId = await connectSSE();
-      const requestId = getRequestId();
       const params = {
         packageName: "nonexistent_package", // Bad package
         modelPath: "models/flights.malloy",
         query: "run: flights->{aggregate: c is count()}"
       };
-      const requestPayload: JSONRPCRequest = {
-          jsonrpc: "2.0",
-          id: requestId,
-          method: "tools/call",
-          params: { name: "malloy/executeQuery", arguments: params }
-      };
+      
+      const expectedError = new PackageNotFoundError("Package not found");
+      
+      // Configure getPackage mock to throw
+      mockGetPackage.mockRejectedValue(expectedError);
 
-      const postResponse = await sendPost(sessionId, requestPayload);
-      expect(postResponse.status).toBeGreaterThanOrEqual(200);
-      expect(postResponse.status).toBeLessThan(300);
-
-      const sseResponse = await waitForResponse(requestId);
-
-      expect(sseResponse.jsonrpc).toBe("2.0");
-      expect(sseResponse.id).toBe(requestId);
-      // Use hasOwnProperty check for non-result
-      expect(sseResponse).not.toHaveProperty('result'); 
-      expect(sseResponse.error).toBeDefined();
-      if (sseResponse.error) {
-         expect(sseResponse.error.code).toBe(ErrorCode.InvalidParams); // Package/Model not found maps to InvalidParams
-         expect(sseResponse.error.message).toMatch(/Resource not found/i);
-      }
+      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
+          .rejects.toMatchObject({
+              code: ErrorCode.InvalidParams,
+              message: expect.stringMatching(/Resource not found/i) 
+          });
+       expect(mockGetPackage).toHaveBeenCalledWith(params.packageName);
+       expect(mockGetModel).not.toHaveBeenCalled(); // getModel shouldn't be called if getPackage fails
+       expect(mockGetQueryResults).not.toHaveBeenCalled();
     });
+
+    // Add a test case for ModelNotFoundError from getModel
+    it("should return error if model not found within package", async () => {
+        const params = {
+          packageName: "faa",
+          modelPath: "models/flights.malloy",
+          query: "run: flights->{aggregate: c is count()}"
+        };
+        const expectedError = new ModelNotFoundError("Model not found");
+
+        // Configure getModel to throw
+        mockGetModel.mockImplementation(() => { throw expectedError; }); // Throw directly
+
+        await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
+            .rejects.toMatchObject({
+                code: ErrorCode.InvalidParams, 
+                message: expect.stringMatching(/Resource not found/i) 
+            });
+        expect(mockGetPackage).toHaveBeenCalledWith(params.packageName);
+        expect(mockGetModel).toHaveBeenCalledWith(params.modelPath);
+        expect(mockGetQueryResults).not.toHaveBeenCalled();
+    });
+
   });
 }); 

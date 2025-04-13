@@ -149,9 +149,12 @@ export class Package {
          packageName,
          PACKAGE_MANIFEST_NAME,
       );
+      console.log(`[PackageService Debug] Checking for manifest at: ${packageConfigPath}`);
       try {
          await fs.stat(packageConfigPath);
-      } catch {
+         console.log(`[PackageService Debug] Manifest found at: ${packageConfigPath}`);
+      } catch (error) {
+         console.error(`[PackageService Debug] Manifest check failed for ${packageConfigPath}:`, error);
          throw new PackageNotFoundError(
             `Package manifest for ${packageName} does not exist.`,
          );

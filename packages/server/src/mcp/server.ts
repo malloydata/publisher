@@ -227,47 +227,57 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
   );
  console.log(`Registered resource handler template for models: malloy://project/${PROJECT_NAME}/package/{packageName}/models/{...modelPath}`);
 
-  // --- Register malloy/executeQuery Tool Handler (remains unchanged) ---
+  // --- Register malloy/executeQuery Tool Handler using .tool() ---
   mcpServer.tool(
       'malloy/executeQuery',  
       ExecuteQueryParamsShape, 
       async (params: z.infer<typeof ExecuteQueryParamsSchema>): Promise<{ content: { type: 'text', text: string }[] }> => {
-          console.log("Handling malloy/executeQuery request:", params);
-          // ... (rest of executeQuery handler implementation) ...
-          try {
-              // 1. Get Package
-              const pkg = await packageService.getPackage(params.packageName);
+          console.log("[HANDLER] Handling malloy/executeQuery request:", JSON.stringify(params));
+          
+          // Manually validate refinements if needed inside the handler
+          if (!params.query && !(params.sourceName && params.queryName)) {
+               const errorMsg = `[${ErrorCode.InvalidParams}] Either 'query' or both 'sourceName' and 'queryName' must be provided`;
+               console.error("[HANDLER] Validation Error:", errorMsg);
+               throw new Error(errorMsg);
+          }
+          if (params.query && params.queryName) {
+               const errorMsg = `[${ErrorCode.InvalidParams}] Cannot provide both 'query' and 'queryName'`;
+               console.error("[HANDLER] Validation Error:", errorMsg);
+               throw new Error(errorMsg);
+          }
 
-              // 2. Get Model
+          try {
+              console.log("[HANDLER] Getting package:", params.packageName);
+              const pkg = await packageService.getPackage(params.packageName);
+              console.log("[HANDLER] Got package. Getting model:", params.modelPath);
               const model = pkg.getModel(params.modelPath);
               if (!model) {
                   throw new ModelNotFoundError(`Model not found at path: ${params.modelPath} in package ${params.packageName}`);
               }
-
-              // 3. Execute Query
+              console.log("[HANDLER] Got model. Executing query...");
               const { queryResults, modelDef, dataStyles } = await model.getQueryResults(
                   params.sourceName,
                   params.queryName,
                   params.query
               );
+              console.log("[HANDLER] Query executed. Preparing result...");
 
-              // 4. Map to ApiQueryResult structure (stringifying complex objects)
               const apiQueryResult: ApiQueryResult = {
                   queryResult: JSON.stringify(queryResults._queryResult),
                   modelDef: JSON.stringify(modelDef),
                   dataStyles: JSON.stringify(dataStyles),
               };
 
-              // 5. Validate the structure (optional but good practice)
-              ExecuteQueryResultSchema.parse(apiQueryResult);
-
-              // 6. Return stringified JSON within a text content block
-              return {
-                  content: [{ type: 'text', text: JSON.stringify(apiQueryResult) }]
+              ExecuteQueryResultSchema.parse(apiQueryResult); // Optional validation
+              
+              const resultPayload = {
+                  content: [{ type: 'text' as const, text: JSON.stringify(apiQueryResult) }]
               };
+              console.log("[HANDLER] Returning successful result for request.");
+              return resultPayload;
 
           } catch (error) {
-              console.error(`Error during malloy/executeQuery for model ${params.modelPath}:`, error);
+              console.error(`[HANDLER] Error during malloy/executeQuery for model ${params.modelPath}:`, error);
               let errorMessage = "An unexpected error occurred while executing the Malloy query.";
               let errorCode = ErrorCode.InternalError;
               let suggestion = "Please check the server logs for more details or contact support.";
@@ -299,9 +309,12 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
                   }
               }
 
-              // Throw standard Error with code indication for McpServer tool handler
-              const formattedMessage = `[${errorCode}] ${errorMessage} Suggestion: ${suggestion}`;
-              throw new Error(formattedMessage);
+              // Construct the final error message FOR THE EXCEPTION OBJECT
+              const consoleErrorMessage = `[${errorCode}] ${errorMessage}`; 
+              console.error("[HANDLER] Throwing JSON-RPC style error object:", { code: errorCode, message: errorMessage }, "Suggestion:", suggestion);
+              
+              // --- Throw an object matching JSON-RPC error structure --- 
+              throw { code: errorCode, message: errorMessage }; 
           }
       }
   );
