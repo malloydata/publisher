@@ -652,4 +652,8 @@ export class Model {
          runnableNotebookCells: runnableNotebookCells,
       };
    }
+
+   public getModelType(): ModelType {
+       return this.modelType;
+   }
 }
