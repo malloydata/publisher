@@ -11,15 +11,15 @@ import { z } from "zod";
 import { PackageService } from "../service/package.service";
 
 // --- Add necessary imports for mocking ---
-import { Package } from "../service/package"; 
-import { Model } from "../service/model"; 
-import { ModelCompilationError, PackageNotFoundError, ModelNotFoundError } from "../errors"; 
-import { MalloyError, Result } from "@malloydata/malloy"; 
+import type { Package } from "../service/package"; // Keep types for mocks
+import type { Model } from "../service/model"; // Keep types for mocks
+import type { Result } from "@malloydata/malloy"; // Keep Result type
 // --- End added imports --- 
 
-import { initializeMcpServer, ExecuteQueryResultSchema } from "../mcp/server"; 
+import { initializeMcpServer } from "../mcp/server"; // Remove ExecuteQueryResultSchema if unused 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, JSONRPCError } from "@modelcontextprotocol/sdk/types.js";
+import { MCP_ERROR_MESSAGES } from "../mcp/mcp_constants"; // Corrected import path
 
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 
@@ -218,17 +218,23 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
         query: "run: flights->{group_by: carrier_name, BAD SYNTAX aggregate: flight_count is count()}" 
       };
       
-      const expectedError = new ModelCompilationError("Malloy model compilation failed: Bad Syntax");
+      const originalErrorMessage = "Malloy model compilation failed: Bad Syntax";
 
       // Configure mock to throw the expected error
-      mockGetQueryResults.mockRejectedValue(expectedError);
-      
-      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
-          .rejects.toMatchObject({
-              code: ErrorCode.InvalidRequest,
-              message: expect.stringContaining(expectedError.message)
-          });
-        expect(mockGetQueryResults).toHaveBeenCalled();
+      mockGetQueryResults.mockRejectedValue(new Error(originalErrorMessage));
+
+      // Expect RESOLUTION with isError: true for application errors
+      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toMatchObject({
+          isError: true,
+          content: expect.arrayContaining([
+              expect.objectContaining({
+                  type: 'text',
+                  text: expect.stringContaining(MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(`${params.packageName}/${params.modelPath}`)) &&
+                        expect.stringContaining(originalErrorMessage)
+              })
+          ])
+      });
+      expect(mockGetQueryResults).toHaveBeenCalled();
     });
 
     it("should return InvalidParams error for conflicting parameters (query and queryName)", async () => {
@@ -243,7 +249,7 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
        await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
           .rejects.toMatchObject({
               code: ErrorCode.InvalidParams, 
-              message: expect.stringMatching(/Cannot provide both 'query' and 'queryName'/i)
+              message: MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS
           });
          // Verify service wasn't called
          expect(mockGetPackage).not.toHaveBeenCalled(); 
@@ -259,7 +265,7 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
        await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
           .rejects.toMatchObject({
               code: ErrorCode.InvalidParams,
-              message: expect.stringMatching(/Either 'query' or both 'sourceName' and 'queryName' must be provided/i)
+              message: MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS
           });
        expect(mockGetPackage).not.toHaveBeenCalled();
     });
@@ -271,16 +277,19 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
         query: "run: flights->{aggregate: c is count()}"
       };
       
-      const expectedError = new PackageNotFoundError("Package not found");
-      
-      // Configure getPackage mock to throw
-      mockGetPackage.mockRejectedValue(expectedError);
+      // Simulate service throwing PackageNotFoundError (Application Error)
+      mockGetPackage.mockRejectedValue(new Error(MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(params.packageName)));
 
-      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
-          .rejects.toMatchObject({
-              code: ErrorCode.InvalidParams,
-              message: expect.stringMatching(/Resource not found/i) 
-          });
+      // Expect RESOLUTION with isError: true
+      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toMatchObject({
+          isError: true,
+          content: expect.arrayContaining([
+              expect.objectContaining({
+                  type: 'text',
+                  text: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(params.packageName)
+              })
+          ])
+      });
        expect(mockGetPackage).toHaveBeenCalledWith(params.packageName);
        expect(mockGetModel).not.toHaveBeenCalled(); // getModel shouldn't be called if getPackage fails
        expect(mockGetQueryResults).not.toHaveBeenCalled();
@@ -293,16 +302,21 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
           modelPath: "models/flights.malloy",
           query: "run: flights->{aggregate: c is count()}"
         };
-        const expectedError = new ModelNotFoundError("Model not found");
+        // Simulate service throwing ModelNotFoundError (Application Error)
+        mockGetModel.mockImplementation(() => { 
+            throw new Error(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(params.packageName, params.modelPath)); 
+        }); 
 
-        // Configure getModel to throw
-        mockGetModel.mockImplementation(() => { throw expectedError; }); // Throw directly
-
-        await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
-            .rejects.toMatchObject({
-                code: ErrorCode.InvalidParams, 
-                message: expect.stringMatching(/Resource not found/i) 
-            });
+        // Expect RESOLUTION with isError: true
+        await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toMatchObject({
+            isError: true,
+            content: expect.arrayContaining([
+                expect.objectContaining({
+                    type: 'text',
+                    text: MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(params.packageName, params.modelPath)
+                })
+            ])
+        });
         expect(mockGetPackage).toHaveBeenCalledWith(params.packageName);
         expect(mockGetModel).toHaveBeenCalledWith(params.modelPath);
         expect(mockGetQueryResults).not.toHaveBeenCalled();

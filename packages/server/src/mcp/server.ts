@@ -1,7 +1,7 @@
 import {
     McpServer,
     ResourceTemplate,
-    ResourceMetadata,
+    ResourceMetadata
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { components } from "../api";
 import { z } from "zod";
@@ -12,12 +12,11 @@ import {
     CallToolResult
 } from "@modelcontextprotocol/sdk/types.js";
 import { PackageService } from "../service/package.service";
-import { PackageNotFoundError, ModelNotFoundError, ModelCompilationError } from "../errors";
-import { MalloyError } from "@malloydata/malloy";
+import { PackageNotFoundError, ModelNotFoundError } from "../errors";
+import { Model } from "../service/model";
 import { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol";
 import { UriTemplate, Variables } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
-
-type ApiQueryResult = components["schemas"]["QueryResult"];
+import { MCP_ERROR_MESSAGES } from './mcp_constants';
 
 // --- Query Execution Schema ---
 
@@ -34,10 +33,10 @@ const ExecuteQueryParamsShape = {
 // Full schema with refinements for validation
 const ExecuteQueryParamsSchema = z.object(ExecuteQueryParamsShape)
     .refine(params => params.query || (params.sourceName && params.queryName), {
-        message: "Either 'query' or both 'sourceName' and 'queryName' must be provided",
+        message: MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS,
     })
     .refine(params => !(params.query && params.queryName), {
-        message: "Cannot provide both 'query' and 'queryName'",
+        message: MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS,
     });
 
 // --- Error Handling ---
@@ -360,7 +359,7 @@ Use 'mcp/readResource' with a model URI to view model details.`
                 const pkg = await packageService.getPackage(packageName);
                 const model = pkg.getModel(modelPath);
                 if (!model) {
-                    throw new ModelNotFoundError(`Model '${modelPath}' not found in package '${packageName}'.`);
+                    throw new ModelNotFoundError(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(packageName, modelPath));
                 }
                 const modelType = model.getModelType();
 
@@ -401,60 +400,70 @@ Example tool call:
         ExecuteQueryParamsShape,
         async (params: z.infer<typeof ExecuteQueryParamsSchema>, extra: RequestHandlerExtra): Promise<CallToolResult> => {
             console.log(`[tool] Handling malloy/executeQuery:`, params);
-            try {
-                // Validate parameters first
-                const validatedParams = await ExecuteQueryParamsSchema.parseAsync(params).catch(error => {
-                    throw new McpError(
-                        `Invalid parameters: ${error.errors.map((e: z.ZodError['errors'][0]) => `${e.path.join('.')} (${e.message})`).join(', ')}`,
-                        ErrorCode.InvalidParams,
-                        "Check the request parameters against the required schema.",
-                        error
-                    );
-                });
+            // 1. Protocol Validation (Throws on failure -> Promise Rejection)
+            const validatedParams = await ExecuteQueryParamsSchema.parseAsync(params).catch(error => {
+                // Zod errors are protocol errors (Invalid Params)
+                throw new McpError(
+                    MCP_ERROR_MESSAGES.INVALID_ARGUMENTS('malloy/executeQuery', error.errors.map((e: z.ZodError['errors'][0]) => `${e.path.join('.')} (${e.message})`)),
+                    ErrorCode.InvalidParams,
+                    "Check the request parameters against the required schema.",
+                    error
+                );
+            });
 
+            // 2. Application Logic (Catches errors -> Promise Resolution with error content)
+            try { 
+                // Validate parameters first
                 const pkg = await packageService.getPackage(validatedParams.packageName);
                 if (!pkg) {
                     throw new McpError(
-                        `Package '${validatedParams.packageName}' not found`,
+                        MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(validatedParams.packageName),
                         ErrorCode.InvalidParams,
                         "Check that the package exists and is accessible"
                     );
                 }
                 const model = pkg.getModel(validatedParams.modelPath);
                 if (!model) {
-                    throw new McpError(
-                        `Model '${validatedParams.modelPath}' not found in package '${validatedParams.packageName}'`,
-                        ErrorCode.InvalidParams,
-                        "Check that the model exists in the specified package"
-                    );
+                    throw new ModelNotFoundError(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(validatedParams.packageName, validatedParams.modelPath));
                 }
 
-                const { queryResults, modelDef, dataStyles } = await model.getQueryResults(
+                // Use getQueryResults which handles both ad-hoc and named queries
+                const { queryResults } = await model.getQueryResults(
                     validatedParams.sourceName,
                     validatedParams.queryName,
                     validatedParams.query
                 );
 
-                const apiResult: ApiQueryResult = {
-                    queryResult: JSON.stringify(queryResults),  // queryResults is already JSON-compatible
-                    modelDef: JSON.stringify(modelDef || {}),
-                    dataStyles: JSON.stringify(dataStyles || {})
-                };
-
-                console.log(`[tool] malloy/executeQuery successful.`);
+                // Success Case
                 return {
+                    isError: false,
                     content: [{
                         type: 'text',
-                        text: JSON.stringify(apiResult)
+                        text: JSON.stringify(queryResults) // Stringify only the results
                     }]
                 };
             } catch (error) {
-                console.error(`[tool] Error executing query:`, error);
-                // Don't wrap already formatted errors
-                if (error instanceof McpError) {
-                    throw error;
+                // Handle Application Errors - Return successful response with error content
+                console.error(`[tool] Application error executing query:`, error);
+
+                let errorMessage: string;
+                if (error instanceof PackageNotFoundError || error instanceof ModelNotFoundError) {
+                    errorMessage = error.message; // Use the message directly from these specific errors
+                } else if (error instanceof Error) {
+                    // For other errors (like compilation/runtime from getQueryResults), prepend context
+                    const packagePath = `${validatedParams.packageName}/${validatedParams.modelPath}`;
+                    errorMessage = `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(packagePath)} ${error.message}`;
+                } else {
+                    errorMessage = "An unknown error occurred during query execution."; // Fallback
                 }
-                throw McpError.withContext(error, `executing query on '${params.packageName}/${params.modelPath}'`);
+
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: errorMessage
+                    }]
+                };
             }
         }
     );

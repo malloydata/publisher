@@ -287,16 +287,8 @@ mcpRouter.post('/messages', async (req, res) => {
    if (transport) {
       console.log(`Found transport for session ${sessionId}, handling message.`);
       console.log(`Stream readable before handlePostMessage?: ${req.readable}`);
-      try {
-         await transport.handlePostMessage(req, res);
-         console.log(`Successfully handled POST message for session ${sessionId}`);
-      } catch (error) {
-         console.error(`Error handling POST message for session ${sessionId}:`, error);
-         if (!res.headersSent) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      }
+      await transport.handlePostMessage(req, res);
+      console.log(`Successfully handled POST message for session ${sessionId}`);
    } else {
       console.warn(`No transport found for session ${sessionId}.`);
       res.status(400).send(`No active SSE connection found for session ${sessionId}`);

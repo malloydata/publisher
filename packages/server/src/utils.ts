@@ -9,10 +9,7 @@ export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 
 export function getWorkingDirectory(): string {
-   return path.resolve(
-      process.cwd(),
-      process.env.PACKAGE_ROOT || "./malloy-samples",
-   );
+   return path.resolve(__dirname, '..', 'malloy-samples');
 }
 
 export const URL_READER: URLReader = {

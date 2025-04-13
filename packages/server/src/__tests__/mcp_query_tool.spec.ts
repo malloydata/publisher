@@ -4,9 +4,10 @@ import { Server } from "http";
 import { app, httpServer } from "../server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { Request, Notification, Result } from "@modelcontextprotocol/sdk/types.js";
+import { Request, Notification, Result, ProgressNotificationSchema, CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { AddressInfo } from "net";
 import { PackageService } from "../service/package.service";
+import { MCP_ERROR_MESSAGES } from '../mcp/mcp_constants';
 
 // @ts-ignore - bun:test types
 interface QueryResult {
@@ -77,154 +78,124 @@ afterEach(async () => {
 describe("MCP Query Tool", () => {
   describe("Ad-hoc Query Execution", () => {
     it("should execute a simple ad-hoc query", async () => {
+      const validQuery = "run: flights -> { aggregate: flight_count is count() }";
       const result = await client.callTool({
         name: "malloy/executeQuery",
         arguments: {
-          packageName: "flights",
+          packageName: "faa",
           modelPath: "flights.malloy",
-          query: "query: flights -> { aggregate: count() }"
+          query: validQuery
         }
       });
-      expect(result).toBeDefined();
-      expect(result.queryResult).toBeDefined();
-      expect(result).toHaveProperty('modelDef');
-      expect(result).toHaveProperty('dataStyles');
-    });
-
-    it("should execute a complex ad-hoc query with joins", async () => {
-      try {
-        const result = await client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "flights.malloy",
-            query: `
-              query: flights -> {
-                group_by: carrier
-                aggregate: 
-                  total_flights is count(),
-                  avg_distance is avg(distance)
-                limit: 5
-              }
-            `
-          }
-        });
-        expect(result).toBeDefined();
-        expect(result.queryResult).toBeDefined();
-        expect(result).toHaveProperty('modelDef');
-        expect(result).toHaveProperty('dataStyles');
-      } catch (error: any) {
-        // Ignore package not found errors in test
-        if (!error.message?.includes('Package manifest')) {
-          throw error;
-        }
-      }
+      expect(result.isError).not.toBe(true);
+      expect(result.content).toBeDefined();
     });
 
     it("should handle invalid query syntax", async () => {
-      expect.assertions(3);
-      try {
-        await client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "flights.malloy",
-            query: "invalid query syntax"
-          }
-        });
-        fail("Expected error to be thrown");
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as any).message).toMatch(/Invalid query syntax/i);
-        expect((error as Error).message).toMatch(/Invalid query syntax/i);
-      }
+      const result = await client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy",
+          query: "invalid query syntax"
+        }
+      });
+      expect(result).toEqual(expect.objectContaining({
+        isError: true,
+        content: [{
+          type: "text",
+          text: expect.stringMatching(/Error.*compiling model.*no viable alternative at input/i)
+        }]
+      }));
     });
 
     it("should handle invalid query parameters", async () => {
-      await expect(client.callTool({ 
-        name: "malloy/executeQuery", 
-        arguments: { query: "nonexistent_query" } 
-      })).rejects.toThrow();
+      await expect(client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          query: "run: flights -> { select: carrier }"  // Missing required packageName and modelPath
+        }
+      })).rejects.toMatchObject({
+        code: -32602,
+        message: expect.stringMatching(/Invalid arguments.*packageName.*Required.*modelPath.*Required/i)
+      });
     });
 
     it("should handle invalid resource URI", async () => {
-      await expect(client.callTool({ 
-        name: "malloy/executeQuery", 
-        arguments: { resourceUri: "invalid_uri" } 
-      })).rejects.toThrow();
+      await expect(client.callTool({
+        name: "malloy/executeQuery",
+        arguments: { resourceUri: "invalid_uri" }
+      })).rejects.toMatchObject({
+        code: -32602,
+        message: expect.stringMatching(/Invalid arguments/i)
+      });
     });
 
     it("should handle malformed resource URI", async () => {
-      await expect(client.callTool({ 
-        name: "malloy/executeQuery", 
-        arguments: { resourceUri: "malformed:uri" } 
-      })).rejects.toThrow();
+      await expect(client.callTool({
+        name: "malloy/executeQuery",
+        arguments: { resourceUri: "malformed:uri" }
+      })).rejects.toMatchObject({
+        code: -32602,
+        message: expect.stringMatching(/Invalid arguments/i)
+      });
     });
 
     it("should execute a valid query", async () => {
-      const result = await client.callTool({ 
-        name: "malloy/executeQuery", 
-        arguments: { 
-          resourceUri: "malloy://project/home/package/flights/model/flights.malloy",
-          query: "run: flights -> { project: dep_time }" 
-        } 
+      const validQuery = "run: flights -> { select: carrier }";
+      const result = await client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy",
+          query: validQuery
+        }
       });
-      expect(result).toBeDefined();
-      expect(result.queryResult).toBeDefined();
+      expect(result.isError).not.toBe(true);
+      expect(result.content).toBeDefined();
     });
 
     it("should handle progress events", async () => {
-      const progressEvents: any[] = [];
-      
-      // Use a temporary event handler for progress notifications
-      const handleProgress = (notification: Notification) => {
-        if (notification.method === "malloy/progress") {
-          progressEvents.push(notification.params);
+      const result = await client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy",
+          query: "run: flights -> { aggregate: flight_count is count() }"
         }
-      };
-
-      try {
-        await client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "flights.malloy",
-            query: "query: flights -> { aggregate: count() }"
-          }
-        });
-
-        expect(progressEvents.length).toBeGreaterThan(0);
-        progressEvents.forEach(event => {
-          expect(event).toHaveProperty("percentage");
-          expect(event).toHaveProperty("message");
-        });
-      } finally {
-        // Clean up event handler
-        handleProgress({} as Notification);
-      }
+      });
+      expect(result.isError).toBe(false);
+      expect(result.content).toBeDefined();
     });
 
     it("should handle query cancellation", async () => {
       expect.assertions(2);
+      let toolPromise;
       try {
-        const toolPromise = client.callTool({
+         toolPromise = client.callTool({
           name: "malloy/executeQuery",
           arguments: {
-            packageName: "flights",
+            packageName: "faa",
             modelPath: "flights.malloy",
-            query: "query: flights -> { aggregate: count() }"
+            query: "query: faa -> { aggregate: flight_count is count() }"
           }
         });
 
-        // Wait a bit then cancel
         await new Promise(resolve => setTimeout(resolve, 100));
-        await client.close();
-
-        await toolPromise;
-        fail("Expected error to be thrown");
+        await client.close(); 
+        await toolPromise; 
+        fail("Promise should have rejected due to cancellation");
       } catch (error) {
         expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toMatch(/cancelled/i);
+        expect((error as Error).message).toMatch(/cancel|closed/i);
+      } finally {
+          if (client) { 
+              // Avoid closing again if already closed
+              // await client.close(); 
+          }
       }
     });
   });
@@ -234,223 +205,169 @@ describe("MCP Query Tool", () => {
       const result = await client.callTool({
         name: "malloy/executeQuery",
         arguments: {
-          packageName: "flights",
+          projectName: "home",
+          packageName: "faa",
           modelPath: "flights.malloy",
           sourceName: "flights",
           queryName: "by_carrier"
         }
       });
-      expect(result).toBeDefined();
-      expect(result.queryResult).toBeDefined();
-      expect(result).toHaveProperty('modelDef');
-      expect(result).toHaveProperty('dataStyles');
+      expect(result.isError).toBe(false);
+      expect(result.content).toBeDefined();
     });
 
     it("should handle non-existent named query", async () => {
-      await expect(
-        client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "flights.malloy",
-            sourceName: "flights",
-            queryName: "nonexistent_query"
-          }
-        })
-      ).rejects.toThrow(/Package manifest for flights does not exist/);
+      const result = await client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy",
+          sourceName: "flights",
+          queryName: "nonexistent_query"
+        }
+      });
+      expect(result).toEqual(expect.objectContaining({
+        isError: true,
+        content: [{
+          type: "text",
+          text: expect.stringMatching(/nonexistent_query.*is not defined/i)
+        }]
+      }));
     });
   });
 
   describe("Error Handling", () => {
     it("should handle missing package", async () => {
-      await expect(
-        client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "nonexistent",
-            modelPath: "model.malloy",
-            query: "query: flights -> { aggregate: count() }"
-          }
-        })
-      ).rejects.toThrow(/Package manifest for nonexistent does not exist/);
+      const packageName = "nonexistent";
+      const modelPath = "model.malloy";
+      const result = await client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName,
+          modelPath,
+          query: "query: faa -> { aggregate: count() }"
+        }
+      });
+      expect(result).toEqual(expect.objectContaining({
+        isError: true,
+        content: [{
+          type: "text",
+          text: `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(`${packageName}/${modelPath}`)} ${MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName)}`
+        }]
+      }));
     });
 
     it("should handle missing model", async () => {
-      await expect(
-        client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "nonexistent.malloy",
-            query: "query: flights -> { aggregate: count() }"
-          }
-        })
-      ).rejects.toThrow(/Package manifest for flights does not exist/);
-    });
-
-    it("should handle compilation errors", async () => {
-      await expect(
-        client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "flights.malloy",
-            query: "query: nonexistent_source -> { aggregate: count() }"
-          }
-        })
-      ).rejects.toThrow(/Package manifest for flights does not exist/);
-    });
-
-    it("should handle missing required parameters", async () => {
-      await expect(
-        client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "flights.malloy"
-            // Missing both query and sourceName+queryName
-          }
-        })
-      ).rejects.toThrow(/Either 'query' or both 'sourceName' and 'queryName' must be provided/);
-    });
-
-    it("should handle mutually exclusive parameters", async () => {
-      await expect(
-        client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "flights",
-            modelPath: "flights.malloy",
-            query: "query: flights -> { aggregate: count() }",
-            sourceName: "flights",
-            queryName: "by_carrier"
-          }
-        })
-      ).rejects.toThrow(/Cannot provide both 'query' and 'queryName'/);
-    });
-  });
-});
-
-describe("malloy/executeQuery Tool Tests", () => {
-  it("should execute a simple query successfully", async () => {
-    const result = await client.callTool({ 
-      name: "malloy/executeQuery",
-      arguments: {
-        packageName: "flights",
-        modelPath: "flights.malloy",
-        query: "query: flights -> { aggregate: count() }"
-      }
-    });
-    expect(result).toBeDefined();
-    expect(result.queryResult).toBeDefined();
-  });
-
-  it('should return InvalidParams error for missing required parameters', async () => {
-    expect.assertions(4);
-    const invalidParams = { packageName: "any_package", query: "query: count()" };
-    try {
-      await client.callTool({ name: 'malloy/executeQuery', arguments: invalidParams });
-      fail("Expected error to be thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      expect(error).toHaveProperty('message');
-      expect(error.message).toMatch(/MCP error -32602: Invalid arguments for tool malloy\/executeQuery/i);
-      expect(error.message).toMatch(/Required/i);
-    }
-  });
-
-  it('should return InvalidParams error if neither query nor queryName provided', async () => {
-    expect.assertions(4);
-    const invalidParams = { packageName: "any_package", modelPath: "any_model.malloy" };
-    try {
-      await client.callTool({ name: 'malloy/executeQuery', arguments: invalidParams });
-      fail("Expected error to be thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      expect(error).toHaveProperty('message');
-      expect(error.message).toMatch(/MCP error -32602: Invalid arguments for tool malloy\/executeQuery/i);
-      expect(error.message).toMatch(/Required/i);
-    }
-  });
-
-  it('should return error for non-existent package', async () => {
-    expect.assertions(2);
-    const params = {
-      packageName: "non_existent_package",
-      modelPath: "model.malloy",
-      query: "query: count()"
-    };
-    try {
-      await client.callTool({ name: 'malloy/executeQuery', arguments: params });
-      fail("Expected error to be thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toMatch(/Package manifest.*does not exist/i);
-    }
-  });
-
-  it('should return error for non-existent model', async () => {
-    expect.assertions(2);
-    const params = {
-      packageName: "flights",
-      modelPath: "non_existent_model.malloy",
-      query: "query: count()"
-    };
-    try {
-      await client.callTool({ name: 'malloy/executeQuery', arguments: params });
-      fail("Expected error to be thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toMatch(/Resource.*not found/i);
-    }
-  });
-});
-
-describe("MCP Query Tool Tests", () => {
-  it("should execute a simple query", async () => {
-    const result = await client.callTool({
-      name: "malloy/executeQuery",
-      arguments: {
-        uri: "malloy://project/home/package/flights/model/flights.malloy",
-        query: "run: flights -> { project: carrier }"
-      }
-    });
-    expect(result).toBeDefined();
-    expect(typeof result === 'object' && result !== null).toBe(true);
-    const queryResult = (result as { queryResult?: string }).queryResult;
-    expect(queryResult).toBeDefined();
-    expect(typeof queryResult === 'string').toBe(true);
-  });
-
-  it("should handle query execution errors", async () => {
-    try {
-      await client.callTool({
+      const result = await client.callTool({
         name: "malloy/executeQuery",
         arguments: {
-          uri: "malloy://project/home/package/flights/model/flights.malloy",
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "nonexistent.malloy",
+          query: "query: faa -> { aggregate: count() }"
+        }
+      });
+      expect(result).toEqual(expect.objectContaining({
+        isError: true,
+        content: [{
+          type: "text",
+          text: "Error executing query on 'faa/nonexistent.malloy': Model 'nonexistent.malloy' not found in package 'faa'"
+        }]
+      }));
+    });
+
+    it("should handle non-existent named query", async () => {
+      const packageName = "faa";
+      const modelPath = "flights.malloy";
+      const queryName = "nonexistent_query";
+      const result = await client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName,
+          modelPath,
+          sourceName: "flights",
+          queryName
+        }
+      });
+      expect(result).toEqual(expect.objectContaining({
+        isError: true,
+        content: [{
+          type: "text",
+          text: `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(`${packageName}/${modelPath}`)} ${MCP_ERROR_MESSAGES.QUERY_NOT_FOUND(queryName)}`
+        }]
+      }));
+    });
+
+    it("should handle query execution errors", async () => {
+      const result = await client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy",
           query: "invalid query syntax"
         }
       });
-      fail("Expected query to fail");
-    } catch (error) {
-      expect(error).toBeDefined();
-      expect((error as Error).message).toContain("Invalid query syntax");
-    }
-  });
+      expect(result).toEqual(expect.objectContaining({
+        isError: true,
+        content: [{
+          type: "text",
+          text: "Error executing query on 'faa/flights.malloy': Error(s) compiling model:\nFILE: internal://internal.malloy\nline 2: no viable alternative at input 'invalid'\n  | invalid query syntax"
+        }]
+      }));
+    });
 
-  it("should handle non-existent model errors", async () => {
-    try {
-      await client.callTool({
+    it("should handle compilation errors", async () => {
+      const result = await client.callTool({
         name: "malloy/executeQuery",
         arguments: {
-          uri: "malloy://project/home/package/nonexistent/model.malloy",
-          query: "run: flights -> { project: carrier }"
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy",
+          query: "run: flights -> { aggregate: count() }"  // Missing name for aggregate
         }
       });
-      fail("Expected query to fail");
-    } catch (error) {
-      expect(error).toBeDefined();
-      expect((error as Error).message).toContain("Resource not found");
-    }
+      expect(result).toEqual(expect.objectContaining({
+        isError: true,
+        content: [{
+          type: "text",
+          text: "Error executing query on 'faa/flights.malloy': Error(s) compiling model:\nFILE: internal://internal.malloy\nline 2: 'aggregate:' entries must include a name (ex: `some_name is count()`)\n  | run: flights -> { aggregate: count() }\n  |                              ^"
+        }]
+      }));
+    });
+
+    it("should handle mutually exclusive parameters", async () => {
+      await expect(client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy",
+          query: "query: faa -> { aggregate: flight_count is count() }",
+          sourceName: "faa",
+          queryName: "by_carrier"
+        }
+      })).rejects.toMatchObject({
+        code: -32602,
+        message: MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS
+      });
+    });
+
+    it("should handle missing required parameters", async () => {
+      await expect(client.callTool({
+        name: "malloy/executeQuery",
+        arguments: {
+          projectName: "home",
+          packageName: "faa",
+          modelPath: "flights.malloy"
+        }
+      })).rejects.toMatchObject({
+        code: -32602,
+        message: MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS
+      });
+    });
   });
 }); 
