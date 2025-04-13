@@ -15,7 +15,7 @@ import { PackageService } from "../service/package.service";
 import { PackageNotFoundError, ModelNotFoundError, ModelCompilationError } from "../errors";
 import { MalloyError } from "@malloydata/malloy";
 import { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol";
-import { UriTemplate } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
+import { UriTemplate, Variables } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
 
 type ApiQueryResult = components["schemas"]["QueryResult"];
 
@@ -143,14 +143,6 @@ class McpError extends Error {
             error
         );
     }
-}
-
-/**
- * Maps any error to an MCP error with appropriate code and suggestion.
- * @deprecated Use McpError.from() or McpError.withContext() instead
- */
-function mapMalloyErrorToMcpError(error: unknown, context?: string): Error {
-    return context ? McpError.withContext(error, context) : McpError.from(error);
 }
 
 // --- Constants & Helpers ---
@@ -282,209 +274,141 @@ Notes:
  * @param packageService Instance of PackageService
  */
 export function initializeMcpServer(packageService: PackageService): McpServer {
-  const mcpServer = new McpServer(testServerInfo);
-  console.log("MCP Server initialized.");
+    const mcpServer = new McpServer(testServerInfo);
 
-  // --- Register Resources using server.resource --- 
-
-  // Register Project Resource (Fixed Project Name: 'home')
-  mcpServer.resource(
-    'project',
-    new ResourceTemplate(
-      PROJECT_TEMPLATE,
-      {
+    // Register Project Resource
+    const projectTemplate = new ResourceTemplate(PROJECT_TEMPLATE, {
         list: async (extra: RequestHandlerExtra): Promise<ListResourcesResult> => {
-          console.log(`[list] Listing packages for project: ${PROJECT_URI}`);
-          try {
-            const packages = await packageService.listPackages();
-            return { 
-              resources: packages.filter(pkg => pkg.name).map(pkg => ({
-                uri: PACKAGE_TEMPLATE.expand({ projectName: PROJECT_NAME, packageName: pkg.name! }),
-                name: pkg.name!,
-                description: "Represents a Malloy package containing models.",
-              })) 
-            };
-          } catch (error) {
-             console.error(`[list] Error listing packages for project '${PROJECT_URI}':`, error);
-             throw mapMalloyErrorToMcpError(error, `listing packages for project '${PROJECT_NAME}'`);
-          }
+            try {
+                console.log(`[list] Listing packages for project: ${PROJECT_URI}`);
+                const packages = await packageService.listPackages();
+                return {
+                    resources: packages.map(pkg => ({
+                        uri: PACKAGE_TEMPLATE.expand({ projectName: PROJECT_NAME, packageName: pkg.name || '' }),
+                        name: pkg.name || '',
+                        description: pkg.description || undefined
+                    }))
+                };
+            } catch (error) {
+                throw McpError.withContext(error, "listing packages");
+            }
         }
-      }
-    ),
-    projectMetadata,
-    // Read callback for the project resource
-    async (uri: URL, variables: Record<string, unknown>, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
-      console.log(`[read] Handling project request: ${uri.href}`);
-      // Provide static content or potentially dynamic info if needed
-      return {
-        contents: [
-          {
-            type: 'text',
-            uri: uri.href,
-            text:
-`Malloy Project Resource ('${uri.href}')
+    });
+
+    mcpServer.resource(
+        'project',
+        projectTemplate,
+        projectMetadata,
+        async (uri: URL, variables: Variables, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
+            return {
+                contents: [{
+                    type: 'text',
+                    uri: uri.toString(),
+                    text: `Malloy Project Resource ('${uri}')
 Type: Project
 Description: The top-level container for Malloy packages.
 Children: Use 'mcp/listResources' with this URI to list available packages.`
-          }
-        ]
-      };
-    }
-  );
-
-  // Register Package Resource Template
-  mcpServer.resource(
-    'package',
-    new ResourceTemplate(
-      PACKAGE_TEMPLATE,
-      {
-        list: async (extra: RequestHandlerExtra): Promise<ListResourcesResult> => {
-          try {
-            const packages = await packageService.listPackages();
-            return {
-              resources: packages.filter(pkg => pkg.name).map(pkg => ({
-                uri: PACKAGE_TEMPLATE.expand({ projectName: PROJECT_NAME, packageName: pkg.name! }),
-                name: pkg.name!,
-                description: "Represents a Malloy package containing models.",
-              }))
+                }]
             };
-          } catch (error) {
-             console.error(`[list] Error listing packages:`, error);
-             throw mapMalloyErrorToMcpError(error, `listing packages`);
-          }
-        },
-        complete: {
-          projectName: async (value: string) => [PROJECT_NAME],
-          packageName: async (value: string) => {
-            try {
-              const packages = await packageService.listPackages();
-              return packages
-                .filter(pkg => pkg.name && pkg.name.toLowerCase().includes(value.toLowerCase()))
-                .map(pkg => pkg.name!)
-                .slice(0, 10);
-            } catch (error) {
-              console.error(`[complete] Error completing packageName:`, error);
-              return [];
-            }
-          }
         }
-      }
-    ),
-    packageMetadata,
-    // Read callback for package resources
-    async (uri: URL, variables: Record<string, unknown>, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
-        const packageName = variables.packageName as string;
-        console.log(`[read] Handling package request: ${uri.href} (packageName: ${packageName})`);
-        try {
-            const pkg = await packageService.getPackage(packageName);
-            const models = await pkg.listModels();
-            const modelList = models
-              .filter(m => m.path)
-              .map(m => `- ${m.path} (URI: ${MODEL_TEMPLATE.expand({ projectName: PROJECT_NAME, packageName, modelPath: m.path! })})`).join('\n');
-            return {
-                 contents: [{
-                     type: 'text',
-                     uri: uri.href,
-                     text:
-`Malloy Package Resource
+    );
+
+    // Register Package Resource
+    const packageTemplate = new ResourceTemplate(PACKAGE_TEMPLATE, {
+        list: async (extra: RequestHandlerExtra): Promise<ListResourcesResult> => {
+            try {
+                const packages = await packageService.listPackages();
+                const allModels: ListResourcesResult["resources"] = [];
+                for (const pkg of packages) {
+                    if (!pkg.name) continue;
+                    const pkgInstance = await packageService.getPackage(pkg.name);
+                    const models = await pkgInstance.listModels();
+                    allModels.push(...models.map(model => ({
+                        uri: MODEL_TEMPLATE.expand({ 
+                            projectName: PROJECT_NAME, 
+                            packageName: pkg.name!, 
+                            modelPath: model.path || '' 
+                        }),
+                        name: model.path || '',
+                        description: undefined
+                    })));
+                }
+                return { resources: allModels };
+            } catch (error) {
+                throw McpError.withContext(error, "listing models");
+            }
+        }
+    });
+
+    mcpServer.resource(
+        'package',
+        packageTemplate,
+        packageMetadata,
+        async (uri: URL, variables: Variables, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
+            const packageName = variables.packageName as string;
+            try {
+                const pkg = await packageService.getPackage(packageName);
+                const models = await pkg.listModels();
+                const modelList = models
+                    .map(m => `- ${m.path || '(unnamed)'} (URI: ${MODEL_TEMPLATE.expand({ 
+                        projectName: PROJECT_NAME, 
+                        packageName, 
+                        modelPath: m.path || '' 
+                    })})`).join('\n');
+
+                return {
+                    contents: [{
+                        type: 'text',
+                        uri: uri.toString(),
+                        text: `Malloy Package Resource
 Name: ${packageName}
-URI: ${uri.href}
+URI: ${uri}
 Description: Represents a Malloy package containing models.
 Models (${models.length}):
 ${modelList || '(No models found)'}
 
 Use 'mcp/listResources' with this URI to list models.
 Use 'mcp/readResource' with a model URI to view model details.`
-                 }]
-            };
-        } catch (error) {
-            console.error(`[read] Error getting package resource '${uri.href}':`, error);
-            throw mapMalloyErrorToMcpError(error, `reading package '${packageName}`);
-        }
-    }
-  );
-
-  // Register Model Resource Template
-  mcpServer.resource(
-    'model',
-    new ResourceTemplate(
-      MODEL_TEMPLATE,
-      {
-        list: undefined, // Models don't list children
-        complete: {
-          projectName: async (value: string) => [PROJECT_NAME],
-          packageName: async (value: string) => {
-            try {
-              const packages = await packageService.listPackages();
-              return packages
-                .filter(pkg => pkg.name && pkg.name.toLowerCase().includes(value.toLowerCase()))
-                .map(pkg => pkg.name!)
-                .slice(0, 10);
+                    }]
+                };
             } catch (error) {
-              console.error(`[complete] Error completing packageName:`, error);
-              return [];
+                throw McpError.withContext(error, `reading package '${packageName}'`);
             }
-          },
-          modelPath: async (value: string) => {
+        }
+    );
+
+    // Register Model Resource
+    const modelTemplate = new ResourceTemplate(MODEL_TEMPLATE, {
+        list: async (extra: RequestHandlerExtra): Promise<ListResourcesResult> => {
+            // Models are leaf nodes, so they have no children to list
+            return { resources: [] };
+        }
+    });
+
+    mcpServer.resource(
+        'model',
+        modelTemplate,
+        {
+            description: "A Malloy model file containing source definitions and queries."
+        },
+        async (uri: URL, variables: Variables, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
+            const packageName = variables.packageName as string;
+            const modelPath = variables.modelPath as string;
             try {
-              // Since we can't get the packageName from variables, we'll list all models from all packages
-              const packages = await packageService.listPackages();
-              const allModels: string[] = [];
-              
-              for (const pkg of packages) {
-                if (!pkg.name) continue;
-                try {
-                  const pkgInstance = await packageService.getPackage(pkg.name);
-                  const models = await pkgInstance.listModels();
-                  allModels.push(...models.filter(model => model.path).map(model => model.path!));
-                } catch (error) {
-                  console.error(`[complete] Error listing models for package ${pkg.name}:`, error);
+                const pkg = await packageService.getPackage(packageName);
+                const model = pkg.getModel(modelPath);
+                if (!model) {
+                    throw new ModelNotFoundError(`Model '${modelPath}' not found in package '${packageName}'.`);
                 }
-              }
-              
-              return allModels
-                .filter(path => path.toLowerCase().includes(value.toLowerCase()))
-                .slice(0, 10);
-            } catch (error) {
-              console.error(`[complete] Error completing modelPath:`, error);
-              return [];
-            }
-          }
-        }
-      }
-    ),
-    modelMetadata,
-    // Add schema validation here in the read callback
-    async (uri: URL, variables: Record<string, unknown>, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
-        // Validate variables
-        const schema = z.object({
-          projectName: z.string().refine(name => name === PROJECT_NAME, {message: `Only project '${PROJECT_NAME}' is supported`}),
-          packageName: z.string(),
-          modelPath: z.union([z.string(), z.array(z.string())])
-        });
-        const validated = schema.parse(variables);
-        
-        const packageName = validated.packageName;
-        const modelPath = Array.isArray(validated.modelPath) ? validated.modelPath.join('/') : validated.modelPath;
-        console.log(`[read] Handling model request: ${uri.href} (packageName: ${packageName}, modelPath: ${modelPath})`);
+                const modelType = model.getModelType();
 
-        try {
-            const pkg = await packageService.getPackage(packageName);
-            const model = pkg.getModel(modelPath);
-            if (!model) {
-                throw new ModelNotFoundError(`Model '${modelPath}' not found in package '${packageName}'.`);
-            }
-            const modelType = model.getModelType(); 
-
-            return {
-                contents: [
-                    {
+                return {
+                    contents: [{
                         type: 'text',
-                        uri: uri.href,
-                        text:
-`Malloy Model Resource
+                        uri: uri.toString(),
+                        text: `Malloy Model Resource
 Name: ${modelPath}
-URI: ${uri.href}
+URI: ${uri}
 Package: ${packageName}
 Type: ${modelType}
 Description: Represents a Malloy model file (.malloy).
@@ -499,57 +423,55 @@ Example tool call:
     "query": "query: ..."
   }
 }`
-                    }
-                ]
-            };
-        } catch (error) {
-            console.error(`[read] Error getting model resource '${uri.href}':`, error);
-            throw mapMalloyErrorToMcpError(error, `reading model '${modelPath}' in package '${packageName}'`);
-        }
-    }
-  );
-
-  // --- Register Tools using server.tool --- 
-
-  // Register malloy/executeQuery Tool
-  mcpServer.tool(
-    'malloy/executeQuery',
-    ExecuteQueryParamsShape,
-    async (params: z.infer<typeof ExecuteQueryParamsSchema>, extra: RequestHandlerExtra): Promise<CallToolResult> => {
-        console.log(`[tool] Handling malloy/executeQuery:`, params);
-        try {
-            const pkg = await packageService.getPackage(params.packageName);
-            const model = pkg.getModel(params.modelPath);
-            if (!model) {
-                throw new ModelNotFoundError(`Model '${params.modelPath}' not found in package '${params.packageName}'.`);
+                    }]
+                };
+            } catch (error) {
+                throw McpError.withContext(error, `reading model '${modelPath}' in package '${packageName}'`);
             }
-
-            const { queryResults, modelDef, dataStyles } = await model.getQueryResults(
-                params.sourceName,
-                params.queryName,
-                params.query
-            );
-
-            const apiResult: ApiQueryResult = {
-                queryResult: JSON.stringify(queryResults.toJSON(), null, 2),
-                modelDef: JSON.stringify(modelDef || {}, null, 2),
-                dataStyles: JSON.stringify(dataStyles || {}),
-            };
-
-            console.log(`[tool] malloy/executeQuery successful.`);
-            return {
-                content: [{
-                    type: 'text',
-                    text: JSON.stringify(apiResult)
-                }]
-            };
-        } catch (error) {
-            console.error(`[tool] Error executing query:`, error);
-            throw mapMalloyErrorToMcpError(error, `executing query on '${params.packageName}/${params.modelPath}'`);
         }
-    }
-  );
+    );
 
-  console.log("MCP Resources and Tools registered.");
-  return mcpServer;
+    // --- Register Tools using server.tool --- 
+
+    // Register malloy/executeQuery Tool
+    mcpServer.tool(
+        'malloy/executeQuery',
+        ExecuteQueryParamsShape,
+        async (params: z.infer<typeof ExecuteQueryParamsSchema>, extra: RequestHandlerExtra): Promise<CallToolResult> => {
+            console.log(`[tool] Handling malloy/executeQuery:`, params);
+            try {
+                const pkg = await packageService.getPackage(params.packageName);
+                const model = pkg.getModel(params.modelPath);
+                if (!model) {
+                    throw new ModelNotFoundError(`Model '${params.modelPath}' not found in package '${params.packageName}'.`);
+                }
+
+                const { queryResults, modelDef, dataStyles } = await model.getQueryResults(
+                    params.sourceName,
+                    params.queryName,
+                    params.query
+                );
+
+                const apiResult: ApiQueryResult = {
+                    queryResult: JSON.stringify(queryResults.toJSON(), null, 2),
+                    modelDef: JSON.stringify(modelDef || {}, null, 2),
+                    dataStyles: JSON.stringify(dataStyles || {}),
+                };
+
+                console.log(`[tool] malloy/executeQuery successful.`);
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify(apiResult)
+                    }]
+                };
+            } catch (error) {
+                console.error(`[tool] Error executing query:`, error);
+                throw McpError.withContext(error, `executing query on '${params.packageName}/${params.modelPath}'`);
+            }
+        }
+    );
+
+    console.log("MCP Resources and Tools registered.");
+    return mcpServer;
 } 
