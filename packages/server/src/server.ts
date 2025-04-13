@@ -12,12 +12,10 @@ import { PackageService } from "./service/package.service";
 import { initializeMcpServer } from "./mcp/server";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { AboutController } from "./controller/about.controller";
-import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { ScheduleController } from "./controller/schedule.controller";
-import type { components } from "./api";
 
 const app = express();
 app.use(morgan("tiny"));
@@ -32,7 +30,6 @@ const packageService = new PackageService();
 const aboutController = new AboutController();
 const modelController = new ModelController(packageService);
 const packageController = new PackageController(packageService);
-const databaseController = new DatabaseController(packageService);
 const queryController = new QueryController(packageService);
 const scheduleController = new ScheduleController(packageService);
 
@@ -40,6 +37,7 @@ const mcpServer = initializeMcpServer(packageService);
 
 const transports: {[sessionId: string]: SSEServerTransport} = {};
 
+// --- Static file serving (Keep before API routers) ---
 app.use("/", express.static(path.join(ROOT, "/")));
 app.use("/api-doc.html", express.static(path.join(ROOT, "/api-doc.html")));
 
@@ -65,6 +63,7 @@ const setProjectNameError = (res: express.Response) => {
    res.status(status).json(json);
 };
 
+// --- REST API Router Definition ---
 const restApiRouter = Router();
 
 restApiRouter.use(cors());
@@ -255,6 +254,7 @@ restApiRouter.get(
    },
 );
 
+// --- MCP Router Definition ---
 const mcpRouter = Router();
 
 mcpRouter.get('/sse', async (req, res) => {
@@ -306,6 +306,7 @@ mcpRouter.post('/messages', async (req, res) => {
    }
 });
 
+// --- Mount Routers (Keep AFTER definitions) ---
 app.use(API_PREFIX, restApiRouter);
 app.use(`${API_PREFIX}/mcp`, mcpRouter);
 
