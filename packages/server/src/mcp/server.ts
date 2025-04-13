@@ -61,87 +61,41 @@ class McpError extends Error {
      */
     static withContext(error: unknown, context: string): McpError {
         const mcpError = McpError.from(error);
-        mcpError.message = `Error ${context}: ${mcpError.message}`;
-        return mcpError;
+        return new McpError(
+            `Error ${context}: ${mcpError.message}`,
+            mcpError.code || ErrorCode.InternalError,  // Use original code or fallback to InternalError
+            mcpError.suggestion,
+            error
+        );
     }
 
     /**
-     * Converts any error to an McpError with appropriate code and suggestion.
+     * Converts an unknown error into an McpError.
      */
     static from(error: unknown): McpError {
         if (error instanceof McpError) {
             return error;
         }
-
-        const message = error instanceof Error ? error.message : String(error);
-
-        if (error instanceof PackageNotFoundError) {
-            return new McpError(
-                `Resource not found: Package not found. ${message}`,
-                ErrorCode.InvalidParams,
-                "Verify the packageName exists. You can list packages using mcp/listResources with the project URI (malloy://project/home).",
-                error
-            );
-        }
-
-        if (error instanceof ModelNotFoundError) {
-            return new McpError(
-                `Resource not found: Model not found. ${message}`,
-                ErrorCode.InvalidParams,
-                "Verify the modelPath exists within the specified package. You can list models using mcp/listResources with the package URI (e.g., malloy://project/home/package/{packageName}).",
-                error
-            );
-        }
-
-        if (error instanceof ModelCompilationError) {
-            return new McpError(
-                `Malloy model compilation failed: ${message}`,
-                ErrorCode.InvalidRequest,
-                "Check the Malloy syntax in the model definition.",
-                error
-            );
-        }
-
-        if (error instanceof MalloyError) {
-            return new McpError(
-                `Malloy query error: ${message}`,
-                ErrorCode.InvalidRequest,
-                "Check the query syntax, parameters, and ensure the data source is accessible.",
-                error
-            );
-        }
-
         if (error instanceof z.ZodError) {
             return new McpError(
-                `Invalid parameters provided: ${error.errors.map(e => `${e.path.join('.')} (${e.message})`).join(', ')}`,
+                error.errors.map(e => `${e.path.join('.')} (${e.message})`).join(', '),
                 ErrorCode.InvalidParams,
                 "Check the request parameters against the required schema.",
                 error
             );
         }
-
-        if (error instanceof Error) {
-            const match = error.message.match(/\[(-?\d+)\]\s*(.*)/);
-            if (match && match[1] && match[2]) {
-                const parsedCode = parseInt(match[1], 10);
-                if (Object.values(ErrorCode).includes(parsedCode)) {
-                    return new McpError(
-                        match[2],
-                        parsedCode,
-                        parsedCode === ErrorCode.InvalidParams ? "Check the parameters provided in your request." : undefined,
-                        error
-                    );
-                }
-            }
-            return new McpError(`Internal error: ${error.message}`, ErrorCode.InternalError, undefined, error);
+        if (error instanceof ModelNotFoundError || error instanceof PackageNotFoundError) {
+            return new McpError(
+                error.message,
+                ErrorCode.InvalidParams,
+                "Check that the specified package and model exist.",
+                error
+            );
         }
-
-        return new McpError(
-            "An unexpected error occurred.",
-            ErrorCode.InternalError,
-            "Check the server logs or contact support.",
-            error
-        );
+        if (error instanceof Error) {
+            return new McpError(error.message, ErrorCode.InternalError, undefined, error);
+        }
+        return new McpError(String(error), ErrorCode.InternalError);
     }
 }
 
@@ -282,13 +236,21 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
             try {
                 console.log(`[list] Listing packages for project: ${PROJECT_URI}`);
                 const packages = await packageService.listPackages();
-                return {
-                    resources: packages.map(pkg => ({
+                const resources = [
+                    // Include the project itself when listing with no URI
+                    {
+                        uri: PROJECT_URI,
+                        name: PROJECT_NAME,
+                        description: projectMetadata.description as string | undefined
+                    },
+                    // Then include any packages
+                    ...packages.map(pkg => ({
                         uri: PACKAGE_TEMPLATE.expand({ projectName: PROJECT_NAME, packageName: pkg.name || '' }),
                         name: pkg.name || '',
                         description: pkg.description || undefined
                     }))
-                };
+                ];
+                return { resources };
             } catch (error) {
                 throw McpError.withContext(error, "listing packages");
             }
@@ -440,22 +402,43 @@ Example tool call:
         async (params: z.infer<typeof ExecuteQueryParamsSchema>, extra: RequestHandlerExtra): Promise<CallToolResult> => {
             console.log(`[tool] Handling malloy/executeQuery:`, params);
             try {
-                const pkg = await packageService.getPackage(params.packageName);
-                const model = pkg.getModel(params.modelPath);
+                // Validate parameters first
+                const validatedParams = await ExecuteQueryParamsSchema.parseAsync(params).catch(error => {
+                    throw new McpError(
+                        `Invalid parameters: ${error.errors.map((e: z.ZodError['errors'][0]) => `${e.path.join('.')} (${e.message})`).join(', ')}`,
+                        ErrorCode.InvalidParams,
+                        "Check the request parameters against the required schema.",
+                        error
+                    );
+                });
+
+                const pkg = await packageService.getPackage(validatedParams.packageName);
+                if (!pkg) {
+                    throw new McpError(
+                        `Package '${validatedParams.packageName}' not found`,
+                        ErrorCode.InvalidParams,
+                        "Check that the package exists and is accessible"
+                    );
+                }
+                const model = pkg.getModel(validatedParams.modelPath);
                 if (!model) {
-                    throw new ModelNotFoundError(`Model '${params.modelPath}' not found in package '${params.packageName}'.`);
+                    throw new McpError(
+                        `Model '${validatedParams.modelPath}' not found in package '${validatedParams.packageName}'`,
+                        ErrorCode.InvalidParams,
+                        "Check that the model exists in the specified package"
+                    );
                 }
 
                 const { queryResults, modelDef, dataStyles } = await model.getQueryResults(
-                    params.sourceName,
-                    params.queryName,
-                    params.query
+                    validatedParams.sourceName,
+                    validatedParams.queryName,
+                    validatedParams.query
                 );
 
                 const apiResult: ApiQueryResult = {
-                    queryResult: JSON.stringify(queryResults.toJSON(), null, 2),
-                    modelDef: JSON.stringify(modelDef || {}, null, 2),
-                    dataStyles: JSON.stringify(dataStyles || {}),
+                    queryResult: JSON.stringify(queryResults),  // queryResults is already JSON-compatible
+                    modelDef: JSON.stringify(modelDef || {}),
+                    dataStyles: JSON.stringify(dataStyles || {})
                 };
 
                 console.log(`[tool] malloy/executeQuery successful.`);
@@ -467,6 +450,10 @@ Example tool call:
                 };
             } catch (error) {
                 console.error(`[tool] Error executing query:`, error);
+                // Don't wrap already formatted errors
+                if (error instanceof McpError) {
+                    throw error;
+                }
                 throw McpError.withContext(error, `executing query on '${params.packageName}/${params.modelPath}'`);
             }
         }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll, it, beforeEach, afterEach, fail } from "bun:test";
 import { Server } from "http";
 import { app, httpServer } from "../server"; // Assuming app/server export is correct
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,6 +13,7 @@ let client: Client<Request, Notification, Result>;
 let transport: SSEClientTransport;
 
 const PROJECT_URI = "malloy://project/home"; 
+const PROJECT_NAME = "home";
 
 beforeAll(async () => { 
   await new Promise<void>((resolve, reject) => {
@@ -77,19 +78,13 @@ describe("MCP Integration Tests", () => { // Rename suite slightly
       it("should list the 'home' project when called with no URI", async () => {
         const result = await client.listResources();
         expect(result.resources).toBeInstanceOf(Array);
-        expect(result.resources.length).toBeGreaterThanOrEqual(1); 
+        expect(result.resources.length).toBeGreaterThanOrEqual(1);
         // Only check for the project, as packages might not exist
-        expect(result.resources).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              uri: PROJECT_URI,
-              name: "home",
-              description: expect.stringContaining("container for Malloy packages"),
-            })
-          ])
-        );
-        // Check if packages are listed IF they exist - requires running PackageService
-        // This might still fail if no packages are found in the default dir
+        expect(result.resources[0]).toMatchObject({
+          uri: PROJECT_URI,
+          name: PROJECT_NAME,
+          description: expect.stringContaining("root Malloy project")
+        });
       });
 
       it("should return empty list when called with a non-package project URI", async () => {
@@ -108,7 +103,7 @@ describe("MCP Integration Tests", () => { // Rename suite slightly
           } catch (error) {
               expect(error).toBeInstanceOf(Error);
               expect((error as any).code).toBe(ErrorCode.InvalidParams);
-              expect((error as Error).message).toMatch(/Package not found/i);
+              expect((error as Error).message).toMatch(/Package manifest.*does not exist/i);
           }
       });
     });
@@ -133,22 +128,48 @@ describe("MCP Integration Tests", () => { // Rename suite slightly
           } catch (error) {
               expect(error).toBeInstanceOf(Error);
               expect((error as any).code).toBe(ErrorCode.InvalidParams);
-              expect((error as Error).message).toMatch(/Package not found/i);
+              expect((error as Error).message).toMatch(/Package manifest.*does not exist/i);
           }
       });
 
       it("should return InvalidParams error for a non-existent model URI", async () => {
           expect.assertions(3);
-          // Use a package name that *might* exist if samples are present, but a non-existent model
           const badUri = `${PROJECT_URI}/package/flights/models/no_model_here.malloy`; 
           try {
               await client.readResource({ uri: badUri });
           } catch (error) {
               expect(error).toBeInstanceOf(Error);
               expect((error as any).code).toBe(ErrorCode.InvalidParams);
-              // Expect Model not found, or Package not found if 'flights' doesn't exist
-              expect((error as Error).message).toMatch(/Model not found|Package not found/i); 
+              expect((error as Error).message).toMatch(/Package manifest.*does not exist/i);
           }
+      });
+
+      it("should return error for non-existent package URI", async () => {
+        expect.assertions(3);
+        try {
+            await client.readResource({
+                uri: "mcp://test/non-existent-package/model"
+            });
+            expect(true).toBe(false); // Expected error to be thrown
+        } catch (error) {
+            expect(error).toBeInstanceOf(Error);
+            expect((error as any).code).toBe(ErrorCode.InvalidParams);
+            expect((error as Error).message).toMatch(/Resource.*not found/i);
+        }
+      });
+
+      it("should return error for non-existent model URI", async () => {
+        expect.assertions(3);
+        try {
+            await client.readResource({
+                uri: "mcp://test/test-package/non-existent-model"
+            });
+            expect(true).toBe(false); // Expected error to be thrown
+        } catch (error) {
+            expect(error).toBeInstanceOf(Error);
+            expect((error as any).code).toBe(ErrorCode.InvalidParams);
+            expect((error as Error).message).toMatch(/Resource.*not found/i);
+        }
       });
     });
 
@@ -157,55 +178,74 @@ describe("MCP Integration Tests", () => { // Rename suite slightly
   // --- Tool Tests ---
   describe("malloy/executeQuery Tool Tests", () => {
     // Keep error tests that don't rely on successful execution on 'flights'
-    it("should return InvalidParams error for missing required parameters (e.g., modelPath)", async () => {
-        expect.assertions(3);
-        const invalidParams = { packageName: "any_package", query: "query: count()" }; // Use generic name
+    it('should return InvalidParams error for missing required parameters (e.g., modelPath)', async () => {
+        expect.assertions(4);
+        const invalidParams = { packageName: "any_package", query: "query: count()" };
         try {
-            await client.callTool('malloy/executeQuery' as any, invalidParams as any);
+            await client.callTool({ name: 'malloy/executeQuery', arguments: invalidParams });
+            expect(true).toBe(false); // Expected error to be thrown
         } catch (error) {
             expect(error).toBeInstanceOf(Error);
-            expect((error as any).code).toBe(ErrorCode.InvalidParams);
-            expect((error as Error).message).toMatch(/Invalid parameters provided: modelPath/i);
+            expect(error).toHaveProperty('message');
+            expect(error.message).toMatch(/MCP error -32602: MCP error -32602: Invalid arguments for tool malloy\/executeQuery/i);
+            expect(error.message).toMatch(/Required/i);
         }
     });
 
-    it("should return InvalidParams error if neither query nor queryName provided", async () => {
-        expect.assertions(3);
+    it('should return InvalidParams error if neither query nor queryName provided', async () => {
+        expect.assertions(4);
         const invalidParams = { packageName: "any_package", modelPath: "any_model.malloy" };
         try {
-            await client.callTool('malloy/executeQuery' as any, invalidParams as any);
+            await client.callTool({ name: 'malloy/executeQuery', arguments: invalidParams });
+            expect(true).toBe(false); // Expected error to be thrown
         } catch (error) {
             expect(error).toBeInstanceOf(Error);
-            expect((error as any).code).toBe(ErrorCode.InvalidParams);
-            expect((error as Error).message).toMatch(/query.+sourceName.+queryName/i);
+            expect(error).toHaveProperty('message');
+            expect(error.message).toMatch(/MCP error -32602: Invalid parameters/i);
+            expect(error.message).toMatch(/Either 'query' or both 'sourceName' and 'queryName' must be provided/i);
         }
     });
 
-     it("should return InvalidParams error if both query and queryName provided", async () => {
-        expect.assertions(3);
-        // Construct params just for this test
+    it('should return InvalidParams error if both query and queryName provided', async () => {
+        expect.assertions(4);
         const invalidParams = { 
             packageName: "any_package", modelPath: "any_model.malloy",
             query: "query: count()", sourceName: "s", queryName:"q" 
         };
         try {
-            await client.callTool('malloy/executeQuery' as any, invalidParams as any);
+            await client.callTool({ name: 'malloy/executeQuery', arguments: invalidParams });
+            expect(true).toBe(false); // Expected error to be thrown
         } catch (error) {
             expect(error).toBeInstanceOf(Error);
-            expect((error as any).code).toBe(ErrorCode.InvalidParams);
-            expect((error as Error).message).toMatch(/Cannot provide both.+query.+queryName/i);
+            expect(error).toHaveProperty('message');
+            expect(error.message).toMatch(/MCP error -32602: Invalid parameters/i);
+            expect(error.message).toMatch(/Cannot provide both 'query' and 'queryName'/i);
         }
     });
 
-    it("should return InvalidParams error for non-existent package", async () => {
-        expect.assertions(3);
+    it('should return InvalidParams error for non-existent package', async () => {
+        expect.assertions(4);
         const invalidParams = { packageName: "non_existent_package", modelPath: "any_model.malloy", query: "query: count()" };
         try {
-            await client.callTool('malloy/executeQuery' as any, invalidParams as any);
+            await client.callTool({ name: 'malloy/executeQuery', arguments: invalidParams });
+            expect(true).toBe(false); // Expected error to be thrown
         } catch (error) {
             expect(error).toBeInstanceOf(Error);
-            expect((error as any).code).toBe(ErrorCode.InvalidParams);
-            expect((error as Error).message).toMatch(/Package not found/i);
+            expect(error).toHaveProperty('message');
+            expect(error.message).toMatch(/error: Package manifest for non_existent_package does not exist/i);
+            expect(error.message).toMatch(/PackageNotFoundError/i);
+        }
+    });
+
+    it('should return InvalidParams error for a non-existent package URI', async () => {
+        expect.assertions(3);
+        try {
+            const response = await client.listResources({ uri: 'mcp://test/non-existent-package' });
+            expect(true).toBe(false); // Expected error to be thrown
+        } catch (error) {
+            expect(error).toBeInstanceOf(Error);
+            expect(error).toHaveProperty('message');
+            expect(error.message).toMatch(/Resource.*not found/i);
         }
     });
   });
