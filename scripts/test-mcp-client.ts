@@ -3,7 +3,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { URL } from 'url';
 
 // --- Configuration ---
-const serverSseUrl = "http://localhost:4000/api/v0/mcp/sse"; 
+const serverSseUrl = "http://localhost:4000/api/v0/mcp"; 
 
 // --- Main Client Logic ---
 async function runTestClient() { 

@@ -67,8 +67,6 @@ const setProjectNameError = (res: express.Response) => {
 const restApiRouter = Router();
 
 restApiRouter.use(cors());
-restApiRouter.use(bodyParser.json());
-restApiRouter.use(express.json());
 
 restApiRouter.get('/projects', async (_req, res) => {
    try {
@@ -264,12 +262,10 @@ mcpRouter.get('/sse', async (req, res) => {
       const transport = new SSEServerTransport(messagePath, res);
       transports[transport.sessionId] = transport;
       console.log(`Transport created for session: ${transport.sessionId}`);
-
       res.on("close", () => {
          console.log(`SSE connection closed for session: ${transport.sessionId}`);
          delete transports[transport.sessionId];
       });
-
       await mcpServer.connect(transport);
       console.log(`MCP Server connected to transport for session: ${transport.sessionId}`);
    } catch (error) {
@@ -297,7 +293,8 @@ mcpRouter.post('/messages', async (req, res) => {
       } catch (error) {
          console.error(`Error handling POST message for session ${sessionId}:`, error);
          if (!res.headersSent) {
-            res.status(500).send('Internal Server Error handling message');
+            const { json, status } = internalErrorToHttpError(error as Error);
+            res.status(status).json(json);
          }
       }
    } else {
@@ -307,8 +304,9 @@ mcpRouter.post('/messages', async (req, res) => {
 });
 
 // --- Mount Routers (Keep AFTER definitions) ---
-app.use(API_PREFIX, restApiRouter);
+// Mount MCP router BEFORE REST router to avoid bodyParser conflict
 app.use(`${API_PREFIX}/mcp`, mcpRouter);
+app.use(API_PREFIX, restApiRouter);
 
 app.get("*", (_req: express.Request, res: express.Response) => res.sendFile(path.resolve(ROOT, "index.html")));
 
