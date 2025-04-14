@@ -1,13 +1,17 @@
 // @ts-ignore - bun:test types
-import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, fail } from "bun:test";
 
 // --- Removed imports for mocking (express, http, etc.) ---
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { MCP_ERROR_MESSAGES } from "../mcp/mcp_constants"; // Keep for error message checks
 
 // --- Import MCP Client SDK (Only Client needed directly) ---
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-// import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"; // Don't strictly type result for now
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Request, Notification, Result } from "@modelcontextprotocol/sdk/types.js"; // Keep these base types
+
+// Imports needed for cancellation test
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"; 
+import { URL } from 'url';
 
 // --- Import E2E Test Setup ---
 import { McpE2ETestEnvironment, setupE2ETestEnvironment, cleanupE2ETestEnvironment } from "./mcp_test_setup";
@@ -207,6 +211,50 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
         // Cast text to string
         expect(result.content![0].text as string).toEqual(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(params.packageName, params.modelPath)); 
     });
+
+    // Added from mcp_query_tool.spec.ts
+    it("should handle query cancellation via client close", async () => {
+        if (!env) throw new Error("Test environment not initialized");
+        
+        // Create a new client *specifically* for this test so we can close it
+        // without affecting other tests running concurrently (if any).
+        const cancelClient = new Client<Request, Notification, Result>({ name: "cancel-test-client", version: "1.0" });
+        // Correct: Use SSEClientTransport with the server URL
+        const cancelTransport = new SSEClientTransport(new URL(env.serverUrl + '/')); 
+        await cancelClient.connect(cancelTransport);
+  
+        expect.assertions(2); // Expecting two assertions: instanceof Error and message match
+        let toolPromise;
+        try {
+           toolPromise = cancelClient.callTool({
+            name: "malloy/executeQuery",
+            arguments: {
+              packageName: FAA_PACKAGE, 
+              modelPath: FLIGHTS_MODEL, 
+              // Use a query known to take a little time if possible, otherwise a simple one
+              query: "run: flights->{aggregate: c is count() for 100}"
+            }
+          });
+  
+          // Give the request a moment to start on the server
+          await new Promise(resolve => setTimeout(resolve, 100)); 
+          
+          // Close the client to trigger cancellation
+          await cancelClient.close(); 
+          
+          // Await the promise - it should reject due to the closure
+          await toolPromise; 
+          
+          fail("Promise should have rejected due to cancellation");
+        } catch (error) {
+          // Check that the error is an Error instance and the message indicates closure/cancellation
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).toMatch(/cancel|closed/i);
+        } finally {
+            // Ensure the temporary client is closed even if the test failed unexpectedly
+            await cancelClient.close().catch(() => {}); // Ignore errors on final cleanup
+        }
+      });
 
   });
 }); 
