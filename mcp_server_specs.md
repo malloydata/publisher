@@ -175,4 +175,8 @@ During implementation, we encountered the following challenges and solutions:
     Each new resource type should:
     - Follow the simple SDK pattern established for existing resources
     - Include appropriate error handling for not found cases
-    - Provide clear, minimal response text 
+    - Provide clear, minimal response text
+4.  Fix server networking configuration:
+    - Ensure server listens on both localhost and 127.0.0.1
+    - Configure CORS to properly handle connections from MCP Inspector
+    - Fix connection refused errors when connecting to 127.0.0.1 
