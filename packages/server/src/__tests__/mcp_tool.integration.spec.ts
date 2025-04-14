@@ -66,47 +66,25 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
   beforeAll(async () => {
     // --- Server Setup --- 
     testApp = express();
-    // Initialize MCP server - it will use the mocked PackageService
     testMcpServer = initializeMcpServer(testPackageService); 
 
-    // Setup REAL MCP routes using the REAL SSEServerTransport 
-    // (Client connects to this, not a mocked transport)
-    const mcpRouter = express.Router();
-    const serverTransports: {[sessionId: string]: SSEServerTransport} = {}; // Server still needs to manage transports
+    // Setup MCP routes without middleware
+    let mcpTransport: SSEServerTransport | null = null;
 
-    mcpRouter.get('/sse', async (req, res) => {
-        try {
-            const messagePath = '/api/v0/mcp/messages'; 
-            const transport = new SSEServerTransport(messagePath, res);
-            serverTransports[transport.sessionId] = transport;
-            res.on("close", () => { delete serverTransports[transport.sessionId]; });
-            await testMcpServer.connect(transport);
-        } catch (error) {
-            console.error("Test Server SSE Error:", error);
-            if (!res.headersSent) res.status(500).send("SSE Error");
-        }
+    testApp.get('/api/v0/mcp/sse', async (req, res) => {
+      if (mcpTransport) {
+        await mcpTransport.close();
+      }
+      mcpTransport = new SSEServerTransport('/api/v0/mcp/messages', res);
+      await testMcpServer.connect(mcpTransport);
     });
-    mcpRouter.post('/messages', async (req, res) => {
-        const sessionId = req.query.sessionId as string;
-        const transport = serverTransports[sessionId];
-        if (transport) {
-            try { await transport.handlePostMessage(req, res); }
-            catch (error) { 
-                 console.error("Test Server POST Error:", error); 
-                 if (!res.headersSent) res.status(500).send("POST Error");
-             }
-        } else { res.status(400).send("Invalid session"); }
-    });
-    testApp.use('/api/v0/mcp', mcpRouter);
 
-    // Add a minimal global error handler for the test app
-    // This helps ensure async errors thrown in handlers are caught 
-    // and allow the MCP layer to generate proper JSON-RPC errors.
-    testApp.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-        console.error("Integration Test App Unhandled Error:", err);
-        if (!res.headersSent) {
-            res.status(500).send("Internal Server Error");
-        }
+    testApp.post('/api/v0/mcp/messages', async (req, res) => {
+      if (mcpTransport) {
+        await mcpTransport.handlePostMessage(req, res);
+      } else {
+        res.status(400).send(JSON.stringify({ error: 'No active SSE connection' }));
+      }
     });
 
     httpServer = http.createServer(testApp).listen(0, '127.0.0.1');

@@ -48,52 +48,24 @@ describe("MCP Resource Handlers (Integration - SDK Client)", () => {
     testApp = express();
     testMcpServer = initializeMcpServer(testPackageService); // Uses mocked service 
 
-    // Setup REAL MCP routes 
-    const mcpRouter = express.Router();
-    const serverTransports: {[sessionId: string]: SSEServerTransport} = {};
-    mcpRouter.get('/sse', (req, res) => { 
-        try {
-            const messagePath = '/api/v0/mcp/messages'; 
-            const transport = new SSEServerTransport(messagePath, res);
-            const sessionId = transport.sessionId; 
-            console.log(`[Test Server] SSE Transport created for session: ${sessionId}`);
-            serverTransports[sessionId] = transport;
-            res.on("close", () => { 
-                console.log(`[Test Server] SSE Transport closed for session: ${sessionId}`);
-                delete serverTransports[sessionId]; 
-            });
-            
-            // Connect the McpServer instance, but DO NOT await it here
-            testMcpServer.connect(transport).then(() => {
-                console.log(`[Test Server] McpServer connect promise resolved for session: ${sessionId}`);
-            }).catch(error => {
-                console.error(`[Test Server] McpServer connect promise rejected for session: ${sessionId}`, error);
-            });
-            console.log(`[Test Server] Called testMcpServer.connect for session: ${sessionId}`);
+    // Setup MCP routes without middleware
+    let mcpTransport: SSEServerTransport | null = null;
 
-            // Send mcp-ready event immediately after starting connect
-            res.write(`event: mcp-ready\ndata: ${JSON.stringify({ connectionId: sessionId })}\n\n`);
-            if (typeof (res as any).flush === 'function') {
-               (res as any).flush();
-            }
-            console.log(`[Test Server] SSE handler finished for session: ${sessionId}`);
-        } catch (error) {
-            console.error("Test Server SSE Error:", error);
-            if (!res.headersSent) res.status(500).send("SSE Error");
-        }
+    testApp.get('/api/v0/mcp/sse', async (req, res) => {
+      if (mcpTransport) {
+        await mcpTransport.close();
+      }
+      mcpTransport = new SSEServerTransport('/api/v0/mcp/messages', res);
+      await testMcpServer.connect(mcpTransport);
     });
-    mcpRouter.post('/messages', async (req, res) => { 
-        const sessionId = req.query.sessionId as string;
-        const transport = serverTransports[sessionId];
-        if (transport) {
-            try { await transport.handlePostMessage(req, res); }
-            catch (error) { 
-                 console.error("Test Server POST Error:", error); 
-                 if (!res.headersSent) res.status(500).send("POST Error");
-             }
-        } else { res.status(400).send("Invalid session"); }
+
+    testApp.post('/api/v0/mcp/messages', async (req, res) => {
+      if (mcpTransport) {
+        await mcpTransport.handlePostMessage(req, res);
+      } else {
+        res.status(400).send(JSON.stringify({ error: 'No active SSE connection' }));
+      }
     });
-    testApp.use('/api/v0/mcp', mcpRouter);
 
     httpServer = http.createServer(testApp).listen(0, '127.0.0.1');
     await new Promise<void>(resolve => httpServer.once('listening', resolve));

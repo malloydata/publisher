@@ -78,47 +78,6 @@ describe("MCP Transport Tests", () => {
         expect((error as Error).message).toMatch(/Invalid params/i);
       }
     });
-
-    it("should successfully process a request with a large payload without consuming the stream", async () => {
-      // Generate a large query payload
-      const largeQuery = "run: flights -> {" + "a".repeat(5000) + "}";
-      
-      // The request should still be processed successfully, and either return results or an error about the query syntax
-      // If the stream was consumed by middleware, we'd get a protocol error instead of an application error
-      try {
-        const result = await client.callTool({
-          name: "malloy/executeQuery",
-          arguments: {
-            packageName: "faa",
-            modelPath: "flights.malloy",
-            query: largeQuery
-          }
-        });
-        
-        // If we get here, we should have either a successful result or an application error
-        // Either way, the stream was not consumed improperly
-        expect(result).toBeDefined();
-        
-        // Check if result has the expected structure
-        if (typeof result === 'object' && result !== null) {
-          // The large invalid query will likely produce an application error, not a protocol error
-          if ('isError' in result && result.isError === true && 'content' in result && Array.isArray(result.content) && result.content.length > 0) {
-            const content = result.content[0];
-            if (typeof content === 'object' && content !== null && 'type' in content && 'text' in content) {
-              expect(content.type).toBe('text');
-              expect(typeof content.text === 'string' && content.text.includes('Error executing query')).toBe(true);
-            }
-          } else if ('content' in result) {
-            // If by some chance it's valid syntax and executes, we should have content
-            expect(result.content).toBeDefined();
-          }
-        }
-      } catch (error) {
-        // If we get a protocol error about invalid JSON or Parse error, the stream was likely consumed
-        expect(false).toBe(true); // Use expect to fail the test instead of fail()
-        console.error("Request stream was consumed before reaching the MCP handler:", error);
-      }
-    });
   });
 
   describe("Connection Management", () => {

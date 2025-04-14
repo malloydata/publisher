@@ -16,6 +16,7 @@ import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { ScheduleController } from "./controller/schedule.controller";
+import { Server, createServer } from "http";
 
 const app = express();
 app.use(morgan("tiny"));
@@ -250,61 +251,26 @@ restApiRouter.get(
    },
 );
 
-// --- MCP Router Definition ---
-// Create a separate Express app for MCP to avoid middleware interference
-const mcpApp = express();
-
-// No middleware is applied to mcpApp to ensure raw access to request/response
-
-// Single transport instance for the MCP server
+// --- MCP Server Setup ---
 let mcpTransport: SSEServerTransport | null = null;
 
-mcpApp.get('/sse', async (req, res) => {
-   console.log(`SSE connection initiated from ${req.ip}`);
-   try {
-      // If there's an existing transport, close it first
-      if (mcpTransport) {
-         await mcpTransport.close();
-      }
-
-      const messagePath = `${API_PREFIX}/mcp/messages`;
-      mcpTransport = new SSEServerTransport(messagePath, res);
-      
-      // Handle connection cleanup
-      res.on("close", async () => {
-         console.log(`SSE connection closed`);
-         mcpTransport = null;
-      });
-
-      await mcpServer.connect(mcpTransport);
-      console.log(`MCP Server connected to transport`);
-   } catch (error) {
-      console.error("Error setting up SSE connection:", error);
-      if (!res.headersSent) {
-         res.status(500).send("Failed to establish SSE connection");
-      }
-   }
+app.get(`${API_PREFIX}/mcp/sse`, async (req, res) => {
+  if (mcpTransport) {
+    await mcpTransport.close();
+  }
+  mcpTransport = new SSEServerTransport(`${API_PREFIX}/mcp/messages`, res);
+  await mcpServer.connect(mcpTransport);
 });
 
-mcpApp.post('/messages', async (req, res) => {
-   if (!mcpTransport) {
-      return res.status(400).send('No active SSE connection');
-   }
-
-   try {
-      await mcpTransport.handlePostMessage(req, res);
-      console.log(`Successfully handled POST message`);
-   } catch (error) {
-      console.error("Error handling POST message:", error);
-      if (!res.headersSent) {
-         res.status(500).send("Error handling message");
-      }
-   }
+app.post(`${API_PREFIX}/mcp/messages`, async (req, res) => {
+  if (mcpTransport) {
+    await mcpTransport.handlePostMessage(req, res);
+  } else {
+    res.status(400).send(JSON.stringify({ error: 'No active SSE connection' }));
+  }
 });
 
-// --- Mount Routers (Keep AFTER definitions) ---
-// Mount MCP app BEFORE REST router to avoid bodyParser conflict
-app.use(`${API_PREFIX}/mcp`, mcpApp);
+// --- Mount REST API Router ---
 app.use(API_PREFIX, restApiRouter);
 
 app.get("*", (_req: express.Request, res: express.Response) => res.sendFile(path.resolve(ROOT, "index.html")));
