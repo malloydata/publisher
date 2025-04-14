@@ -1,128 +1,124 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
-import { Server } from "http";
-import { app, httpServer } from "../server";
+// @ts-ignore - bun:test types
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+
+// --- Removed Server, app, httpServer imports ---
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { ErrorCode, Request, Notification, Result } from "@modelcontextprotocol/sdk/types.js";
-import { AddressInfo } from "net";
+// --- Removed AddressInfo, URL imports if not needed --- 
+import { URL } from 'url'; // Keep if needed for reconnection test
+import type { Server } from "http"; // Keep for serverInstance type in reconnection test
+import type { AddressInfo } from "net"; // Keep for serverInstance type in reconnection test
 
-let serverInstance: Server;
-let serverUrl: string;
-let client: Client<Request, Notification, Result>;
-let transport: SSEClientTransport;
+// --- Import E2E Test Setup ---
+import { McpE2ETestEnvironment, setupE2ETestEnvironment, cleanupE2ETestEnvironment } from "./mcp_test_setup";
 
-beforeAll(async () => {
-  await new Promise<void>((resolve, reject) => {
-    serverInstance = httpServer.listen(0, () => {
-      try {
-        const address = serverInstance.address();
-        if (typeof address === 'string' || address === null) {
-          reject(new Error("Failed to get server address"));
-          return;
-        }
-        serverUrl = `http://localhost:${address.port}`;
-        console.log(`Test server running on ${serverUrl}`);
-        resolve();
-      } catch (err) {
-        reject(err);
-      }
-    });
-    serverInstance.on('error', reject);
+// --- Test Suite --- 
+describe("MCP Transport Tests (E2E Integration)", () => {
+  let env: McpE2ETestEnvironment | null = null;
+  let mcpClient: Client<Request, Notification, Result>; // Convenience variable
+
+  beforeAll(async () => {
+    env = await setupE2ETestEnvironment();
+    mcpClient = env.mcpClient;
   });
-});
 
-afterAll(async () => {
-  await new Promise<void>((resolve) => {
-    serverInstance.close(() => resolve());
+  afterAll(async () => {
+    await cleanupE2ETestEnvironment(env);
+    env = null;
   });
-});
 
-beforeEach(async () => {
-  client = new Client<Request, Notification, Result>({ name: "test-client", version: "0.0.1" });
-  transport = new SSEClientTransport(new URL(`${serverUrl}/api/v0/mcp/sse`));
-  await client.connect(transport);
-});
-
-afterEach(async () => {
-  if (client) {
-    await client.close();
-  }
-});
-
-describe("MCP Transport Tests", () => {
   describe("Basic Protocol", () => {
     it("should handle a simple listResources request", async () => {
-      const result = await client.listResources();
+      if (!env) throw new Error("Test environment not initialized");
+      const result = await mcpClient.listResources();
+      // Assert based on actual successful response structure
       expect(result).toHaveProperty('resources');
       expect(Array.isArray(result.resources)).toBe(true);
     });
 
     it("should receive MethodNotFound error for an unknown method", async () => {
-      expect.assertions(3);
+       if (!env) throw new Error("Test environment not initialized");
+      expect.assertions(3); // Keep assertion count if specific
       try {
-        await (client as any).call('unknown/method', { param: 'value' });
+        // Use the client from the test environment
+        await (mcpClient as any).call('unknown/method', { param: 'value' });
       } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as any).code).toBe(-32601);
+        expect(error).toBeInstanceOf(Error); 
+        // Check error code and message for MethodNotFound
+        expect((error as any).code).toBe(ErrorCode.MethodNotFound);
         expect((error as Error).message).toMatch(/Method not found/i);
       }
     });
 
     it("should receive InvalidParams error when calling a known method with invalid params", async () => {
+       if (!env) throw new Error("Test environment not initialized");
       expect.assertions(3);
       try {
-        await client.readResource({} as any);
+        // Use the client from the test environment
+        await mcpClient.readResource({} as any); // Force invalid params
       } catch (error) {
         expect(error).toBeInstanceOf(Error);
-        expect((error as any).code).toBe(-32602);
-        expect((error as Error).message).toMatch(/Invalid params/i);
+        // Check error code and message for InvalidParams
+        expect((error as any).code).toBe(ErrorCode.InvalidParams);
+        expect((error as Error).message).toMatch(/Invalid params/i); 
       }
     });
   });
 
   describe("Connection Management", () => {
     it("should handle multiple concurrent requests", async () => {
+      if (!env) throw new Error("Test environment not initialized");
+      // Use the client from the test environment
       const requests = [
-        client.listResources(),
-        client.readResource({ uri: "malloy://project/home" }),
-        client.listResources()
+        mcpClient.listResources(),
+        mcpClient.readResource({ uri: "malloy://project/home" }), // Assuming this URI is valid
+        mcpClient.listResources()
       ];
       
       const results = await Promise.all(requests);
       expect(results.length).toBe(3);
+      // Basic checks on results structure
       expect(results[0]).toHaveProperty('resources');
       expect(results[1]).toHaveProperty('contents');
       expect(results[2]).toHaveProperty('resources');
     });
 
     it("should handle reconnection after close", async () => {
-      await client.close();
-      const address = serverInstance.address();
-      if (!address || typeof address === 'string') {
-        throw new Error("Invalid server address");
-      }
+       if (!env) throw new Error("Test environment not initialized");
+      // Close the existing client connection
+      await mcpClient.close();
+
+      // Create a new transport to the SAME server URL
       const newTransport = new SSEClientTransport(
-        new URL(`http://localhost:${address.port}/api/v0/mcp/sse`)
+        new URL(`${env.serverUrl}/`) // Connect to the root SSE endpoint
       );
-      await client.connect(newTransport);
-      const result = await client.listResources({ projectName: 'malloy://project/home' });
+      // Reconnect the SAME client instance with the new transport
+      await mcpClient.connect(newTransport);
+
+      // Perform a request to verify reconnection
+      const result = await mcpClient.listResources(); // Simple request
       expect(result).toBeDefined();
+      expect(result).toHaveProperty('resources');
     });
 
-    it("should fail gracefully with invalid connection", async () => {
+    // This test might be less relevant now, as setup handles connection errors,
+    // but keep it if testing explicit bad connections is desired.
+    it("should fail gracefully when connecting to an invalid URL", async () => {
+      if (!env) throw new Error("Test environment not initialized");
       const badClient = new Client<Request, Notification, Result>({
-        name: 'test-client',
+        name: 'test-client-bad-conn',
         version: '0.0.1'
       });
-      const address = serverInstance.address();
-      if (!address || typeof address === 'string') {
-        throw new Error("Invalid server address");
-      }
+      // Use a clearly invalid port/URL
       const badTransport = new SSEClientTransport(
-        new URL(`http://localhost:${address.port + 1}/api/v0/mcp/sse`)
+        new URL(`http://127.0.0.1:${(env.httpServer.address() as AddressInfo).port + 10}/`) 
       );
 
+      // Expect connect to reject
       await expect(badClient.connect(badTransport)).rejects.toThrow();
+      // Ensure the bad client is closed if connect somehow didn't clean up
+      await badClient.close().catch(() => {}); 
     });
   });
 }); 
