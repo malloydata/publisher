@@ -47,13 +47,17 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
         'package',
         new ResourceTemplate('malloy://project/{projectName}/package/{packageName}', {
             list: async () => {
+                 console.log("[MCP Server Debug] Entering package list callback...");
                 const packages = await packageService.listPackages();
+                console.log(`[MCP Server Debug] packageService.listPackages returned ${packages.length} packages.`);
+                const mappedResources = packages.map(pkg => ({
+                    uri: `malloy://project/home/package/${pkg.name || 'unknown'}`,
+                    name: pkg.name || 'unknown',
+                    description: `Package: ${pkg.name || 'unknown'}`
+                }));
+                console.log("[MCP Server Debug] Finished mapping packages.");
                 return {
-                    resources: packages.map(pkg => ({
-                        uri: `malloy://project/home/package/${pkg.name || 'unknown'}`,
-                        name: pkg.name || 'unknown',
-                        description: `Package: ${pkg.name || 'unknown'}`
-                    }))
+                    resources: mappedResources
                 };
             }
         }),
@@ -88,21 +92,32 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
         'model',
         new ResourceTemplate('malloy://project/{projectName}/package/{packageName}/models/{modelPath}', {
             list: async () => {
+                 console.log("[MCP Server Debug] Entering model list callback...");
                 try {
-                    const pkg = await packageService.getPackage('home');
+                    // TODO: Fix hardcoded package name 'home' here?
+                    console.log("[MCP Server Debug] Calling packageService.getPackage('home')...");
+                    const pkg = await packageService.getPackage('home'); 
+                    console.log("[MCP Server Debug] Got package 'home', calling listModels()...");
                     const models = await pkg.listModels();
+                    console.log(`[MCP Server Debug] pkg.listModels returned ${models.length} models.`);
+                    const mappedResources = models.map(model => ({
+                        uri: `malloy://project/home/package/home/models/${model.path || ''}`,
+                        name: model.path || '',
+                        description: `Model: ${model.path || ''}`
+                    }));
+                    console.log("[MCP Server Debug] Finished mapping models.");
                     return {
-                        resources: models.map(model => ({
-                            uri: `malloy://project/home/package/home/models/${model.path || ''}`,
-                            name: model.path || '',
-                            description: `Model: ${model.path || ''}`
-                        }))
+                        resources: mappedResources
                     };
                 } catch (error) {
+                    console.error("[MCP Server Error] Error in model list callback:", error);
                     if (error instanceof PackageNotFoundError) {
-                        return { resources: [] };
+                         console.log("[MCP Server Debug] Package not found, returning empty resources.");
+                        return { resources: [] }; // Return empty list on error as per original code
                     }
-                    throw error;
+                    // Re-throw other errors to be caught by MCP framework?
+                    // Or return an error structure? The original code re-threw.
+                    throw error; 
                 }
             }
         }),
@@ -120,11 +135,12 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
                         }]
                     };
                 }
+                // TODO: Should this return the actual model details (e.g., from model.getModel())?
                 return {
                     contents: [{
                         type: 'text',
                         uri: uri.href,
-                        text: `Model: ${modelPath}`
+                        text: `Model: ${modelPath}` // Currently just returning name
                     }]
                 };
             } catch (error) {
@@ -196,6 +212,7 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
                         }]
                     };
                 }
+                // Rethrow unexpected errors to let MCP framework handle it
                 throw error;
             }
         }
