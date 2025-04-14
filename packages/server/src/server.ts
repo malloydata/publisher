@@ -35,8 +35,6 @@ const scheduleController = new ScheduleController(packageService);
 
 const mcpServer = initializeMcpServer(packageService);
 
-const transports: {[sessionId: string]: SSEServerTransport} = {};
-
 // --- Static file serving (Keep before API routers) ---
 app.use("/", express.static(path.join(ROOT, "/")));
 app.use("/api-doc.html", express.static(path.join(ROOT, "/api-doc.html")));
@@ -253,21 +251,33 @@ restApiRouter.get(
 );
 
 // --- MCP Router Definition ---
-const mcpRouter = Router();
+// Create a separate Express app for MCP to avoid middleware interference
+const mcpApp = express();
 
-mcpRouter.get('/sse', async (req, res) => {
+// No middleware is applied to mcpApp to ensure raw access to request/response
+
+// Single transport instance for the MCP server
+let mcpTransport: SSEServerTransport | null = null;
+
+mcpApp.get('/sse', async (req, res) => {
    console.log(`SSE connection initiated from ${req.ip}`);
    try {
+      // If there's an existing transport, close it first
+      if (mcpTransport) {
+         await mcpTransport.close();
+      }
+
       const messagePath = `${API_PREFIX}/mcp/messages`;
-      const transport = new SSEServerTransport(messagePath, res);
-      transports[transport.sessionId] = transport;
-      console.log(`Transport created for session: ${transport.sessionId}`);
-      res.on("close", () => {
-         console.log(`SSE connection closed for session: ${transport.sessionId}`);
-         delete transports[transport.sessionId];
+      mcpTransport = new SSEServerTransport(messagePath, res);
+      
+      // Handle connection cleanup
+      res.on("close", async () => {
+         console.log(`SSE connection closed`);
+         mcpTransport = null;
       });
-      await mcpServer.connect(transport);
-      console.log(`MCP Server connected to transport for session: ${transport.sessionId}`);
+
+      await mcpServer.connect(mcpTransport);
+      console.log(`MCP Server connected to transport`);
    } catch (error) {
       console.error("Error setting up SSE connection:", error);
       if (!res.headersSent) {
@@ -276,28 +286,25 @@ mcpRouter.get('/sse', async (req, res) => {
    }
 });
 
-mcpRouter.post('/messages', async (req, res) => {
-   const sessionId = req.query.sessionId as string;
-   console.log(`Received POST message for session: ${sessionId}`);
-   if (!sessionId) {
-      return res.status(400).send('sessionId query parameter is required');
+mcpApp.post('/messages', async (req, res) => {
+   if (!mcpTransport) {
+      return res.status(400).send('No active SSE connection');
    }
 
-   const transport = transports[sessionId];
-   if (transport) {
-      console.log(`Found transport for session ${sessionId}, handling message.`);
-      console.log(`Stream readable before handlePostMessage?: ${req.readable}`);
-      await transport.handlePostMessage(req, res);
-      console.log(`Successfully handled POST message for session ${sessionId}`);
-   } else {
-      console.warn(`No transport found for session ${sessionId}.`);
-      res.status(400).send(`No active SSE connection found for session ${sessionId}`);
+   try {
+      await mcpTransport.handlePostMessage(req, res);
+      console.log(`Successfully handled POST message`);
+   } catch (error) {
+      console.error("Error handling POST message:", error);
+      if (!res.headersSent) {
+         res.status(500).send("Error handling message");
+      }
    }
 });
 
 // --- Mount Routers (Keep AFTER definitions) ---
-// Mount MCP router BEFORE REST router to avoid bodyParser conflict
-app.use(`${API_PREFIX}/mcp`, mcpRouter);
+// Mount MCP app BEFORE REST router to avoid bodyParser conflict
+app.use(`${API_PREFIX}/mcp`, mcpApp);
 app.use(API_PREFIX, restApiRouter);
 
 app.get("*", (_req: express.Request, res: express.Response) => res.sendFile(path.resolve(ROOT, "index.html")));

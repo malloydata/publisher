@@ -111,7 +111,7 @@ describe("MCP Query Tool", () => {
             text: expect.stringContaining(MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY("faa/flights.malloy")) &&
                   expect.stringContaining("no viable alternative at input 'invalid'")
           }
-        ]
+          ]
       });
     });
 
