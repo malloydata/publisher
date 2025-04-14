@@ -134,6 +134,7 @@ The implementation should reuse existing logic from the REST API where possible 
 
 *   Use official MCP standard and TypeScript SDK.
 *   Implement HTTP POST / SSE transport using **Express**.
+*   **Use a separate Express app instance for MCP endpoints to avoid interference from global middleware.** This is critical because the MCP SDK requires raw access to the request/response objects without interference from middleware like logging or body parsing that might consume the request stream.
 *   Focus on JSON output initially.
 *   Reuse existing REST API logic.
 *   **Initial MCP endpoint will have no authentication, matching the current REST API. Authentication should be addressed holistically later if needed.**
@@ -141,7 +142,20 @@ The implementation should reuse existing logic from the REST API where possible 
 *   *(Optional Consideration)* Add an environment variable (e.g., `MCP_ENDPOINT_ENABLED`) to optionally enable/disable the MCP endpoint.
 *   *(Optional Consideration)* Implement progress reporting for long-running queries.
 
+## Implementation Challenges and Solutions
+
+During implementation, we encountered the following challenges and solutions:
+
+1. **Middleware Interference:** 
+   - **Problem:** Global Express middleware (particularly morgan logging middleware) was interfering with the SSE connection and request handling required by the MCP SDK. 
+   - **Impact:** This caused connection issues where the client couldn't properly establish SSE connections or the server couldn't parse incoming JSON-RPC requests.
+   - **Solution:** Create a separate Express app instance dedicated to MCP endpoints that doesn't share middleware with the main API. This isolated app is then mounted at the `/api/v0/mcp` path.
+
+2. **Transport Configuration:**
+   - **Approach:** Let the MCP SDK handle all transport configuration, including setting headers and parsing requests. 
+   - **Implementation:** Provide the SDK with raw request and response objects without prior processing by middleware.
+
 ## Next Steps
 
-1.  Await user review and confirmation of the updated specs (including TDD approach and test execution strategy).
-2.  Proceed with **[TDD Step] 3a: Write Transport Layer Tests** once confirmed. 
+1.  Implement the separate Express app approach for MCP endpoints.
+2.  Proceed with **[TDD Step] 3a: Write Transport Layer Tests** after the change. 
