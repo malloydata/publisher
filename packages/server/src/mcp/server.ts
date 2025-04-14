@@ -72,13 +72,14 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
                     }]
                 };
             } catch (error) {
+                 console.error(`[MCP Server Error] Error reading package ${packageName}:`, error);
                 if (error instanceof PackageNotFoundError) {
                     return {
                         isError: true,
                         contents: [{
-                            type: 'text',
+                            type: 'application/json',
                             uri: uri.href,
-                            text: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName as string)
+                            text: JSON.stringify({ error: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName as string) })
                         }]
                     };
                 }
