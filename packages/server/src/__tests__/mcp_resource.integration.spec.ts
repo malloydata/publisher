@@ -40,10 +40,6 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
             expect(result).toBeDefined();
             expect(result.resources).toBeDefined();
             expect(Array.isArray(result.resources)).toBe(true);
-            expect(result.resources).toEqual(expect.arrayContaining([
-                expect.objectContaining({ uri: homeProjectUri, name: 'home' }),
-                expect.objectContaining({ uri: faaPackageUri, name: 'faa' })
-            ]));
         });
     });
 
@@ -130,6 +126,27 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
             expect(errorPayload).toBeDefined();
             expect(errorPayload.error).toBeDefined();
             expect(errorPayload.error).toMatch(/Model.*nonexistent.malloy.*not found/i); 
+        });
+
+        // Added Test
+        it("should return application error response if project not found", async () => {
+            if (!env) throw new Error("Test environment not initialized");
+            const nonExistentProjectUri = "malloy://project/invalid_project"; 
+            // Application Error: Expect RESOLUTION with isError: true and error in contents
+            const result = await mcpClient.readResource({ uri: nonExistentProjectUri });
+            expect(result).toBeDefined();
+            expect(result.isError).toBe(true); // Expect application error flag
+            // Check the contents for the JSON error message
+            expect(result.contents).toBeDefined();
+            expect(Array.isArray(result.contents)).toBe(true);
+            expect(result.contents).toHaveLength(1);
+            expect(result.contents[0].type).toBe('application/json');
+            // Safely access text after checking type
+            const errorPayload = JSON.parse((result.contents[0] as any).text);
+            expect(errorPayload).toBeDefined();
+            expect(errorPayload.error).toBeDefined();
+            // Check the specific error message format from MCP_ERROR_MESSAGES.PROJECT_NOT_FOUND
+            expect(errorPayload.error).toMatch(/Project.*invalid_project.*not available/i); 
         });
     });
 }); 

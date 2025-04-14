@@ -6,6 +6,8 @@ export const MCP_ERROR_MESSAGES = {
     `Invalid arguments for tool ${toolName}: ${errors.join(", ")}`,
   
   // Application-level errors (runtime)
+  PROJECT_NOT_FOUND: (projectName: string) =>
+    `Project '${projectName}' is not available or does not exist.`,
   PACKAGE_NOT_FOUND: (packageName: string) => 
     `Package manifest for ${packageName} does not exist.`,
   MODEL_NOT_FOUND: (packageName: string, modelPath: string) => 

@@ -24,22 +24,29 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
     // Register Project Resource
     mcpServer.resource(
         'project',
-        new ResourceTemplate('malloy://project/{projectName}', {
-            list: async () => ({
-                resources: [{
-                    uri: 'malloy://project/home',
-                    name: 'home',
-                    description: 'Home project containing Malloy packages'
+        new ResourceTemplate('malloy://project/{projectName}', { list: undefined }),
+        async (uri, { projectName }) => {
+            if (projectName !== 'home') {
+                 console.log(`[MCP Server Debug] Project not found: ${projectName}`);
+                 return {
+                    isError: true,
+                    contents: [{
+                        type: 'application/json',
+                        uri: uri.href,
+                        text: JSON.stringify({ error: MCP_ERROR_MESSAGES.PROJECT_NOT_FOUND(projectName as string) })
+                    }]
+                };
+            }
+            
+            console.log(`[MCP Server Debug] Reading project: ${projectName}`);
+            return {
+                contents: [{
+                    type: 'text',
+                    uri: uri.href,
+                    text: `Project: ${projectName}`
                 }]
-            })
-        }),
-        async (uri, { projectName }) => ({
-            contents: [{
-                type: 'text',
-                uri: uri.href,
-                text: `Project: ${projectName}`
-            }]
-        })
+            };
+        }
     );
 
     // Register Package Resource
