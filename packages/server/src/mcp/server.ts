@@ -6,6 +6,7 @@ import { z } from "zod";
 import { PackageService } from "../service/package.service";
 import { PackageNotFoundError, ModelNotFoundError } from "../errors";
 import { MCP_ERROR_MESSAGES } from './mcp_constants';
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 
 export const testServerInfo = {
   name: "malloy-publisher-mcp-server",
@@ -198,6 +199,22 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
             queryName: z.string().optional()
         },
         async ({ packageName, modelPath, query, sourceName, queryName }) => {
+            // --- Parameter Validation ---
+            const hasAdhocQuery = !!query;
+            const hasNamedQuery = !!queryName; // sourceName is optional for named query lookup in model
+
+            if (!hasAdhocQuery && !hasNamedQuery) {
+                console.log("[MCP Server Error] Invalid executeQuery params: Missing query or queryName");
+                 throw new McpError(ErrorCode.InvalidParams, MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS);
+            }
+            // Check for conflict only if BOTH query and queryName are provided
+            if (hasAdhocQuery && hasNamedQuery) { 
+                 console.log("[MCP Server Error] Invalid executeQuery params: Conflicting query and queryName");
+                 throw new McpError(ErrorCode.InvalidParams, MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS);
+            }
+             // Removed optional sourceName check based on previous discussion
+            // --- End Parameter Validation ---
+
             try {
                 const pkg = await packageService.getPackage(packageName);
                 const model = pkg.getModel(modelPath);
@@ -212,11 +229,12 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
                 }
 
                 try {
-                    const { queryResults } = await model.getQueryResults(sourceName, queryName, query);
+                    const fullResult = await model.getQueryResults(sourceName, queryName, query);
+                    const jsonText = JSON.stringify(fullResult); 
                     return {
                         content: [{
-                            type: 'text',
-                            text: JSON.stringify(queryResults)
+                            type: 'text', 
+                            text: jsonText
                         }]
                     };
                 } catch (queryError) {

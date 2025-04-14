@@ -45,26 +45,30 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
       const params = {
         packageName: FAA_PACKAGE,
         modelPath: FLIGHTS_MODEL,
-        // Use a simple, valid query against the real faa/flights model
         query: "run: flights->{aggregate: flight_count is count()}" 
       };
       
-      // Expect successful RESOLUTION for valid query against real data
-      // Cast to any to bypass strict type check for now
       const result: any = await mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }); 
 
       expect(result).toBeDefined();
-       // --- Assert success based on presence of content --- 
+      expect(result.isError).not.toBe(true); // Should be success
       expect(result.content).toBeDefined(); 
       expect(Array.isArray(result.content)).toBe(true);
       expect(result.content.length).toBeGreaterThan(0);
       expect(result.content[0].type).toBe('text');
-      // Check if the result text is valid JSON (contains query results)
-      expect(() => JSON.parse(result.content![0].text as string)).not.toThrow(); 
-      const parsedResult = JSON.parse(result.content![0].text as string);
-      expect(parsedResult).toHaveProperty('result');
-      expect(parsedResult).toHaveProperty('sql');
-      expect(Array.isArray(parsedResult.result)).toBe(true);
+      
+      // Check if the result text is valid JSON
+      let parsedResult: any;
+      expect(() => { 
+          parsedResult = JSON.parse(result.content![0].text as string);
+      }).not.toThrow(); 
+      
+      // Check for high-level properties in the parsed JSON
+      expect(parsedResult).toHaveProperty('queryResults');
+      expect(parsedResult).toHaveProperty('modelDef');
+      expect(parsedResult).toHaveProperty('dataStyles');
+      // Minimal check inside queryResults - just that it exists
+      expect(parsedResult.queryResults).toBeDefined();
     });
 
     it("should execute a valid named query successfully", async () => {
@@ -72,8 +76,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
       const params = {
         packageName: FAA_PACKAGE,
         modelPath: FLIGHTS_MODEL,
-        sourceName: "flights", 
-        queryName: "by_carrier"
+        queryName: "top_carriers"
       };
       
       // Expect successful RESOLUTION for valid named query
@@ -81,11 +84,21 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
 
       expect(result).toBeDefined();
       // --- Assert success based on presence of content --- 
+      expect(result.isError).not.toBe(true);
       expect(result.content).toBeDefined();
+      expect(Array.isArray(result.content)).toBe(true);
+      expect(result.content.length).toBeGreaterThan(0);
       expect(result.content![0].type).toBe('text');
       expect(() => JSON.parse(result.content![0].text as string)).not.toThrow(); 
       const parsedResult = JSON.parse(result.content![0].text as string); 
-      expect(parsedResult).toHaveProperty('result');
+      expect(parsedResult).toHaveProperty('queryResults');
+      expect(parsedResult).toHaveProperty('modelDef');
+      expect(parsedResult).toHaveProperty('dataStyles');
+      expect(parsedResult.queryResults).toHaveProperty('_queryResult');
+      expect(parsedResult.queryResults._queryResult).toHaveProperty('result');
+      expect(parsedResult.queryResults._queryResult).toHaveProperty('sql');
+      expect(Array.isArray(parsedResult.queryResults._queryResult.result)).toBe(true);
+      expect(parsedResult.queryResults._queryResult.result.length).toBeGreaterThan(0);
     });
 
     it("should return application error for invalid Malloy query syntax", async () => {
@@ -112,8 +125,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
         packageName: FAA_PACKAGE,
         modelPath: FLIGHTS_MODEL,
         query: "run: flights->{aggregate: c is count()}",
-        sourceName: "flights",
-        queryName: "by_carrier"
+        queryName: "top_carriers"
       };
       
        // Protocol Error (Caught by Zod/MCP): Expect REJECTION
