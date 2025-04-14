@@ -439,7 +439,7 @@ Example tool call:
                     isError: false,
                     content: [{
                         type: 'text',
-                        text: JSON.stringify(queryResults) // Stringify only the results
+                        text: JSON.stringify(queryResults)
                     }]
                 };
             } catch (error) {
@@ -447,14 +447,18 @@ Example tool call:
                 console.error(`[tool] Application error executing query:`, error);
 
                 let errorMessage: string;
-                if (error instanceof PackageNotFoundError || error instanceof ModelNotFoundError) {
-                    errorMessage = error.message; // Use the message directly from these specific errors
+                // Explicitly handle known error types first
+                if (error instanceof PackageNotFoundError) {
+                    errorMessage = MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(validatedParams.packageName);
+                } else if (error instanceof ModelNotFoundError) {
+                    errorMessage = MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(validatedParams.packageName, validatedParams.modelPath);
                 } else if (error instanceof Error) {
-                    // For other errors (like compilation/runtime from getQueryResults), prepend context
+                    // For other generic errors, prepend context
                     const packagePath = `${validatedParams.packageName}/${validatedParams.modelPath}`;
                     errorMessage = `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(packagePath)} ${error.message}`;
                 } else {
-                    errorMessage = "An unknown error occurred during query execution."; // Fallback
+                    // Fallback for unknown errors
+                    errorMessage = "An unknown error occurred during query execution."; 
                 }
 
                 return {

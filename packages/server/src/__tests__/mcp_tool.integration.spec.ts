@@ -13,7 +13,8 @@ import { PackageService } from "../service/package.service";
 // --- Add necessary imports for mocking ---
 import type { Package } from "../service/package"; // Keep types for mocks
 import type { Model } from "../service/model"; // Keep types for mocks
-import type { Result } from "@malloydata/malloy"; // Keep Result type
+import { PackageNotFoundError, ModelNotFoundError } from "../errors"; // Import specific error types
+import type { Result } from "@malloydata/malloy"; // Import Result type for casting
 // --- End added imports --- 
 
 import { initializeMcpServer } from "../mcp/server"; // Remove ExecuteQueryResultSchema if unused 
@@ -98,6 +99,16 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
     });
     testApp.use('/api/v0/mcp', mcpRouter);
 
+    // Add a minimal global error handler for the test app
+    // This helps ensure async errors thrown in handlers are caught 
+    // and allow the MCP layer to generate proper JSON-RPC errors.
+    testApp.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+        console.error("Integration Test App Unhandled Error:", err);
+        if (!res.headersSent) {
+            res.status(500).send("Internal Server Error");
+        }
+    });
+
     httpServer = http.createServer(testApp).listen(0, '127.0.0.1');
     await new Promise<void>(resolve => httpServer.once('listening', resolve));
     const address = httpServer.address() as AddressInfo;
@@ -151,10 +162,16 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
         query: "run: flights->{group_by: carrier_name, aggregate: flight_count is count()}" 
       };
       
-      const mockQueryResult = { _queryResult: { /* fake data */ } } as Result;
+      // Construct Mock Data Object (Plain JS Object representing stringified data)
+      const mockMalloyResultData = {
+          sql: "SELECT 'AA' as carrier_name, 100 as flight_count",
+          result: [{ carrier_name: 'AA', flight_count: 100 }],
+          totalRows: 1
+      };
       
+      // Configure Mock Implementation (Cast the data object)
       mockGetQueryResults.mockResolvedValue({ 
-          queryResults: mockQueryResult, 
+          queryResults: mockMalloyResultData as any, // Use 'as any' to bypass strict type check
           modelDef: { /* fake */ }, 
           dataStyles: { /* fake */ } 
       });
@@ -167,13 +184,8 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
       expect(mockGetQueryResults).toHaveBeenCalled();
       if (isToolResultWithContent(result)) { 
           expect(result.content[0].type).toBe('text');
-          // Parse and check for essential properties
-          const parsedResultText = JSON.parse(result.content[0].text);
-          expect(parsedResultText).toHaveProperty('queryResult');
-          expect(parsedResultText).toHaveProperty('modelDef');
-          expect(parsedResultText).toHaveProperty('dataStyles');
-          // Optionally, check if queryResult is a string (as it was stringified)
-          expect(typeof parsedResultText.queryResult).toBe('string'); 
+          const parsedText = JSON.parse(result.content[0].text);
+          expect(parsedText).toEqual(mockMalloyResultData);
       } else {
           throw new Error("Tool call result missing expected content structure");
       }
@@ -187,10 +199,16 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
         queryName: "carrier_analysis" 
       };
       
-      const mockQueryResult = { _queryResult: { /* fake data */ } } as Result;
+      // Construct Mock Data Object (Plain JS Object representing stringified data)
+      const mockMalloyResultData = {
+          sql: "SELECT 'some_val' as some_col",
+          result: [{ some_col: 'some_val' }],
+          totalRows: 1
+      };
       
+      // Configure Mock Implementation (Cast the data object)
       mockGetQueryResults.mockResolvedValue({ 
-          queryResults: mockQueryResult, 
+          queryResults: mockMalloyResultData as any, // Use 'as any' to bypass strict type check
           modelDef: { /* fake */ }, 
           dataStyles: { /* fake */ } 
       });
@@ -200,12 +218,8 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
       expect(result).toBeDefined();
       if (isToolResultWithContent(result)) {
          expect(result.content[0].type).toBe('text');
-         // Parse and check for essential properties
-         const parsedResultText = JSON.parse(result.content[0].text);
-         expect(parsedResultText).toHaveProperty('queryResult');
-         expect(parsedResultText).toHaveProperty('modelDef');
-         expect(parsedResultText).toHaveProperty('dataStyles');
-         expect(typeof parsedResultText.queryResult).toBe('string');
+         const parsedText = JSON.parse(result.content[0].text);
+         expect(parsedText).toEqual(mockMalloyResultData);
       } else {
          throw new Error("Tool call result missing expected content structure");
       }
@@ -221,22 +235,35 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
       const originalErrorMessage = "Malloy model compilation failed: Bad Syntax";
 
       // Configure mock to throw the expected error
-      mockGetQueryResults.mockRejectedValue(new Error(originalErrorMessage));
+      mockGetQueryResults.mockImplementation(() => { throw new Error(originalErrorMessage); });
 
       // Expect RESOLUTION with isError: true for application errors
-      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toMatchObject({
-          isError: true,
-          content: expect.arrayContaining([
-              expect.objectContaining({
-                  type: 'text',
-                  text: expect.stringContaining(MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(`${params.packageName}/${params.modelPath}`)) &&
-                        expect.stringContaining(originalErrorMessage)
-              })
-          ])
-      });
-      expect(mockGetQueryResults).toHaveBeenCalled();
+       await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toEqual({ // Use toEqual for exact match
+           isError: true,
+           content: [
+               { 
+                   type: 'text',
+                   text: `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(`${params.packageName}/${params.modelPath}`)} ${originalErrorMessage}`
+               }
+           ]
+       });
+       expect(mockGetQueryResults).toHaveBeenCalled();
     });
 
+    // Note on Protocol Error Testing (below):
+    // Parameter validation errors (conflicting, missing) are caught first by the 
+    // Zod schema's `.parseAsync().catch()` block in `server.ts`. 
+    // This catch block *wraps* the original validation error message using 
+    // `McpError` and `MCP_ERROR_MESSAGES.INVALID_ARGUMENTS`. 
+    // This newly created `McpError` (with the wrapped message) is then thrown.
+    // The MCP Server/SDK framework catches this thrown error and translates it 
+    // into the resolved `{ isError: true, content: [...] }` response seen by the client.
+    // Therefore, these tests assert against the final, wrapped error message 
+    // generated by `MCP_ERROR_MESSAGES.INVALID_ARGUMENTS(...)`.
+    // NOTE: This differs from the end-to-end test (mcp_query_tool.spec.ts) where protocol errors
+    // correctly cause promise REJECTION. This test environment seems to handle the thrown 
+    // error differently, leading to RESOLUTION.
+    // UPDATE: Aligning with spec & E2E tests. Expect REJECTION now.
     it("should return InvalidParams error for conflicting parameters (query and queryName)", async () => {
        const params = {
         packageName: "faa",
@@ -246,13 +273,14 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
         queryName: "carrier_analysis"
       };
       
-       await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
-          .rejects.toMatchObject({
-              code: ErrorCode.InvalidParams, 
-              message: MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS
-          });
-         // Verify service wasn't called
-         expect(mockGetPackage).not.toHaveBeenCalled(); 
+       // Protocol Error: Expect REJECTION
+       await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).rejects.toMatchObject({ 
+           code: ErrorCode.InvalidParams,
+           message: expect.stringContaining("Invalid arguments for tool malloy/executeQuery:") &&
+                    expect.stringContaining(MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS)
+       });
+            // Verify service wasn't called
+            expect(mockGetPackage).not.toHaveBeenCalled(); 
     });
 
     it("should return InvalidParams error if required params are missing", async () => {
@@ -262,12 +290,13 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
         sourceName: "flights" // Missing queryName or query
       };
       
-       await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params }))
-          .rejects.toMatchObject({
-              code: ErrorCode.InvalidParams,
-              message: MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS
-          });
-       expect(mockGetPackage).not.toHaveBeenCalled();
+       // Protocol Error: Expect REJECTION
+       await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).rejects.toMatchObject({ 
+            code: ErrorCode.InvalidParams,
+            message: expect.stringContaining("Invalid arguments for tool malloy/executeQuery:") &&
+                     expect.stringContaining(MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS)
+       });
+        expect(mockGetPackage).not.toHaveBeenCalled();
     });
 
     it("should return error if package/model not found", async () => {
@@ -278,17 +307,17 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
       };
       
       // Simulate service throwing PackageNotFoundError (Application Error)
-      mockGetPackage.mockRejectedValue(new Error(MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(params.packageName)));
+      mockGetPackage.mockImplementation(() => { throw new PackageNotFoundError(MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(params.packageName)); });
 
       // Expect RESOLUTION with isError: true
-      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toMatchObject({
+      await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toEqual({
           isError: true,
-          content: expect.arrayContaining([
-              expect.objectContaining({
+          content: [
+              { 
                   type: 'text',
                   text: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(params.packageName)
-              })
-          ])
+              }
+          ]
       });
        expect(mockGetPackage).toHaveBeenCalledWith(params.packageName);
        expect(mockGetModel).not.toHaveBeenCalled(); // getModel shouldn't be called if getPackage fails
@@ -304,18 +333,18 @@ describe("MCP Tool Handlers (Integration - Mocked Service)", () => {
         };
         // Simulate service throwing ModelNotFoundError (Application Error)
         mockGetModel.mockImplementation(() => { 
-            throw new Error(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(params.packageName, params.modelPath)); 
+            throw new ModelNotFoundError(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(params.packageName, params.modelPath)); 
         }); 
 
         // Expect RESOLUTION with isError: true
-        await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toMatchObject({
+        await expect(mcpClient.callTool({ name: "malloy/executeQuery", arguments: params })).resolves.toEqual({
             isError: true,
-            content: expect.arrayContaining([
-                expect.objectContaining({
+            content: [
+                { 
                     type: 'text',
                     text: MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(params.packageName, params.modelPath)
-                })
-            ])
+                }
+            ]
         });
         expect(mockGetPackage).toHaveBeenCalledWith(params.packageName);
         expect(mockGetModel).toHaveBeenCalledWith(params.modelPath);

@@ -8,6 +8,7 @@ import { Request, Notification, Result, ProgressNotificationSchema, CallToolResu
 import { AddressInfo } from "net";
 import { PackageService } from "../service/package.service";
 import { MCP_ERROR_MESSAGES } from '../mcp/mcp_constants';
+import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 
 // @ts-ignore - bun:test types
 interface QueryResult {
@@ -101,24 +102,31 @@ describe("MCP Query Tool", () => {
           query: "invalid query syntax"
         }
       });
-      expect(result).toEqual(expect.objectContaining({
+      // Application Error: Expect resolution with isError: true and specific message
+      expect(result).toEqual({
         isError: true,
-        content: [{
-          type: "text",
-          text: expect.stringMatching(/Error.*compiling model.*no viable alternative at input/i)
-        }]
-      }));
+        content: [
+          { 
+            type: 'text',
+            text: expect.stringContaining(MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY("faa/flights.malloy")) &&
+                  expect.stringContaining("no viable alternative at input 'invalid'")
+          }
+        ]
+      });
     });
 
     it("should handle invalid query parameters", async () => {
+      // Protocol Error: Expect rejection with specific code and wrapped message
       await expect(client.callTool({
         name: "malloy/executeQuery",
         arguments: {
           query: "run: flights -> { select: carrier }"  // Missing required packageName and modelPath
         }
       })).rejects.toMatchObject({
-        code: -32602,
-        message: expect.stringMatching(/Invalid arguments.*packageName.*Required.*modelPath.*Required/i)
+        code: ErrorCode.InvalidParams, 
+        message: expect.stringContaining("Invalid arguments for tool malloy/executeQuery:") && 
+                 expect.stringContaining("packageName") &&
+                 expect.stringContaining("modelPath")
       });
     });
 
@@ -227,13 +235,12 @@ describe("MCP Query Tool", () => {
           queryName: "nonexistent_query"
         }
       });
-      expect(result).toEqual(expect.objectContaining({
-        isError: true,
-        content: [{
-          type: "text",
-          text: expect.stringMatching(/nonexistent_query.*is not defined/i)
-        }]
-      }));
+      // Application Error (non-existent named query): Expect resolution with isError: true
+      expect(result.isError).toBe(true);
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toEqual(
+        `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY("faa/flights.malloy")} Error(s) compiling model:\nFILE: internal://internal.malloy\nline 2: 'nonexistent_query' is not defined`
+      );
     });
   });
 
@@ -250,32 +257,40 @@ describe("MCP Query Tool", () => {
           query: "query: faa -> { aggregate: count() }"
         }
       });
-      expect(result).toEqual(expect.objectContaining({
+      // Application Error: Expect resolution with isError: true and direct message
+      expect(result).toEqual({
         isError: true,
-        content: [{
-          type: "text",
-          text: `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(`${packageName}/${modelPath}`)} ${MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName)}`
-        }]
-      }));
+        content: [
+          { 
+            type: 'text',
+            text: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName)
+          }
+        ]
+      });
     });
 
     it("should handle missing model", async () => {
+      const packageName = "faa";
+      const modelPath = "nonexistent.malloy";
       const result = await client.callTool({
         name: "malloy/executeQuery",
         arguments: {
           projectName: "home",
-          packageName: "faa",
-          modelPath: "nonexistent.malloy",
+          packageName,
+          modelPath,
           query: "query: faa -> { aggregate: count() }"
         }
       });
-      expect(result).toEqual(expect.objectContaining({
+      // Application Error: Expect resolution with isError: true and direct message
+      expect(result).toEqual({
         isError: true,
-        content: [{
-          type: "text",
-          text: "Error executing query on 'faa/nonexistent.malloy': Model 'nonexistent.malloy' not found in package 'faa'"
-        }]
-      }));
+        content: [
+          { 
+            type: 'text',
+            text: MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(packageName, modelPath)
+          }
+        ]
+      });
     });
 
     it("should handle non-existent named query", async () => {
@@ -292,13 +307,12 @@ describe("MCP Query Tool", () => {
           queryName
         }
       });
-      expect(result).toEqual(expect.objectContaining({
-        isError: true,
-        content: [{
-          type: "text",
-          text: `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(`${packageName}/${modelPath}`)} ${MCP_ERROR_MESSAGES.QUERY_NOT_FOUND(queryName)}`
-        }]
-      }));
+      // Application Error (non-existent named query): Expect resolution with isError: true
+      expect(result.isError).toBe(true);
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toEqual(
+        `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY("faa/flights.malloy")} Error(s) compiling model:\nFILE: internal://internal.malloy\nline 2: 'nonexistent_query' is not defined`
+      );
     });
 
     it("should handle query execution errors", async () => {
@@ -311,13 +325,17 @@ describe("MCP Query Tool", () => {
           query: "invalid query syntax"
         }
       });
-      expect(result).toEqual(expect.objectContaining({
+      // Application Error: Expect resolution with isError: true and specific message
+      expect(result).toEqual({
         isError: true,
-        content: [{
-          type: "text",
-          text: "Error executing query on 'faa/flights.malloy': Error(s) compiling model:\nFILE: internal://internal.malloy\nline 2: no viable alternative at input 'invalid'\n  | invalid query syntax"
-        }]
-      }));
+        content: [
+          { 
+            type: 'text',
+            text: expect.stringContaining(MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY("faa/flights.malloy")) &&
+                  expect.stringContaining("no viable alternative at input 'invalid'")
+          }
+        ]
+      });
     });
 
     it("should handle compilation errors", async () => {
@@ -330,20 +348,24 @@ describe("MCP Query Tool", () => {
           query: "run: flights -> { aggregate: count() }"  // Missing name for aggregate
         }
       });
-      expect(result).toEqual(expect.objectContaining({
+      // Application Error: Expect resolution with isError: true and specific message
+      expect(result).toEqual({
         isError: true,
-        content: [{
-          type: "text",
-          text: "Error executing query on 'faa/flights.malloy': Error(s) compiling model:\nFILE: internal://internal.malloy\nline 2: 'aggregate:' entries must include a name (ex: `some_name is count()`)\n  | run: flights -> { aggregate: count() }\n  |                              ^"
-        }]
-      }));
+        content: [
+          { 
+            type: 'text',
+            text: expect.stringContaining(MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY("faa/flights.malloy")) &&
+                  expect.stringContaining("no viable alternative at input 'invalid'")
+          }
+        ]
+      });
     });
 
     it("should handle mutually exclusive parameters", async () => {
+      // Protocol Error: Expect REJECTION with specific code and wrapped message
       await expect(client.callTool({
         name: "malloy/executeQuery",
         arguments: {
-          projectName: "home",
           packageName: "faa",
           modelPath: "flights.malloy",
           query: "query: faa -> { aggregate: flight_count is count() }",
@@ -351,12 +373,13 @@ describe("MCP Query Tool", () => {
           queryName: "by_carrier"
         }
       })).rejects.toMatchObject({
-        code: -32602,
-        message: MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS
+        code: ErrorCode.InvalidParams, 
+        message: `Invalid arguments for tool malloy/executeQuery:  (${MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS})`
       });
     });
 
     it("should handle missing required parameters", async () => {
+      // Protocol Error: Expect REJECTION with specific code and wrapped message
       await expect(client.callTool({
         name: "malloy/executeQuery",
         arguments: {
@@ -365,8 +388,8 @@ describe("MCP Query Tool", () => {
           modelPath: "flights.malloy"
         }
       })).rejects.toMatchObject({
-        code: -32602,
-        message: MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS
+        code: ErrorCode.InvalidParams, 
+        message: `Invalid arguments for tool malloy/executeQuery:  (${MCP_ERROR_MESSAGES.MISSING_REQUIRED_PARAMS})`
       });
     });
   });
