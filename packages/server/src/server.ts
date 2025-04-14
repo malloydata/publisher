@@ -252,25 +252,28 @@ restApiRouter.get(
 );
 
 // --- MCP Server Setup ---
+const mcpApp = express.Router();
 let mcpTransport: SSEServerTransport | null = null;
 
-app.get(`${API_PREFIX}/mcp/sse`, async (req, res) => {
+mcpApp.get('/sse', (req, res) => {
   if (mcpTransport) {
-    await mcpTransport.close();
+    mcpTransport.close();
   }
-  mcpTransport = new SSEServerTransport(`${API_PREFIX}/mcp/messages`, res);
-  await mcpServer.connect(mcpTransport);
+  mcpTransport = new SSEServerTransport('/messages', res);
+  mcpServer.connect(mcpTransport);
 });
 
-app.post(`${API_PREFIX}/mcp/messages`, async (req, res) => {
-  if (mcpTransport) {
-    await mcpTransport.handlePostMessage(req, res);
-  } else {
-    res.status(400).send(JSON.stringify({ error: 'No active SSE connection' }));
+mcpApp.post('/messages', (req, res) => {
+  if (!mcpTransport) {
+    res.writeHead(400);
+    res.end(JSON.stringify({ error: 'No active SSE connection' }));
+    return;
   }
+  mcpTransport.handlePostMessage(req, res);
 });
 
-// --- Mount REST API Router ---
+// --- Mount Routers (Keep AFTER definitions) ---
+app.use(`${API_PREFIX}/mcp`, mcpApp);
 app.use(API_PREFIX, restApiRouter);
 
 app.get("*", (_req: express.Request, res: express.Response) => res.sendFile(path.resolve(ROOT, "index.html")));

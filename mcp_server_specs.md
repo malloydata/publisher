@@ -158,4 +158,21 @@ During implementation, we encountered the following challenges and solutions:
 ## Next Steps
 
 1.  Implement the separate Express app approach for MCP endpoints.
-2.  Proceed with **[TDD Step] 3a: Write Transport Layer Tests** after the change. 
+2.  Proceed with **[TDD Step] 3a: Write Transport Layer Tests** after the change.
+3.  Implement additional Malloy resource types:
+    - **Source Resources:** `malloy://project/{projectName}/package/{packageName}/models/{modelPath}/sources/{sourceName}`
+      - Represents named data sources defined within models
+      - Provides metadata about available fields, measures, and dimensions
+    - **Query Resources:** `malloy://project/{projectName}/package/{packageName}/models/{modelPath}/sources/{sourceName}/queries/{queryName}`
+      - Represents named queries defined within sources
+      - Includes query definition and expected result schema
+    - **View Resources:** `malloy://project/{projectName}/package/{packageName}/models/{modelPath}/views/{viewName}`
+      - Represents view definitions within models
+      - Provides view structure and dependencies
+    - **Notebook Resources:** `malloy://project/{projectName}/package/{packageName}/notebooks/{notebookPath}`
+      - Represents Malloy notebooks
+      - Contains metadata about queries and visualizations
+    Each new resource type should:
+    - Follow the simple SDK pattern established for existing resources
+    - Include appropriate error handling for not found cases
+    - Provide clear, minimal response text 

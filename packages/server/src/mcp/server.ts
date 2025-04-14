@@ -70,31 +70,27 @@ class McpError extends Error {
 
     /**
      * Converts an unknown error into an McpError.
+     * Protocol errors will be thrown and reject the promise.
+     * Application errors will be returned in the response with isError: true.
      */
     static from(error: unknown): McpError {
         if (error instanceof McpError) {
             return error;
         }
         if (error instanceof z.ZodError) {
-            return new McpError(
+            // Protocol error - invalid parameters - throw
+            throw new McpError(
                 error.errors.map(e => `${e.path.join('.')} (${e.message})`).join(', '),
                 ErrorCode.InvalidParams,
                 "Check the request parameters against the required schema.",
                 error
             );
         }
-        if (error instanceof ModelNotFoundError || error instanceof PackageNotFoundError) {
-            return new McpError(
-                error.message,
-                ErrorCode.InvalidParams,
-                "Check that the specified package and model exist.",
-                error
-            );
-        }
-        if (error instanceof Error) {
-            return new McpError(error.message, ErrorCode.InternalError, undefined, error);
-        }
-        return new McpError(String(error), ErrorCode.InternalError);
+        // All other errors are protocol errors
+        throw new McpError(
+            error instanceof Error ? error.message : String(error),
+            ErrorCode.InternalError
+        );
     }
 }
 
@@ -230,164 +226,85 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
     const mcpServer = new McpServer(testServerInfo);
 
     // Register Project Resource
-    const projectTemplate = new ResourceTemplate(PROJECT_TEMPLATE, {
-        list: async (extra: RequestHandlerExtra): Promise<ListResourcesResult> => {
-            try {
-                console.log(`[list] Listing packages for project: ${PROJECT_URI}`);
-                const packages = await packageService.listPackages();
-                const resources = [
-                    // Include the project itself when listing with no URI
-                    {
-                        uri: PROJECT_URI,
-                        name: PROJECT_NAME,
-                        description: projectMetadata.description as string | undefined
-                    },
-                    // Then include any packages
-                    ...packages.map(pkg => ({
-                        uri: PACKAGE_TEMPLATE.expand({ projectName: PROJECT_NAME, packageName: pkg.name || '' }),
-                        name: pkg.name || '',
-                        description: pkg.description || undefined
-                    }))
-                ];
-                return { resources };
-            } catch (error) {
-                throw McpError.withContext(error, "listing packages");
-            }
-        }
-    });
-
     mcpServer.resource(
         'project',
-        projectTemplate,
-        projectMetadata,
-        async (uri: URL, variables: Variables, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
-            return {
-                contents: [{
-                    type: 'text',
-                    uri: uri.toString(),
-                    text: `Malloy Project Resource ('${uri}')
-Type: Project
-Description: The top-level container for Malloy packages.
-Children: Use 'mcp/listResources' with this URI to list available packages.`
-                }]
-            };
-        }
+        new ResourceTemplate('malloy://project/{projectName}', { list: undefined }),
+        async (uri, { projectName }) => ({
+            contents: [{
+                type: 'text',
+                uri: uri.href,
+                text: `Project: ${projectName}`
+            }]
+        })
     );
 
     // Register Package Resource
-    const packageTemplate = new ResourceTemplate(PACKAGE_TEMPLATE, {
-        list: async (extra: RequestHandlerExtra): Promise<ListResourcesResult> => {
-            try {
-                const packages = await packageService.listPackages();
-                const allModels: ListResourcesResult["resources"] = [];
-                for (const pkg of packages) {
-                    if (!pkg.name) continue;
-                    const pkgInstance = await packageService.getPackage(pkg.name);
-                    const models = await pkgInstance.listModels();
-                    allModels.push(...models.map(model => ({
-                        uri: MODEL_TEMPLATE.expand({ 
-                            projectName: PROJECT_NAME, 
-                            packageName: pkg.name!, 
-                            modelPath: model.path || '' 
-                        }),
-                        name: model.path || '',
-                        description: undefined
-                    })));
-                }
-                return { resources: allModels };
-            } catch (error) {
-                throw McpError.withContext(error, "listing models");
-            }
-        }
-    });
-
     mcpServer.resource(
         'package',
-        packageTemplate,
-        packageMetadata,
-        async (uri: URL, variables: Variables, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
-            const packageName = variables.packageName as string;
+        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}', { list: undefined }),
+        async (uri, { projectName, packageName }) => {
             try {
-                const pkg = await packageService.getPackage(packageName);
-                const models = await pkg.listModels();
-                const modelList = models
-                    .map(m => `- ${m.path || '(unnamed)'} (URI: ${MODEL_TEMPLATE.expand({ 
-                        projectName: PROJECT_NAME, 
-                        packageName, 
-                        modelPath: m.path || '' 
-                    })})`).join('\n');
-
+                const pkg = await packageService.getPackage(packageName as string);
                 return {
                     contents: [{
                         type: 'text',
-                        uri: uri.toString(),
-                        text: `Malloy Package Resource
-Name: ${packageName}
-URI: ${uri}
-Description: Represents a Malloy package containing models.
-Models (${models.length}):
-${modelList || '(No models found)'}
-
-Use 'mcp/listResources' with this URI to list models.
-Use 'mcp/readResource' with a model URI to view model details.`
+                        uri: uri.href,
+                        text: `Package: ${packageName}`
                     }]
                 };
             } catch (error) {
-                throw McpError.withContext(error, `reading package '${packageName}'`);
+                if (error instanceof PackageNotFoundError) {
+                    return {
+                        isError: true,
+                        contents: [{
+                            type: 'text',
+                            uri: uri.href,
+                            text: error.message
+                        }]
+                    };
+                }
+                throw McpError.from(error);
             }
         }
     );
 
     // Register Model Resource
-    const modelTemplate = new ResourceTemplate(MODEL_TEMPLATE, {
-        list: async (extra: RequestHandlerExtra): Promise<ListResourcesResult> => {
-            // Models are leaf nodes, so they have no children to list
-            return { resources: [] };
-        }
-    });
-
     mcpServer.resource(
         'model',
-        modelTemplate,
-        {
-            description: "A Malloy model file containing source definitions and queries."
-        },
-        async (uri: URL, variables: Variables, extra: RequestHandlerExtra): Promise<ReadResourceResult> => {
-            const packageName = variables.packageName as string;
-            const modelPath = variables.modelPath as string;
+        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}/models/{modelPath}', { list: undefined }),
+        async (uri, { projectName, packageName, modelPath }) => {
             try {
-                const pkg = await packageService.getPackage(packageName);
-                const model = pkg.getModel(modelPath);
+                const pkg = await packageService.getPackage(packageName as string);
+                const model = pkg.getModel(modelPath as string);
                 if (!model) {
-                    throw new ModelNotFoundError(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(packageName, modelPath));
+                    return {
+                        isError: true,
+                        contents: [{
+                            type: 'text',
+                            uri: uri.href,
+                            text: `Model not found: ${modelPath}`
+                        }]
+                    };
                 }
-                const modelType = model.getModelType();
-
                 return {
                     contents: [{
                         type: 'text',
-                        uri: uri.toString(),
-                        text: `Malloy Model Resource
-Name: ${modelPath}
-URI: ${uri}
-Package: ${packageName}
-Type: ${modelType}
-Description: Represents a Malloy model file (.malloy).
-
-Use the 'malloy/executeQuery' tool to run queries against this model.
-Example tool call:
-{
-  "method": "malloy/executeQuery",
-  "params": {
-    "packageName": "${packageName}",
-    "modelPath": "${modelPath}",
-    "query": "query: ..."
-  }
-}`
+                        uri: uri.href,
+                        text: `Model: ${modelPath}`
                     }]
                 };
             } catch (error) {
-                throw McpError.withContext(error, `reading model '${modelPath}' in package '${packageName}'`);
+                if (error instanceof PackageNotFoundError) {
+                    return {
+                        isError: true,
+                        contents: [{
+                            type: 'text',
+                            uri: uri.href,
+                            text: error.message
+                        }]
+                    };
+                }
+                throw McpError.from(error);
             }
         }
     );
@@ -411,20 +328,27 @@ Example tool call:
                 );
             });
 
-            // 2. Application Logic (Catches errors -> Promise Resolution with error content)
             try { 
-                // Validate parameters first
                 const pkg = await packageService.getPackage(validatedParams.packageName);
                 if (!pkg) {
-                    throw new McpError(
-                        MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(validatedParams.packageName),
-                        ErrorCode.InvalidParams,
-                        "Check that the package exists and is accessible"
-                    );
+                    return {
+                        isError: true,
+                        content: [{
+                            type: 'text',
+                            text: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(validatedParams.packageName)
+                        }]
+                    };
                 }
+
                 const model = pkg.getModel(validatedParams.modelPath);
                 if (!model) {
-                    throw new ModelNotFoundError(MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(validatedParams.packageName, validatedParams.modelPath));
+                    return {
+                        isError: true,
+                        content: [{
+                            type: 'text',
+                            text: MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(validatedParams.packageName, validatedParams.modelPath)
+                        }]
+                    };
                 }
 
                 // Use getQueryResults which handles both ad-hoc and named queries
@@ -436,28 +360,24 @@ Example tool call:
 
                 // Success Case
                 return {
-                    isError: false,
                     content: [{
                         type: 'text',
                         text: JSON.stringify(queryResults)
                     }]
                 };
             } catch (error) {
-                // Handle Application Errors - Return successful response with error content
+                // Handle Application Errors - Return in response
                 console.error(`[tool] Application error executing query:`, error);
 
                 let errorMessage: string;
-                // Explicitly handle known error types first
                 if (error instanceof PackageNotFoundError) {
                     errorMessage = MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(validatedParams.packageName);
                 } else if (error instanceof ModelNotFoundError) {
                     errorMessage = MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(validatedParams.packageName, validatedParams.modelPath);
                 } else if (error instanceof Error) {
-                    // For other generic errors, prepend context
                     const packagePath = `${validatedParams.packageName}/${validatedParams.modelPath}`;
                     errorMessage = `${MCP_ERROR_MESSAGES.ERROR_EXECUTING_QUERY(packagePath)} ${error.message}`;
                 } else {
-                    // Fallback for unknown errors
                     errorMessage = "An unknown error occurred during query execution."; 
                 }
 
