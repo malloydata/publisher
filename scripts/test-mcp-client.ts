@@ -3,11 +3,11 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { URL } from 'url';
 
 // --- Configuration ---
-const serverSseUrl = "http://localhost:4000/api/v0/mcp/sse"; 
+const mcpServerUrl = "http://localhost:4001";
 
 // --- Main Client Logic ---
 async function runTestClient() { 
-    console.log(`[CLIENT] Attempting to connect to SSE: ${serverSseUrl}`);
+    console.log(`[CLIENT] Attempting to connect to SSE: ${mcpServerUrl}`);
     let client: Client | null = null; // Use Client type
 
     try {
@@ -19,7 +19,7 @@ async function runTestClient() {
         console.log('[CLIENT] Client created.'); // Changed log message
 
         
-        const transport = new SSEClientTransport(new URL(serverSseUrl)); 
+        const transport = new SSEClientTransport(new URL(mcpServerUrl)); 
         console.log(`[CLIENT] SSEClientTransport created.`);
 
         // 2. Connect (Initialization is likely handled internally by McpClient)

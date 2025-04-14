@@ -18,11 +18,13 @@ import { QueryController } from "./controller/query.controller";
 import { ScheduleController } from "./controller/schedule.controller";
 import { Server, createServer } from "http";
 
+// Main app for REST API
 const app = express();
 app.use(morgan("tiny"));
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "localhost";
+const MCP_PORT = Number(process.env.MCP_PORT || 4001);
 const ROOT = path.join(__dirname, "../../app/dist/");
 const API_PREFIX = "/api/v0";
 const PROJECT_NAME = "home";
@@ -34,7 +36,26 @@ const packageController = new PackageController(packageService);
 const queryController = new QueryController(packageService);
 const scheduleController = new ScheduleController(packageService);
 
+// Initialize MCP server and transport
 const mcpServer = initializeMcpServer(packageService);
+
+// Separate Express app for MCP
+const mcpApp = express();
+let mcpTransport: SSEServerTransport | null = null;
+
+// Mount SSE endpoints directly
+mcpApp.get('/', async (req, res) => {
+  mcpTransport = new SSEServerTransport('/messages', res);
+  await mcpServer.connect(mcpTransport);
+});
+
+mcpApp.post('/messages', async (req, res) => {
+  if (mcpTransport) {
+    await mcpTransport.handlePostMessage(req, res);
+  } else {
+    res.status(400).send(JSON.stringify({ error: 'No active SSE connection' }));
+  }
+});
 
 // --- Static file serving (Keep before API routers) ---
 app.use("/", express.static(path.join(ROOT, "/")));
@@ -251,29 +272,7 @@ restApiRouter.get(
    },
 );
 
-// --- MCP Server Setup ---
-const mcpApp = express.Router();
-let mcpTransport: SSEServerTransport | null = null;
-
-mcpApp.get('/sse', (req, res) => {
-  if (mcpTransport) {
-    mcpTransport.close();
-  }
-  mcpTransport = new SSEServerTransport('/messages', res);
-  mcpServer.connect(mcpTransport);
-});
-
-mcpApp.post('/messages', (req, res) => {
-  if (!mcpTransport) {
-    res.writeHead(400);
-    res.end(JSON.stringify({ error: 'No active SSE connection' }));
-    return;
-  }
-  mcpTransport.handlePostMessage(req, res);
-});
-
-// --- Mount Routers (Keep AFTER definitions) ---
-app.use(`${API_PREFIX}/mcp`, mcpApp);
+// Mount REST API router
 app.use(API_PREFIX, restApiRouter);
 
 app.get("*", (_req: express.Request, res: express.Response) => res.sendFile(path.resolve(ROOT, "index.html")));
@@ -284,15 +283,14 @@ app.use((err: Error, _req: express.Request, res: express.Response) => {
   res.status(status).json(json);
 });
 
-const httpServer = http.createServer(app);
+// Start main server
+const mainServer = app.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
+  console.log(`Publisher server listening at http://${PUBLISHER_HOST}:${PUBLISHER_PORT}`);
+});
 
-if (require.main === module) {
-   httpServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
-      const address = httpServer.address() as AddressInfo;
-      console.log(
-         `Server is running at http://${address.address}:${address.port}`,
-      );
-   });
-}
+// Start MCP server on its own port
+const mcpHttpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
+  console.log(`MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`);
+});
 
-export { httpServer, app };
+export { mainServer as httpServer, mcpHttpServer, app, mcpApp };
