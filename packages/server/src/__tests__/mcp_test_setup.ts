@@ -3,8 +3,6 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import http from 'http';
 import { AddressInfo } from 'net';
 import { URL } from 'url';
-
-// MCP SDK Imports
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { Request, Notification, Result } from "@modelcontextprotocol/sdk/types.js";
@@ -31,15 +29,13 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
     // Define an explicit port for the test server to avoid conflicts
     const TEST_MCP_PORT = (Number(process.env.MCP_PORT || 4001)) + 2; // e.g., 4003
 
-    // Start the REAL HTTP server using the REAL Express app on the specific test port
     await new Promise<void>((resolve, reject) => {
-        // Use the imported real app instance
         const server = http.createServer(mcpApp).listen(TEST_MCP_PORT, '127.0.0.1', () => { // Use explicit TEST_MCP_PORT
             try {
                 const address = server.address() as AddressInfo;
                 if (!address) throw new Error("Server address is null after listen");
-                serverInstance = server; // Assign the instance
-                serverUrl = `http://127.0.0.1:${address.port}`; // Still use address.port in case it differs somehow, though should match TEST_MCP_PORT
+                serverInstance = server;
+                serverUrl = `http://127.0.0.1:${TEST_MCP_PORT}`;
                 console.log(`[E2E Test Setup] Real server (using mcpApp) listening on ${serverUrl} (Port: ${TEST_MCP_PORT})`);
                 resolve();
             } catch (err) {
@@ -50,7 +46,7 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
             // Provide more specific error info if available (like EADDRINUSE)
              console.error(`[E2E Test Setup] Server failed to start on port ${TEST_MCP_PORT}: ${err.code} - ${err.message}`);
              reject(err)
-            }); // Handle server startup errors
+            });
     });
 
     // Ensure serverInstance and serverUrl are assigned
@@ -60,7 +56,7 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
     // --- Client Setup ---
     const mcpClient = new Client<Request, Notification, Result>({ name: "mcp-e2e-test-client", version: "1.0" });
     // The SSE endpoint path is defined within the mcpApp routes, use that path directly.
-    const ssePath = '/'; // Corrected path based on server.ts mcpApp.get('/') route
+    const ssePath = '/';
     const clientTransport = new SSEClientTransport(new URL(`${listeningServerUrl}${ssePath}`)); 
 
     // Connect client (with timeout)
@@ -83,7 +79,7 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
             listeningServerInstance.closeAllConnections?.(); // Force close connections
             await new Promise<void>(res => listeningServerInstance.close(() => res()));
         }
-        throw error; // Re-throw the connection error
+        throw error;
     } finally {
         if (connectTimeout) clearTimeout(connectTimeout);
     }
@@ -106,10 +102,8 @@ export async function cleanupE2ETestEnvironment(env: McpE2ETestEnvironment | nul
 
     // 1. Close client first
     if (mcpClient) {
-        // console.log("[E2E Test Cleanup] Closing MCP client...");
         try {
             await mcpClient.close();
-             // console.log("[E2E Test Cleanup] MCP client closed.");
         } catch (e) {
             // Ignore client close errors during cleanup potentially
             console.warn("[E2E Test Cleanup] Error closing MCP client (ignoring):"); //, e);
@@ -118,24 +112,22 @@ export async function cleanupE2ETestEnvironment(env: McpE2ETestEnvironment | nul
 
     // 2. Close HTTP server connections and then the server itself
     if (httpServer) {
-        // console.log("[E2E Test Cleanup] Closing HTTP server connections and server...");
         // Force close any remaining connections immediately
         httpServer.closeAllConnections?.(); 
 
-        // Now attempt to close the server - should be faster now
         if (httpServer.listening) {
             await new Promise<void>((resolve) => {
                 httpServer.close((err) => {
                     if (err) {
                         console.error("[E2E Test Cleanup] Error closing HTTP server (after closing connections):", err);
                     } else {
-                        // console.log("[E2E Test Cleanup] HTTP server closed.");
+                        console.log("[E2E Test Cleanup] HTTP server closed.");
                     }
-                    resolve(); // Resolve regardless of error after attempting close
+                    resolve();
                 });
             });
         } else {
-             // console.log("[E2E Test Cleanup] HTTP server was not listening or already closed.");
+            console.log("[E2E Test Cleanup] HTTP server was not listening or already closed.");
         }
     }
 } 

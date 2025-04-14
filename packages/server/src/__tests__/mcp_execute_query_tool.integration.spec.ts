@@ -1,15 +1,9 @@
 // @ts-ignore - bun:test types
 import { describe, it, expect, beforeAll, afterAll, fail } from "bun:test";
-
-// --- Removed imports for mocking (express, http, etc.) ---
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { MCP_ERROR_MESSAGES } from "../mcp/mcp_constants"; // Keep for error message checks
-
-// --- Import MCP Client SDK (Only Client needed directly) ---
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Request, Notification, Result } from "@modelcontextprotocol/sdk/types.js"; // Keep these base types
-
-// Imports needed for cancellation test
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"; 
 import { URL } from 'url';
 
@@ -29,25 +23,22 @@ function isToolResultWithContent(result: any): result is ToolResultWithContent {
 // --- Test Suite --- 
 describe("MCP Tool Handlers (E2E Integration)", () => {
   let env: McpE2ETestEnvironment | null = null;
-  let mcpClient: Client; // Convenience variable
+  let mcpClient: Client;
 
   beforeAll(async () => {
       // Setup the E2E environment (starts server, connects client)
       env = await setupE2ETestEnvironment();
       mcpClient = env.mcpClient; // Assign client from setup
-  }); // Removed timeout argument
+  });
 
   afterAll(async () => {
-      // Cleanup the E2E environment (closes client, stops server)
       await cleanupE2ETestEnvironment(env);
       env = null;
-  }); // Removed timeout argument
-
-  // --- Removed beforeEach --- 
+  });
 
   describe("malloy/executeQuery Tool", () => {
-    const FAA_PACKAGE = "faa"; // Use constant for package name
-    const FLIGHTS_MODEL = "flights.malloy"; // Use constant for model path (relative to package)
+    const FAA_PACKAGE = "faa";
+    const FLIGHTS_MODEL = "flights.malloy";
 
     it("should execute a valid ad-hoc query successfully", async () => {
       if (!env) throw new Error("Test environment not initialized");
@@ -69,10 +60,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
       expect(result.content.length).toBeGreaterThan(0);
       expect(result.content[0].type).toBe('text');
       // Check if the result text is valid JSON (contains query results)
-       // Cast text to string before parsing
       expect(() => JSON.parse(result.content![0].text as string)).not.toThrow(); 
-      // Optionally, parse and check specific aspects of the *real* result data if stable
-      // Cast text to string before parsing
       const parsedResult = JSON.parse(result.content![0].text as string);
       expect(parsedResult).toHaveProperty('result');
       expect(parsedResult).toHaveProperty('sql');
@@ -85,20 +73,17 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
         packageName: FAA_PACKAGE,
         modelPath: FLIGHTS_MODEL,
         sourceName: "flights", 
-        queryName: "by_carrier" // Assuming this named query exists in the real model
+        queryName: "by_carrier"
       };
       
       // Expect successful RESOLUTION for valid named query
-      // Cast to any
       const result: any = await mcpClient.callTool({ name: "malloy/executeQuery", arguments: params });
 
       expect(result).toBeDefined();
       // --- Assert success based on presence of content --- 
       expect(result.content).toBeDefined();
-      expect(result.content![0].type).toBe('text'); // Added non-null assertion
-      // Cast text to string
+      expect(result.content![0].type).toBe('text');
       expect(() => JSON.parse(result.content![0].text as string)).not.toThrow(); 
-      // Cast text to string
       const parsedResult = JSON.parse(result.content![0].text as string); 
       expect(parsedResult).toHaveProperty('result');
     });
@@ -112,14 +97,12 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
       };
       
       // Application Error (Malloy Compilation): Expect RESOLUTION with isError: true
-      // Cast to any
        const result: any = await mcpClient.callTool({ name: "malloy/executeQuery", arguments: params });
 
        expect(result.isError).toBe(true);
        expect(result.content).toBeDefined();
        expect(result.content![0].type).toBe('text'); // Added non-null assertion
        // Check for a compilation error message from Malloy
-        // Cast text to string
        expect(result.content![0].text as string).toMatch(/Error compiling model/i); 
     });
 
@@ -144,7 +127,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
 
     it("should reject with InvalidParams if required params are missing (e.g., query or queryName)", async () => {
       if (!env) throw new Error("Test environment not initialized");
-       const params = { // Missing query, sourceName, and queryName
+       const params = {
         packageName: FAA_PACKAGE,
         modelPath: FLIGHTS_MODEL
       };

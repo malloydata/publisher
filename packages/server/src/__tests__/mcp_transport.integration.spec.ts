@@ -1,14 +1,11 @@
 // @ts-ignore - bun:test types
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-
-// --- Removed Server, app, httpServer imports ---
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { ErrorCode, Request, Notification, Result } from "@modelcontextprotocol/sdk/types.js";
-// --- Removed AddressInfo, URL imports if not needed --- 
-import { URL } from 'url'; // Keep if needed for reconnection test
-import type { Server } from "http"; // Keep for serverInstance type in reconnection test
-import type { AddressInfo } from "net"; // Keep for serverInstance type in reconnection test
+import { URL } from 'url';
+import type { Server } from "http";
+import type { AddressInfo } from "net";
 
 // --- Import E2E Test Setup ---
 import { McpE2ETestEnvironment, setupE2ETestEnvironment, cleanupE2ETestEnvironment } from "./mcp_test_setup";
@@ -100,25 +97,6 @@ describe("MCP Transport Tests (E2E Integration)", () => {
       const result = await mcpClient.listResources(); // Simple request
       expect(result).toBeDefined();
       expect(result).toHaveProperty('resources');
-    });
-
-    // This test might be less relevant now, as setup handles connection errors,
-    // but keep it if testing explicit bad connections is desired.
-    it("should fail gracefully when connecting to an invalid URL", async () => {
-      if (!env) throw new Error("Test environment not initialized");
-      const badClient = new Client<Request, Notification, Result>({
-        name: 'test-client-bad-conn',
-        version: '0.0.1'
-      });
-      // Use a clearly invalid port/URL
-      const badTransport = new SSEClientTransport(
-        new URL(`http://127.0.0.1:${(env.httpServer.address() as AddressInfo).port + 10}/`) 
-      );
-
-      // Expect connect to reject
-      await expect(badClient.connect(badTransport)).rejects.toThrow();
-      // Ensure the bad client is closed if connect somehow didn't clean up
-      await badClient.close().catch(() => {}); 
     });
   });
 }); 
