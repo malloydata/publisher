@@ -24,7 +24,15 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
     // Register Project Resource
     mcpServer.resource(
         'project',
-        new ResourceTemplate('malloy://project/{projectName}', { list: undefined }),
+        new ResourceTemplate('malloy://project/{projectName}', {
+            list: async () => ({
+                resources: [{
+                    uri: 'malloy://project/home',
+                    name: 'home',
+                    description: 'Home project containing Malloy packages'
+                }]
+            })
+        }),
         async (uri, { projectName }) => ({
             contents: [{
                 type: 'text',
@@ -37,7 +45,18 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
     // Register Package Resource
     mcpServer.resource(
         'package',
-        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}', { list: undefined }),
+        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}', {
+            list: async () => {
+                const packages = await packageService.listPackages();
+                return {
+                    resources: packages.map(pkg => ({
+                        uri: `malloy://project/home/package/${pkg.name || 'unknown'}`,
+                        name: pkg.name || 'unknown',
+                        description: `Package: ${pkg.name || 'unknown'}`
+                    }))
+                };
+            }
+        }),
         async (uri, { projectName, packageName }) => {
             try {
                 const pkg = await packageService.getPackage(packageName as string);
@@ -67,7 +86,26 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
     // Register Model Resource
     mcpServer.resource(
         'model',
-        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}/models/{modelPath}', { list: undefined }),
+        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}/models/{modelPath}', {
+            list: async () => {
+                try {
+                    const pkg = await packageService.getPackage('home');
+                    const models = await pkg.listModels();
+                    return {
+                        resources: models.map(model => ({
+                            uri: `malloy://project/home/package/home/models/${model.path || ''}`,
+                            name: model.path || '',
+                            description: `Model: ${model.path || ''}`
+                        }))
+                    };
+                } catch (error) {
+                    if (error instanceof PackageNotFoundError) {
+                        return { resources: [] };
+                    }
+                    throw error;
+                }
+            }
+        }),
         async (uri, { projectName, packageName, modelPath }) => {
             try {
                 const pkg = await packageService.getPackage(packageName as string);
