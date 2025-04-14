@@ -87,70 +87,89 @@ export function initializeMcpServer(packageService: PackageService): McpServer {
         }
     );
 
-    // Register Model Resource
+    // 1. Resource for READING a SPECIFIC model
     mcpServer.resource(
         'model',
-        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}/models/{modelPath}', {
-            list: async () => {
-                 console.log("[MCP Server Debug] Entering model list callback...");
-                try {
-                    // TODO: Fix hardcoded package name 'home' here?
-                    console.log("[MCP Server Debug] Calling packageService.getPackage('home')...");
-                    const pkg = await packageService.getPackage('home'); 
-                    console.log("[MCP Server Debug] Got package 'home', calling listModels()...");
-                    const models = await pkg.listModels();
-                    console.log(`[MCP Server Debug] pkg.listModels returned ${models.length} models.`);
-                    const mappedResources = models.map(model => ({
-                        uri: `malloy://project/home/package/home/models/${model.path || ''}`,
-                        name: model.path || '',
-                        description: `Model: ${model.path || ''}`
-                    }));
-                    console.log("[MCP Server Debug] Finished mapping models.");
-                    return {
-                        resources: mappedResources
-                    };
-                } catch (error) {
-                    console.error("[MCP Server Error] Error in model list callback:", error);
-                    if (error instanceof PackageNotFoundError) {
-                         console.log("[MCP Server Debug] Package not found, returning empty resources.");
-                        return { resources: [] }; // Return empty list on error as per original code
-                    }
-                    // Re-throw other errors to be caught by MCP framework?
-                    // Or return an error structure? The original code re-threw.
-                    throw error; 
-                }
-            }
-        }),
+        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}/models/{modelPath}', { list: undefined }),
         async (uri, { projectName, packageName, modelPath }) => {
             try {
+                console.log(`[MCP Server Debug] Reading specific model: project=${projectName}, package=${packageName}, model=${modelPath}`);
                 const pkg = await packageService.getPackage(packageName as string);
-                const model = pkg.getModel(modelPath as string);
-                if (!model) {
+                const modelInstance = pkg.getModel(modelPath as string);
+                if (!modelInstance) {
+                     console.log(`[MCP Server Debug] Model not found: ${modelPath}`);
                     return {
                         isError: true,
                         contents: [{
-                            type: 'text',
+                            type: 'application/json',
                             uri: uri.href,
-                            text: MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(packageName as string, modelPath as string)
+                            text: JSON.stringify({ error: MCP_ERROR_MESSAGES.MODEL_NOT_FOUND(packageName as string, modelPath as string) })
                         }]
                     };
                 }
-                // TODO: Should this return the actual model details (e.g., from model.getModel())?
+
+                const compiledModel = await modelInstance.getModel();
+                console.log(`[MCP Server Debug] Successfully retrieved compiled model for: ${modelPath}`);
+
                 return {
                     contents: [{
-                        type: 'text',
+                        type: 'application/json',
                         uri: uri.href,
-                        text: `Model: ${modelPath}` // Currently just returning name
+                        text: JSON.stringify(compiledModel)
                     }]
                 };
             } catch (error) {
+                 console.error(`[MCP Server Error] Error reading model ${modelPath} in package ${packageName}:`, error);
                 if (error instanceof PackageNotFoundError) {
                     return {
                         isError: true,
                         contents: [{
-                            type: 'text',
+                            type: 'application/json',
                             uri: uri.href,
-                            text: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName as string)
+                            text: JSON.stringify({ error: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName as string) })
+                        }]
+                    };
+                }
+                throw error;
+            }
+        }
+    );
+
+    // 2. NEW Resource for LISTING models within a package (using READ)
+    mcpServer.resource(
+        'packageModels',
+        new ResourceTemplate('malloy://project/{projectName}/package/{packageName}/models', { list: undefined }),
+        async (uri, { projectName, packageName }) => {
+            try {
+                console.log(`[MCP Server Debug] Listing models for package: project=${projectName}, package=${packageName}`);
+                const pkg = await packageService.getPackage(packageName as string);
+                const models = await pkg.listModels();
+                console.log(`[MCP Server Debug] Found ${models.length} models in package ${packageName}`);
+
+                const modelContents = models.map(model => ({
+                    type: 'application/json',
+                    uri: `malloy://project/${projectName}/package/${packageName}/models/${model.path || ''}`,
+                    text: JSON.stringify({
+                       path: model.path,
+                       type: model.type,
+                       name: model.path || 'Unnamed Model',
+                       description: `Malloy ${model.type || 'model'} file: ${model.path || ''}`
+                    })
+                }));
+
+                return {
+                    contents: modelContents
+                };
+            } catch (error) {
+                console.error(`[MCP Server Error] Error listing models for package ${packageName}:`, error);
+                if (error instanceof PackageNotFoundError) {
+                     console.log(`[MCP Server Debug] Package not found while listing models: ${packageName}`);
+                    return {
+                        isError: true,
+                        contents: [{
+                            type: 'application/json',
+                            uri: uri.href,
+                            text: JSON.stringify({ error: MCP_ERROR_MESSAGES.PACKAGE_NOT_FOUND(packageName as string) })
                         }]
                     };
                 }
