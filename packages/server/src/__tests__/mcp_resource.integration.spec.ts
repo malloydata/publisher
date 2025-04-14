@@ -41,6 +41,16 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
             expect(result.resources).toBeDefined();
             expect(Array.isArray(result.resources)).toBe(true);
         });
+
+        // Added Test
+        it("should resolve for syntactically invalid URI string", async () => {
+            if (!env) throw new Error("Test environment not initialized");
+            const syntacticallyInvalidUri = "i am /// not valid?";
+            const result = await mcpClient.listResources({ uri: syntacticallyInvalidUri });
+            expect(result).toBeDefined();
+            expect(result.resources).toBeDefined();
+            expect(Array.isArray(result.resources)).toBe(true);
+        });
     });
 
     describe("client.readResource", () => {
@@ -148,5 +158,64 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
             // Check the specific error message format from MCP_ERROR_MESSAGES.PROJECT_NOT_FOUND
             expect(errorPayload.error).toMatch(/Project.*invalid_project.*not available/i); 
         });
+
+        // Added Test
+        it("should reject for syntactically invalid URI string", async () => {
+            if (!env) throw new Error("Test environment not initialized");
+            const syntacticallyInvalidUri = "i am /// not valid?";
+            // readResource should fail at new URL() parsing
+            await expect(mcpClient.readResource({ uri: syntacticallyInvalidUri }))
+                .rejects.toMatchObject({
+                    // Expect a protocol error, likely InvalidParams or InternalError
+                    code: expect.any(Number), // Check for any error code for now
+                    message: expect.any(String) // Check for any message
+                });
+        });
     });
+
+    // --- Tests for Package Models Listing Resource ---
+    describe("client.readResource (for packageModels)", () => {
+        const faaModelsListUri = 'malloy://project/home/package/faa/models'; // URI to list models in faa
+        const nonExistentPkgModelsListUri = 'malloy://project/home/package/nonexistent/models';
+
+        it("should return list of models for a valid package", async () => {
+            if (!env) throw new Error("Test environment not initialized");
+            const result = await mcpClient.readResource({ uri: faaModelsListUri });
+            
+            expect(result).toBeDefined();
+            expect(result.isError).not.toBe(true); // Should not be an error
+            expect(result.contents).toBeDefined();
+            expect(Array.isArray(result.contents)).toBe(true);
+            expect(result.contents.length).toBeGreaterThan(0); // Expecting at least one model
+
+            // Check the first model entry
+            const firstModelContent = result.contents[0];
+            expect(firstModelContent.type).toBe('application/json');
+            const modelInfo = JSON.parse((firstModelContent as any).text);
+            expect(modelInfo).toBeDefined();
+            expect(modelInfo.path).toBeDefined(); // e.g., flights.malloy
+            expect(modelInfo.type).toBeDefined(); // e.g., source or notebook
+            expect(modelInfo.name).toBe(modelInfo.path);
+            expect(modelInfo.description).toContain(modelInfo.path);
+             // Check that the URI in the content matches a specific model URI format
+            expect(firstModelContent.uri).toMatch(/malloy:\/\/project\/home\/package\/faa\/models\/.+/);
+        });
+
+        it("should return application error if package not found when listing models", async () => {
+            if (!env) throw new Error("Test environment not initialized");
+            const result = await mcpClient.readResource({ uri: nonExistentPkgModelsListUri });
+
+            expect(result).toBeDefined();
+            expect(result.isError).toBe(true); // Expect application error flag
+            expect(result.contents).toBeDefined();
+            expect(Array.isArray(result.contents)).toBe(true);
+            expect(result.contents).toHaveLength(1);
+            expect(result.contents[0].type).toBe('application/json');
+            const errorPayload = JSON.parse((result.contents[0] as any).text);
+            expect(errorPayload).toBeDefined();
+            expect(errorPayload.error).toBeDefined();
+            expect(errorPayload.error).toMatch(/Package manifest.*nonexistent.*does not exist/i); 
+        });
+    });
+
 }); 
