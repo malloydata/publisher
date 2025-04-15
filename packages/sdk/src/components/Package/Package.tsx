@@ -37,7 +37,7 @@ export default function Package({
          columns={12}
          sx={{ mb: (theme) => theme.spacing(2) }}
       >
-         <Grid2 size={{ md: 12, lg: 4 }}>
+         <Grid2 size={{ xs: 12, md: 12, lg: 4 }}>
             <Config
                server={server}
                projectName={projectName}
@@ -46,7 +46,7 @@ export default function Package({
                accessToken={accessToken}
             />
          </Grid2>
-         <Grid2 size={{ md: 12, lg: 4 }}>
+         <Grid2 size={{ xs: 12, md: 12, lg: 4 }}>
             <Models
                server={server}
                projectName={projectName}
@@ -56,7 +56,7 @@ export default function Package({
                accessToken={accessToken}
             />
          </Grid2>
-         <Grid2 size={{ md: 12, lg: 4 }}>
+         <Grid2 size={{ xs: 12, md: 12, lg: 4 }}>
             <Databases
                server={server}
                projectName={projectName}
@@ -65,7 +65,7 @@ export default function Package({
                accessToken={accessToken}
             />
          </Grid2>
-         <Grid2 size={{ md: 12 }}>
+         <Grid2 size={{ xs: 12, md: 12 }}>
             <Schedules
                server={server}
                projectName={projectName}
@@ -74,7 +74,7 @@ export default function Package({
                accessToken={accessToken}
             />
          </Grid2>
-         <Grid2 size={{ md: 12 }}>
+         <Grid2 size={{ xs: 12, md: 12 }}>
             <Notebook
                server={server}
                projectName={projectName}
