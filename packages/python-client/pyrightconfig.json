@@ -1,0 +1,22 @@
+{
+  "typeCheckingMode": "strict",
+  "exclude": [
+    "malloy_publisher_sdk"
+  ],
+  "reportUnknownMemberType": false,
+  "reportUnknownVariableType": false,
+  "reportPrivateUsage": false,
+  "executionEnvironments": [
+    {
+      "root": "./malloy_publisher_sdk",
+      "typeCheckingMode": "basic",
+      "reportUnknownMemberType": false,
+      "reportUnknownVariableType": false,
+      "reportPrivateUsage": false
+    },
+    {
+      "root": ".",
+      "typeCheckingMode": "strict"
+    }
+  ]
+} 

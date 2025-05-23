@@ -1,0 +1,64 @@
+name: python-sdk
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api-doc.yaml"
+      - "packages/python-client/**"
+  pull_request:
+    paths:
+      - "api-doc.yaml"
+      - "packages/python-client/**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv via pip
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Build + test SDK
+        run: packages/python-client/scripts/build-python-sdk.sh
+
+      - name: Detect drift
+        run: |
+          git diff --exit-code || (echo "Generated SDK out of date — run build-python-sdk.sh and commit." && exit 1)
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/sdk-python-')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel and sdist
+        run: |
+          pip install build
+          cd packages/python-client
+          python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          pip install twine
+          cd packages/python-client
+          twine upload dist/* --non-interactive 

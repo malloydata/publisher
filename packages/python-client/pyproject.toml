@@ -1,0 +1,67 @@
+[project]
+name = "malloy_publisher_sdk"
+version = "0.1.0"
+requires-python = ">=3.9"
+description = "Auto-generated client for Malloy Publisher"
+authors = [ {name = "Malloy Data"} ]
+license = {text = "MIT"}
+readme = "README.md"
+
+# Runtime dependencies generated client relies on
+dependencies = [
+    "httpx>=0.25.0",
+    "attrs>=23.1.0",
+    "pydantic>=2.6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "respx>=0.20.1",  # for mocking httpx
+    "hypothesis>=6.82.0"  # property-based testing
+]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.2.0",
+    "mkdocstrings[python]>=0.22.0"
+]
+dev = [
+    "openapi-python-client>=0.18.0",
+    "openapi-spec-validator>=0.7.1",
+    "black>=24.4.0",
+    "ruff>=0.4.1",
+    "pyright>=1.1.360"
+]
+
+[tool.pytest.ini_options]
+addopts = "--cov=malloy_publisher_sdk"
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+asyncio_mode = "auto"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')"
+]
+
+[tool.coverage.run]
+source = ["malloy_publisher_sdk"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# Można dodać opcję generowania raportu XML dla CI:
+# xml = "coverage.xml"
+
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+line-length = 88
+
+[tool.pyright]
+typeCheckingMode = "strict"
+
+[tool.hatch.metadata]
+allow-direct-references = true

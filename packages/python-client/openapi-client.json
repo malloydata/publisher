@@ -1,0 +1,7 @@
+{
+  "project_name": "malloy_publisher_sdk",
+  "package_version": "0.1.0",
+  "package_description": "Auto-generated Malloy Publisher Python client",
+  "package_author": "Malloy Data",
+  "use_enum_prefix": true
+}

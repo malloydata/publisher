@@ -18,7 +18,7 @@ paths:
       summary:
         Returns a list of the Projects hosted on this server.
       responses:
-        200:
+        "200":
           description:
             A list of the Projects names.
           content:
@@ -27,9 +27,9 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Project"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
   
   /projects/{projectName}:
@@ -53,18 +53,18 @@ paths:
           schema:
             type: boolean
       responses:
-        200:
+        "200":
           description:
             Metadata about the project.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Project"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections:
@@ -82,7 +82,7 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A list of the connections in the project.
           content:
@@ -91,9 +91,9 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Connection"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
   
   /projects/{projectName}/connections/{connectionName}:
@@ -117,18 +117,18 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A connection.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Connection"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections/{connectionName}/test:
@@ -152,14 +152,14 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             Test passed.
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections/{connectionName}/sqlSource:
@@ -189,18 +189,18 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A SQL source.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
   
   /projects/{projectName}/connections/{connectionName}/tableSource:
@@ -236,18 +236,18 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A table source.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TableSource"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables:
@@ -277,7 +277,7 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A list of table names available in the specified schema.
           content:
@@ -286,11 +286,11 @@ paths:
                 type: array
                 items:
                   type: string
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections/{connectionName}/schemas:
@@ -314,7 +314,7 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A list of schemas available in the connection with metadata.
           content:
@@ -323,11 +323,11 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SchemaName"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections/{connectionName}/queryData:
@@ -363,18 +363,18 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A query and its results.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryData"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections/{connectionName}/temporaryTable:
@@ -404,18 +404,18 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A temporary table.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TemporaryTable"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
           
 
@@ -434,7 +434,7 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A list of the Packages names.
           content:
@@ -443,11 +443,11 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Package"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
-        501:
+        "501":
           $ref: "#/components/responses/NotImplementedError"
 
   /projects/{projectName}/packages/{packageName}:
@@ -483,20 +483,20 @@ paths:
           schema:
             type: boolean
       responses:
-        200:
+        "200":
           description:
             Package metadata.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
-        501:
+        "501":
           $ref: "#/components/responses/NotImplementedError"
 
   /projects/{projectName}/packages/{packageName}/models:
@@ -526,7 +526,7 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A list of relative paths to the models in the package.
           content:
@@ -535,13 +535,13 @@ paths:
                 type: array
                 items: 
                   $ref: "#/components/schemas/Model"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
-        501:
+        "501":
           $ref: "#/components/responses/NotImplementedError"
 
   /projects/{projectName}/packages/{packageName}/models/{path}:
@@ -577,20 +577,20 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A Malloy model.
           content:
             "application/json":
               schema:
                 $ref: "#/components/schemas/CompiledModel"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
-        501:
+        "501":
           $ref: "#/components/responses/NotImplementedError"
 
   /projects/{projectName}/packages/{packageName}/queryResults/{path}:
@@ -645,22 +645,22 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A query and its results.
           content:
             "application/json":
               schema:
                 $ref: "#/components/schemas/QueryResult"
-        400:
+        "400":
           $ref: "#/components/responses/BadRequestError"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
-        501:
+        "501":
           $ref: "#/components/responses/NotImplementedError"
 
   /projects/{projectName}/packages/{packageName}/databases:
@@ -690,7 +690,7 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A list of relative paths to the databases embedded in the package.
           content:
@@ -699,13 +699,13 @@ paths:
                 type: array
                 items: 
                   $ref: "#/components/schemas/Database"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
-        501:
+        "501":
           $ref: "#/components/responses/NotImplementedError"
   
   /projects/{projectName}/packages/{packageName}/schedules:
@@ -735,7 +735,7 @@ paths:
           schema:
             type: string
       responses:
-        200:
+        "200":
           description:
             A list of running schedules.
           content:
@@ -744,13 +744,13 @@ paths:
                 type: array
                 items: 
                   $ref: "#/components/schemas/Schedule"
-        401:
+        "401":
           $ref: "#/components/responses/UnauthorizedError"
-        404:
+        "404":
           $ref: "#/components/responses/NotFoundError"
-        500:
+        "500":
           $ref: "#/components/responses/InternalServerError"
-        501:
+        "501":
           $ref: "#/components/responses/NotImplementedError"
 
 components:
