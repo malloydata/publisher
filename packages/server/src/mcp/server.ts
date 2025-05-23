@@ -9,6 +9,7 @@ import { registerQueryResource } from "./resources/query_resource";
 import { registerViewResource } from "./resources/view_resource";
 import { registerNotebookResource } from "./resources/notebook_resource";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
+import { registerPromptCapability } from "./prompts/prompt_service.js";
 
 export const testServerInfo = {
    name: "malloy-publisher-mcp-server",
@@ -44,6 +45,9 @@ export function initializeMcpServer(projectStore: ProjectStore): McpServer {
 
    console.log("[MCP Init] Registering executeQuery tool...");
    registerExecuteQueryTool(mcpServer, projectStore);
+
+   console.log("[MCP Init] Registering prompt capability...");
+   registerPromptCapability(mcpServer, projectStore);
 
    const endTime = Date.now();
    console.log(

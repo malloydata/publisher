@@ -13,7 +13,7 @@ import {
    McpE2ETestEnvironment,
    setupE2ETestEnvironment,
    cleanupE2ETestEnvironment,
-} from "./mcp_test_setup";
+} from "../../harness/mcp_test_setup";
 
 // --- Test Suite ---
 // Note: These tests assume interaction via a standard MCP client.

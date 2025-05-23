@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: ./docker/Dockerfile.ci
     networks:
-      - canary_net 
+      - canary_net
     profiles:
       - ci
     # volumes:
@@ -15,4 +15,4 @@ services:
 
 networks:
   canary_net:
-    name: canary_net 
+    name: canary_net

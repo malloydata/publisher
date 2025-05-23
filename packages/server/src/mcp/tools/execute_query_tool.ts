@@ -2,7 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
    McpError,
    ErrorCode,
-   // type ExecuteToolResult, // Removed: Type not found/exported or inferred
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { ProjectStore } from "../../service/project_store";
@@ -11,28 +10,15 @@ import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 import { buildMalloyUri } from "../handler_utils";
 
-// Define the raw shape for the Zod schema
+// Zod shape defining required/optional params for executeQuery
 const executeQueryShape = {
-   // Explicitly add projectName, making it required
+   // projectName is required; other fields mirror SDK expectations
    projectName: z.string().describe("Project name"),
-   packageName: z.string().describe("Name of the package containing the model"),
-   modelPath: z
-      .string()
-      .describe("Path to the .malloy model file within the package"),
-   query: z
-      .string()
-      .optional()
-      .describe("Ad-hoc Malloy query string (omit if using queryName)"),
-   sourceName: z
-      .string()
-      .optional()
-      .describe("Source name (required for named queries/views)"),
-   queryName: z
-      .string()
-      .optional()
-      .describe(
-         "Named query or view defined in the model (omit if using query)",
-      ),
+   packageName: z.string().describe("Package containing the model"),
+   modelPath: z.string().describe("Path to the .malloy model file"),
+   query: z.string().optional().describe("Ad-hoc Malloy query code"),
+   sourceName: z.string().optional().describe("Source name for a view"),
+   queryName: z.string().optional().describe("Named query or view"),
 };
 
 // Infer the type from the Zod shape for use in the handler
@@ -48,7 +34,7 @@ export function registerExecuteQueryTool(
    mcpServer.tool(
       "malloy/executeQuery",
       "Executes a Malloy query (either ad-hoc or a named query/view defined in a model) against the specified model and returns the results as JSON.",
-      executeQueryShape, // Pass the raw shape, not the Zod object
+      executeQueryShape,
       /** Handles requests for the malloy/executeQuery tool */
       async (params: ExecuteQueryParams) => {
          // Destructure projectName as well
@@ -64,7 +50,7 @@ export function registerExecuteQueryTool(
          console.log(
             "[MCP Tool executeQuery] Received params:",
             JSON.stringify(params),
-         ); // Log params
+         );
 
          const hasAdhocQuery = !!query;
          const hasNamedQuery = !!queryName;
@@ -86,18 +72,13 @@ export function registerExecuteQueryTool(
          // --- Get Package and Model ---
          console.log(
             `[MCP Tool executeQuery] Calling getModelForQuery for ${projectName}/${packageName}/${modelPath}`,
-         ); // Log before getModelForQuery
+         );
          const modelResult = await getModelForQuery(
             projectStore,
             projectName,
             packageName,
             modelPath,
          );
-
-         // console.log(
-         //    "[MCP Tool executeQuery] Result from getModelForQuery:",
-         //    modelResult,
-         // ); // Log result
 
          // Handle errors during package/model access (e.g., not found, initial compilation)
          if ("error" in modelResult) {
@@ -130,7 +111,7 @@ export function registerExecuteQueryTool(
          const { model } = modelResult;
          console.log(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
-         ); // Log before getQueryResults
+         );
          try {
             // If ad-hoc query is provided, use it directly in the 3rd arg
             if (query) {
@@ -196,6 +177,15 @@ export function registerExecuteQueryTool(
                   ],
                };
             }
+
+            // If execution reaches this point, something has gone wrong with
+            // the earlier parameter validation logic. Throw an explicit error
+            // so the return type is never 'undefined' from the compiler's
+            // perspective.
+            throw new McpError(
+               ErrorCode.InternalError,
+               "Unreachable executeQuery code path – parameters were not validated correctly.",
+            );
          } catch (queryError) {
             // Handle query execution errors (syntax errors, invalid queries, etc.)
             console.error(

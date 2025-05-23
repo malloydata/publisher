@@ -8,6 +8,7 @@
       "experimentalDecorators": true,
       "emitDecoratorMetadata": true,
       "strictPropertyInitialization": false,
+      "types": ["bun-types"], // Added bun-types for bun:test support
 
       "moduleResolution": "Node", // Specifies how modules are resolved when bundling.
       "resolveJsonModule": true, // Enables importing JSON modules.
@@ -27,6 +28,5 @@
 
       "outDir": "./dist"
    },
-   "include": ["src"],
-   "exclude": ["**/*.spec.ts"]
+   "include": ["src"]
 }

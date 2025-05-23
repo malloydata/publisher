@@ -40,7 +40,7 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
 
    // --- IMPORTANT: Import server *after* setting env var ---
    // Dynamically import the actual app instance
-   const { mcpApp } = await import("../server");
+   const { mcpApp } = await import("../../src/server");
 
    let serverInstance: http.Server;
    let serverUrl: string;

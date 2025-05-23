@@ -3,6 +3,31 @@ export interface ErrorDetails {
    suggestions: string[];
 }
 
+export interface InvalidParamDetail {
+   name: string;
+   reason: string;
+   value?: unknown;
+}
+
+export function getInvalidParamsError(
+   params: InvalidParamDetail[],
+): ErrorDetails {
+   const reasons = params
+      .map(
+         (p) =>
+            `${p.name}: ${p.reason}${p.value !== undefined ? ` (value: ${JSON.stringify(p.value)})` : ""}`,
+      )
+      .join("; ");
+   return {
+      message: `Invalid parameter(s) provided. ${reasons}`,
+      suggestions: [
+         "Check the parameter names and values against the prompt's argument definition.",
+         "Ensure all required parameters are provided and have the correct data types.",
+         "For URI parameters, ensure they are correctly formatted.",
+      ],
+   };
+}
+
 /**
  * Generates error details for a resource not found scenario.
  * @param resourceUriOrContext The URI that was not found, or a context string (e.g., "Package 'X'", "Model 'Y' in package 'X'").
@@ -14,9 +39,6 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
       `Verify the identifier or URI (${resourceUriOrContext}) is spelled correctly and exists. Check capitalization and path separators.`,
       `If using a URI, ensure it follows the correct format (e.g., malloy://project/...) and includes the right path segments (e.g., /models/, /sources/, /queries/, /views/).`,
    ];
-
-   // Add context-specific suggestions
-   // Removed suggestions hardcoding 'home'
 
    suggestions.push(
       "Check if the resource exists and is correctly named in your Malloy project structure or the specific model file.",
@@ -39,7 +61,6 @@ export function getInternalError(
    error?: unknown,
 ): ErrorDetails {
    const baseMessage = `An unexpected internal error occurred during ${operation}.`;
-   // Simple check to get a bit more detail from the error if possible
    const errorMessage = error instanceof Error ? error.message : String(error);
    return {
       message: error ? `${baseMessage}: ${errorMessage}` : baseMessage,
@@ -50,7 +71,6 @@ export function getInternalError(
    };
 }
 
-// Function for Malloy Compilation/Query Errors
 /**
  * Generates detailed error information for Malloy compilation or query execution errors.
  * @param operation The operation that failed (e.g., 'GetResource (model)', 'executeQuery').

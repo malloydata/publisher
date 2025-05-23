@@ -9,66 +9,74 @@ The Malloy Publisher Server includes several K6 test presets to help you test it
 Below is a list of the available test presets:
 
 ### Smoke Test
+
 Basic functionality test with minimal load.
+
 - **File:**
-    
-    `./k6-tests/smoke-test.ts`
+   `./k6-tests/smoke-test.ts`
 - **Virtual Users:** 1
 - **Duration:** 1 minute
 - **95th Percentile Response Time:** < 500ms
 - **Error Rate:** < 1%
 
 ### Load Test
+
 Testing system under normal load.
+
 - **File:**
-    
-    `./k6-tests/load-test.ts`
+   `./k6-tests/load-test.ts`
 - **Virtual Users:** 50
 - **Duration:** 5 minutes
 - **95th Percentile Response Time:** < 1s
 - **Error Rate:** < 5%
 
 ### Stress Test
+
 Testing system under extreme load.
+
 - **File:**
 
-    `./k6-tests/stress-test.ts`
+   `./k6-tests/stress-test.ts`
+
 - **Virtual Users:** 100
 - **Duration:** 10 minutes
 - **95th Percentile Response Time:** < 2s
 - **Error Rate:** < 10%
 
 ### Spike Test
+
 Testing system under sudden spikes of load.
+
 - **File:**
-    
-    `./k6-tests/spike-test.ts`
+   `./k6-tests/spike-test.ts`
 - **Stages:**
-  - 2 minutes ramp-up to 100 users
-  - 1 minute at 100 users
-  - 2 minutes ramp-down to 0 users
+   - 2 minutes ramp-up to 100 users
+   - 1 minute at 100 users
+   - 2 minutes ramp-down to 0 users
 - **95th Percentile Response Time:** < 2s
 - **Error Rate:** < 10%
 
 ### Breakpoint Test
+
 Testing system to find its breaking point.
+
 - **File:**
-    
-    `./k6-tests/breakpoint-test.ts`
+   `./k6-tests/breakpoint-test.ts`
 - **Stages:**
-  - 2 minutes at 50 users
-  - 2 minutes at 100 users
-  - 2 minutes at 150 users
-  - 2 minutes at 200 users
-  - 2 minutes ramp-down to 0 users
+   - 2 minutes at 50 users
+   - 2 minutes at 100 users
+   - 2 minutes at 150 users
+   - 2 minutes at 200 users
+   - 2 minutes ramp-down to 0 users
 - **95th Percentile Response Time:** < 3s
 - **Error Rate:** < 15%
 
 ### Soak Test
+
 Testing system under sustained load.
+
 - **File:**
-    
-    `./k6-tests/soak-test.ts`
+   `./k6-tests/soak-test.ts`
 - **Virtual Users:** 10
 - **Duration:** 1 hour
 - **95th Percentile Response Time:** < 1s
@@ -77,6 +85,7 @@ Testing system under sustained load.
 You can run these presets using the K6 testing tool to ensure your system performs well under different load conditions.
 
 For example, this command will run a smoke test against your localhost:
+
 ```sh
 k6 run ./k6-tests/smoke-test.ts --env PUBLISHER_URL=http://::1:4000
 ```
@@ -97,3 +106,14 @@ K6_OTEL_HTTP_EXPORTER_ENDPOINT=${MY_OTLP_ENDPOINT} K6_OTEL_GRPC_EXPORTER_INSECUR
 ```
 
 For more information on how to configure OpenTelemetry collectors, please refer to the official documentation: [K6 OpenTelemetry Integration](https://grafana.com/docs/k6/latest/results-output/real-time/opentelemetry/)
+
+## MCP Prompt Capability
+
+The server registers Malloy-specific **prompts** with its MCP interface.  These prompts deliver ready-to-send LLM messages so agents can:
+
+* explain a Malloy query
+* generate a query from a natural-language goal
+* translate SQL into Malloy
+* summarise a model
+
+Use `mcp-client prompts/list` to discover them or see the root `README.md` for full details.

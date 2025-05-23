@@ -13,7 +13,7 @@ import {
    getInternalError,
    getMalloyErrorDetails,
    type ErrorDetails,
-} from "./error_messages"; // Use local ErrorDetails
+} from "./error_messages";
 import type { Model } from "../service/model";
 
 // Custom error to wrap specific GetResource application errors
@@ -76,7 +76,7 @@ export async function handleResourceGet<
          error,
       );
 
-      let errorDetails: ErrorDetails; // Use local ErrorDetails type
+      let errorDetails: ErrorDetails;
 
       // Determine the correct error details based on the error type
       if (error instanceof McpGetResourceError) {
@@ -126,7 +126,6 @@ export async function getModelForQuery(
    packageName: string,
    modelPath: string,
 ): Promise<{ model: Model } | { error: ErrorDetails }> {
-   // Use local ErrorDetails
    try {
       const project = await projectStore.getProject(projectName, false);
       const pkg = await project.getPackage(packageName, false);
@@ -143,7 +142,7 @@ export async function getModelForQuery(
       return { model };
    } catch (error) {
       // Handle errors during package/model access or initial compilation
-      let errorDetails: ErrorDetails; // Use local ErrorDetails
+      let errorDetails: ErrorDetails;
       if (error instanceof ProjectNotFoundError) {
          errorDetails = getNotFoundError(`project '${projectName}'`);
       } else if (error instanceof PackageNotFoundError) {
