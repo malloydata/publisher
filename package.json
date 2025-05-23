@@ -2,7 +2,9 @@
   "version": "0.0.1",
   "license": "MIT",
   "name": "malloy-publisher",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "bun": ">=1.2.2"
   },
@@ -35,5 +37,8 @@
     "eslint": "^8.50.0",
     "sinon": "^19.0.4",
     "prettier": "^3.0.0"
+  },
+  "dependencies": {
+    "handlebars": "^4.7.8"
   }
 }

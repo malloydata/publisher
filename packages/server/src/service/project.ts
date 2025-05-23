@@ -146,7 +146,7 @@ export class Project {
                         metadata ? JSON.stringify(metadata) : "undefined",
                      );
                      return metadata;
-                  } catch (err) {
+                  } catch {
                      // Directory did not contain a valid package.json file -- therefore, it's not a package.
                      return undefined;
                   }

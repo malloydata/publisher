@@ -1,7 +1,7 @@
 // @ts-expect-error Bun test types are not recognized by ESLint
 import { describe, it, expect, beforeAll, afterAll, fail } from "bun:test";
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import { MCP_ERROR_MESSAGES } from "../mcp/mcp_constants"; // Keep for error message checks
+import { MCP_ERROR_MESSAGES } from "../../../src/mcp/mcp_constants"; // Keep for error message checks
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type {
    Request,
@@ -16,7 +16,7 @@ import {
    McpE2ETestEnvironment,
    setupE2ETestEnvironment,
    cleanupE2ETestEnvironment,
-} from "./mcp_test_setup";
+} from "../../harness/mcp_test_setup";
 
 // --- Test Suite ---
 describe("MCP Tool Handlers (E2E Integration)", () => {

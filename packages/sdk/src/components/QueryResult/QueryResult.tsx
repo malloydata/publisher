@@ -77,9 +77,7 @@ export default function QueryResult({
          )}
          {isSuccess && (
             <Suspense fallback="Loading malloy...">
-               <RenderedResult
-                  result={data.data.result}
-               />
+               <RenderedResult result={data.data.result} />
             </Suspense>
          )}
          {isError && (

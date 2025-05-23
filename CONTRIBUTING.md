@@ -1,4 +1,5 @@
 ## Project Committers
+
 Our committers are the following GitHub accounts:
 
 - lloydtabb
@@ -11,13 +12,13 @@ Our committers are the following GitHub accounts:
 
 ## Developer Certificate of Origin
 
-All new inbound code contributions must also be accompanied by a Developer 
-Certificate of Origin (http://developercertificate.org) sign-off in the source 
-code system that is submitted through a TSC-approved contribution process which 
-will bind the authorized contributor and, if not self-employed, their employer 
+All new inbound code contributions must also be accompanied by a Developer
+Certificate of Origin (http://developercertificate.org) sign-off in the source
+code system that is submitted through a TSC-approved contribution process which
+will bind the authorized contributor and, if not self-employed, their employer
 to the applicable license.
 
-Contributors sign-off that they adhere to these requirements by adding a 
+Contributors sign-off that they adhere to these requirements by adding a
 Signed-off-by line to commit messages.
 
 Git has a -s command line option to append this automatically to your commit
@@ -25,7 +26,7 @@ message, for example:
 
 ```
 $ git commit -s -m 'This is my commit message'
-``` 
+```
 
 ## Code Reviews
 

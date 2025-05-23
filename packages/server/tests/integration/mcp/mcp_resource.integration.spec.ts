@@ -7,7 +7,7 @@ import {
    McpE2ETestEnvironment,
    setupE2ETestEnvironment,
    cleanupE2ETestEnvironment,
-} from "./mcp_test_setup";
+} from "../../harness/mcp_test_setup";
 
 // Define an interface for the expected structure of package content entries
 interface PackageContentEntry {

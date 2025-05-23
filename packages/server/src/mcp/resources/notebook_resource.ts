@@ -74,11 +74,9 @@ export function registerNotebookResource(
                      const isNotebookError =
                         modelInstance?.getModelType() !== "notebook";
                      const errorDetails = getNotFoundError(
-                        `Notebook '${notebookName}' in package '${packageName}' project '${projectName}'`,
-                        // Add specific suggestion only if it exists but isn't a notebook
-                        isNotebookError
-                           ? [`The path exists but is not a .malloynb file.`]
-                           : undefined,
+                        `Notebook '${notebookName}' in package '${packageName}' project '${projectName}'${
+                           isNotebookError ? " (not a .malloynb file)" : ""
+                        }`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }

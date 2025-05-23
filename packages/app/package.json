@@ -1,29 +1,29 @@
 {
-  "name": "@malloy-publisher/app",
-  "description": "Malloy Publisher App",
-  "version": "0.0.1",
-  "type": "module",
-  "scripts": {
-    "build": "bunx vite build --mode development",
-    "dev": "bunx vite --host",
-    "preview": "bunx vite preview",
-    "lint": "bunx eslint ./src --ext .ts,.tsx --ignore-path .gitignore --fix",
-    "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
-    "generate-api-types": ""
-  },
-  "dependencies": {
-    "@malloy-publisher/sdk": "workspace:*",
-    "@mui/icons-material": "^7.0.2",
-    "@mui/material": "^7.0.2",
-    "@vitejs/plugin-react": "^4.3.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.1"
-  },
-  "devDependencies": {
-    "@types/react": "^18.3.1",
-    "@types/react-dom": "^18.3.1",
-    "@typescript-eslint/eslint-plugin": "^8.31.0",
-    "vite": "^6.0.1"
-  }
+   "name": "@malloy-publisher/app",
+   "description": "Malloy Publisher App",
+   "version": "0.0.1",
+   "type": "module",
+   "scripts": {
+      "build": "bunx vite build --mode development",
+      "dev": "bunx vite --host",
+      "preview": "bunx vite preview",
+      "lint": "bunx eslint ./src --ext .ts,.tsx --ignore-path .gitignore --fix",
+      "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
+      "generate-api-types": ""
+   },
+   "dependencies": {
+      "@malloy-publisher/sdk": "workspace:*",
+      "@mui/icons-material": "^7.0.2",
+      "@mui/material": "^7.0.2",
+      "@vitejs/plugin-react": "^4.3.1",
+      "react": "^18.3.1",
+      "react-dom": "^18.3.1",
+      "react-router-dom": "^6.26.1"
+   },
+   "devDependencies": {
+      "@types/react": "^18.3.1",
+      "@types/react-dom": "^18.3.1",
+      "@typescript-eslint/eslint-plugin": "^8.31.0",
+      "vite": "^6.0.1"
+   }
 }

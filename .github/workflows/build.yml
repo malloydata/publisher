@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          submodules: 'true' # Fetch submodules
+          submodules: "true" # Fetch submodules
       - name: Spin-up services
         run: docker compose --profile ci up -d
       - name: Install dependencies
