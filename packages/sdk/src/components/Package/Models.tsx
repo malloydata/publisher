@@ -1,7 +1,7 @@
 import { Box, Divider, Typography } from "@mui/material";
 import { QueryClient, useQuery } from "@tanstack/react-query";
 import axios from "axios";
-import { Configuration, ModelsApi } from "../../client";
+import { Configuration, ListModelsFilterEnum, ModelsApi } from "../../client";
 import { StyledCard, StyledCardContent } from "../styles";
 import { FileTreeView } from "./FileTreeView";
 
@@ -18,6 +18,7 @@ interface ModelsProps {
    versionId?: string;
    navigate: (to: string) => void;
    accessToken?: string;
+   filter?: ListModelsFilterEnum;
 }
 
 export default function Models({
@@ -27,12 +28,20 @@ export default function Models({
    versionId,
    navigate,
    accessToken,
+   filter,
 }: ModelsProps) {
    const { data, isSuccess, isError, error } = useQuery(
       {
-         queryKey: ["models", server, projectName, packageName, versionId],
+         queryKey: [
+            "models",
+            server,
+            projectName,
+            packageName,
+            versionId,
+            filter,
+         ],
          queryFn: () =>
-            modelsApi.listModels(projectName, packageName, versionId, {
+            modelsApi.listModels(projectName, packageName, versionId, filter, {
                baseURL: server,
                withCredentials: !accessToken,
                headers: {
@@ -48,7 +57,7 @@ export default function Models({
       <StyledCard variant="outlined" sx={{ padding: "10px", width: "100%" }}>
          <StyledCardContent>
             <Typography variant="overline" fontWeight="bold">
-               Models
+               {filter === ListModelsFilterEnum.Source ? "Models" : "Notebooks"}
             </Typography>
             <Divider />
             <Box
@@ -60,7 +69,10 @@ export default function Models({
             >
                {!isSuccess && !isError && (
                   <Typography variant="body2" sx={{ p: "20px", m: "auto" }}>
-                     Fetching Models
+                     Fetching&nbsp;
+                     {filter === ListModelsFilterEnum.Source
+                        ? "Models"
+                        : "Notebooks"}
                   </Typography>
                )}
                {isSuccess && data.data.length > 0 && (

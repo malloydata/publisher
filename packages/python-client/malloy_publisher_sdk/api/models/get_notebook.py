@@ -5,36 +5,30 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.compiled_notebook import CompiledNotebook
 from ...models.error import Error
-from ...models.list_models_filter import ListModelsFilter
-from ...models.model import Model
 from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     project_name: str,
     package_name: str,
+    path: str,
     *,
     version_id: Union[Unset, str] = UNSET,
-    filter_: Union[Unset, ListModelsFilter] = UNSET,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
 
     params["versionId"] = version_id
 
-    json_filter_: Union[Unset, str] = UNSET
-    if not isinstance(filter_, Unset):
-        json_filter_ = filter_.value
-
-    params["filter"] = json_filter_
-
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "get",
-        "url": "/projects/{project_name}/packages/{package_name}/models".format(
+        "url": "/projects/{project_name}/packages/{package_name}/notebooks/{path}".format(
             project_name=project_name,
             package_name=package_name,
+            path=path,
         ),
         "params": params,
     }
@@ -44,14 +38,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, list["Model"]]]:
+) -> Optional[Union[CompiledNotebook, Error]]:
     if response.status_code == 200:
-        response_200 = []
-        _response_200 = response.json()
-        for response_200_item_data in _response_200:
-            response_200_item = Model.from_dict(response_200_item_data)
-
-            response_200.append(response_200_item)
+        response_200 = CompiledNotebook.from_dict(response.json())
 
         return response_200
     if response.status_code == 401:
@@ -78,7 +67,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, list["Model"]]]:
+) -> Response[Union[CompiledNotebook, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -90,32 +79,32 @@ def _build_response(
 def sync_detailed(
     project_name: str,
     package_name: str,
+    path: str,
     *,
     client: Union[AuthenticatedClient, Client],
     version_id: Union[Unset, str] = UNSET,
-    filter_: Union[Unset, ListModelsFilter] = UNSET,
-) -> Response[Union[Error, list["Model"]]]:
-    """Returns a list of relative paths to the models in the package.
+) -> Response[Union[CompiledNotebook, Error]]:
+    """Returns a Malloy notebook.
 
     Args:
         project_name (str):
         package_name (str):
+        path (str):
         version_id (Union[Unset, str]):
-        filter_ (Union[Unset, ListModelsFilter]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, list['Model']]]
+        Response[Union[CompiledNotebook, Error]]
     """
 
     kwargs = _get_kwargs(
         project_name=project_name,
         package_name=package_name,
+        path=path,
         version_id=version_id,
-        filter_=filter_,
     )
 
     response = client.get_httpx_client().request(
@@ -128,65 +117,65 @@ def sync_detailed(
 def sync(
     project_name: str,
     package_name: str,
+    path: str,
     *,
     client: Union[AuthenticatedClient, Client],
     version_id: Union[Unset, str] = UNSET,
-    filter_: Union[Unset, ListModelsFilter] = UNSET,
-) -> Optional[Union[Error, list["Model"]]]:
-    """Returns a list of relative paths to the models in the package.
+) -> Optional[Union[CompiledNotebook, Error]]:
+    """Returns a Malloy notebook.
 
     Args:
         project_name (str):
         package_name (str):
+        path (str):
         version_id (Union[Unset, str]):
-        filter_ (Union[Unset, ListModelsFilter]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, list['Model']]
+        Union[CompiledNotebook, Error]
     """
 
     return sync_detailed(
         project_name=project_name,
         package_name=package_name,
+        path=path,
         client=client,
         version_id=version_id,
-        filter_=filter_,
     ).parsed
 
 
 async def asyncio_detailed(
     project_name: str,
     package_name: str,
+    path: str,
     *,
     client: Union[AuthenticatedClient, Client],
     version_id: Union[Unset, str] = UNSET,
-    filter_: Union[Unset, ListModelsFilter] = UNSET,
-) -> Response[Union[Error, list["Model"]]]:
-    """Returns a list of relative paths to the models in the package.
+) -> Response[Union[CompiledNotebook, Error]]:
+    """Returns a Malloy notebook.
 
     Args:
         project_name (str):
         package_name (str):
+        path (str):
         version_id (Union[Unset, str]):
-        filter_ (Union[Unset, ListModelsFilter]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, list['Model']]]
+        Response[Union[CompiledNotebook, Error]]
     """
 
     kwargs = _get_kwargs(
         project_name=project_name,
         package_name=package_name,
+        path=path,
         version_id=version_id,
-        filter_=filter_,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -197,33 +186,33 @@ async def asyncio_detailed(
 async def asyncio(
     project_name: str,
     package_name: str,
+    path: str,
     *,
     client: Union[AuthenticatedClient, Client],
     version_id: Union[Unset, str] = UNSET,
-    filter_: Union[Unset, ListModelsFilter] = UNSET,
-) -> Optional[Union[Error, list["Model"]]]:
-    """Returns a list of relative paths to the models in the package.
+) -> Optional[Union[CompiledNotebook, Error]]:
+    """Returns a Malloy notebook.
 
     Args:
         project_name (str):
         package_name (str):
+        path (str):
         version_id (Union[Unset, str]):
-        filter_ (Union[Unset, ListModelsFilter]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, list['Model']]
+        Union[CompiledNotebook, Error]
     """
 
     return (
         await asyncio_detailed(
             project_name=project_name,
             package_name=package_name,
+            path=path,
             client=client,
             version_id=version_id,
-            filter_=filter_,
         )
     ).parsed

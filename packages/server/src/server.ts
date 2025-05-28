@@ -16,6 +16,7 @@ import { ScheduleController } from "./controller/schedule.controller";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
+import type { ListModelsFilterEnum } from "./controller/model.controller";
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "localhost";
@@ -399,6 +400,7 @@ app.get(
             await modelController.listModels(
                req.params.projectName,
                req.params.packageName,
+               (req.query.filter as ListModelsFilterEnum) || "all",
             ),
          );
       } catch (error) {
@@ -421,6 +423,31 @@ app.get(
          const zero = 0 as unknown;
          res.status(200).json(
             await modelController.getModel(
+               req.params.projectName,
+               req.params.packageName,
+               req.params[zero as keyof typeof req.params],
+            ),
+         );
+      } catch (error) {
+         console.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         const zero = 0 as unknown;
+         res.status(200).json(
+            await modelController.getNotebook(
                req.params.projectName,
                req.params.packageName,
                req.params[zero as keyof typeof req.params],

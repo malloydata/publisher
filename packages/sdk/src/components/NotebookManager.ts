@@ -178,7 +178,7 @@ export class NotebookManager {
             } else {
                return (
                   ">>>malloy\n" +
-                  `import "${cell.modelPath}"\n` +
+                  `import {${cell.sourceName}}" from '${cell.modelPath}'"\n` +
                   cell.value +
                   "\n"
                );

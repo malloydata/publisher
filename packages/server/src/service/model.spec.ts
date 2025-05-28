@@ -126,7 +126,7 @@ describe("service/model", () => {
                packageName,
                mockModelPath,
                {},
-               "invalid" as ModelType,
+               "notebook" as ModelType,
                undefined,
                undefined,
                undefined,
@@ -137,6 +137,50 @@ describe("service/model", () => {
 
             await expect(async () => {
                await model.getModel();
+            }).toThrowError(ModelNotFoundError);
+
+            sinon.restore();
+         });
+      });
+
+      describe("getNotebook", () => {
+         it("should throw ModelCompilationError if a compilation error exists", async () => {
+            const model = new Model(
+               packageName,
+               mockModelPath,
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               "Compilation error",
+            );
+
+            await expect(async () => {
+               await model.getNotebook();
+            }).toThrowError(ModelCompilationError);
+
+            sinon.restore();
+         });
+
+         it("should throw ModelNotFoundError for invalid modelType", async () => {
+            const model = new Model(
+               packageName,
+               mockModelPath,
+               {},
+               "model" as ModelType,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+            );
+
+            await expect(async () => {
+               await model.getNotebook();
             }).toThrowError(ModelNotFoundError);
 
             sinon.restore();

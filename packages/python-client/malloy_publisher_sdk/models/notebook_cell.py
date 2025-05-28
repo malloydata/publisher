@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Any, TypeVar, Union
+from typing import Any, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -17,14 +17,16 @@ class NotebookCell:
     Attributes:
         type_ (Union[Unset, NotebookCellType]): Type of notebook cell.
         text (Union[Unset, str]): Text contents of the notebook cell.
-        query_name (Union[Unset, str]): Name of query, if this is a named query.  Otherwise, empty.
         result (Union[Unset, str]): JSON string of Malloy.Result. See malloy/packages/malloy-interfaces/src/types.ts
+        new_sources (Union[Unset, list[str]]): Array of JSON string of SourceInfo made available in the notebook cell.
+            Only *new* SourceInfos are returned. The complete list of SourceInfos is available be concatenating the prior
+            notebook cells.  The SourceInfos are in the order they are made available in the notebook cell.
     """
 
     type_: Union[Unset, NotebookCellType] = UNSET
     text: Union[Unset, str] = UNSET
-    query_name: Union[Unset, str] = UNSET
     result: Union[Unset, str] = UNSET
+    new_sources: Union[Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,9 +36,11 @@ class NotebookCell:
 
         text = self.text
 
-        query_name = self.query_name
-
         result = self.result
+
+        new_sources: Union[Unset, list[str]] = UNSET
+        if not isinstance(self.new_sources, Unset):
+            new_sources = self.new_sources
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -45,10 +49,10 @@ class NotebookCell:
             field_dict["type"] = type_
         if text is not UNSET:
             field_dict["text"] = text
-        if query_name is not UNSET:
-            field_dict["queryName"] = query_name
         if result is not UNSET:
             field_dict["result"] = result
+        if new_sources is not UNSET:
+            field_dict["newSources"] = new_sources
 
         return field_dict
 
@@ -64,15 +68,15 @@ class NotebookCell:
 
         text = d.pop("text", UNSET)
 
-        query_name = d.pop("queryName", UNSET)
-
         result = d.pop("result", UNSET)
+
+        new_sources = cast(list[str], d.pop("newSources", UNSET))
 
         notebook_cell = cls(
             type_=type_,
             text=text,
-            query_name=query_name,
             result=result,
+            new_sources=new_sources,
         )
 
         notebook_cell.additional_properties = d

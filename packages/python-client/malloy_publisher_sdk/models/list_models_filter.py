@@ -1,7 +1,8 @@
 from enum import Enum
 
 
-class CompiledModelType(str, Enum):
+class ListModelsFilter(str, Enum):
+    ALL = "all"
     NOTEBOOK = "notebook"
     SOURCE = "source"
 

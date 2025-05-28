@@ -32,21 +32,23 @@ export function ModelPage({ server }: ModelPageProps) {
             packageName={params.packageName}
             server={server}
          >
-            <Model
-               modelPath={modelPath}
-               displayEmbeddingLink={true}
-               showNamedQueries={true}
-            />
+            <Model modelPath={modelPath} />
          </PublisherPackageProvider>
       );
    } else if (modelPath?.endsWith(".malloynb")) {
       return (
-         <Notebook
-            server={server}
+         <PublisherPackageProvider
             projectName={params.projectName}
             packageName={params.packageName}
-            notebookPath={modelPath}
-         />
+            server={server}
+         >
+            <Notebook
+               server={server}
+               projectName={params.projectName}
+               packageName={params.packageName}
+               notebookPath={modelPath}
+            />
+         </PublisherPackageProvider>
       );
    } else {
       return (

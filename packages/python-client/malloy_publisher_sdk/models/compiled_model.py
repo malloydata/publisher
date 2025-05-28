@@ -4,11 +4,9 @@ from typing import TYPE_CHECKING, Any, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.compiled_model_type import CompiledModelType
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.notebook_cell import NotebookCell
     from ..models.query import Query
 
 
@@ -23,25 +21,21 @@ class CompiledModel:
         resource (Union[Unset, str]): Resource path to the model.
         package_name (Union[Unset, str]): Model's package Name
         path (Union[Unset, str]): Model's relative path in its package directory.
-        type_ (Union[Unset, CompiledModelType]): Type of malloy model file -- source file or notebook file.
         malloy_version (Union[Unset, str]): Version of the Malloy compiler that generated the model def and results
             fields.
         model_info (Union[Unset, str]): JSON string of ModelInfo. See malloy/packages/malloy-interfaces/src/types.ts
         source_infos (Union[Unset, list[str]]): Array of JSON string of SourceInfo. See malloy/packages/malloy-
             interfaces/src/types.ts
         queries (Union[Unset, list['Query']]):
-        notebook_cells (Union[Unset, list['NotebookCell']]): Array of notebook cells.
     """
 
     resource: Union[Unset, str] = UNSET
     package_name: Union[Unset, str] = UNSET
     path: Union[Unset, str] = UNSET
-    type_: Union[Unset, CompiledModelType] = UNSET
     malloy_version: Union[Unset, str] = UNSET
     model_info: Union[Unset, str] = UNSET
     source_infos: Union[Unset, list[str]] = UNSET
     queries: Union[Unset, list["Query"]] = UNSET
-    notebook_cells: Union[Unset, list["NotebookCell"]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,10 +44,6 @@ class CompiledModel:
         package_name = self.package_name
 
         path = self.path
-
-        type_: Union[Unset, str] = UNSET
-        if not isinstance(self.type_, Unset):
-            type_ = self.type_.value
 
         malloy_version = self.malloy_version
 
@@ -70,13 +60,6 @@ class CompiledModel:
                 queries_item = queries_item_data.to_dict()
                 queries.append(queries_item)
 
-        notebook_cells: Union[Unset, list[dict[str, Any]]] = UNSET
-        if not isinstance(self.notebook_cells, Unset):
-            notebook_cells = []
-            for notebook_cells_item_data in self.notebook_cells:
-                notebook_cells_item = notebook_cells_item_data.to_dict()
-                notebook_cells.append(notebook_cells_item)
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -86,8 +69,6 @@ class CompiledModel:
             field_dict["packageName"] = package_name
         if path is not UNSET:
             field_dict["path"] = path
-        if type_ is not UNSET:
-            field_dict["type"] = type_
         if malloy_version is not UNSET:
             field_dict["malloyVersion"] = malloy_version
         if model_info is not UNSET:
@@ -96,14 +77,11 @@ class CompiledModel:
             field_dict["sourceInfos"] = source_infos
         if queries is not UNSET:
             field_dict["queries"] = queries
-        if notebook_cells is not UNSET:
-            field_dict["notebookCells"] = notebook_cells
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.notebook_cell import NotebookCell
         from ..models.query import Query
 
         d = dict(src_dict)
@@ -112,13 +90,6 @@ class CompiledModel:
         package_name = d.pop("packageName", UNSET)
 
         path = d.pop("path", UNSET)
-
-        _type_ = d.pop("type", UNSET)
-        type_: Union[Unset, CompiledModelType]
-        if isinstance(_type_, Unset):
-            type_ = UNSET
-        else:
-            type_ = CompiledModelType(_type_)
 
         malloy_version = d.pop("malloyVersion", UNSET)
 
@@ -133,23 +104,14 @@ class CompiledModel:
 
             queries.append(queries_item)
 
-        notebook_cells = []
-        _notebook_cells = d.pop("notebookCells", UNSET)
-        for notebook_cells_item_data in _notebook_cells or []:
-            notebook_cells_item = NotebookCell.from_dict(notebook_cells_item_data)
-
-            notebook_cells.append(notebook_cells_item)
-
         compiled_model = cls(
             resource=resource,
             package_name=package_name,
             path=path,
-            type_=type_,
             malloy_version=malloy_version,
             model_info=model_info,
             source_infos=source_infos,
             queries=queries,
-            notebook_cells=notebook_cells,
         )
 
         compiled_model.additional_properties = d

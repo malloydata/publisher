@@ -34,6 +34,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
+type ApiCompiledNotebook = components["schemas"]["CompiledNotebook"];
 type ApiSource = components["schemas"]["Source"];
 type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
@@ -50,6 +51,7 @@ interface RunnableNotebookCell {
    type: "code" | "markdown";
    text: string;
    runnable?: QueryMaterializer;
+   newSources?: Malloy.SourceInfo[];
 }
 
 export class Model {
@@ -189,11 +191,22 @@ export class Model {
 
       if (this.modelType === "model") {
          return this.getStandardModel();
-      } else if (this.modelType === "notebook") {
+      } else {
+         throw new ModelNotFoundError(
+            `${this.modelPath} is not a valid model name.  Model files must end in .malloy.`,
+         );
+      }
+   }
+
+   public async getNotebook(): Promise<ApiCompiledNotebook> {
+      if (this.compilationError) {
+         throw new ModelCompilationError(this.compilationError);
+      }
+      if (this.modelType === "notebook") {
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid model name.  Model files must end in .malloy or .malloynb.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb.`,
          );
       }
    }
@@ -278,7 +291,7 @@ export class Model {
       } as ApiCompiledModel;
    }
 
-   private async getNotebookModel(): Promise<ApiCompiledModel> {
+   private async getNotebookModel(): Promise<ApiCompiledNotebook> {
       const notebookCells: ApiNotebookCell[] = await Promise.all(
          (this.runnableNotebookCells as RunnableNotebookCell[]).map(
             async (cell) => {
@@ -308,6 +321,9 @@ export class Model {
                   text: cell.text,
                   queryName: queryName,
                   result: queryResult,
+                  newSources: cell.newSources?.map((source) =>
+                     JSON.stringify(source),
+                  ),
                } as ApiNotebookCell;
             },
          ),
@@ -501,25 +517,96 @@ export class Model {
          throw new Error("Could not parse model: " + modelPath);
       }
 
-      const runnableNotebookCells: RunnableNotebookCell[] = [];
       let mm: ModelMaterializer | undefined = undefined;
-      parse.statements.forEach((stmt) => {
+      const oldImports: string[] = [];
+      const oldSources: Record<string, Malloy.SourceInfo> = {};
+      // First generate the sequence of ModelMaterializers.
+      // This has to happen sync, since mm.getModel() is async and
+      // may execute out-of-order.
+      const mms = parse.statements.map((stmt) => {
          if (stmt.type === MalloySQLStatementType.MALLOY) {
             if (!mm) {
                mm = runtime.loadModel(stmt.text, { importBaseURL });
             } else {
                mm = mm.extendModel(stmt.text, { importBaseURL });
             }
-            const runnable = mm.loadFinalQuery();
-            runnableNotebookCells.push({
-               type: "code",
-               text: stmt.text,
-               runnable: runnable,
-            });
-         } else if (stmt.type === MalloySQLStatementType.MARKDOWN) {
-            runnableNotebookCells.push({ type: "markdown", text: stmt.text });
          }
+         return mm;
       });
+      const runnableNotebookCells: RunnableNotebookCell[] = (
+         await Promise.all(
+            parse.statements.map(async (stmt, index) => {
+               if (stmt.type === MalloySQLStatementType.MALLOY) {
+                  // Get the Materializer for the current cell/statement.
+                  const localMM = mms[index];
+                  if (!localMM) {
+                     // This can't happen because the to be in this branch there stmt must be
+                     // MalloySQLStatementType.MALLOY and we must have a model materializer.
+                     throw new Error("Model materializer is undefined");
+                  }
+                  // Pull available sources from the current model.
+                  // Add any of then that are new into newSources and then add them to oldSources.
+                  const currentModelDef = (await localMM.getModel())._modelDef;
+                  let newSources: Malloy.SourceInfo[] = [];
+                  const newImports = currentModelDef.imports?.slice(
+                     oldImports.length,
+                  );
+                  if (newImports) {
+                     await Promise.all(
+                        newImports.map(async (importLocation) => {
+                           const modelString = await runtime.urlReader.readURL(
+                              new URL(importLocation.importURL),
+                           );
+                           const importModel = (
+                              await runtime
+                                 .loadModel(modelString as string, {
+                                    importBaseURL,
+                                 })
+                                 .getModel()
+                           )._modelDef;
+                           const importModelInfo =
+                              modelDefToModelInfo(importModel);
+                           newSources = importModelInfo.entries
+                              .filter((entry) => entry.kind === "source")
+                              .filter(
+                                 (source) => !(source.name in oldSources),
+                              ) as Malloy.SourceInfo[];
+                           oldImports.push(importLocation.importURL.toString());
+                        }),
+                     );
+                  }
+                  const currentModelInfo = modelDefToModelInfo(currentModelDef);
+                  newSources = newSources.concat(
+                     currentModelInfo.entries
+                        .filter((entry) => entry.kind === "source")
+                        .filter(
+                           (source) => !(source.name in oldSources),
+                        ) as Malloy.SourceInfo[],
+                  );
+
+                  for (const source of newSources) {
+                     oldSources[source.name] = source;
+                  }
+
+                  const runnable = localMM.loadFinalQuery();
+
+                  return {
+                     type: "code",
+                     text: stmt.text,
+                     runnable: runnable,
+                     newSources,
+                  } as RunnableNotebookCell;
+               } else if (stmt.type === MalloySQLStatementType.MARKDOWN) {
+                  return {
+                     type: "markdown",
+                     text: stmt.text,
+                  } as RunnableNotebookCell;
+               } else {
+                  return undefined;
+               }
+            }),
+         )
+      ).filter((cell) => cell !== undefined);
 
       return {
          modelMaterializer: mm,

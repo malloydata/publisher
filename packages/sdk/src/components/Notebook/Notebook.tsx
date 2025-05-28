@@ -16,41 +16,32 @@ import { StyledCard, StyledCardContent, StyledCardMedia } from "../styles";
 import { highlight } from "../highlighter";
 import { NotebookCell } from "./NotebookCell";
 import { Configuration, ModelsApi } from "../../client";
+import { usePublisherPackage } from "../Package";
 
-axios.defaults.baseURL = "http://localhost:4000";
 const modelsApi = new ModelsApi(new Configuration());
 const queryClient = new QueryClient();
 
 interface NotebookProps {
-   server?: string;
-   projectName: string;
-   packageName: string;
    notebookPath: string;
-   versionId?: string;
    expandCodeCells?: boolean;
    hideCodeCellIcons?: boolean;
    expandEmbeddings?: boolean;
    hideEmbeddingIcons?: boolean;
-   accessToken?: string;
 }
-
+// Requires PublisherPackageProvider
 export default function Notebook({
-   server,
-   projectName,
-   packageName,
    notebookPath,
-   versionId,
    expandCodeCells,
    hideCodeCellIcons,
    expandEmbeddings,
    hideEmbeddingIcons,
-   accessToken,
 }: NotebookProps) {
    const [embeddingExpanded, setEmbeddingExpanded] =
       React.useState<boolean>(false);
    const [highlightedEmbedCode, setHighlightedEmbedCode] =
       React.useState<string>();
-
+   const { server, projectName, packageName, accessToken, versionId } =
+      usePublisherPackage();
    const notebookCodeSnippet = getNotebookCodeSnippet(
       server,
       packageName,
@@ -80,7 +71,7 @@ export default function Notebook({
             versionId,
          ],
          queryFn: () =>
-            modelsApi.getModel(
+            modelsApi.getNotebook(
                projectName,
                packageName,
                notebookPath,
@@ -180,7 +171,7 @@ export default function Notebook({
                   notebook.data.notebookCells?.map((cell, index) => (
                      <NotebookCell
                         cell={cell}
-                        modelInfo={notebook.data.modelInfo}
+                        notebookPath={notebookPath}
                         queryResultCodeSnippet={getQueryResultCodeSnippet(
                            server,
                            projectName,

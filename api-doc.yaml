@@ -525,6 +525,13 @@ paths:
           required: false
           schema:
             type: string
+        - name: filter
+          in: query
+          description: Filter to either "source" or "notebook" or "all"
+          required: false
+          schema:
+            type: string
+            enum: ['source', 'notebook', 'all']
       responses:
         "200":
           description:
@@ -584,6 +591,56 @@ paths:
             "application/json":
               schema:
                 $ref: "#/components/schemas/CompiledModel"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplementedError"
+
+
+  /projects/{projectName}/packages/{packageName}/notebooks/{path}:
+    get:
+      tags:
+      - models
+      operationId: get-notebook
+      summary: 
+        Returns a Malloy notebook.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of project
+          required: true
+          schema:
+            type: string
+        - name: packageName
+          in: path
+          description: Name of package.
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          description: Path to notebook wihin the package.
+          required: true
+          schema:
+            type: string
+        - name: versionId
+          in: query
+          description: Version ID
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description:
+            A Malloy notebook.
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/CompiledNotebook"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "404":
@@ -838,6 +895,28 @@ components:
           enum: ["source", "notebook"]
           description: Type of malloy model file -- source file or notebook file.
   
+    CompiledNotebook:
+      type: object
+      description: Malloy notebook def and result data.  Malloy notebook def and result data is Malloy version depdendent.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the notebook.
+        packageName:
+          type: string
+          description: Notebook's package Name
+        path:
+          type: string
+          description: Notebook's relative path in its package directory.
+        malloyVersion:
+          type: string
+          description: Version of the Malloy compiler that generated the notebook def and results fields.
+        notebookCells:
+          type: array
+          description: Array of notebook cells.
+          items:
+            $ref: "#/components/schemas/NotebookCell"
+
     CompiledModel:
       type: object
       description: Malloy model def and result data.  Malloy model def and result data is Malloy version depdendent.
@@ -851,10 +930,6 @@ components:
         path:
           type: string
           description: Model's relative path in its package directory.
-        type:
-          type: string
-          enum: ["source", "notebook"]
-          description: Type of malloy model file -- source file or notebook file.
         malloyVersion:
           type: string
           description: Version of the Malloy compiler that generated the model def and results fields.
@@ -871,11 +946,6 @@ components:
           descript: Array of named queries.
           items:
             $ref: "#/components/schemas/Query"
-        notebookCells:
-          type: array
-          description: Array of notebook cells.
-          items:
-            $ref: "#/components/schemas/NotebookCell"
   
     View:
       type: object
@@ -914,13 +984,17 @@ components:
         text:
           type: string
           description: Text contents of the notebook cell.
-        queryName:
-          type: string
-          description: Name of query, if this is a named query.  Otherwise, empty.
         result: 
           type: string
           description: JSON string of Malloy.Result. See malloy/packages/malloy-interfaces/src/types.ts
-  
+        newSources:
+          type: array
+          description: Array of JSON string of SourceInfo made available in the notebook cell. Only *new*
+            SourceInfos are returned. The complete list of SourceInfos is available be concatenating the prior
+            notebook cells.  The SourceInfos are in the order they are made available in the notebook cell.
+          items:
+            type: string
+
     QueryResult:
       type: object
       description: A Malloy query's results.
