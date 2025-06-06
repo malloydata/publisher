@@ -209,7 +209,7 @@ function getQueryResultCodeSnippet(
    server="${server}"
    accessToken={accessToken}
    projectName="${projectName}"
-packageName="${packageName}"
+   packageName="${packageName}"
    modelPath="${modelPath}"
    query="
       ${query}
