@@ -10,3 +10,5 @@ export { useRouterClickHandler } from "./click_helper";
 export { ServerProvider, useServer } from "./ServerProvider";
 export type { ServerContextValue, ServerProviderProps } from "./ServerProvider";
 export { AnalyzePackageButton } from "./AnalyzePackageButton";
+export type { PackageContextProps } from "./Package";
+export type { WorkbookStorage } from "./Workbook";
