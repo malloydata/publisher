@@ -229,8 +229,8 @@ export default function AddChartDialog({
                 >
                   <ModelExplorer
                     modelPath={selectedModel}
-                    expandResults={false}
-                    hideResultIcons={true}
+                    expandResults={true}
+                    hideResultIcons={false}
                     expandEmbeddings={false}
                     hideEmbeddingIcons={true}
                     onChange={handleModelQueryChange}

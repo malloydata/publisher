@@ -6,3 +6,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 **/.env
+
+# Log files
+*.log

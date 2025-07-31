@@ -1,0 +1,52 @@
+# Core Slack Bot Dependencies
+slack_sdk>=3.23.0
+python-dotenv>=1.0.0
+
+# LangChain and AI Dependencies
+langchain>=0.1.0
+langchain-openai>=0.0.2
+langchain-google-vertexai>=0.0.1
+langchain-anthropic>=0.1.1
+langchain-community>=0.0.10
+
+# MCP (Model Context Protocol) Support
+mcp>=1.0.0
+
+# HTTP and Async Support
+aiohttp>=3.9.1
+requests>=2.31.0
+
+# Data Processing and Chart Generation
+quickchart.io>=2.0.0  # Chart.js-based chart generation via QuickChart.io
+pandas>=2.2.0  # Use newer version compatible with Python 3.13
+numpy>=1.24.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Optional: Data Science Ecosystem
+scipy>=1.11.0
+pillow>=10.0.0
+
+# Development Dependencies
+pydantic>=2.0.0
+dataclasses-json>=0.6.0
+
+# JSON Schema Support  
+jsonschema>=4.19.0
+
+# Type hints for older Python compatibility
+typing-extensions>=4.7.0
+
+# Async HTTP session management
+httpx>=0.25.0
+
+# Better environment variable management
+python-decouple>=3.8
+
+# Structured logging
+structlog>=23.1.0
+
+# Better async tools
+anyio>=4.0.0
