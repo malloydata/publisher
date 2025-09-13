@@ -95,7 +95,7 @@ function Connection({
                />
                <DeleteConnectionDialog
                   connection={connection}
-                  onCloseDialog={() => { }}
+                  onCloseDialog={() => {}}
                   isMutating={isMutating}
                   onDelete={() => onDelete(connection)}
                />
@@ -226,9 +226,9 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                               alignItems: "center",
                            },
                            "& .MuiTableRow-root:last-child .MuiTableCell-root":
-                           {
-                              borderBottom: "none",
-                           },
+                              {
+                                 borderBottom: "none",
+                              },
                         }}
                      >
                         <TableBody>
@@ -300,7 +300,9 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                {mutable && (
                   <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
                      <AddConnectionDialog
-                        onSubmit={(payload) => addConnection.mutateAsync(payload)}
+                        onSubmit={(payload) =>
+                           addConnection.mutateAsync(payload)
+                        }
                         isSubmitting={addConnection.isPending}
                      />
                   </Box>

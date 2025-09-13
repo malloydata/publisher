@@ -416,7 +416,10 @@ function ProjectCard({
                         horizontal: "right",
                      }}
                   >
-                     <EditProjectDialog project={project} onCloseDialog={closeMenu} />
+                     <EditProjectDialog
+                        project={project}
+                        onCloseDialog={closeMenu}
+                     />
                      <DeleteProjectDialog
                         project={project}
                         onCloseDialog={closeMenu}
