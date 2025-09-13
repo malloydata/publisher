@@ -3,6 +3,7 @@ import {
    WorkbookStorage,
    WorkbookStorageProvider,
 } from "@malloy-publisher/sdk";
+import "@malloy-publisher/sdk/styles.css";
 import "@malloydata/malloy-explorer/styles.css";
 import { CssBaseline } from "@mui/material";
 import { ThemeProvider } from "@mui/material/styles";
@@ -10,7 +11,6 @@ import * as React from "react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { HeaderProps } from "./components/Header";
 import theme from "./theme";
-import "@malloy-publisher/sdk/styles.css";
 
 /**
  * Vite automatically handles code splitting and chunking when using
