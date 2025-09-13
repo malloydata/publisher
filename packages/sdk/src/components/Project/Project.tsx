@@ -1,9 +1,10 @@
 import { Box, Grid, Typography } from "@mui/material";
-import About from "./About";
-import Packages from "./Packages";
-import { PackageContainer } from "../styles";
 import { parseResourceUri } from "../../utils/formatting";
+import { useServer } from "../ServerProvider";
+import { PackageContainer } from "../styles";
+import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
+import Packages from "./Packages";
 
 interface ProjectProps {
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
@@ -14,6 +15,7 @@ export default function Project({
    onSelectPackage,
    resourceUri,
 }: ProjectProps) {
+   const { mutable } = useServer();
    const { projectName } = parseResourceUri(resourceUri);
    return (
       <>
@@ -25,7 +27,7 @@ export default function Project({
                mb={2}
             >
                <Typography variant="h6">{projectName} packages</Typography>
-               <AddPackageDialog resourceUri={resourceUri} />
+               {mutable && <AddPackageDialog resourceUri={resourceUri} />}
             </Box>
             <Grid container spacing={3} columns={12}>
                <Grid size={{ xs: 12, md: 12 }}>

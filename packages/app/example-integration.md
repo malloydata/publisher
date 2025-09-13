@@ -65,7 +65,6 @@ const AuthenticatedMalloyAppComponent: React.FC<AuthenticatedMalloyAppProps> = (
   return (
     <MalloyPublisherApp 
       server={authenticatedServer}
-      workspaceStorage={new BrowserWorkspaceStorage()}
       {...props}
     />
   );
@@ -80,7 +79,19 @@ export const AuthenticatedMalloyApp = withAuthenticationRequired(
 );
 ```
 
-## 4. Setup Auth0 Provider in Your Main App
+## 4. Understanding the Mutable Prop
+
+The `mutable` prop is passed to the `ServerProvider` and controls whether users can create, edit, or delete projects and packages:
+
+- `mutable={true}` (default): Users can manage projects and packages
+- `mutable={false}`: Users can only view and explore existing projects and packages
+
+This is useful for:
+- **Read-only deployments**: When you want to provide access to data without allowing modifications
+- **Production environments**: Where you want to prevent accidental changes
+- **Embedded applications**: Where the parent application manages the data model
+
+## 5. Setup Auth0 Provider in Your Main App
 
 ```tsx
 // src/App.tsx
@@ -109,6 +120,7 @@ const App: React.FC = () => {
           <AuthenticatedMalloyApp 
             serverUrl="https://your-malloy-server.com/api/v0"
             basePath="/malloy"
+            mutable={true} // Set to false to disable project/package management
           />
         </div>
       </BrowserRouter>

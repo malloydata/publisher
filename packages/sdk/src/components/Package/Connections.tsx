@@ -38,6 +38,7 @@ type ConnectionProps = {
    onEdit: (connection: ApiConnection) => Promise<unknown>;
    onDelete: (connection: ApiConnection) => Promise<unknown>;
    isMutating: boolean;
+   mutable: boolean;
 };
 
 // TODO(jjs) - Move this UI to the ConnectionExplorer component
@@ -47,6 +48,7 @@ function Connection({
    onEdit,
    onDelete,
    isMutating,
+   mutable,
 }: ConnectionProps) {
    return (
       <TableRow
@@ -84,19 +86,21 @@ function Connection({
          <TableCell sx={{ minWidth: "120px" }}>
             <Typography variant="body2">{connection.type}</Typography>
          </TableCell>
-         <TableCell sx={{ minWidth: "120px" }}>
-            <EditConnectionDialog
-               connection={connection}
-               onSubmit={onEdit}
-               isSubmitting={isMutating}
-            />
-            <DeleteConnectionDialog
-               connection={connection}
-               onCloseDialog={() => {}}
-               isMutating={isMutating}
-               onDelete={() => onDelete(connection)}
-            />
-         </TableCell>
+         {mutable && (
+            <TableCell sx={{ minWidth: "120px" }}>
+               <EditConnectionDialog
+                  connection={connection}
+                  onSubmit={onEdit}
+                  isSubmitting={isMutating}
+               />
+               <DeleteConnectionDialog
+                  connection={connection}
+                  onCloseDialog={() => {}}
+                  isMutating={isMutating}
+                  onDelete={() => onDelete(connection)}
+               />
+            </TableCell>
+         )}
       </TableRow>
    );
 }
@@ -106,7 +110,7 @@ type ConnectionsProps = {
 };
 
 export default function Connections({ resourceUri }: ConnectionsProps) {
-   const { apiClients } = useServer();
+   const { apiClients, mutable } = useServer();
    const queryClient = useQueryClient();
    const { projectName: projectName } = parseResourceUri(resourceUri);
    const [notificationMessage, setNotificationMessage] = useState("");
@@ -247,16 +251,18 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                     Type
                                  </Typography>
                               </TableCell>
-                              <TableCell sx={{ minWidth: "120px" }}>
-                                 <Typography
-                                    variant="body2"
-                                    fontWeight="500"
-                                    color="text.secondary"
-                                    sx={{ mx: "auto" }}
-                                 >
-                                    Actions
-                                 </Typography>
-                              </TableCell>
+                              {mutable && (
+                                 <TableCell sx={{ minWidth: "120px" }}>
+                                    <Typography
+                                       variant="body2"
+                                       fontWeight="500"
+                                       color="text.secondary"
+                                       sx={{ mx: "auto" }}
+                                    >
+                                       Actions
+                                    </Typography>
+                                 </TableCell>
+                              )}
                            </TableRow>
                            {data.data.map((conn) => (
                               <Connection
@@ -275,6 +281,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                     updateConnection.isPending ||
                                     deleteConnection.isPending
                                  }
+                                 mutable={mutable}
                               />
                            ))}
                         </TableBody>
@@ -290,12 +297,14 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                      />
                   )}
                </Box>
-               <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-                  <AddConnectionDialog
-                     onSubmit={(payload) => addConnection.mutateAsync(payload)}
-                     isSubmitting={addConnection.isPending}
-                  />
-               </Box>
+               {mutable && (
+                  <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+                     <AddConnectionDialog
+                        onSubmit={(payload) => addConnection.mutateAsync(payload)}
+                        isSubmitting={addConnection.isPending}
+                     />
+                  </Box>
+               )}
             </PackageCardContent>
          </PackageCard>
 

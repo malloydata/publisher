@@ -1,3 +1,4 @@
+import { MoreVert } from "@mui/icons-material";
 import AnalyticsRoundedIcon from "@mui/icons-material/AnalyticsRounded";
 import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
@@ -14,29 +15,28 @@ import {
    Container,
    Divider,
    Grid,
-   Menu,
    IconButton,
+   Menu,
    Stack,
    Typography,
 } from "@mui/material";
+import { useState } from "react";
+import { Project } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { getProjectDescription } from "../../utils/parsing";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
-import { MoreVert } from "@mui/icons-material";
-import { Project } from "../../client";
-import { useState } from "react";
 import AddProjectDialog from "./AddProjectDialog";
-import EditProjectDialog from "./EditProjectDialog";
-import { getProjectDescription } from "../../utils/parsing";
 import DeleteProjectDialog from "./DeleteProjectDialog";
+import EditProjectDialog from "./EditProjectDialog";
 
 interface HomeProps {
    onClickProject?: (to: string, event?: React.MouseEvent) => void;
 }
 
 export default function Home({ onClickProject }: HomeProps) {
-   const { apiClients } = useServer();
+   const { apiClients, mutable } = useServer();
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["projects"],
@@ -269,7 +269,7 @@ export default function Home({ onClickProject }: HomeProps) {
                         Choose a project to explore its semantic models and
                         start analyzing your data
                      </Typography>
-                     <AddProjectDialog />
+                     {mutable && <AddProjectDialog />}
                   </Box>
                   <Grid container spacing={3} justifyContent="center">
                      {data.data.map((project) => (
@@ -365,6 +365,7 @@ function ProjectCard({
    project: Project;
    onClickProject: (to: string, event?: React.MouseEvent) => void;
 }) {
+   const { mutable } = useServer();
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
    const isMenuOpen = Boolean(menuAnchorEl);
    const openMenu = (event: React.MouseEvent<HTMLElement>) => {
@@ -387,38 +388,42 @@ function ProjectCard({
                },
             }}
          >
-            <IconButton
-               aria-controls={isMenuOpen ? "project-menu" : undefined}
-               aria-haspopup="true"
-               aria-expanded={isMenuOpen ? "true" : undefined}
-               onClick={openMenu}
-               sx={{ position: "absolute", top: 8, right: 8 }}
-            >
-               <MoreVert fontSize="small" />
-            </IconButton>
-            <Menu
-               id="project-menu"
-               aria-haspopup="true"
-               aria-expanded={isMenuOpen ? "true" : undefined}
-               open={isMenuOpen}
-               anchorEl={menuAnchorEl}
-               onClose={closeMenu}
-               disableRestoreFocus
-               anchorOrigin={{
-                  vertical: "top",
-                  horizontal: "left",
-               }}
-               transformOrigin={{
-                  vertical: "top",
-                  horizontal: "right",
-               }}
-            >
-               <EditProjectDialog project={project} onCloseDialog={closeMenu} />
-               <DeleteProjectDialog
-                  project={project}
-                  onCloseDialog={closeMenu}
-               />
-            </Menu>
+            {mutable && (
+               <>
+                  <IconButton
+                     aria-controls={isMenuOpen ? "project-menu" : undefined}
+                     aria-haspopup="true"
+                     aria-expanded={isMenuOpen ? "true" : undefined}
+                     onClick={openMenu}
+                     sx={{ position: "absolute", top: 8, right: 8 }}
+                  >
+                     <MoreVert fontSize="small" />
+                  </IconButton>
+                  <Menu
+                     id="project-menu"
+                     aria-haspopup="true"
+                     aria-expanded={isMenuOpen ? "true" : undefined}
+                     open={isMenuOpen}
+                     anchorEl={menuAnchorEl}
+                     onClose={closeMenu}
+                     disableRestoreFocus
+                     anchorOrigin={{
+                        vertical: "top",
+                        horizontal: "left",
+                     }}
+                     transformOrigin={{
+                        vertical: "top",
+                        horizontal: "right",
+                     }}
+                  >
+                     <EditProjectDialog project={project} onCloseDialog={closeMenu} />
+                     <DeleteProjectDialog
+                        project={project}
+                        onCloseDialog={closeMenu}
+                     />
+                  </Menu>
+               </>
+            )}
             <CardContent sx={{ p: 3, textAlign: "center" }}>
                <ExploreRoundedIcon
                   sx={{

@@ -1,22 +1,22 @@
+import { MoreVert } from "@mui/icons-material";
 import {
    Box,
-   Grid,
-   Typography,
    Divider,
+   Grid,
    IconButton,
    Menu,
+   Typography,
 } from "@mui/material";
-import { MoreVert } from "@mui/icons-material";
+import { useState } from "react";
+import { Package } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
-import { PackageCard, PackageCardContent } from "../styles";
-import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
-import { useState } from "react";
+import { PackageCard, PackageCardContent } from "../styles";
 import DeletePackageDialog from "./DeletePackageDialog";
 import EditPackageDialog from "./EditPackageDialog";
-import { Package } from "../../client";
 
 interface PackagesProps {
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
@@ -30,6 +30,7 @@ const PackageMenu = ({
    package: Package;
    resourceUri: string;
 }) => {
+   const { mutable } = useServer();
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
    const isMenuOpen = Boolean(menuAnchorEl);
    const openMenu = (event: React.MouseEvent<HTMLElement>) => {
@@ -41,47 +42,51 @@ const PackageMenu = ({
 
    return (
       <>
-         <IconButton
-            onClick={(event) => {
-               event.stopPropagation();
-               openMenu(event);
-            }}
-            aria-controls={isMenuOpen ? "package-menu" : undefined}
-            aria-haspopup="true"
-            aria-expanded={isMenuOpen ? "true" : undefined}
-         >
-            <MoreVert fontSize="small" />
-         </IconButton>
-         <Menu
-            id="package-menu"
-            aria-haspopup="true"
-            aria-expanded={isMenuOpen ? "true" : undefined}
-            open={isMenuOpen}
-            anchorEl={menuAnchorEl}
-            onClose={closeMenu}
-            disableRestoreFocus
-            anchorOrigin={{
-               vertical: "top",
-               horizontal: "left",
-            }}
-            transformOrigin={{
-               vertical: "top",
-               horizontal: "right",
-            }}
-            onClick={(event) => {
-               event.stopPropagation();
-            }}
-         >
-            <EditPackageDialog
-               package={p}
-               resourceUri={packageResourceUri}
-               onCloseDialog={closeMenu}
-            />
-            <DeletePackageDialog
-               resourceUri={packageResourceUri}
-               onCloseDialog={closeMenu}
-            />
-         </Menu>
+         {mutable && (
+            <>
+               <IconButton
+                  onClick={(event) => {
+                     event.stopPropagation();
+                     openMenu(event);
+                  }}
+                  aria-controls={isMenuOpen ? "package-menu" : undefined}
+                  aria-haspopup="true"
+                  aria-expanded={isMenuOpen ? "true" : undefined}
+               >
+                  <MoreVert fontSize="small" />
+               </IconButton>
+               <Menu
+                  id="package-menu"
+                  aria-haspopup="true"
+                  aria-expanded={isMenuOpen ? "true" : undefined}
+                  open={isMenuOpen}
+                  anchorEl={menuAnchorEl}
+                  onClose={closeMenu}
+                  disableRestoreFocus
+                  anchorOrigin={{
+                     vertical: "top",
+                     horizontal: "left",
+                  }}
+                  transformOrigin={{
+                     vertical: "top",
+                     horizontal: "right",
+                  }}
+                  onClick={(event) => {
+                     event.stopPropagation();
+                  }}
+               >
+                  <EditPackageDialog
+                     package={p}
+                     resourceUri={packageResourceUri}
+                     onCloseDialog={closeMenu}
+                  />
+                  <DeletePackageDialog
+                     resourceUri={packageResourceUri}
+                     onCloseDialog={closeMenu}
+                  />
+               </Menu>
+            </>
+         )}
       </>
    );
 };

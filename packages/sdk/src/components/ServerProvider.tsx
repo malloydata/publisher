@@ -1,24 +1,25 @@
-import React, { createContext, useContext, ReactNode, useMemo } from "react";
-import { Configuration } from "../client/configuration";
+import { QueryClientProvider } from "@tanstack/react-query";
+import axios from "axios";
+import React, { createContext, ReactNode, useContext, useMemo } from "react";
 import {
-   QueryresultsApi,
-   ModelsApi,
-   ProjectsApi,
-   PackagesApi,
-   NotebooksApi,
    ConnectionsApi,
    DatabasesApi,
+   ModelsApi,
+   NotebooksApi,
+   PackagesApi,
+   ProjectsApi,
+   QueryresultsApi,
    SchedulesApi,
    WatchModeApi,
 } from "../client";
-import axios from "axios";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { Configuration } from "../client/configuration";
 import { globalQueryClient } from "../hooks/useQueryWithApiError";
 
 export interface ServerContextValue {
    server: string;
    getAccessToken?: () => Promise<string>;
    apiClients: ApiClients;
+   mutable: boolean;
 }
 
 const ServerContext = createContext<ServerContextValue | undefined>(undefined);
@@ -36,6 +37,11 @@ export interface ServerProviderProps {
     * Will send "Bearer 123" in the Authorization header.
     */
    getAccessToken?: () => Promise<string>;
+   /** Whether the publisher should allow project and package management operations.
+    * When false, users can only view and explore existing projects and packages.
+    * @default true
+    */
+   mutable?: boolean;
 }
 
 const getApiClients = (
@@ -76,6 +82,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
    children,
    getAccessToken,
    baseURL,
+   mutable = true,
 }) => {
    const apiClients = useMemo(
       () => getApiClients(baseURL, getAccessToken),
@@ -88,6 +95,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
          `${window.location.protocol}//${window.location.host}/api/v0`,
       getAccessToken,
       apiClients,
+      mutable,
    };
 
    return (
