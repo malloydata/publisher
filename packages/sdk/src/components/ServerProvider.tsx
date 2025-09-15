@@ -57,7 +57,8 @@ const getApiClients = (
    });
 
    axiosInstance.interceptors.request.use(async (config) => {
-      config.headers.Authorization = (await accessToken?.()) ?? "";
+      const token = await accessToken?.();
+      config.headers.Authorization = token ? `Bearer ${token}` : "";
       return config;
    });
 
