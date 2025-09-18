@@ -3,6 +3,7 @@ import * as bodyParser from "body-parser";
 import cors from "cors";
 import express from "express";
 import * as http from "http";
+import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
 import { ConnectionController } from "./controller/connection.controller";
@@ -184,6 +185,16 @@ if (!isDevelopment) {
    // In development mode, proxy requests to React dev server
    // Handle API routes first
    app.use(`${API_PREFIX}`, loggerMiddleware);
+
+   // Proxy everything else to Vite
+   app.use(
+      createProxyMiddleware({
+         target: "http://localhost:5173",
+         changeOrigin: true,
+         ws: true,
+         pathFilter: (path) => !path.startsWith("/api/"),
+      }),
+   );
 }
 
 const setVersionIdError = (res: express.Response) => {
