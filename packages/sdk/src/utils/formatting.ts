@@ -16,13 +16,14 @@ export const parseResourceUri = (resourceUri: string) => {
    for (let i = 0; i < pathParts.length; i += 2) {
       const part = pathParts[i];
       if (part === "projects") {
-         parsedResource.projectName = pathParts[i + 1] || undefined;
+         parsedResource.projectName = decodeURI(pathParts[i + 1]) || undefined;
       } else if (part === "packages") {
-         parsedResource.packageName = pathParts[i + 1] || undefined;
+         parsedResource.packageName = decodeURI(pathParts[i + 1]) || undefined;
       } else if (part === "connections") {
-         parsedResource.connectionName = pathParts[i + 1] || undefined;
+         parsedResource.connectionName =
+            decodeURI(pathParts[i + 1]) || undefined;
       } else if (part === "models") {
-         parsedResource.modelPath = pathParts[i + 1] || undefined;
+         parsedResource.modelPath = decodeURI(pathParts[i + 1]) || undefined;
       }
    }
 
