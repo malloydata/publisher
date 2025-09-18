@@ -1,18 +1,17 @@
-import React from "react";
+import { AddCircleRounded } from "@mui/icons-material";
 import Button from "@mui/material/Button";
-import TextField from "@mui/material/TextField";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
-import { useState } from "react";
-import { AddCircleRounded } from "@mui/icons-material";
+import Snackbar from "@mui/material/Snackbar";
+import TextField from "@mui/material/TextField";
+import { useQueryClient } from "@tanstack/react-query";
+import React, { useState } from "react";
+import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { generateProjectReadme } from "../../utils/parsing";
 import { useServer } from "../ServerProvider";
-import Snackbar from "@mui/material/Snackbar";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
-import { useQueryClient } from "@tanstack/react-query";
 
 export default function AddProjectDialog() {
    const [open, setOpen] = useState(false);
@@ -99,7 +98,7 @@ export default function AddProjectDialog() {
                      id="description"
                      name="description"
                      label="Project Description"
-                     defaultValue="Explore semantic models, run queries, and build dashboards"
+                     placeholder="Explore semantic models, run queries, and build dashboards"
                      type="text"
                      fullWidth
                      variant="standard"
