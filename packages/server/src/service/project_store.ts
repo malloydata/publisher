@@ -329,6 +329,30 @@ export class ProjectStore {
       return absoluteProjectPath;
    }
 
+   private isLocalPath(location: string) {
+      return (
+         location.startsWith("./") ||
+         location.startsWith("~/") ||
+         location.startsWith("/") ||
+         path.isAbsolute(location)
+      );
+   }
+
+   private isGitHubURL(location: string) {
+      return (
+         location.startsWith("https://github.com/") ||
+         location.startsWith("git@github.com:")
+      );
+   }
+
+   private isGCSURL(location: string) {
+      return location.startsWith("gs://");
+   }
+
+   private isS3URL(location: string) {
+      return location.startsWith("s3://");
+   }
+
    private async loadProjectIntoDisk(
       projectName: string,
       projectPath: string,
@@ -361,10 +385,7 @@ export class ProjectStore {
 
          // For GitHub URLs, group by base repository URL to optimize downloads
          let locationKey = _package.location;
-         if (
-            _package.location.startsWith("https://github.com/") ||
-            _package.location.startsWith("git@github.com:")
-         ) {
+         if (this.isGitHubURL(_package.location)) {
             const githubInfo = this.parseGitHubUrl(_package.location);
             if (githubInfo) {
                // Always use HTTPS format for grouping to ensure consistency
@@ -391,7 +412,6 @@ export class ProjectStore {
             .replace(/[^a-zA-Z0-9]/g, "")}`;
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
-
          try {
             // Use the existing download method for all locations
             await this.downloadOrMountLocation(
@@ -400,15 +420,13 @@ export class ProjectStore {
                projectName,
                "shared",
             );
-
             // Extract each package from the downloaded content
             for (const _package of packagesForLocation) {
                const packageDir = _package.name;
                const absolutePackagePath = `${absoluteTargetPath}/${packageDir}`;
-
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
-               if (groupedLocation.startsWith("https://github.com/")) {
+               if (this.isGitHubURL(_package.location)) {
                   const githubInfo = this.parseGitHubUrl(_package.location);
                   if (githubInfo && githubInfo.packagePath) {
                      // Extract subdirectory from the original GitHub URL
@@ -430,7 +448,11 @@ export class ProjectStore {
                   }
                } else {
                   // For non-GitHub locations, use package name
-                  sourcePath = path.join(tempDownloadPath, packageDir);
+                  if (this.isLocalPath(_package.location)) {
+                     sourcePath = _package.location;
+                  } else {
+                     sourcePath = path.join(tempDownloadPath, groupedLocation);
+                  }
                }
 
                const sourceExists = await fs.promises
@@ -500,7 +522,7 @@ export class ProjectStore {
    ) {
       const isCompressedFile = location.endsWith(".zip");
       // Handle GCS paths
-      if (location.startsWith("gs://")) {
+      if (this.isGCSURL(location)) {
          try {
             logger.info(
                `Downloading GCS directory from "${location}" to "${targetPath}"`,
@@ -523,10 +545,7 @@ export class ProjectStore {
       }
 
       // Handle GitHub URLs
-      if (
-         location.startsWith("https://github.com/") ||
-         location.startsWith("git@")
-      ) {
+      if (this.isGitHubURL(location)) {
          try {
             logger.info(
                `Cloning GitHub repository from "${location}" to "${targetPath}"`,
@@ -544,7 +563,7 @@ export class ProjectStore {
       }
 
       // Handle S3 paths
-      if (location.startsWith("s3://")) {
+      if (this.isS3URL(location)) {
          try {
             logger.info(
                `Downloading S3 directory from "${location}" to "${targetPath}"`,
@@ -562,7 +581,7 @@ export class ProjectStore {
       }
 
       // Handle absolute and relative paths
-      if (path.isAbsolute(location) || location.startsWith("./")) {
+      if (this.isLocalPath(location)) {
          const packagePath: string = path.isAbsolute(location)
             ? location
             : path.join(this.serverRootPath, location);
