@@ -22,9 +22,6 @@ import ResultContainer from "../RenderedResult/ResultContainer";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard, CleanNotebookCell } from "../styles";
 
-// Regex to extract model path from import statements like: import {flights} from 'flights.malloy'
-const IMPORT_REGEX = /import\s*(?:\{[^}]*\}\s*from\s*)?['"`]([^'"`]+)['"`]/;
-
 interface NotebookCellProps {
    cell: ClientNotebookCell;
    expandCodeCell?: boolean;
@@ -52,9 +49,62 @@ export function NotebookCell({
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
 
-   // Extract model path from import statement in cell text
-   const importMatch = cell.text && cell.text.match(IMPORT_REGEX);
-   const hasValidImport = !!importMatch;
+   // Regex to extract imported names from import statements
+   const IMPORT_NAMES_REGEX = /import\s*\{([^}]+)\}\s*from\s*['"`][^'"`]+['"`]/;
+
+   // Regex to extract model path from import statements
+   const IMPORT_MODEL_PATH_REGEX =
+      /import\s*(?:\{[^}]*\}\s*from\s*)?['"`]([^'"`]+)['"`]/;
+
+   const hasValidImport =
+      !!cell.text &&
+      (IMPORT_NAMES_REGEX.test(cell.text) ||
+         IMPORT_MODEL_PATH_REGEX.test(cell.text));
+   const getInitialSourceIndex = () => {
+      if (!cell.newSources || cell.newSources.length === 0) return 0;
+
+      let importNames = [];
+      let importPath = "";
+
+      if (cell.text) {
+         const namesMatch = cell.text.match(IMPORT_NAMES_REGEX);
+         if (namesMatch) {
+            importNames = namesMatch[1].split(",").map((name) => name.trim());
+         }
+
+         const pathMatch = cell.text.match(IMPORT_MODEL_PATH_REGEX);
+         if (pathMatch) {
+            importPath = pathMatch[1].trim();
+         }
+      }
+
+      for (let i = 0; i < cell.newSources.length; i++) {
+         try {
+            const sourceInfo = JSON.parse(cell.newSources[i]);
+
+            // Match either by imported name or by path
+            if (
+               (importNames.length > 0 &&
+                  importNames.includes(sourceInfo.name)) ||
+               (importPath && importPath === sourceInfo.path)
+            ) {
+               return i;
+            }
+         } catch (_e) {
+            continue; // Skip invalid JSON
+         }
+      }
+
+      return 0; // Default to the first source
+   };
+
+   const modelDataFromNewSources =
+      cell.newSources && cell.newSources.length > 0
+         ? {
+              sourceInfos: cell.newSources,
+              resource: resourceUri,
+           }
+         : undefined;
 
    const queryResultCodeSnippet = createEmbeddedQueryResult({
       query: cell.text,
@@ -190,6 +240,8 @@ export function NotebookCell({
                title="Data Sources"
                hasValidImport={hasValidImport}
                resourceUri={resourceUri}
+               data={modelDataFromNewSources}
+               initialSelectedSourceIndex={getInitialSourceIndex()}
             />
 
             {/* Code Dialog */}

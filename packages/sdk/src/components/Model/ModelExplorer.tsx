@@ -1,13 +1,13 @@
-import React from "react";
-import { Box, Stack, Button } from "@mui/material";
+import { Box, Button, Stack } from "@mui/material";
 import { styled } from "@mui/material/styles";
+import React from "react";
+import { CompiledModel } from "../../client";
+import { parseResourceUri } from "../../utils/formatting";
+import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { Loading } from "../Loading";
 import { StyledCard, StyledCardContent, StyledCardMedia } from "../styles";
 import { QueryExplorerResult, SourcesExplorer } from "./SourcesExplorer";
-import { CompiledModel } from "../../client";
 import { useModelData } from "./useModelData";
-import { Loading } from "../Loading";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { parseResourceUri } from "../../utils/formatting";
 
 // Add a styled component for the multi-row tab bar
 const MultiRowTabBar = styled(Box)(({ theme }) => ({
@@ -80,7 +80,7 @@ export function ModelExplorer({
       isError,
       isLoading,
       error,
-   } = useModelData(resourceUri);
+   } = useModelData(resourceUri, !data); // we shld only fetch when data is not provided
    const { modelPath } = parseResourceUri(resourceUri);
 
    const effectiveData = data || fetchedData;

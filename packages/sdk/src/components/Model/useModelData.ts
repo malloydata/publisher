@@ -7,7 +7,7 @@ import { useServer } from "../ServerProvider";
  * Custom hook for fetching model data. Combines usePackage context with
  * useQueryWithApiError to fetch a compiled model.
  */
-export function useModelData(resourceUri: string) {
+export function useModelData(resourceUri: string, enabled: boolean = true) {
    const { modelPath, projectName, packageName, versionId } =
       parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -23,5 +23,6 @@ export function useModelData(resourceUri: string) {
          );
          return response.data;
       },
+      enabled: enabled,
    });
 }
