@@ -49,6 +49,7 @@ export class ProjectStore {
          const projectManifest = await ProjectStore.reloadProjectManifest(
             this.serverRootPath,
          );
+         await this.cleanupAndCreatePublisherPath();
          logger.info(`Initializing project store.`);
          await Promise.all(
             projectManifest.projects.map(async (project) => {
@@ -73,6 +74,12 @@ export class ProjectStore {
          console.error(error);
          process.exit(1);
       }
+   }
+
+   private async cleanupAndCreatePublisherPath() {
+      logger.info(`Cleaning up publisher path ${publisherPath}`);
+      await fs.promises.rm(publisherPath, { recursive: true, force: true });
+      await fs.promises.mkdir(publisherPath, { recursive: true });
    }
 
    public async listProjects(skipInitializationCheck: boolean = false) {

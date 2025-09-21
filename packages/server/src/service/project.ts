@@ -186,7 +186,7 @@ export class Project {
          const packageMetadata = await Promise.all(
             this.packageStatuses.keys().map(async (packageName) => {
                try {
-                  let packageMetadata = (
+                  const packageMetadata = (
                      this.packageStatuses.get(packageName)?.status ===
                      PackageStatus.LOADING
                         ? undefined
