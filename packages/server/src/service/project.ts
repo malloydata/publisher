@@ -3,7 +3,7 @@ import { Mutex } from "async-mutex";
 import * as fs from "fs";
 import * as path from "path";
 import { components } from "../api";
-import { API_PREFIX, PACKAGE_MANIFEST_NAME, README_NAME } from "../constants";
+import { API_PREFIX, README_NAME } from "../constants";
 import {
    ConnectionNotFoundError,
    PackageNotFoundError,
@@ -14,7 +14,7 @@ import { createConnections, InternalConnection } from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 
-enum PackageStatus {
+export enum PackageStatus {
    LOADING = "loading",
    SERVING = "serving",
    UNLOADING = "unloading",
@@ -183,28 +183,22 @@ export class Project {
    public async listPackages(): Promise<ApiPackage[]> {
       logger.info("Listing packages", { projectPath: this.projectPath });
       try {
-         const files = await fs.promises.readdir(this.projectPath, {
-            withFileTypes: true,
-         });
-         const packageDirectories = files.filter(
-            (file) =>
-               file.isDirectory() &&
-               fs.existsSync(
-                  path.join(this.projectPath, file.name, PACKAGE_MANIFEST_NAME),
-               ),
-         );
          const packageMetadata = await Promise.all(
-            packageDirectories.map(async (directory) => {
+            this.packageStatuses.keys().map(async (packageName) => {
                try {
-                  return (
-                     this.packageStatuses.get(directory.name)?.status ===
+                  let packageMetadata = (
+                     this.packageStatuses.get(packageName)?.status ===
                      PackageStatus.LOADING
                         ? undefined
-                        : await this.getPackage(directory.name, false)
+                        : await this.getPackage(packageName, false)
                   )?.getPackageMetadata();
+                  if (packageMetadata) {
+                     packageMetadata.name = packageName;
+                  }
+                  return packageMetadata;
                } catch (error) {
                   logger.error(
-                     `Failed to load package: ${directory.name} due to : ${error}`,
+                     `Failed to load package: ${packageName} due to : ${error}`,
                   );
                   // Directory did not contain a valid package.json file -- therefore, it's not a package.
                   // Or it timed out

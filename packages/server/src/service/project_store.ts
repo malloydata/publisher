@@ -19,7 +19,7 @@ import {
    ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
-import { Project } from "./project";
+import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
 
 export class ProjectStore {
@@ -218,6 +218,9 @@ export class ProjectStore {
          this.serverRootPath,
       );
       this.projects.set(projectName, newProject);
+      projectConfig?.packages.forEach((_package) => {
+         newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
+      });
       return newProject;
    }
 
