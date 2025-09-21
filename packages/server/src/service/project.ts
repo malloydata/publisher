@@ -184,7 +184,7 @@ export class Project {
       logger.info("Listing packages", { projectPath: this.projectPath });
       try {
          const packageMetadata = await Promise.all(
-            this.packageStatuses.keys().map(async (packageName) => {
+            Array.from(this.packageStatuses.keys()).map(async (packageName) => {
                try {
                   const packageMetadata = (
                      this.packageStatuses.get(packageName)?.status ===

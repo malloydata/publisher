@@ -78,7 +78,15 @@ export class ProjectStore {
 
    private async cleanupAndCreatePublisherPath() {
       logger.info(`Cleaning up publisher path ${publisherPath}`);
-      await fs.promises.rm(publisherPath, { recursive: true, force: true });
+      try {
+         await fs.promises.rm(publisherPath, { recursive: true, force: true });
+      } catch (error) {
+         if ((error as NodeJS.ErrnoException).code === 'EACCES') {
+            logger.warn(`Permission denied, skipping cleanup of publisher path ${publisherPath}`);
+         } else {
+            throw error;
+         }
+      }
       await fs.promises.mkdir(publisherPath, { recursive: true });
    }
 
