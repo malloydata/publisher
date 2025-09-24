@@ -4,19 +4,19 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { SnowflakeConnection } from "@malloydata/db-snowflake";
 import { TrinoConnection } from "@malloydata/db-trino";
 import { Connection } from "@malloydata/malloy";
-import { BadRequestError } from "../errors";
-import { logAxiosError, logger } from "../logger";
 import { BaseConnection } from "@malloydata/malloy/connection";
+import { AxiosError } from "axios";
 import fs from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { components } from "../api";
-import { TEMP_DIR_PATH } from "../constants";
 import {
    convertConnectionsToApiConnections,
    getConnectionsFromPublisherConfig,
 } from "../config";
-import { AxiosError } from "axios";
+import { TEMP_DIR_PATH } from "../constants";
+import { BadRequestError } from "../errors";
+import { logAxiosError, logger } from "../logger";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionAttributes = components["schemas"]["ConnectionAttributes"];
@@ -284,13 +284,15 @@ export async function testConnectionConfig(
 
          const postgresConfig = connectionConfig.postgresConnection;
          if (
+            !postgresConfig.connectionString && (
             !postgresConfig.host ||
             !postgresConfig.port ||
-            !postgresConfig.userName ||
-            !postgresConfig.databaseName
+               !postgresConfig.userName ||
+               !postgresConfig.databaseName
+            )
          ) {
             throw new Error(
-               "PostgreSQL connection requires: host, port, userName, and databaseName",
+               "PostgreSQL connection requires: all of host, port, userName, and databaseName, or connectionString",
             );
          }
 
