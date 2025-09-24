@@ -292,7 +292,7 @@ export async function testConnectionConfig(
             )
          ) {
             throw new Error(
-               "PostgreSQL connection requires: all of host, port, userName, and databaseName, or connectionString",
+               "PostgreSQL connection requires: either all of host, port, userName, and databaseName, or connectionString",
             );
          }
 
