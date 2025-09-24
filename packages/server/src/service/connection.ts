@@ -284,12 +284,11 @@ export async function testConnectionConfig(
 
          const postgresConfig = connectionConfig.postgresConnection;
          if (
-            !postgresConfig.connectionString && (
-            !postgresConfig.host ||
-            !postgresConfig.port ||
+            !postgresConfig.connectionString &&
+            (!postgresConfig.host ||
+               !postgresConfig.port ||
                !postgresConfig.userName ||
-               !postgresConfig.databaseName
-            )
+               !postgresConfig.databaseName)
          ) {
             throw new Error(
                "PostgreSQL connection requires: either all of host, port, userName, and databaseName, or connectionString",
