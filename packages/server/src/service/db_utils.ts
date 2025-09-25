@@ -26,6 +26,7 @@ async function getPostgresConnection(
       database: apiPostgresConnection.databaseName,
       password: apiPostgresConnection.password,
       port: apiPostgresConnection.port,
+      connectionString: apiPostgresConnection.connectionString,
       max: 10,
       idleTimeoutMillis: 30000,
    });
