@@ -26,6 +26,7 @@ async function getPostgresConnection(
       database: apiPostgresConnection.databaseName,
       password: apiPostgresConnection.password,
       port: apiPostgresConnection.port,
+      connectionString: apiPostgresConnection.connectionString,
       max: 10,
       idleTimeoutMillis: 30000,
    });
@@ -127,6 +128,7 @@ export async function getSchemasForConnection(
          throw new Error("Postgres connection is required");
       }
       const pool = await getPostgresConnection(connection.postgresConnection);
+      console.log("pool", pool);
       const res = await pool.query(
          "SELECT schema_name FROM information_schema.schemata",
       );
