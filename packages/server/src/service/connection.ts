@@ -50,6 +50,40 @@ export async function readConnectionConfig(
    return convertConnectionsToApiConnections(connections);
 }
 
+function validateAndBuildTrinoConfig(trinoConfig: components["schemas"]["TrinoConnection"]) {
+   if (
+      !trinoConfig.server?.includes(trinoConfig.port?.toString() || "")
+   ) {
+      trinoConfig.server = `${trinoConfig.server}:${trinoConfig.port}`;
+   }
+
+   if (trinoConfig.server?.startsWith("http://")) {
+      return {
+         server: trinoConfig.server,
+         port: trinoConfig.port,
+         catalog: trinoConfig.catalog,
+         schema: trinoConfig.schema,
+         user: trinoConfig.user,
+   };
+   } else if (
+      trinoConfig.server?.startsWith("https://") &&
+      trinoConfig.password
+   ) {
+      return {
+         server: trinoConfig.server,
+         port: trinoConfig.port,
+         catalog: trinoConfig.catalog,
+         schema: trinoConfig.schema,
+         user: trinoConfig.user,
+         password: trinoConfig.password,
+      };
+   } else {
+      throw new Error(
+         `Invalid Trino connection: expected "http://server:port" (no password) or "https://server:port" (with username and password).`,
+      );
+   }
+}
+
 export async function createConnections(
    basePath: string,
    defaultConnections: ApiConnection[] = [],
@@ -220,50 +254,7 @@ export async function createConnections(
                throw new Error("Trino connection configuration is missing.");
             }
 
-            const trinoConfig = connection.trinoConnection;
-
-            if (
-               !trinoConfig.server?.startsWith("https://") &&
-               !trinoConfig.server?.startsWith("http://")
-            ) {
-               throw new Error(
-                  "Trino connection requires server to start with https:// or http://",
-               );
-            }
-
-            if (
-               !trinoConfig.server?.includes(trinoConfig.port?.toString() || "")
-            ) {
-               trinoConfig.server = `${trinoConfig.server}:${trinoConfig.port}`;
-            }
-
-            let trinoConnectionOptions;
-
-            if (trinoConfig.server?.startsWith("http://")) {
-               trinoConnectionOptions = {
-                  server: trinoConfig.server,
-                  port: trinoConfig.port,
-                  catalog: trinoConfig.catalog,
-                  schema: trinoConfig.schema,
-                  user: trinoConfig.user,
-               };
-            } else if (
-               trinoConfig.server?.startsWith("https://") &&
-               trinoConfig.password
-            ) {
-               trinoConnectionOptions = {
-                  server: trinoConfig.server,
-                  port: trinoConfig.port,
-                  catalog: trinoConfig.catalog,
-                  schema: trinoConfig.schema,
-                  user: trinoConfig.user,
-                  password: trinoConfig.password,
-               };
-            } else {
-               throw new Error(
-                  "Trino connection requires password for https connection",
-               );
-            }
+            const trinoConnectionOptions = validateAndBuildTrinoConfig(connection.trinoConnection);
             const trinoConnection = new TrinoConnection(
                connection.name,
                {},
@@ -501,47 +492,7 @@ export async function testConnectionConfig(
             );
          }
 
-         if (
-            !trinoConfig.server?.startsWith("https://") &&
-            !trinoConfig.server?.startsWith("http://")
-         ) {
-            throw new Error(
-               "Trino connection requires: server to start with https:// or http://",
-            );
-         }
-
-         if (!trinoConfig.server?.includes(trinoConfig.port.toString())) {
-            trinoConfig.server = `${trinoConfig.server}:${trinoConfig.port}`;
-         }
-
-         let trinoConnectionOptions;
-
-         if (trinoConfig.server?.startsWith("http://")) {
-            trinoConnectionOptions = {
-               server: trinoConfig.server,
-               port: trinoConfig.port,
-               catalog: trinoConfig.catalog,
-               schema: trinoConfig.schema,
-               user: trinoConfig.user,
-            };
-         } else if (
-            trinoConfig.server?.startsWith("https://") &&
-            trinoConfig.password
-         ) {
-            trinoConnectionOptions = {
-               server: trinoConfig.server,
-               port: trinoConfig.port,
-               catalog: trinoConfig.catalog,
-               schema: trinoConfig.schema,
-               user: trinoConfig.user,
-               password: trinoConfig.password,
-            };
-         } else {
-            throw new Error(
-               "Trino connection requires password for https connection",
-            );
-         }
-
+         const trinoConnectionOptions = validateAndBuildTrinoConfig(trinoConfig);
          const trinoConnection = new TrinoConnection(
             "testConnection",
             {},
