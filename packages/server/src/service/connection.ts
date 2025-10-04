@@ -224,7 +224,7 @@ export async function createConnections(
 
             if (
                !trinoConfig.server?.startsWith("https://") &&
-               !trinoConfig.server?.startsWith("http")
+               !trinoConfig.server?.startsWith("http://")
             ) {
                throw new Error(
                   "Trino connection requires server to start with https:// or http://",
@@ -503,7 +503,7 @@ export async function testConnectionConfig(
 
          if (
             !trinoConfig.server?.startsWith("https://") &&
-            !trinoConfig.server?.startsWith("http")
+            !trinoConfig.server?.startsWith("http://")
          ) {
             throw new Error(
                "Trino connection requires: server to start with https:// or http://",
