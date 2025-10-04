@@ -222,28 +222,35 @@ export async function createConnections(
 
             const trinoConfig = connection.trinoConnection;
 
-            if (!trinoConfig.server?.startsWith("https://") && !trinoConfig.server?.startsWith("http")) {
+            if (
+               !trinoConfig.server?.startsWith("https://") &&
+               !trinoConfig.server?.startsWith("http")
+            ) {
                throw new Error(
                   "Trino connection requires server to start with https:// or http://",
                );
             }
-   
-            if (!trinoConfig.server?.includes(trinoConfig.port?.toString() || "")) {
+
+            if (
+               !trinoConfig.server?.includes(trinoConfig.port?.toString() || "")
+            ) {
                trinoConfig.server = `${trinoConfig.server}:${trinoConfig.port}`;
             }
-   
+
             let trinoConnectionOptions;
-   
+
             if (trinoConfig.server?.startsWith("http://")) {
-   
                trinoConnectionOptions = {
                   server: trinoConfig.server,
                   port: trinoConfig.port,
                   catalog: trinoConfig.catalog,
                   schema: trinoConfig.schema,
-                  user: trinoConfig.user
+                  user: trinoConfig.user,
                };
-            } else if (trinoConfig.server?.startsWith("https://") && trinoConfig.password) {
+            } else if (
+               trinoConfig.server?.startsWith("https://") &&
+               trinoConfig.password
+            ) {
                trinoConnectionOptions = {
                   server: trinoConfig.server,
                   port: trinoConfig.port,
@@ -494,7 +501,10 @@ export async function testConnectionConfig(
             );
          }
 
-         if (!trinoConfig.server?.startsWith("https://") && !trinoConfig.server?.startsWith("http")) {
+         if (
+            !trinoConfig.server?.startsWith("https://") &&
+            !trinoConfig.server?.startsWith("http")
+         ) {
             throw new Error(
                "Trino connection requires: server to start with https:// or http://",
             );
@@ -507,15 +517,17 @@ export async function testConnectionConfig(
          let trinoConnectionOptions;
 
          if (trinoConfig.server?.startsWith("http://")) {
-
             trinoConnectionOptions = {
                server: trinoConfig.server,
                port: trinoConfig.port,
                catalog: trinoConfig.catalog,
                schema: trinoConfig.schema,
-               user: trinoConfig.user
+               user: trinoConfig.user,
             };
-         } else if (trinoConfig.server?.startsWith("https://") && trinoConfig.password) {
+         } else if (
+            trinoConfig.server?.startsWith("https://") &&
+            trinoConfig.password
+         ) {
             trinoConnectionOptions = {
                server: trinoConfig.server,
                port: trinoConfig.port,
@@ -558,15 +570,18 @@ export async function testConnectionConfig(
             throw new Error("MySQL connection configuration is missing.");
          }
 
-         if (!connectionConfig.mysqlConnection.host ||
+         if (
+            !connectionConfig.mysqlConnection.host ||
             !connectionConfig.mysqlConnection.port ||
             !connectionConfig.mysqlConnection.user ||
             !connectionConfig.mysqlConnection.password ||
             !connectionConfig.mysqlConnection.database
          ) {
-            throw new Error("MySQL connection requires: host, port, user, password, and database");
+            throw new Error(
+               "MySQL connection requires: host, port, user, password, and database",
+            );
          }
-         
+
          const mysqlConfig = connectionConfig.mysqlConnection;
          const mysqlConnectionOptions = {
             host: mysqlConfig.host,
