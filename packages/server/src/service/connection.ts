@@ -50,10 +50,10 @@ export async function readConnectionConfig(
    return convertConnectionsToApiConnections(connections);
 }
 
-function validateAndBuildTrinoConfig(trinoConfig: components["schemas"]["TrinoConnection"]) {
-   if (
-      !trinoConfig.server?.includes(trinoConfig.port?.toString() || "")
-   ) {
+function validateAndBuildTrinoConfig(
+   trinoConfig: components["schemas"]["TrinoConnection"],
+) {
+   if (!trinoConfig.server?.includes(trinoConfig.port?.toString() || "")) {
       trinoConfig.server = `${trinoConfig.server}:${trinoConfig.port}`;
    }
 
@@ -64,7 +64,7 @@ function validateAndBuildTrinoConfig(trinoConfig: components["schemas"]["TrinoCo
          catalog: trinoConfig.catalog,
          schema: trinoConfig.schema,
          user: trinoConfig.user,
-   };
+      };
    } else if (
       trinoConfig.server?.startsWith("https://") &&
       trinoConfig.password
@@ -254,7 +254,9 @@ export async function createConnections(
                throw new Error("Trino connection configuration is missing.");
             }
 
-            const trinoConnectionOptions = validateAndBuildTrinoConfig(connection.trinoConnection);
+            const trinoConnectionOptions = validateAndBuildTrinoConfig(
+               connection.trinoConnection,
+            );
             const trinoConnection = new TrinoConnection(
                connection.name,
                {},
@@ -492,7 +494,8 @@ export async function testConnectionConfig(
             );
          }
 
-         const trinoConnectionOptions = validateAndBuildTrinoConfig(trinoConfig);
+         const trinoConnectionOptions =
+            validateAndBuildTrinoConfig(trinoConfig);
          const trinoConnection = new TrinoConnection(
             "testConnection",
             {},
