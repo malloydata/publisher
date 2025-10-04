@@ -13,7 +13,10 @@ import {
    MysqlConnection,
    PostgresConnection,
    SnowflakeConnection,
+   TrinoConnection
 } from "./model";
+
+import { BasicAuth, Trino } from "trino-client";
 
 type ApiSchemaName = components["schemas"]["SchemaName"];
 
@@ -85,6 +88,26 @@ async function getSnowflakeConnection(
       });
    });
 }
+
+function getTrinoClient(trinoConn: TrinoConnection) {
+  let auth: any;
+  if (trinoConn.server?.startsWith("https://")) {
+    // HTTPS allows password authentication
+    auth = new BasicAuth(trinoConn?.user || "", trinoConn?.password || "");
+  } else {
+    // HTTP only allows username, no password for security
+    auth = new BasicAuth(trinoConn?.user || "");
+  }
+
+  return Trino.create({
+    server: trinoConn.server,
+    catalog: trinoConn.catalog,
+    schema: trinoConn.schema,
+    auth,
+  });
+};
+
+
 
 export async function getSchemasForConnection(
    connection: ApiConnection,
@@ -167,6 +190,27 @@ export async function getSchemasForConnection(
             }
          });
       }
+   } else if (connection.type === "trino") {
+      if (!connection.trinoConnection) {
+         throw new Error("Trino connection is required");
+      }
+      const client = getTrinoClient(connection.trinoConnection);
+      const result = await client.query(
+         `SHOW SCHEMAS FROM ${connection.trinoConnection.catalog}`,
+      );
+      const rows: any[] = [];
+      let next = await result.next();
+      while (!next.done) {
+         if (next.value.data) {
+            rows.push(...next.value.data);
+         }
+         next = await result.next();
+      }
+      return rows.map((r) => ({
+         name: r[0],
+         isHidden: false,
+         isDefault: r[0] === connection.trinoConnection?.schema,
+      }));
    } else {
       throw new Error(`Unsupported connection type: ${connection.type}`);
    }
@@ -243,6 +287,23 @@ export async function getTablesForSchema(
             }
          });
       }
+   } else if (connection.type === "trino") {
+      if (!connection.trinoConnection) {
+         throw new Error("Trino connection is required");
+      }
+      const client = getTrinoClient(connection.trinoConnection);
+      const result = await client.query(
+         `SHOW TABLES FROM ${connection.trinoConnection.catalog}.${schemaName}`,
+      );
+      const rows: any[] = [];
+      let next = await result.next();
+      while (!next.done) {
+         if (next.value.data) {
+            rows.push(...next.value.data);
+         }
+         next = await result.next();
+      }
+      return rows.map((r) => r[0]);
    } else {
       // TODO(jjs) - implement
       return [];

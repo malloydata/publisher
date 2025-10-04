@@ -54,6 +54,7 @@
     "node-cron": "^3.0.3",
     "recursive-readdir": "^2.2.3",
     "simple-git": "^3.28.0",
+    "trino": "^1.1.1",
     "uuid": "^11.0.3"
   },
   "devDependencies": {
