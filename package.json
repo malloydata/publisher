@@ -39,6 +39,7 @@
     "upgrade-malloy": "./scripts/upgrade-malloy.sh"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.1",
     "@types/react": "^19.1.7",
     "@types/react-dom": "^19.1.6",
     "eslint": "^8.50.0",

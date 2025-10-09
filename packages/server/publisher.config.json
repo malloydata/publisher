@@ -15,10 +15,6 @@
         {
           "name": "faa",
           "location": "https://github.com/credibledata/malloy-samples/tree/main/faa"
-        },
-        {
-          "name": "bigquery-hackernews",
-          "location": "https://github.com/credibledata/malloy-samples/tree/main/bigquery-hackernews"
         }
       ],
       "connections": [
