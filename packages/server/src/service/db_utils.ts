@@ -78,6 +78,7 @@ async function getSnowflakeConnection(
          password: apiSnowflakeConnection.password,
          database: apiSnowflakeConnection.database,
          warehouse: apiSnowflakeConnection.warehouse || undefined,
+         role: apiSnowflakeConnection.role || undefined,
       });
       connection.connect((err, conn) => {
          if (err) {

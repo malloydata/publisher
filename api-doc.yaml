@@ -5,18 +5,18 @@ info:
     The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources. 
     A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases 
     (.parquet files) with a malloy-publisher.json manifest at the package's root directory.
-    
+
     ## Key Features
-    
+
     - **Project Management**: Create and manage projects with their associated packages and connections
     - **Package Lifecycle**: Full CRUD operations for Malloy packages and their versions
     - **Model & Notebook Access**: Retrieve and execute Malloy models and notebooks
     - **Connection Management**: Secure database connection configuration and testing
     - **Query Execution**: Execute queries against models and retrieve results
     - **Watch Mode**: Real-time file watching for development workflows
-    
+
     ## Resource Hierarchy
-    
+
     The API follows a hierarchical resource structure:
     ```
     Projects
@@ -28,7 +28,7 @@ info:
     │   └── Schedules
     └── Watch Mode
     ```
-    
+
     For examples, see the Malloy samples packages (https://github.com/malloydata/malloy-samples) repository.
   version: v0
 
@@ -62,7 +62,7 @@ paths:
   /status:
     get:
       tags:
-      - publisher
+        - publisher
       operationId: get-status
       summary: Get server status and health information
       description: |
@@ -70,12 +70,12 @@ paths:
         available projects, and server timestamp. This endpoint is useful for health checks and
         monitoring server availability.
       responses:
-        '200':
+        "200":
           description: Returns server status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServerStatus'
+                $ref: "#/components/schemas/ServerStatus"
 
   /connections/test:
     post:
@@ -93,14 +93,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Connection'
+              $ref: "#/components/schemas/Connection"
       responses:
         "200":
           description: Connection test result
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConnectionStatus'
+                $ref: "#/components/schemas/ConnectionStatus"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -147,7 +147,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Project'
+              $ref: "#/components/schemas/Project"
       responses:
         "200":
           description: Returns the project created
@@ -217,7 +217,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Project'
+              $ref: "#/components/schemas/Project"
       responses:
         "200":
           description: Returns the project updated
@@ -327,7 +327,6 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-
   /projects/{projectName}/connections/{connectionName}/test:
     get:
       tags:
@@ -357,7 +356,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConnectionStatus'
+                $ref: "#/components/schemas/ConnectionStatus"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -375,7 +374,7 @@ paths:
       description: |
         **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
         Use the POST version instead for better security and functionality.
-        
+
         Creates a Malloy source from a SQL statement using the specified connection.
         The SQL statement is executed to generate a source definition that can be used in Malloy models.
       parameters:
@@ -600,7 +599,7 @@ paths:
       description: |
         **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
         Use the POST version instead for better security and functionality.
-        
+
         Executes a SQL statement against the specified database connection and returns the results.
         The query results include data, metadata, and execution information.
       parameters:
@@ -640,7 +639,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
-              $ref: "#/components/responses/InternalServerError"
+          $ref: "#/components/responses/InternalServerError"
     post:
       tags:
         - connections
@@ -703,7 +702,7 @@ paths:
       description: |
         **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
         Use the POST version instead for better security and functionality.
-        
+
         Creates a temporary table from a SQL statement using the specified connection.
         Temporary tables are useful for storing intermediate results during complex queries.
       parameters:
@@ -785,7 +784,6 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-
   /projects/{projectName}/packages:
     get:
       tags:
@@ -839,7 +837,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Package'
+              $ref: "#/components/schemas/Package"
       responses:
         "200":
           description: Returns the package created
@@ -932,7 +930,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Package'
+              $ref: "#/components/schemas/Package"
       responses:
         "200":
           description: Returns the package updated
@@ -1462,17 +1460,17 @@ components:
   schemas:
     IdentifierPattern:
       type: string
-      pattern: '^[a-zA-Z0-9_-]+$'
+      pattern: "^[a-zA-Z0-9_-]+$"
       description: Standard identifier pattern for resource names
-    
+
     VersionIdPattern:
       type: string
-      pattern: '^[a-zA-Z0-9_.-]+$'
+      pattern: "^[a-zA-Z0-9_.-]+$"
       description: Version identifier pattern supporting dots and dashes
-    
+
     PathPattern:
       type: string
-      pattern: '^[a-zA-Z0-9_/.-]+$'
+      pattern: "^[a-zA-Z0-9_/.-]+$"
       description: Path pattern supporting slashes, dots, and dashes
 
     ServerStatus:
@@ -1486,7 +1484,7 @@ components:
           type: array
           description: List of available projects
           items:
-            $ref: '#/components/schemas/Project'
+            $ref: "#/components/schemas/Project"
         initialized:
           type: boolean
           description: Whether the server is fully initialized and ready to serve requests
@@ -1511,12 +1509,12 @@ components:
           type: array
           description: List of database connections configured for this project
           items:
-            $ref: '#/components/schemas/Connection'
+            $ref: "#/components/schemas/Connection"
         packages:
           type: array
           description: List of Malloy packages in this project
           items:
-            $ref: '#/components/schemas/Package'
+            $ref: "#/components/schemas/Package"
 
     Package:
       type: object
@@ -1870,6 +1868,9 @@ components:
         schema:
           type: string
           description: Snowflake schema name
+        role:
+          type: string
+          description: Snowflake role name
         responseTimeoutMilliseconds:
           type: integer
           description: Query response timeout in milliseconds

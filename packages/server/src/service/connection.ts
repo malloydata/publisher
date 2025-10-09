@@ -235,6 +235,7 @@ export async function createConnections(
                   warehouse: connection.snowflakeConnection.warehouse,
                   database: connection.snowflakeConnection.database,
                   schema: connection.snowflakeConnection.schema,
+                  role: connection.snowflakeConnection.role,
                   timeout:
                      connection.snowflakeConnection.responseTimeoutMilliseconds,
                },
@@ -386,6 +387,7 @@ export async function testConnectionConfig(
                warehouse: snowflakeConfig.warehouse,
                database: snowflakeConfig.database,
                schema: snowflakeConfig.schema,
+               role: snowflakeConfig.role,
                timeout: snowflakeConfig.responseTimeoutMilliseconds,
             },
          };
