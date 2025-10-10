@@ -53,6 +53,7 @@ export default function Notebook({ resourceUri }: NotebookProps) {
                      <NotebookCell
                         cell={cell}
                         key={index}
+                        index={index}
                         resourceUri={resourceUri}
                      />
                   ))}

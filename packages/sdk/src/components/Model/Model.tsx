@@ -1,6 +1,14 @@
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { Box, IconButton, Stack, Typography } from "@mui/material";
+import {
+   Box,
+   IconButton,
+   Snackbar,
+   Stack,
+   Tooltip,
+   Typography,
+} from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
+import ShareIcon from "@mui/icons-material/Share";
 import "@malloydata/malloy-explorer/styles.css";
 import { QueryExplorerResult } from "./SourcesExplorer";
 import { Loading } from "../Loading";
@@ -8,7 +16,7 @@ import { ModelExplorer } from "./ModelExplorer";
 import { ModelExplorerDialog } from "./ModelExplorerDialog";
 import { ModelCell } from "./ModelCell";
 import { useModelData } from "./useModelData";
-import React from "react";
+import React, { useState } from "react";
 import { parseResourceUri } from "../../utils/formatting";
 
 interface ModelProps {
@@ -28,6 +36,7 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
       QueryExplorerResult | undefined
    >();
    const [sharedSourceIndex, setSharedSourceIndex] = React.useState(0);
+   const [copyMessage, setCopyMessage] = useState("");
 
    if (isLoading) {
       return <Loading text="Fetching Model..." />;
@@ -50,6 +59,14 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
       setSharedSourceIndex(index);
    };
 
+   const copyToClipboard = () => {
+      const url = window.location.href;
+      navigator.clipboard
+         .writeText(url)
+         .then(() => setCopyMessage("URL copied to clipboard!"))
+         .catch(() => setCopyMessage("Failed to copy URL"));
+   };
+
    return (
       <>
          <Box
@@ -65,7 +82,14 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                data.sourceInfos.length > 0 && (
                   <Stack spacing={2} component="section">
                      {/* Sources Header */}
-                     <Box sx={{ padding: "0 0 16px 0" }}>
+                     <Box
+                        sx={{
+                           padding: "0 0 16px 0",
+                           display: "flex",
+                           alignItems: "center",
+                           justifyContent: "space-between",
+                        }}
+                     >
                         <Typography
                            variant="h1"
                            sx={{
@@ -79,6 +103,16 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                         >
                            Sources
                         </Typography>
+                        <Tooltip title="Click to copy and share">
+                           <ShareIcon
+                              sx={{
+                                 fontSize: "24px",
+                                 color: "#666666",
+                                 cursor: "pointer",
+                              }}
+                              onClick={copyToClipboard}
+                           />
+                        </Tooltip>
                      </Box>
 
                      <ModelExplorer
@@ -162,6 +196,12 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                onSourceChange={handleSourceChange}
             />
          </Box>
+         <Snackbar
+            open={copyMessage !== ""}
+            autoHideDuration={6000}
+            onClose={() => setCopyMessage("")}
+            message={copyMessage}
+         />
       </>
    );
 }
