@@ -50,6 +50,7 @@ export type ApiConnection = components["schemas"]["Connection"];
 export type SnowflakeConnection = components["schemas"]["SnowflakeConnection"];
 export type PostgresConnection = components["schemas"]["PostgresConnection"];
 export type BigqueryConnection = components["schemas"]["BigqueryConnection"];
+export type TrinoConnection = components["schemas"]["TrinoConnection"];
 
 const MALLOY_VERSION = malloyPackage.version;
 

@@ -104,6 +104,11 @@ export const connectionFieldsByType: Record<
          type: "password",
       },
       {
+         label: "Role",
+         name: "role",
+         type: "text",
+      },
+      {
          label: "Warehouse",
          name: "warehouse",
          type: "text",
