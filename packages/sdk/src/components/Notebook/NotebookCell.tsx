@@ -2,7 +2,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import CodeIcon from "@mui/icons-material/Code";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import SearchIcon from "@mui/icons-material/Search";
-import ShareIcon from '@mui/icons-material/Share';
+import ShareIcon from "@mui/icons-material/Share";
 import {
    Box,
    Dialog,
@@ -12,7 +12,7 @@ import {
    Stack,
    Tooltip,
    Typography,
-   Snackbar
+   Snackbar,
 } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
@@ -31,7 +31,7 @@ interface NotebookCellProps {
    expandEmbedding?: boolean;
    hideEmbeddingIcon?: boolean;
    resourceUri: string;
-   index:number;
+   index: number;
 }
 
 export function NotebookCell({
@@ -130,13 +130,13 @@ export function NotebookCell({
       });
    }, [queryResultCodeSnippet]);
 
-
    const copyToClipboard = () => {
       const url = window.location.href;
-      navigator.clipboard.writeText(url)
-      .then(() => setCopyMessage("URL copied to clipboard!"))
-      .catch(() => setCopyMessage("Failed to copy URL"));
-   }
+      navigator.clipboard
+         .writeText(url)
+         .then(() => setCopyMessage("URL copied to clipboard!"))
+         .catch(() => setCopyMessage("Failed to copy URL"));
+   };
 
    return (
       (cell.type === "markdown" && (
@@ -170,13 +170,25 @@ export function NotebookCell({
                }}
             >
                {index === 0 ? (
-                  <Stack direction="row" alignItems="flex-start" justifyContent="space-between">
+                  <Stack
+                     direction="row"
+                     alignItems="flex-start"
+                     justifyContent="space-between"
+                  >
                      <Markdown>{cell.text}</Markdown>
                      <Tooltip title="Click to copy and share">
-                        <ShareIcon  sx={{ fontSize: "24px", color: "#666666", cursor:"pointer", marginTop:"26px" }} onClick={copyToClipboard}/>
+                        <ShareIcon
+                           sx={{
+                              fontSize: "24px",
+                              color: "#666666",
+                              cursor: "pointer",
+                              marginTop: "26px",
+                           }}
+                           onClick={copyToClipboard}
+                        />
                      </Tooltip>
                   </Stack>
-                  ) : (
+               ) : (
                   <Markdown>{cell.text}</Markdown>
                )}
                <Snackbar

@@ -1,7 +1,14 @@
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { Box, IconButton, Snackbar, Stack, Tooltip, Typography } from "@mui/material";
+import {
+   Box,
+   IconButton,
+   Snackbar,
+   Stack,
+   Tooltip,
+   Typography,
+} from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
-import ShareIcon from '@mui/icons-material/Share';
+import ShareIcon from "@mui/icons-material/Share";
 import "@malloydata/malloy-explorer/styles.css";
 import { QueryExplorerResult } from "./SourcesExplorer";
 import { Loading } from "../Loading";
@@ -52,13 +59,13 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
       setSharedSourceIndex(index);
    };
 
-
    const copyToClipboard = () => {
       const url = window.location.href;
-      navigator.clipboard.writeText(url)
-      .then(() => setCopyMessage("URL copied to clipboard!"))
-      .catch(() => setCopyMessage("Failed to copy URL"));
-   } 
+      navigator.clipboard
+         .writeText(url)
+         .then(() => setCopyMessage("URL copied to clipboard!"))
+         .catch(() => setCopyMessage("Failed to copy URL"));
+   };
 
    return (
       <>
@@ -75,7 +82,14 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                data.sourceInfos.length > 0 && (
                   <Stack spacing={2} component="section">
                      {/* Sources Header */}
-                     <Box sx={{ padding: "0 0 16px 0", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                     <Box
+                        sx={{
+                           padding: "0 0 16px 0",
+                           display: "flex",
+                           alignItems: "center",
+                           justifyContent: "space-between",
+                        }}
+                     >
                         <Typography
                            variant="h1"
                            sx={{
@@ -87,10 +101,17 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                               paddingLeft: "0",
                            }}
                         >
-                           Sources 
+                           Sources
                         </Typography>
                         <Tooltip title="Click to copy and share">
-                           <ShareIcon  sx={{ fontSize: "24px", color: "#666666", cursor:"pointer" }} onClick={copyToClipboard}/>
+                           <ShareIcon
+                              sx={{
+                                 fontSize: "24px",
+                                 color: "#666666",
+                                 cursor: "pointer",
+                              }}
+                              onClick={copyToClipboard}
+                           />
                         </Tooltip>
                      </Box>
 
