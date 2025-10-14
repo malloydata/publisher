@@ -15,7 +15,7 @@ export const getProjectDescription = (readme: string | undefined): string => {
 
    // Get first paragraph (split by double newlines)
    const paragraphs = cleanText.split(/\n\s*\n/);
-   const firstParagraph = paragraphs[0] || cleanText;
+   const firstParagraph = paragraphs[1] || cleanText;
 
    // Limit to ~120 characters
    if (firstParagraph.length <= 120) {
