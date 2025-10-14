@@ -1,10 +1,10 @@
 import {
+   ServerProvider,
    WorkbookStorage,
    WorkbookStorageProvider,
 } from "@malloy-publisher/sdk";
-import { ServerProvider } from "@malloy-publisher/sdk/client";
-import "@malloy-publisher/sdk/malloy-explorer.css";
 import "@malloy-publisher/sdk/styles.css";
+import "@malloydata/malloy-explorer/styles.css";
 import { CssBaseline } from "@mui/material";
 import { ThemeProvider } from "@mui/material/styles";
 import * as React from "react";

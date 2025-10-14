@@ -19,17 +19,13 @@ export default ({ mode }) => {
          lib: {
             entry: {
                index: "./src/index.ts",
-               "client/index": "./src/client-entry.ts",
+               "client/index": "./src/client/index.ts",
             },
             name: "@malloy-publisher/sdk",
-            fileName: (format, entryName) => {
-               if (entryName === "index") {
-                  return `index.${format}.js`;
-               } else if (entryName === "client/index") {
-                  return `client/index.${format}.js`;
-               }
-               return `${entryName}.${format}.js`;
-            },
+            fileName: (format, entryName) =>
+               entryName === "index"
+                  ? `index.${format}.js`
+                  : `client/index.${format}.js`,
             formats: ["cjs", "es"],
          },
          rollupOptions: {
@@ -78,26 +74,21 @@ export default ({ mode }) => {
                // All peer dependencies
                ...Object.keys(peerDependencies),
             ],
-            output: [
-               // ES modules build with preserved modules for better tree-shaking
-               {
-                  format: "es",
-                  preserveModules: true,
-                  preserveModulesRoot: "src",
-                  exports: "named",
-                  entryFileNames: "[name].es.js",
-                  chunkFileNames: "[name].es.js",
+            output: {
+               preserveModules: true,
+               preserveModulesRoot: "src",
+               // Provide global variable names for externalized dependencies
+               globals: {
+                  react: "React",
+                  "react-dom": "ReactDOM",
+                  "react/jsx-runtime": "ReactJSXRuntime",
+                  "@emotion/react": "EmotionReact",
+                  "@emotion/styled": "EmotionStyled",
+                  "@mui/material": "MaterialUI",
+                  "@mui/icons-material": "MaterialUIIcons",
+                  "@mui/system": "MaterialUISystem",
                },
-               // CommonJS build bundled (not preserved) to avoid resolution issues
-               {
-                  format: "cjs",
-                  exports: "named",
-                  entryFileNames: "[name].cjs.js",
-                  chunkFileNames: "[name].cjs.js",
-                  // Don't preserve modules for CJS to avoid resolution issues
-                  preserveModules: false,
-               },
-            ],
+            },
          },
          sourcemap: mode !== "production",
          emptyOutDir: true,

@@ -1,10 +1,10 @@
-import { ServerProvider } from "@malloy-publisher/sdk/client";
-import { CssBaseline } from "@mui/material";
-import { ThemeProvider } from "@mui/material/styles";
 import * as React from "react";
 import * as ReactDOM from "react-dom/client";
-import AppShell from "./AppShell";
+import { ThemeProvider } from "@mui/material/styles";
+import { CssBaseline } from "@mui/material";
 import theme from "./theme";
+import AppShell from "./AppShell";
+import { ServerProvider } from "@malloy-publisher/sdk";
 // Import required CSS
 import "@malloy-publisher/sdk/styles.css";
 

@@ -13,7 +13,7 @@ import {
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
-import { globalQueryClient } from "../utils/queryClient";
+import { globalQueryClient } from "../hooks/useQueryWithApiError";
 
 export interface ServerContextValue {
    server: string;

@@ -28,10 +28,10 @@
     "lint:app": "cd packages/app && bun run lint",
     "lint:server": "cd packages/server && bun run lint",
     "lint": "bun run lint:sdk && bun run lint:app && bun run lint:server",
-    "typecheck:sdk": "cd packages/sdk && bunx tsc --noEmit",
-    "typecheck:app": "cd packages/app && bunx tsc --noEmit",
-    "typecheck:server": "cd packages/server && bunx tsc --noEmit",
-    "typecheck": "bun run typecheck:sdk && bun run typecheck:app && echo 'skipping bun run typecheck:server'",
+    "typecheck:sdk": "cd packages/sdk && bun run tsc --noEmit",
+    "typecheck:app": "cd packages/app && bun run tsc --noEmit",
+    "typecheck:server": "cd packages/server && bun run tsc --noEmit",
+    "typecheck": "bun run typecheck:sdk && bun run typecheck:app && bun run typecheck:server",
     "format:sdk": "cd packages/sdk && bun run format",
     "format:app": "cd packages/app && bun run format",
     "format:server": "cd packages/server && bun run format",
@@ -50,15 +50,9 @@
     "speccy": "^0.11.0"
   },
   "dependencies": {
-    "@types/bun": "^1.3.0",
-    "@typescript-eslint/typescript-estree": "^8.46.1",
     "duckdb": "^1.3.1",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.0.0",
-    "eslint-plugin-storybook": "^9.1.10",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "typecheck": "^0.1.2"
+    "react-dom": "^19.1.0"
   },
   "resolutions": {
     "duckdb": "1.3.1",
