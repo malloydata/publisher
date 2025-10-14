@@ -9,6 +9,8 @@ await build({
    outdir: "./dist",
    target: "node",
    format: "cjs",
+   minify: false,
+   splitting: false,
    external: [
       "@malloydata/db-duckdb",
       "@malloydata/malloy",
@@ -28,7 +30,14 @@ fs.cpSync("../app/dist", "./dist/app", { recursive: true });
 // Add shebang to server.js for npx compatibility and rename to .cjs for CommonJS
 const serverJsPath = "./dist/server.js";
 const serverCjsPath = "./dist/server.cjs";
-const serverJsContent = fs.readFileSync(serverJsPath, "utf8");
+let serverJsContent = fs.readFileSync(serverJsPath, "utf8");
+
+// Replace import.meta.url with CommonJS equivalent
+serverJsContent = serverJsContent.replace(
+   /import\.meta\.url/g,
+   "require('url').pathToFileURL(__filename).href",
+);
+
 const shebangContent = "#!/usr/bin/env node\n" + serverJsContent;
 fs.writeFileSync(serverCjsPath, shebangContent);
 
