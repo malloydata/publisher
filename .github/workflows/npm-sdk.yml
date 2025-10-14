@@ -18,9 +18,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Install Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2
 
       - name: Show current version
         run: |
