@@ -52,7 +52,8 @@
    },
    "scripts": {
       "build": "bun generate-api-types && bunx vite build",
-      "postbuild": "cp ../../node_modules/@malloydata/malloy-explorer/dist/malloy-explorer.css ./dist/malloy-explorer.css && cp ../../node_modules/@uiw/react-md-editor/markdown-editor.css ./dist/markdown-editor.css && echo '/* SDK Styles */\n@import \"./malloy-explorer.css\";\n@import \"./markdown-editor.css\";' > ./dist/styles.css",
+      "comment": "If the postbuild command fails, upgrade to bun 1.3 or later",
+      "postbuild": "cp node_modules/@malloydata/malloy-explorer/dist/malloy-explorer.css ./dist/malloy-explorer.css && cp node_modules/@uiw/react-md-editor/markdown-editor.css ./dist/markdown-editor.css && echo '/* SDK Styles */\n@import \"./malloy-explorer.css\";\n@import \"./markdown-editor.css\";' > ./dist/styles.css",
       "test": "bun test",
       "lint": "bunx eslint ./src --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
@@ -84,7 +85,7 @@
    },
    "devDependencies": {
       "@openapitools/openapi-generator-cli": "^2.20.2",
-      "@types/bun": "^1.2.21",
+      "@types/bun": "^1.3.0",
       "@types/k6": "^1.0.2",
       "@types/react": "^19.1.7",
       "@types/react-dom": "^19.1.6",
