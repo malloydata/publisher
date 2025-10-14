@@ -25,11 +25,13 @@ await build({
 
 fs.cpSync("../app/dist", "./dist/app", { recursive: true });
 
-// Add shebang to server.js for npx compatibility
+// Add shebang to server.js for npx compatibility and rename to .cjs for CommonJS
 const serverJsPath = "./dist/server.js";
+const serverCjsPath = "./dist/server.cjs";
 const serverJsContent = fs.readFileSync(serverJsPath, "utf8");
 const shebangContent = "#!/usr/bin/env node\n" + serverJsContent;
-fs.writeFileSync(serverJsPath, shebangContent);
+fs.writeFileSync(serverCjsPath, shebangContent);
 
-// Make the file executable
-fs.chmodSync(serverJsPath, "755");
+// Remove the original .js file and make the .cjs file executable
+fs.rmSync(serverJsPath);
+fs.chmodSync(serverCjsPath, "755");

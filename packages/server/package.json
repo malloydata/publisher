@@ -2,9 +2,9 @@
    "name": "@malloy-publisher/server",
    "description": "Malloy Publisher Server",
    "version": "0.0.116",
-   "main": "dist/server.js",
+   "main": "dist/server.cjs",
    "bin": {
-      "malloy-publisher": "dist/server.js"
+      "malloy-publisher": "dist/server.cjs"
    },
    "publishConfig": {
       "access": "public"
@@ -13,9 +13,9 @@
       "test": "bun test --timeout 100000",
       "build": "bun generate-api-types && bun build:app && NODE_ENV=production bun run build.ts",
       "build:server-only": "bun generate-api-types && NODE_ENV=production bun run build.ts",
-      "start": "NODE_ENV=production node ./dist/server.js",
+      "start": "NODE_ENV=production node ./dist/server.cjs",
       "start:dev": "NODE_ENV=development bun --watch src/server.ts",
-      "start:instrumented": "node --require ./dist/instrumentation.js ./dist/server.js",
+      "start:instrumented": "node --require ./dist/instrumentation.js ./dist/server.cjs",
       "lint": "bunx eslint \"./src/**/*.ts\"",
       "format": "bunx prettier --write '**/*.{ts,tsx}'",
       "build:app": "cd ../app && NODE_ENV=production bunx vite build",
