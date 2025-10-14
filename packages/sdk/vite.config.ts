@@ -79,21 +79,21 @@ export default ({ mode }) => {
                ...Object.keys(peerDependencies),
             ],
             output: [
-               // ES modules build with preserved modules for better tree-shaking
+               // ES modules build - bundled to avoid resolution issues with external dependencies
                {
                   format: "es",
-                  preserveModules: true,
-                  preserveModulesRoot: "src",
                   exports: "named",
                   entryFileNames: "[name].es.js",
-                  chunkFileNames: "[name].es.js",
+                  chunkFileNames: "[name]-[hash].es.js",
+                  // Don't preserve modules to avoid node_modules path issues
+                  preserveModules: false,
                },
                // CommonJS build bundled (not preserved) to avoid resolution issues
                {
                   format: "cjs",
                   exports: "named",
                   entryFileNames: "[name].cjs.js",
-                  chunkFileNames: "[name].cjs.js",
+                  chunkFileNames: "[name]-[hash].cjs.js",
                   // Don't preserve modules for CJS to avoid resolution issues
                   preserveModules: false,
                },
