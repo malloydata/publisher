@@ -8,6 +8,8 @@ import { Loading } from "../Loading";
 import { StyledCard, StyledCardContent, StyledCardMedia } from "../styles";
 import { QueryExplorerResult, SourcesExplorer } from "./SourcesExplorer";
 import { useModelData } from "./useModelData";
+import TextField from '@mui/material/TextField';
+import Autocomplete from '@mui/material/Autocomplete';
 
 // Add a styled component for the multi-row tab bar
 const MultiRowTabBar = styled(Box)(({ theme }) => ({
@@ -103,20 +105,33 @@ export function ModelExplorer({
       return <Loading text="Loading..." />;
    }
 
+   const MAX_TABS = 6;
+   const sourceOptions = (effectiveData?.sourceInfos || []).map((source, idx) => {
+      try {
+         const parsed = JSON.parse(source);
+         return parsed?.name || `Source ${idx + 1}`;
+      } catch {
+         return `Source ${idx + 1}`;
+      }
+   });
+   const selectedName = sourceOptions[selectedTab] || "";
+   const visibleSources = effectiveData.sourceInfos?.slice(0, MAX_TABS) || [];
+   const extraSources = sourceOptions.slice(MAX_TABS);
+
+
    return (
       <StyledCard variant="outlined">
          <StyledCardContent>
             <Stack
                sx={{
                   flexDirection: "row",
-                  justifyContent: "space-between",
                }}
             >
                {/* Render the tabs for source selection */}
                {Array.isArray(effectiveData.sourceInfos) &&
                   effectiveData.sourceInfos.length > 0 && (
                      <MultiRowTabBar>
-                        {effectiveData.sourceInfos.map((source, idx) => {
+                        {visibleSources.map((source, idx) => {
                            let sourceInfo;
                            try {
                               sourceInfo = JSON.parse(source);
@@ -133,12 +148,35 @@ export function ModelExplorer({
                                        onSourceChange(idx);
                                     }
                                  }}
+                                 sx={{maxHeight:"40px", marginTop:"3px"}}
                               >
                                  {sourceInfo.name || `Source ${idx + 1}`}
                               </MultiRowTab>
                            );
                         })}
                      </MultiRowTabBar>
+                  )}
+                 {extraSources.length > 0 && (
+                     <Autocomplete
+                        size="small"
+                        id="size-small-standard"
+                        disablePortal
+                        options={extraSources}
+                        value={extraSources.includes(selectedName) ? selectedName : ""}
+                        onChange={(e, newValue) => {
+                           if (!newValue) return;
+
+                           const idx = sourceOptions.indexOf(newValue);
+                           if (idx >= 0) {
+                              setSelectedTab(idx);
+                              onSourceChange?.(idx);
+                           }
+                        }}
+                        renderInput={(params) => (
+                           <TextField {...params} label={`more sources`} />
+                        )}
+                        style={{ width: 250 , marginTop:"3px", marginLeft:"6px", marginBottom:"8px"}}
+                     />
                   )}
             </Stack>
          </StyledCardContent>
