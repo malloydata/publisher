@@ -21,9 +21,13 @@ export default ({ mode }) => {
             __dirname,
             "../sdk/dist/markdown-editor.css",
          ),
+         // Client subpath must come BEFORE the general SDK alias
+         "@malloy-publisher/sdk/client": isDev
+            ? path.resolve(__dirname, "../sdk/src/client-entry.ts")
+            : path.resolve(__dirname, "../sdk/dist/client/index.es.js"),
          "@malloy-publisher/sdk": isDev
             ? // General SDK alias for everything else
-              path.resolve(__dirname, "../sdk/src")
+              path.resolve(__dirname, "../sdk/src/index.ts")
             : // In production, use the built SDK to avoid duplicate dependencies
               path.resolve(__dirname, "../sdk/dist/index.es.js"),
       },
