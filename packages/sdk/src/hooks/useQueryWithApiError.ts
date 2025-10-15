@@ -1,28 +1,17 @@
 import {
-   useQuery,
    useMutation,
-   QueryClient,
-   UseQueryOptions,
-   UseQueryResult,
    UseMutationOptions,
    UseMutationResult,
+   useQuery,
+   UseQueryOptions,
+   UseQueryResult,
 } from "@tanstack/react-query";
-import { ApiError } from "../components/ApiErrorDisplay";
 import { useServer } from "../components";
+import { ApiError } from "../components/ApiErrorDisplay";
+import { globalQueryClient } from "../utils/queryClient";
 
-// Global QueryClient instance
-const globalQueryClient = new QueryClient({
-   defaultOptions: {
-      queries: {
-         retry: false,
-         throwOnError: false,
-      },
-      mutations: {
-         retry: false,
-         throwOnError: false,
-      },
-   },
-});
+// Re-export the global query client for backward compatibility
+export { globalQueryClient };
 export function useQueryWithApiError<TData = unknown, TError = ApiError>(
    options: Omit<UseQueryOptions<TData, TError>, "throwOnError" | "retry"> & {
       queryFn: () => Promise<TData>;
@@ -112,6 +101,3 @@ export function useMutationWithApiError<
 
    return useMutation(enhancedOptions, globalQueryClient);
 }
-
-// Export the global query client for direct access if needed
-export { globalQueryClient };
