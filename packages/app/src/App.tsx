@@ -1,8 +1,8 @@
 import {
-   ServerProvider,
    WorkbookStorage,
    WorkbookStorageProvider,
 } from "@malloy-publisher/sdk";
+import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
 import "@malloydata/malloy-explorer/styles.css";
 import { CssBaseline } from "@mui/material";

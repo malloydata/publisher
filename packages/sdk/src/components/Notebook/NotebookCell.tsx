@@ -2,6 +2,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import CodeIcon from "@mui/icons-material/Code";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import SearchIcon from "@mui/icons-material/Search";
+import ShareIcon from "@mui/icons-material/Share";
 import {
    Box,
    Dialog,
@@ -11,9 +12,10 @@ import {
    Stack,
    Tooltip,
    Typography,
+   Snackbar,
 } from "@mui/material";
 import Markdown from "markdown-to-jsx";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { NotebookCell as ClientNotebookCell } from "../../client";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
@@ -29,6 +31,7 @@ interface NotebookCellProps {
    expandEmbedding?: boolean;
    hideEmbeddingIcon?: boolean;
    resourceUri: string;
+   index: number;
 }
 
 export function NotebookCell({
@@ -36,6 +39,7 @@ export function NotebookCell({
    hideCodeCellIcon,
    hideEmbeddingIcon,
    resourceUri,
+   index,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -48,6 +52,8 @@ export function NotebookCell({
       React.useState<string>();
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
+
+   const [copyMessage, setCopyMessage] = useState("");
 
    // Regex to extract imported names from import statements
    const IMPORT_NAMES_REGEX = /import\s*\{([^}]+)\}\s*from\s*['"`][^'"`]+['"`]/;
@@ -124,6 +130,14 @@ export function NotebookCell({
       });
    }, [queryResultCodeSnippet]);
 
+   const copyToClipboard = () => {
+      const url = window.location.href;
+      navigator.clipboard
+         .writeText(url)
+         .then(() => setCopyMessage("URL copied to clipboard!"))
+         .catch(() => setCopyMessage("Failed to copy URL"));
+   };
+
    return (
       (cell.type === "markdown" && (
          <CleanNotebookCell>
@@ -155,7 +169,34 @@ export function NotebookCell({
                   },
                }}
             >
-               <Markdown>{cell.text}</Markdown>
+               {index === 0 ? (
+                  <Stack
+                     direction="row"
+                     alignItems="flex-start"
+                     justifyContent="space-between"
+                  >
+                     <Markdown>{cell.text}</Markdown>
+                     <Tooltip title="Click to copy and share">
+                        <ShareIcon
+                           sx={{
+                              fontSize: "24px",
+                              color: "#666666",
+                              cursor: "pointer",
+                              marginTop: "26px",
+                           }}
+                           onClick={copyToClipboard}
+                        />
+                     </Tooltip>
+                  </Stack>
+               ) : (
+                  <Markdown>{cell.text}</Markdown>
+               )}
+               <Snackbar
+                  open={copyMessage !== ""}
+                  autoHideDuration={6000}
+                  onClose={() => setCopyMessage("")}
+                  message={copyMessage}
+               />
             </Box>
          </CleanNotebookCell>
       )) ||
