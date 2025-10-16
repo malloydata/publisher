@@ -8,8 +8,8 @@ import { Loading } from "../Loading";
 import { StyledCard, StyledCardContent, StyledCardMedia } from "../styles";
 import { QueryExplorerResult, SourcesExplorer } from "./SourcesExplorer";
 import { useModelData } from "./useModelData";
-import TextField from '@mui/material/TextField';
-import Autocomplete from '@mui/material/Autocomplete';
+import TextField from "@mui/material/TextField";
+import Autocomplete from "@mui/material/Autocomplete";
 
 // Add a styled component for the multi-row tab bar
 const MultiRowTabBar = styled(Box)(({ theme }) => ({
@@ -105,16 +105,17 @@ export function ModelExplorer({
       return <Loading text="Loading..." />;
    }
 
-   const sourceOptions = (effectiveData?.sourceInfos || []).map((source, idx) => {
-      try {
-         const parsed = JSON.parse(source);
-         return parsed?.name || `Source ${idx + 1}`;
-      } catch {
-         return `Source ${idx + 1}`;
-      }
-   });
+   const sourceOptions = (effectiveData?.sourceInfos || []).map(
+      (source, idx) => {
+         try {
+            const parsed = JSON.parse(source);
+            return parsed?.name || `Source ${idx + 1}`;
+         } catch {
+            return `Source ${idx + 1}`;
+         }
+      },
+   );
    const selectedName = sourceOptions[selectedTab] || "";
-
 
    return (
       <StyledCard variant="outlined">
@@ -125,7 +126,7 @@ export function ModelExplorer({
                }}
             >
                {/* Render the tabs for source selection */}
-                  {/* {Array.isArray(effectiveData.sourceInfos) &&
+               {/* {Array.isArray(effectiveData.sourceInfos) &&
                      effectiveData.sourceInfos.length > 0 && (
                         <MultiRowTabBar>
                            {effectiveData.sourceInfos.map((source, idx) => {
@@ -152,26 +153,29 @@ export function ModelExplorer({
                            })}
                         </MultiRowTabBar>
                      )} */}
-                     <Autocomplete
-                        size="small"
-                        id="size-small-standard"
-                        disablePortal
-                        options={sourceOptions}
-                        value={selectedName}
-                        onChange={(e, newValue) => {
-                           if (!newValue) return;
+               <Autocomplete
+                  size="small"
+                  id="size-small-standard"
+                  disablePortal
+                  options={sourceOptions}
+                  value={selectedName}
+                  onChange={(e, newValue) => {
+                     if (!newValue) return;
 
-                           const idx = sourceOptions.indexOf(newValue);
-                           if (idx >= 0) {
-                              setSelectedTab(idx);
-                              onSourceChange?.(idx);
-                           }
-                        }}
-                        renderInput={(params) => (
-                           <TextField {...params} />
-                        )}
-                        style={{ width: 350 , marginTop:"3px", marginLeft:"6px", marginBottom:"8px"}}
-                     />
+                     const idx = sourceOptions.indexOf(newValue);
+                     if (idx >= 0) {
+                        setSelectedTab(idx);
+                        onSourceChange?.(idx);
+                     }
+                  }}
+                  renderInput={(params) => <TextField {...params} />}
+                  style={{
+                     width: 350,
+                     marginTop: "3px",
+                     marginLeft: "6px",
+                     marginBottom: "8px",
+                  }}
+               />
             </Stack>
          </StyledCardContent>
          <StyledCardMedia>
