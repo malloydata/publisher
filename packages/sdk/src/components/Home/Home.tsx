@@ -441,7 +441,7 @@ function ProjectCard({
                <Typography
                   variant="body2"
                   color="text.secondary"
-                  sx={{ mb: 2 }}
+                  sx={{ mb: 2, minHeight: "60px" }}
                >
                   {getProjectDescription(project.readme)}
                </Typography>
