@@ -105,7 +105,6 @@ export function ModelExplorer({
       return <Loading text="Loading..." />;
    }
 
-   const MAX_TABS = 6;
    const sourceOptions = (effectiveData?.sourceInfos || []).map((source, idx) => {
       try {
          const parsed = JSON.parse(source);
@@ -115,8 +114,6 @@ export function ModelExplorer({
       }
    });
    const selectedName = sourceOptions[selectedTab] || "";
-   const visibleSources = effectiveData.sourceInfos?.slice(0, MAX_TABS) || [];
-   const extraSources = sourceOptions.slice(MAX_TABS);
 
 
    return (
@@ -128,41 +125,39 @@ export function ModelExplorer({
                }}
             >
                {/* Render the tabs for source selection */}
-               {Array.isArray(effectiveData.sourceInfos) &&
-                  effectiveData.sourceInfos.length > 0 && (
-                     <MultiRowTabBar>
-                        {visibleSources.map((source, idx) => {
-                           let sourceInfo;
-                           try {
-                              sourceInfo = JSON.parse(source);
-                           } catch {
-                              sourceInfo = { name: String(idx) };
-                           }
-                           return (
-                              <MultiRowTab
-                                 key={sourceInfo.name || idx}
-                                 selected={selectedTab === idx}
-                                 onClick={() => {
-                                    setSelectedTab(idx);
-                                    if (onSourceChange) {
-                                       onSourceChange(idx);
-                                    }
-                                 }}
-                                 sx={{maxHeight:"40px", marginTop:"3px"}}
-                              >
-                                 {sourceInfo.name || `Source ${idx + 1}`}
-                              </MultiRowTab>
-                           );
-                        })}
-                     </MultiRowTabBar>
-                  )}
-                 {extraSources.length > 0 && (
+                  {/* {Array.isArray(effectiveData.sourceInfos) &&
+                     effectiveData.sourceInfos.length > 0 && (
+                        <MultiRowTabBar>
+                           {effectiveData.sourceInfos.map((source, idx) => {
+                              let sourceInfo;
+                              try {
+                                 sourceInfo = JSON.parse(source);
+                              } catch {
+                                 sourceInfo = { name: String(idx) };
+                              }
+                              return (
+                                 <MultiRowTab
+                                    key={sourceInfo.name || idx}
+                                    selected={selectedTab === idx}
+                                    onClick={() => {
+                                       setSelectedTab(idx);
+                                       if (onSourceChange) {
+                                          onSourceChange(idx);
+                                       }
+                                    }}
+                                 >
+                                    {sourceInfo.name || `Source ${idx + 1}`}
+                                 </MultiRowTab>
+                              );
+                           })}
+                        </MultiRowTabBar>
+                     )} */}
                      <Autocomplete
                         size="small"
                         id="size-small-standard"
                         disablePortal
-                        options={extraSources}
-                        value={extraSources.includes(selectedName) ? selectedName : ""}
+                        options={sourceOptions}
+                        value={selectedName}
                         onChange={(e, newValue) => {
                            if (!newValue) return;
 
@@ -173,11 +168,10 @@ export function ModelExplorer({
                            }
                         }}
                         renderInput={(params) => (
-                           <TextField {...params} label={`more sources`} />
+                           <TextField {...params} />
                         )}
-                        style={{ width: 250 , marginTop:"3px", marginLeft:"6px", marginBottom:"8px"}}
+                        style={{ width: 350 , marginTop:"3px", marginLeft:"6px", marginBottom:"8px"}}
                      />
-                  )}
             </Stack>
          </StyledCardContent>
          <StyledCardMedia>
