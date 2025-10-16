@@ -158,7 +158,7 @@ export function ModelExplorer({
                   disablePortal
                   options={sourceOptions}
                   value={selectedName}
-                  onChange={(e, newValue) => {
+                  onChange={(_e, newValue) => {
                      if (!newValue) return;
 
                      const idx = sourceOptions.indexOf(newValue);
