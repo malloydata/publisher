@@ -87,6 +87,16 @@ export default function DeletePackageDialog({
             </DialogContent>
             <DialogActions>
                <Button
+                  variant="outlined"
+                  onClick={handleClose}
+                  style={{
+                     borderColor: "#14b3cb",
+                     color: "#14b3cb",
+                  }}
+               >
+                  Cancel
+               </Button>
+               <Button
                   variant="contained"
                   autoFocus
                   onClick={() => deletePackage.mutate()}

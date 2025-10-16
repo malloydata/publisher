@@ -23,7 +23,8 @@ export const parseResourceUri = (resourceUri: string) => {
          parsedResource.connectionName =
             decodeURI(pathParts[i + 1]) || undefined;
       } else if (part === "models") {
-         parsedResource.modelPath = decodeURI(pathParts[i + 1]) || undefined;
+         parsedResource.modelPath =
+            decodeURI(pathParts.slice(i + 1).join("/")) || undefined;
       }
    }
 
