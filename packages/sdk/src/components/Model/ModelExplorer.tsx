@@ -1,5 +1,6 @@
-import { Box, Button, Stack } from "@mui/material";
-import { styled } from "@mui/material/styles";
+import { Box, Stack } from "@mui/material";
+import Autocomplete from "@mui/material/Autocomplete";
+import TextField from "@mui/material/TextField";
 import React from "react";
 import { CompiledModel } from "../../client";
 import { parseResourceUri } from "../../utils/formatting";
@@ -8,37 +9,35 @@ import { Loading } from "../Loading";
 import { StyledCard, StyledCardContent, StyledCardMedia } from "../styles";
 import { QueryExplorerResult, SourcesExplorer } from "./SourcesExplorer";
 import { useModelData } from "./useModelData";
-import TextField from "@mui/material/TextField";
-import Autocomplete from "@mui/material/Autocomplete";
 
 // Add a styled component for the multi-row tab bar
-const MultiRowTabBar = styled(Box)(({ theme }) => ({
-   display: "flex",
-   flexWrap: "wrap",
-   gap: theme.spacing(1),
-   borderBottom: "1px solid #f0f0f0",
-   minHeight: 48,
-   paddingBottom: "8px",
-}));
+// const MultiRowTabBar = styled(Box)(({ theme }) => ({
+//    display: "flex",
+//    flexWrap: "wrap",
+//    gap: theme.spacing(1),
+//    borderBottom: "1px solid #f0f0f0",
+//    minHeight: 48,
+//    paddingBottom: "8px",
+// }));
 
-const MultiRowTab = styled(Button)<{ selected?: boolean }>(
-   ({ theme, selected }) => ({
-      minHeight: 32,
-      padding: theme.spacing(0.75, 2),
-      borderRadius: "6px",
-      background: selected ? "#f8f9fa" : "transparent",
-      color: selected ? "#495057" : "#666666",
-      fontWeight: selected ? 600 : 500,
-      border: selected ? "1px solid #e9ecef" : "1px solid transparent",
-      boxShadow: "none",
-      textTransform: "none",
-      fontSize: "15px",
-      "&:hover": {
-         background: selected ? "#f8f9fa" : "#fafafa",
-         border: selected ? "1px solid #e9ecef" : "1px solid #f0f0f0",
-      },
-   }),
-);
+// const MultiRowTab = styled(Button)<{ selected?: boolean }>(
+//    ({ theme, selected }) => ({
+//       minHeight: 32,
+//       padding: theme.spacing(0.75, 2),
+//       borderRadius: "6px",
+//       background: selected ? "#f8f9fa" : "transparent",
+//       color: selected ? "#495057" : "#666666",
+//       fontWeight: selected ? 600 : 500,
+//       border: selected ? "1px solid #e9ecef" : "1px solid transparent",
+//       boxShadow: "none",
+//       textTransform: "none",
+//       fontSize: "15px",
+//       "&:hover": {
+//          background: selected ? "#f8f9fa" : "#fafafa",
+//          border: selected ? "1px solid #e9ecef" : "1px solid #f0f0f0",
+//       },
+//    }),
+// );
 
 export interface ModelExplorerProps {
    data?: CompiledModel;
