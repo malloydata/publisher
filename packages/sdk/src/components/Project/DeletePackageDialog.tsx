@@ -90,8 +90,8 @@ export default function DeletePackageDialog({
                   variant="outlined"
                   onClick={handleClose}
                   style={{
-                     borderColor: '#14b3cb',
-                     color: '#14b3cb',
+                     borderColor: "#14b3cb",
+                     color: "#14b3cb",
                   }}
                >
                   Cancel
