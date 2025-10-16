@@ -7,7 +7,7 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import SearchIcon from "@mui/icons-material/Search";
+import ZoomOutMapIcon from "@mui/icons-material/ZoomOutMap";
 import ShareIcon from "@mui/icons-material/Share";
 import "@malloydata/malloy-explorer/styles.css";
 import { QueryExplorerResult } from "./SourcesExplorer";
@@ -140,9 +140,15 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                         }}
                         onClick={() => setDialogOpen(true)}
                      >
-                        <SearchIcon
-                           sx={{ fontSize: "18px", color: "#666666" }}
-                        />
+                        <Tooltip title="Expanded view">
+                           <ZoomOutMapIcon
+                              sx={{
+                                 fontSize: "18px",
+                                 color: "#666666",
+                                 marginBottom: "5px",
+                              }}
+                           />
+                        </Tooltip>
                      </IconButton>
                   </Stack>
                )}
