@@ -25,12 +25,12 @@ export default function About({ resourceUri }: AboutProps) {
       queryKey: ["about", projectName],
       queryFn: () => apiClients.projects.getProject(projectName, false),
    });
- 
+
    const readmeContent = data?.data?.readme || "";
    const words = readmeContent.split(/\s+/);
    const shouldTruncate = words.length > wordLimit;
    const preview = words.slice(0, wordLimit).join(" ");
- 
+
    return (
       <>
          {!isSuccess && !isError && <Loading text="Fetching About..." />}
@@ -42,17 +42,43 @@ export default function About({ resourceUri }: AboutProps) {
                      <Markdown
                         options={{
                            overrides: {
-                              h1: { component: "p", props: { style: { fontSize: "inherit", fontWeight: "italic" } } },
-                              h2: { component: "p", props: { style: { fontSize: "inherit", fontWeight: "italic" } } },
-                              h3: { component: "p", props: { style: { fontSize: "inherit", fontWeight: "italic" } } },
+                              h1: {
+                                 component: "p",
+                                 props: {
+                                    style: {
+                                       fontSize: "inherit",
+                                       fontWeight: "italic",
+                                    },
+                                 },
+                              },
+                              h2: {
+                                 component: "p",
+                                 props: {
+                                    style: {
+                                       fontSize: "inherit",
+                                       fontWeight: "italic",
+                                    },
+                                 },
+                              },
+                              h3: {
+                                 component: "p",
+                                 props: {
+                                    style: {
+                                       fontSize: "inherit",
+                                       fontWeight: "italic",
+                                    },
+                                 },
+                              },
                            },
                         }}
                      >
                         {expanded || !shouldTruncate ? readmeContent : preview}
                      </Markdown>
- 
+
                      {shouldTruncate && (
-                        <Box sx={{ mt: 1 }}> {/* separate line */}
+                        <Box sx={{ mt: 1 }}>
+                           {" "}
+                           {/* separate line */}
                            <Button
                               variant="text"
                               size="small"
