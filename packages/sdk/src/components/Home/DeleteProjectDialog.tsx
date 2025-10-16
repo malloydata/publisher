@@ -85,6 +85,16 @@ export default function DeleteProjectDialog({
             </DialogContent>
             <DialogActions>
                <Button
+                  variant="outlined"
+                  onClick={handleClose}
+                  style={{
+                     borderColor: "#14b3cb",
+                     color: "#14b3cb",
+                  }}
+               >
+                  Cancel
+               </Button>
+               <Button
                   loading={deleteProject.isPending}
                   variant="contained"
                   autoFocus
