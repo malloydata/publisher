@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Stats } from "fs";
 import fs from "fs/promises";
 import { join } from "path";
 import sinon from "sinon";
@@ -6,11 +7,9 @@ import { PackageNotFoundError } from "../errors";
 import { readConnectionConfig } from "./connection";
 import { Model } from "./model";
 import { Package } from "./package";
-import { Scheduler } from "./scheduler";
-import { Stats } from "fs";
 
 // Minimal partial types for mocking
-type PartialScheduler = Pick<Scheduler, "list">;
+type PartialModel = Pick<Model, "getPath">;
 
 describe("service/package", () => {
    const testPackageDirectory = "testPackage";
@@ -48,16 +47,13 @@ describe("service/package", () => {
          new Map([
             [
                "model1.malloy",
-               // @ts-expect-error PartialModel is a partial type
-               { getPath: () => "model1.malloy" } as PartialModel,
+               { getPath: () => "model1.malloy" } as unknown as Model,
             ],
             [
                "model2.malloynb",
-               // @ts-expect-error PartialModel is a partial type
-               { getPath: () => "model2.malloynb" } as PartialModel,
+               { getPath: () => "model2.malloynb" } as unknown as Model,
             ],
          ]),
-         undefined,
       );
 
       expect(pkg).toBeInstanceOf(Package);
@@ -96,16 +92,10 @@ describe("service/package", () => {
                   );
 
                // Still use Partial<Model> for the stub resolution type
-               type PartialModel = Pick<Model, "getPath">;
                sinon
                   .stub(Model, "create")
                   // @ts-expect-error PartialModel is a partial type
                   .resolves({ getPath: () => "model1.model" } as PartialModel);
-
-               // @ts-expect-error PartialScheduler is a partial type
-               sinon.stub(Scheduler, "create").returns({
-                  list: () => [],
-               } as PartialScheduler);
 
                readFileStub.restore();
                readFileStub.resolves(Buffer.from(JSON.stringify([])));
@@ -138,7 +128,6 @@ describe("service/package", () => {
                   },
                ]);
                expect(packageInstance.listModels()).toBeEmpty();
-               expect(packageInstance.listSchedules()).toBeEmpty();
             },
             { timeout: 15000 },
          );
@@ -159,8 +148,7 @@ describe("service/package", () => {
                      {
                         getPath: () => "model1.malloy",
                         getModel: () => "foo",
-                        // @ts-expect-error PartialModel is a partial type
-                     } as PartialModel,
+                     } as unknown as Model,
                   ],
                   [
                      "model2.malloynb",
@@ -171,11 +159,9 @@ describe("service/package", () => {
                               message: "This is the error",
                            };
                         },
-                        // @ts-expect-error PartialModel is a partial type
-                     } as PartialModel,
+                     } as unknown as Model,
                   ],
                ]),
-               undefined,
             );
 
             const models = await packageInstance.listModels();

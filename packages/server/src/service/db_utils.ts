@@ -303,8 +303,8 @@ export async function listTablesForSchema(
          const bigquery = getBigqueryConnection(connection);
          const options = connection.bigqueryConnection?.defaultProjectId
             ? {
-               projectId: connection.bigqueryConnection?.defaultProjectId,
-            }
+                 projectId: connection.bigqueryConnection?.defaultProjectId,
+              }
             : {};
          const dataset = bigquery.dataset(schemaName, options);
          const [exists] = await dataset.exists();
