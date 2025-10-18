@@ -1,6 +1,4 @@
-import {
-   RunSQLOptions
-} from "@malloydata/malloy";
+import { RunSQLOptions } from "@malloydata/malloy";
 import { Connection, PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
@@ -9,7 +7,7 @@ import { testConnectionConfig } from "../service/connection";
 import {
    getConnectionTableSource,
    getSchemasForConnection,
-   getTablesForSchema
+   getTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
 type ApiConnection = components["schemas"]["Connection"];
@@ -58,9 +56,14 @@ export class ConnectionController {
    ): Promise<ApiTable[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
-      return getTablesForSchema(connection, schemaName, this.projectStore, projectName, connectionName);
+      return getTablesForSchema(
+         connection,
+         schemaName,
+         this.projectStore,
+         projectName,
+         connectionName,
+      );
    }
-
 
    public async getConnectionSqlSource(
       projectName: string,
@@ -94,7 +97,7 @@ export class ConnectionController {
          projectName,
          connectionName,
          tableKey,
-         tablePath
+         tablePath,
       );
    }
 

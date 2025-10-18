@@ -53,15 +53,15 @@ export function useRawQueryData({
    const rawData =
       isSuccess && data?.data?.result
          ? (() => {
-            try {
-               const parsed = JSON.parse(data.data.result);
-               // Return the data.array_value array which contains the actual rows
-               return parsed.data?.array_value || [];
-            } catch (e) {
-               console.error("Failed to parse query result:", e);
-               return [];
-            }
-         })()
+              try {
+                 const parsed = JSON.parse(data.data.result);
+                 // Return the data.array_value array which contains the actual rows
+                 return parsed.data?.array_value || [];
+              } catch (e) {
+                 console.error("Failed to parse query result:", e);
+                 return [];
+              }
+           })()
          : [];
 
    return {

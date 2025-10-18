@@ -107,9 +107,9 @@ export function NotebookCell({
    const modelDataFromNewSources =
       cell.newSources && cell.newSources.length > 0
          ? {
-            sourceInfos: cell.newSources,
-            resource: resourceUri,
-         }
+              sourceInfos: cell.newSources,
+              resource: resourceUri,
+           }
          : undefined;
 
    const queryResultCodeSnippet = createEmbeddedQueryResult({
@@ -205,74 +205,74 @@ export function NotebookCell({
             {(!hideCodeCellIcon ||
                (!hideEmbeddingIcon && cell.result) ||
                (cell.newSources && cell.newSources.length > 0)) && (
-                  <Stack
-                     sx={{
-                        flexDirection: "column",
-                        gap: "8px",
-                        marginBottom: "16px",
-                     }}
-                  >
-                     {cell.newSources &&
-                        cell.newSources.length > 0 &&
-                        hasValidImport && (
-                           <CleanMetricCard
+               <Stack
+                  sx={{
+                     flexDirection: "column",
+                     gap: "8px",
+                     marginBottom: "16px",
+                  }}
+               >
+                  {cell.newSources &&
+                     cell.newSources.length > 0 &&
+                     hasValidImport && (
+                        <CleanMetricCard
+                           sx={{
+                              position: "relative",
+                              padding: "0",
+                           }}
+                        >
+                           <Box
                               sx={{
-                                 position: "relative",
-                                 padding: "0",
+                                 display: "flex",
+                                 alignItems: "center",
+                                 justifyContent: "space-between",
+                                 paddingLeft: "24px",
+                                 paddingRight: "8px",
                               }}
                            >
-                              <Box
-                                 sx={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    paddingLeft: "24px",
-                                    paddingRight: "8px",
-                                 }}
-                              >
-                                 {/* This shouldn't be needed but there's a compiler bug */}
-                                 {highlightedMalloyCode && (
-                                    <span
-                                       dangerouslySetInnerHTML={{
-                                          __html:
-                                             cell.text.length > 50 &&
-                                                highlightedMalloyCode
-                                                ? `${highlightedMalloyCode.substring(0, 50)}...`
-                                                : highlightedMalloyCode,
-                                       }}
-                                       style={{
-                                          fontFamily: "monospace",
-                                          fontSize: "14px",
-                                          flex: 1,
-                                          whiteSpace: "nowrap",
-                                          overflow: "hidden",
-                                          textOverflow: "ellipsis",
-                                          marginRight: "8px",
-                                       }}
-                                    />
-                                 )}
-                                 <IconButton
-                                    sx={{
-                                       backgroundColor: "rgba(255, 255, 255, 0.9)",
-                                       "&:hover": {
-                                          backgroundColor:
-                                             "rgba(255, 255, 255, 1)",
-                                       },
-                                       width: "32px",
-                                       height: "32px",
-                                       flexShrink: 0,
+                              {/* This shouldn't be needed but there's a compiler bug */}
+                              {highlightedMalloyCode && (
+                                 <span
+                                    dangerouslySetInnerHTML={{
+                                       __html:
+                                          cell.text.length > 50 &&
+                                          highlightedMalloyCode
+                                             ? `${highlightedMalloyCode.substring(0, 50)}...`
+                                             : highlightedMalloyCode,
                                     }}
-                                    onClick={() => setSourcesDialogOpen(true)}
-                                 >
-                                    <SearchIcon
-                                       sx={{ fontSize: "18px", color: "#666666" }}
-                                    />
-                                 </IconButton>
-                              </Box>
-                           </CleanMetricCard>
-                        )}
-                  </Stack>
-               )}
+                                    style={{
+                                       fontFamily: "monospace",
+                                       fontSize: "14px",
+                                       flex: 1,
+                                       whiteSpace: "nowrap",
+                                       overflow: "hidden",
+                                       textOverflow: "ellipsis",
+                                       marginRight: "8px",
+                                    }}
+                                 />
+                              )}
+                              <IconButton
+                                 sx={{
+                                    backgroundColor: "rgba(255, 255, 255, 0.9)",
+                                    "&:hover": {
+                                       backgroundColor:
+                                          "rgba(255, 255, 255, 1)",
+                                    },
+                                    width: "32px",
+                                    height: "32px",
+                                    flexShrink: 0,
+                                 }}
+                                 onClick={() => setSourcesDialogOpen(true)}
+                              >
+                                 <SearchIcon
+                                    sx={{ fontSize: "18px", color: "#666666" }}
+                                 />
+                              </IconButton>
+                           </Box>
+                        </CleanMetricCard>
+                     )}
+               </Stack>
+            )}
 
             {/* Data Sources Dialog */}
             <ModelExplorerDialog

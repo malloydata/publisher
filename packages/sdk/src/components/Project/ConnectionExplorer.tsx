@@ -14,7 +14,7 @@ import {
    TableContainer,
    TableHead,
    TableRow,
-   Typography
+   Typography,
 } from "@mui/material";
 import React from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
@@ -36,19 +36,27 @@ export default function ConnectionExplorer({
 }: ConnectionExplorerProps) {
    const { apiClients } = useServer();
    const { projectName: projectName } = parseResourceUri(resourceUri);
-   const [selectedTable, setSelectedTable] = React.useState<{ resource: string; columns: Array<{ name: string; type: string }> } | undefined>(
-      undefined,
-   );
+   const [selectedTable, setSelectedTable] = React.useState<
+      | { resource: string; columns: Array<{ name: string; type: string }> }
+      | undefined
+   >(undefined);
    const [selectedSchema, setSelectedSchema] = React.useState<string | null>(
       schema || null,
    );
    const [showHiddenSchemas, setShowHiddenSchemas] = React.useState(false);
-   const { data: schemasData, isError: schemasError, isLoading: schemasLoading, error: schemasErrorObj } = useQueryWithApiError({
+   const {
+      data: schemasData,
+      isError: schemasError,
+      isLoading: schemasLoading,
+      error: schemasErrorObj,
+   } = useQueryWithApiError({
       queryKey: ["schemas", projectName, connectionName],
-      queryFn: () => apiClients.connections.listSchemas(projectName, connectionName),
+      queryFn: () =>
+         apiClients.connections.listSchemas(projectName, connectionName),
    });
 
-   const availableSchemas = schemasData?.data?.map((schema: any) => schema.name) || [];
+   const availableSchemas =
+      schemasData?.data?.map((schema: { name: string }) => schema.name) || [];
 
    return (
       <Grid container spacing={1}>
@@ -89,25 +97,32 @@ export default function ConnectionExplorer({
                            context={`${projectName} > ${connectionName} > Schemas`}
                         />
                      )}
-                     {!schemasLoading && !schemasError && availableSchemas.length === 0 && (
-                        <Typography variant="body2">No Schemas</Typography>
-                     )}
-                     {!schemasLoading && !schemasError && availableSchemas.length > 0 && (
-                        <List dense disablePadding>
-                           {availableSchemas.map((schemaName: string) => {
-                              const isSelected = selectedSchema === schemaName;
-                              return (
-                                 <ListItemButton
-                                    key={schemaName}
-                                    selected={isSelected}
-                                    onClick={() => setSelectedSchema(schemaName)}
-                                 >
-                                    <ListItemText primary={schemaName} />
-                                 </ListItemButton>
-                              );
-                           })}
-                        </List>
-                     )}
+                     {!schemasLoading &&
+                        !schemasError &&
+                        availableSchemas.length === 0 && (
+                           <Typography variant="body2">No Schemas</Typography>
+                        )}
+                     {!schemasLoading &&
+                        !schemasError &&
+                        availableSchemas.length > 0 && (
+                           <List dense disablePadding>
+                              {availableSchemas.map((schemaName: string) => {
+                                 const isSelected =
+                                    selectedSchema === schemaName;
+                                 return (
+                                    <ListItemButton
+                                       key={schemaName}
+                                       selected={isSelected}
+                                       onClick={() =>
+                                          setSelectedSchema(schemaName)
+                                       }
+                                    >
+                                       <ListItemText primary={schemaName} />
+                                    </ListItemButton>
+                                 );
+                              })}
+                           </List>
+                        )}
                   </Box>
                </Paper>
             </Grid>
@@ -129,9 +144,7 @@ export default function ConnectionExplorer({
          <Grid size={{ xs: 12, md: schema ? 6 : 4 }}>
             {selectedTable && (
                <Paper sx={{ p: 1, m: 0 }}>
-                  <TableSchemaViewer
-                     table={selectedTable}
-                  />
+                  <TableSchemaViewer table={selectedTable} />
                </Paper>
             )}
          </Grid>
@@ -143,13 +156,7 @@ type TableSchemaViewerProps = {
    table: { resource: string; columns: Array<{ name: string; type: string }> };
 };
 
-function TableSchemaViewer({
-   table,
-}: TableSchemaViewerProps) {
-   // Extract table name from resource path
-   const tableName = table.resource.split('.').pop() || table.resource;
-   const schemaName = table.resource.split('.')[0] || '';
-
+function TableSchemaViewer({ table }: TableSchemaViewerProps) {
    return (
       <>
          <Typography variant="overline" fontWeight="bold">
@@ -188,7 +195,10 @@ function TableSchemaViewer({
 interface TablesInSchemaProps {
    connectionName: string;
    schemaName: string;
-   onTableClick: (table: { resource: string; columns: Array<{ name: string; type: string }> }) => void;
+   onTableClick: (table: {
+      resource: string;
+      columns: Array<{ name: string; type: string }>;
+   }) => void;
    resourceUri: string;
 }
 
@@ -229,21 +239,27 @@ function TablesInSchema({
             )}
             {isSuccess && data.data.length > 0 && (
                <List dense disablePadding>
-                  {data.data.map((table: { resource: string; columns: Array<{ name: string; type: string }> }) => {
-                     // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
-                     const tableName = table.resource.split('.').pop() || table.resource;
-                     return (
-                        <ListItemButton
-                           key={table.resource}
-                           onClick={() => onTableClick(table)}
-                        >
-                           <ListItemText
-                              primary={tableName}
-                              secondary={`${table.columns.length} columns`}
-                           />
-                        </ListItemButton>
-                     );
-                  })}
+                  {data.data.map(
+                     (table: {
+                        resource: string;
+                        columns: Array<{ name: string; type: string }>;
+                     }) => {
+                        // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
+                        const tableName =
+                           table.resource.split(".").pop() || table.resource;
+                        return (
+                           <ListItemButton
+                              key={table.resource}
+                              onClick={() => onTableClick(table)}
+                           >
+                              <ListItemText
+                                 primary={tableName}
+                                 secondary={`${table.columns.length} columns`}
+                              />
+                           </ListItemButton>
+                        );
+                     },
+                  )}
                </List>
             )}
          </Box>

@@ -182,7 +182,6 @@ export class Package {
       return this.databases;
    }
 
-
    public getModel(modelPath: string): Model | undefined {
       return this.models.get(modelPath);
    }

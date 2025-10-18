@@ -165,8 +165,8 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
             error: { code: -32603, message: "Internal server error" },
             id:
                typeof req.body === "object" &&
-                  req.body !== null &&
-                  "id" in req.body
+               req.body !== null &&
+               "id" in req.body
                   ? req.body.id
                   : null,
          });
@@ -324,7 +324,6 @@ app.post(`${API_PREFIX}/connections/test`, async (req, res) => {
       res.status(status).json(json);
    }
 });
-
 
 app.get(
    `${API_PREFIX}/projects/:projectName/connections/:connectionName/schemas`,
@@ -724,7 +723,6 @@ app.post(
       }
    },
 );
-
 
 app.get(
    `${API_PREFIX}/projects/:projectName/packages/:packageName/databases`,

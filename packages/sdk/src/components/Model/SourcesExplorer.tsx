@@ -106,14 +106,14 @@ function SourceExplorerComponentInner({
    );
    const [submittedQuery, setSubmittedQuery] = React.useState<
       | {
-         executionState: "running" | "finished";
-         response: {
-            result: Malloy.Result;
-         };
-         query: Malloy.Query | string;
-         queryResolutionStartMillis: number;
-         onCancel: () => void;
-      }
+           executionState: "running" | "finished";
+           response: {
+              result: Malloy.Result;
+           };
+           query: Malloy.Query | string;
+           queryResolutionStartMillis: number;
+           onCancel: () => void;
+        }
       | undefined
    >(undefined);
 
@@ -154,9 +154,9 @@ function SourceExplorerComponentInner({
             typeof query?.malloyQuery === "string"
                ? query.malloyQuery
                : new QueryBuilder.ASTQuery({
-                  source: sourceAndPath.sourceInfo,
-                  query: query?.malloyQuery,
-               }).toMalloy();
+                    source: sourceAndPath.sourceInfo,
+                    query: query?.malloyQuery,
+                 }).toMalloy();
 
          // Set submitted query when execution starts
          setSubmittedQuery({
@@ -196,12 +196,12 @@ function SourceExplorerComponentInner({
             setSubmittedQuery((prev) =>
                prev
                   ? {
-                     ...prev,
-                     executionState: "finished",
-                     response: {
-                        result: parsedResult as Malloy.Result,
-                     },
-                  }
+                       ...prev,
+                       executionState: "finished",
+                       response: {
+                          result: parsedResult as Malloy.Result,
+                       },
+                    }
                   : undefined,
             );
          }

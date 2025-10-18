@@ -15,6 +15,7 @@ import {
    SnowflakeConnection,
    TrinoConnection,
 } from "./model";
+import { ProjectStore } from "./project_store";
 
 import { TableSourceDef } from "@malloydata/malloy";
 import { BasicAuth, Trino } from "trino-client";
@@ -219,12 +220,10 @@ export async function getSchemasForConnection(
    }
 }
 
-
-
 export async function getTablesForSchema(
    connection: ApiConnection,
    schemaName: string,
-   projectStore: any,
+   projectStore: ProjectStore,
    projectName: string,
    connectionName: string,
 ): Promise<ApiTable[]> {
@@ -240,19 +239,19 @@ export async function getTablesForSchema(
             projectName,
             connectionName,
             tableName,
-            tablePath
+            tablePath,
          );
 
          return {
             resource: tablePath,
-            columns: tableSource.columns
+            columns: tableSource.columns,
          };
       } catch (error) {
          logger.warn(`Failed to get schema for table ${tableName}`, { error });
          // Return table without columns if schema fetch fails
          return {
             resource: `${schemaName}.${tableName}`,
-            columns: []
+            columns: [],
          };
       }
    });
@@ -264,7 +263,7 @@ export async function getTablesForSchema(
 }
 
 export async function getConnectionTableSource(
-   projectStore: any,
+   projectStore: ProjectStore,
    projectName: string,
    connectionName: string,
    tableKey: string,
