@@ -21,12 +21,10 @@ info:
     ```
     Projects
     ├── Connections
-    ├── Packages
-    │   ├── Models
-    │   ├── Notebooks
-    │   ├── Databases
-    │   └── Schedules
-    └── Watch Mode
+    └── Packages
+        ├── Models
+        ├── Notebooks
+        └── Databases
     ```
 
     For examples, see the Malloy samples packages (https://github.com/malloydata/malloy-samples) repository.
@@ -76,39 +74,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerStatus"
-
-  /connections/test:
-    post:
-      tags:
-        - connections
-      operationId: test-connection-configuration
-      summary: Test database connection configuration
-      description: |
-        Validates a database connection configuration without adding it to any project.
-        This endpoint allows you to test connection parameters, credentials, and network
-        connectivity before committing the connection to a project. Useful for troubleshooting
-        connection issues and validating configurations during setup.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/Connection"
-      responses:
-        "200":
-          description: Connection test result
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConnectionStatus"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
 
   /projects:
     get:
@@ -327,12 +292,14 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  # TODO: Remove this endpoint.
   /projects/{projectName}/connections/{connectionName}/test:
     get:
       tags:
         - connections
       operationId: test-connection
       summary: Test existing project connection
+      deprecated: true
       description: |
         Tests the connectivity and configuration of an existing database connection within a project.
         This endpoint validates that the connection can be established, credentials are valid,
@@ -363,6 +330,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  # TODO: Remove this endpoint. 
 
   /projects/{projectName}/connections/{connectionName}/sqlSource:
     get:
@@ -409,6 +378,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+    # TODO: We should rename this to make it clear this is for Malloy connections.  Should we be using a post here?
     post:
       tags:
         - connections
@@ -417,8 +388,6 @@ paths:
       description: |
         Creates a Malloy source from a SQL statement using the specified database connection.
         The SQL statement is executed to generate a source definition that can be used in Malloy models.
-        This is the preferred method over the deprecated GET version as it provides better security
-        and supports larger SQL statements.
       parameters:
         - name: projectName
           in: path
@@ -456,12 +425,14 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  # TODO: Remove this endpoint. This is deprecated and replaced by /projects/{projectName}/connections/{connectionName}/table resource.
   /projects/{projectName}/connections/{connectionName}/tableSource:
     get:
       tags:
         - connections
       operationId: get-tablesource
       summary: Get table source information
+      deprecated: true
       description: |
         Retrieves information about a specific table or view from the database connection.
         This includes table schema, column definitions, and metadata. The table can be specified
@@ -510,7 +481,8 @@ paths:
       tags:
         - connections
       operationId: list-tables
-      summary: List tables in database schema
+      summary: List tables in database
+      deprecated: true
       description: |
         Retrieves a list of all tables and views available in the specified database schema.
         This endpoint is useful for discovering available data sources and exploring the database
@@ -542,7 +514,7 @@ paths:
               schema:
                 type: array
                 items:
-                  type: string
+                  $ref: "#/components/schemas/Table"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -550,16 +522,17 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /projects/{projectName}/connections/{connectionName}/schemas:
+  /projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables/{tablePath}:
     get:
       tags:
         - connections
-      operationId: list-schemas
-      summary: List database schemas
+      operationId: get-table
+      summary: List tables in database
       description: |
-        Retrieves a list of all schemas (databases) available in the specified connection.
-        Each schema includes metadata such as name, description, and whether it's the default schema.
-        This endpoint is useful for exploring the database structure and discovering available data sources.
+        Retrieves a table from the specified database schema.
+        This endpoint is useful for discovering available data sources and exploring the database
+        structure. The schema must exist in the connection for this operation to succeed.
+        The tablePath is the full path to the table, including the schema name.
       parameters:
         - name: projectName
           in: path
@@ -573,15 +546,25 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: schemaName
+          in: path
+          description: Name of the schema
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: tablePath
+          in: path
+          description: Full path to the table
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
-          description: A list of schemas available in the connection with metadata
+          description: Table information
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/SchemaName"
+                $ref: "#/components/schemas/Table"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -589,6 +572,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  # TODO: Rmove this endpoint. 
   /projects/{projectName}/connections/{connectionName}/queryData:
     get:
       tags:
@@ -640,6 +624,7 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+    # TODO: this should be post query -- not querydata.
     post:
       tags:
         - connections
@@ -647,8 +632,7 @@ paths:
       summary: Execute SQL query
       description: |
         Executes a SQL statement against the specified database connection and returns the results.
-        This is the preferred method over the deprecated GET version as it provides better security
-        and supports larger SQL statements. The results include data, metadata, and execution information.
+        The results include data, metadata, and execution information.
       parameters:
         - name: projectName
           in: path
@@ -692,6 +676,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  # TODO: Rmove this endpoint. 
   /projects/{projectName}/connections/{connectionName}/temporaryTable:
     get:
       tags:
@@ -737,6 +722,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+    
+    # TODO: Shouldn't this be under table?
     post:
       tags:
         - connections
@@ -1131,6 +1118,8 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
+  # TODO: Notebooks should return the notebook file content, not the compiled notebook.  The front end shoould
+  # run the individual notebook cells against the backend.
   /projects/{projectName}/packages/{packageName}/notebooks/{path}:
     get:
       tags:
@@ -1182,6 +1171,7 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
+  # TODO: Is this modeled correctly?  Should it be a POST?  Is it consistent with the other endpoints?
   /projects/{projectName}/packages/{packageName}/queryResults/{path}:
     get:
       tags:
@@ -1301,6 +1291,7 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
+  # TODO: Remove this endpoint for now.  We don't have schedules in the server yet.
   /projects/{projectName}/packages/{packageName}/schedules:
     get:
       tags:
@@ -1347,6 +1338,39 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+
+  /connections/test:
+    post:
+      tags:
+        - connections
+      operationId: test-connection-configuration
+      summary: Test database connection configuration
+      description: |
+        Validates a database connection configuration without adding it to any project.
+        This endpoint allows you to test connection parameters, credentials, and network
+        connectivity before committing the connection to a project. Useful for troubleshooting
+        connection issues and validating configurations during setup.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Connection'
+      responses:
+        "200":
+          description: Connection test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionStatus'
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /watch-mode/status:
     get:
@@ -1898,6 +1922,7 @@ components:
           type: string
           description: Trino password for authentication
 
+    # TODO: What is this?  Can we remove it?
     SqlSource:
       type: object
       properties:
@@ -1908,8 +1933,22 @@ components:
         source:
           type: string
 
+    Table:
+      type: object
+      properties:
+        resource:
+          type: string
+          description: Resource path to the table.
+        columns:
+          description: Table fields
+          type: array
+          items:
+            $ref: "#/components/schemas/Column"
+
+    # TODO: Remove this. Replaced by Table
     TableSource:
       type: object
+      deprecated: true
       properties:
         resource:
           type: string
