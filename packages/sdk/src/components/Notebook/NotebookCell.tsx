@@ -1,18 +1,18 @@
 import CloseIcon from "@mui/icons-material/Close";
 import CodeIcon from "@mui/icons-material/Code";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
-import ShareIcon from "@mui/icons-material/Share";
 import {
    Box,
    Dialog,
    DialogContent,
    DialogTitle,
    IconButton,
+   Snackbar,
    Stack,
    Tooltip,
    Typography,
-   Snackbar,
 } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
@@ -107,9 +107,9 @@ export function NotebookCell({
    const modelDataFromNewSources =
       cell.newSources && cell.newSources.length > 0
          ? {
-              sourceInfos: cell.newSources,
-              resource: resourceUri,
-           }
+            sourceInfos: cell.newSources,
+            resource: resourceUri,
+         }
          : undefined;
 
    const queryResultCodeSnippet = createEmbeddedQueryResult({
@@ -176,8 +176,8 @@ export function NotebookCell({
                      justifyContent="space-between"
                   >
                      <Markdown>{cell.text}</Markdown>
-                     <Tooltip title="Click to copy and share">
-                        <ShareIcon
+                     <Tooltip title="Click to copy link">
+                        <LinkOutlinedIcon
                            sx={{
                               fontSize: "24px",
                               color: "#666666",
@@ -205,74 +205,74 @@ export function NotebookCell({
             {(!hideCodeCellIcon ||
                (!hideEmbeddingIcon && cell.result) ||
                (cell.newSources && cell.newSources.length > 0)) && (
-               <Stack
-                  sx={{
-                     flexDirection: "column",
-                     gap: "8px",
-                     marginBottom: "16px",
-                  }}
-               >
-                  {cell.newSources &&
-                     cell.newSources.length > 0 &&
-                     hasValidImport && (
-                        <CleanMetricCard
-                           sx={{
-                              position: "relative",
-                              padding: "0",
-                           }}
-                        >
-                           <Box
+                  <Stack
+                     sx={{
+                        flexDirection: "column",
+                        gap: "8px",
+                        marginBottom: "16px",
+                     }}
+                  >
+                     {cell.newSources &&
+                        cell.newSources.length > 0 &&
+                        hasValidImport && (
+                           <CleanMetricCard
                               sx={{
-                                 display: "flex",
-                                 alignItems: "center",
-                                 justifyContent: "space-between",
-                                 paddingLeft: "24px",
-                                 paddingRight: "8px",
+                                 position: "relative",
+                                 padding: "0",
                               }}
                            >
-                              {/* This shouldn't be needed but there's a compiler bug */}
-                              {highlightedMalloyCode && (
-                                 <span
-                                    dangerouslySetInnerHTML={{
-                                       __html:
-                                          cell.text.length > 50 &&
-                                          highlightedMalloyCode
-                                             ? `${highlightedMalloyCode.substring(0, 50)}...`
-                                             : highlightedMalloyCode,
-                                    }}
-                                    style={{
-                                       fontFamily: "monospace",
-                                       fontSize: "14px",
-                                       flex: 1,
-                                       whiteSpace: "nowrap",
-                                       overflow: "hidden",
-                                       textOverflow: "ellipsis",
-                                       marginRight: "8px",
-                                    }}
-                                 />
-                              )}
-                              <IconButton
+                              <Box
                                  sx={{
-                                    backgroundColor: "rgba(255, 255, 255, 0.9)",
-                                    "&:hover": {
-                                       backgroundColor:
-                                          "rgba(255, 255, 255, 1)",
-                                    },
-                                    width: "32px",
-                                    height: "32px",
-                                    flexShrink: 0,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    paddingLeft: "24px",
+                                    paddingRight: "8px",
                                  }}
-                                 onClick={() => setSourcesDialogOpen(true)}
                               >
-                                 <SearchIcon
-                                    sx={{ fontSize: "18px", color: "#666666" }}
-                                 />
-                              </IconButton>
-                           </Box>
-                        </CleanMetricCard>
-                     )}
-               </Stack>
-            )}
+                                 {/* This shouldn't be needed but there's a compiler bug */}
+                                 {highlightedMalloyCode && (
+                                    <span
+                                       dangerouslySetInnerHTML={{
+                                          __html:
+                                             cell.text.length > 50 &&
+                                                highlightedMalloyCode
+                                                ? `${highlightedMalloyCode.substring(0, 50)}...`
+                                                : highlightedMalloyCode,
+                                       }}
+                                       style={{
+                                          fontFamily: "monospace",
+                                          fontSize: "14px",
+                                          flex: 1,
+                                          whiteSpace: "nowrap",
+                                          overflow: "hidden",
+                                          textOverflow: "ellipsis",
+                                          marginRight: "8px",
+                                       }}
+                                    />
+                                 )}
+                                 <IconButton
+                                    sx={{
+                                       backgroundColor: "rgba(255, 255, 255, 0.9)",
+                                       "&:hover": {
+                                          backgroundColor:
+                                             "rgba(255, 255, 255, 1)",
+                                       },
+                                       width: "32px",
+                                       height: "32px",
+                                       flexShrink: 0,
+                                    }}
+                                    onClick={() => setSourcesDialogOpen(true)}
+                                 >
+                                    <SearchIcon
+                                       sx={{ fontSize: "18px", color: "#666666" }}
+                                    />
+                                 </IconButton>
+                              </Box>
+                           </CleanMetricCard>
+                        )}
+                  </Stack>
+               )}
 
             {/* Data Sources Dialog */}
             <ModelExplorerDialog

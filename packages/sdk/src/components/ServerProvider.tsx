@@ -8,8 +8,6 @@ import {
    NotebooksApi,
    PackagesApi,
    ProjectsApi,
-   QueryresultsApi,
-   SchedulesApi,
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
@@ -65,14 +63,12 @@ const getApiClients = (
    const config = new Configuration({ basePath });
 
    return {
-      queryResults: new QueryresultsApi(config, basePath, axiosInstance),
       models: new ModelsApi(config, basePath, axiosInstance),
       projects: new ProjectsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),
-      schedules: new SchedulesApi(config, basePath, axiosInstance),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
    };
 };

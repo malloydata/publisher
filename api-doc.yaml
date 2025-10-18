@@ -47,12 +47,8 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
-  - name: queryresults
-    description: Query execution and result retrieval operations
   - name: databases
     description: Embedded database management and access
-  - name: schedules
-    description: Scheduled task management and monitoring
   - name: watch-mode
     description: Real-time file watching for development workflows
 
@@ -292,18 +288,16 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  # TODO: Remove this endpoint.
-  /projects/{projectName}/connections/{connectionName}/test:
+  /projects/{projectName}/connections/{connectionName}/schemas:
     get:
       tags:
         - connections
-      operationId: test-connection
-      summary: Test existing project connection
-      deprecated: true
+      operationId: list-schemas
+      summary: List database schemas
       description: |
-        Tests the connectivity and configuration of an existing database connection within a project.
-        This endpoint validates that the connection can be established, credentials are valid,
-        and the database is accessible. Useful for monitoring connection health and troubleshooting.
+        Retrieves a list of all schemas (databases) available in the specified connection.
+        Each schema includes metadata such as name, description, and whether it's the default schema.
+        This endpoint is useful for exploring the database structure and discovering available data sources.
       parameters:
         - name: projectName
           in: path
@@ -319,11 +313,108 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
-          description: OK
+          description: A list of schemas available in the connection with metadata
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConnectionStatus"
+                type: array
+                items:
+                  $ref: "#/components/schemas/Schema"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables:
+    get:
+      tags:
+        - connections
+      operationId: list-tables
+      summary: List tables in database
+      description: |
+        Retrieves a list of all tables and views available in the specified database schema.
+        This endpoint is useful for discovering available data sources and exploring the database
+        structure. The schema must exist in the connection for this operation to succeed.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: schemaName
+          in: path
+          description: Name of the schema
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: A list of table names available in the specified schema
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Table"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables/{tablePath}:
+    get:
+      tags:
+        - connections
+      operationId: get-table
+      summary: Get table details from database
+      description: |
+        Retrieves a table from the specified database schema.
+        This endpoint is useful for discovering available data sources and exploring the database
+        structure. The schema must exist in the connection for this operation to succeed.
+        The tablePath is the full path to the table, including the schema name.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: schemaName
+          in: path
+          description: Name of the schema
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: tablePath
+          in: path
+          description: Full path to the table
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: Table information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -332,7 +423,6 @@ paths:
           $ref: "#/components/responses/InternalServerError"
 
   # TODO: Remove this endpoint. 
-
   /projects/{projectName}/connections/{connectionName}/sqlSource:
     get:
       tags:
@@ -379,7 +469,6 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-    # TODO: We should rename this to make it clear this is for Malloy connections.  Should we be using a post here?
     post:
       tags:
         - connections
@@ -418,6 +507,150 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /projects/{projectName}/connections/{connectionName}/sqlQuery:
+    post:
+      tags:
+        - connections
+      operationId: post-querydata
+      summary: Execute SQL query
+      description: |
+        Executes a SQL statement against the specified database connection and returns the results.
+        The results include data, metadata, and execution information.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: options
+          in: query
+          description: Options
+          required: false
+          schema:
+            type: string
+      requestBody:
+        description: SQL statement to execute
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sqlStatement:
+                  type: string
+      responses:
+        "200":
+          description: Query execution results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryData"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /projects/{projectName}/connections/{connectionName}/sqlTemporaryTable:
+    post:
+      tags:
+        - connections
+      operationId: post-temporarytable
+      summary: Create temporary table
+      description: |
+        Creates a temporary table from a SQL statement using the specified database connection.
+        Temporary tables are useful for storing intermediate results during complex queries and data processing workflows.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      requestBody:
+        description: SQL statement to create the temporary table
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sqlStatement:
+                  type: string
+      responses:
+        "200":
+          description: Temporary table information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemporaryTable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # TODO: Remove this endpoint. 
+  /projects/{projectName}/connections/{connectionName}/temporaryTable:
+    get:
+      tags:
+        - connections
+      operationId: get-temporarytable
+      deprecated: true
+      summary: Create temporary table (deprecated)
+      description: |
+        **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
+        Use the POST version instead for better security and functionality.
+
+        Creates a temporary table from a SQL statement using the specified connection.
+        Temporary tables are useful for storing intermediate results during complex queries.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: sqlStatement
+          in: query
+          description: SQL statement
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Temporary table information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemporaryTable"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -476,103 +709,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  /projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables:
-    get:
-      tags:
-        - connections
-      operationId: list-tables
-      summary: List tables in database
-      deprecated: true
-      description: |
-        Retrieves a list of all tables and views available in the specified database schema.
-        This endpoint is useful for discovering available data sources and exploring the database
-        structure. The schema must exist in the connection for this operation to succeed.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: schemaName
-          in: path
-          description: Name of the schema
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-      responses:
-        "200":
-          description: A list of table names available in the specified schema
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Table"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables/{tablePath}:
-    get:
-      tags:
-        - connections
-      operationId: get-table
-      summary: List tables in database
-      description: |
-        Retrieves a table from the specified database schema.
-        This endpoint is useful for discovering available data sources and exploring the database
-        structure. The schema must exist in the connection for this operation to succeed.
-        The tablePath is the full path to the table, including the schema name.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: schemaName
-          in: path
-          description: Name of the schema
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: tablePath
-          in: path
-          description: Full path to the table
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-      responses:
-        "200":
-          description: Table information
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Table"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  # TODO: Rmove this endpoint. 
+  # TODO: Remove this endpoint. 
   /projects/{projectName}/connections/{connectionName}/queryData:
     get:
       tags:
@@ -618,152 +755,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryData"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-    # TODO: this should be post query -- not querydata.
-    post:
-      tags:
-        - connections
-      operationId: post-querydata
-      summary: Execute SQL query
-      description: |
-        Executes a SQL statement against the specified database connection and returns the results.
-        The results include data, metadata, and execution information.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: options
-          in: query
-          description: Options
-          required: false
-          schema:
-            type: string
-      requestBody:
-        description: SQL statement to execute
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                sqlStatement:
-                  type: string
-      responses:
-        "200":
-          description: Query execution results
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/QueryData"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  # TODO: Rmove this endpoint. 
-  /projects/{projectName}/connections/{connectionName}/temporaryTable:
-    get:
-      tags:
-        - connections
-      operationId: get-temporarytable
-      deprecated: true
-      summary: Create temporary table (deprecated)
-      description: |
-        **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-        Use the POST version instead for better security and functionality.
-
-        Creates a temporary table from a SQL statement using the specified connection.
-        Temporary tables are useful for storing intermediate results during complex queries.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: sqlStatement
-          in: query
-          description: SQL statement
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Temporary table information
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TemporaryTable"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-    
-    # TODO: Shouldn't this be under table?
-    post:
-      tags:
-        - connections
-      operationId: post-temporarytable
-      summary: Create temporary table
-      description: |
-        Creates a temporary table from a SQL statement using the specified database connection.
-        This is the preferred method over the deprecated GET version as it provides better security
-        and supports larger SQL statements. Temporary tables are useful for storing intermediate
-        results during complex queries and data processing workflows.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-      requestBody:
-        description: SQL statement to create the temporary table
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                sqlStatement:
-                  type: string
-      responses:
-        "200":
-          description: Temporary table information
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TemporaryTable"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1071,6 +1062,60 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
+  /projects/{projectName}/packages/{packageName}/models/{path}/query:
+    post:
+      tags:
+        - models
+      operationId: execute-query-model
+      summary: Execute Malloy query
+      description: |
+        Executes a Malloy query against a model and returns the results. The query can be specified
+        as a raw Malloy query string or by referencing a named query within the model. This endpoint
+        supports both ad-hoc queries and predefined model queries, making it flexible for various
+        use cases including data exploration, reporting, and application integration.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: path
+          in: path
+          description: Path to the model within the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryRequest"
+      responses:
+        "200":
+          description: Query execution results
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  
   /projects/{projectName}/packages/{packageName}/notebooks:
     get:
       tags:
@@ -1171,78 +1216,6 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
-  # TODO: Is this modeled correctly?  Should it be a POST?  Is it consistent with the other endpoints?
-  /projects/{projectName}/packages/{packageName}/queryResults/{path}:
-    get:
-      tags:
-        - queryresults
-      operationId: execute-query
-      summary: Execute Malloy query
-      description: |
-        Executes a Malloy query against a model and returns the results. The query can be specified
-        as a raw Malloy query string or by referencing a named query within the model. This endpoint
-        supports both ad-hoc queries and predefined model queries, making it flexible for various
-        use cases including data exploration, reporting, and application integration.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: path
-          in: path
-          description: Path to the model within the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/PathPattern"
-        - in: query
-          name: query
-          description: Query string to execute on the model. If the query parameter is set, the queryName parameter must be empty.
-          required: false
-          schema:
-            type: string
-        - in: query
-          name: sourceName
-          description: Name of the source in the model to use for queryName, search, and topValue requests.
-          required: false
-          schema:
-            type: string
-        - in: query
-          name: queryName
-          description: Name of a query to execute on a source in the model. Requires the sourceName parameter is set. If the queryName parameter is set, the query parameter must be empty.
-          required: false
-          schema:
-            type: string
-        - in: query
-          name: versionId
-          description: Version ID
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Query execution results
-          content:
-            "application/json":
-              schema:
-                $ref: "#/components/schemas/QueryResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
 
   /projects/{projectName}/packages/{packageName}/databases:
     get:
@@ -1291,58 +1264,10 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
-  # TODO: Remove this endpoint for now.  We don't have schedules in the server yet.
-  /projects/{projectName}/packages/{packageName}/schedules:
-    get:
-      tags:
-        - schedules
-      operationId: list-schedules
-      summary: List package schedules
-      description: |
-        Retrieves a list of all scheduled tasks associated with the specified package. These
-        schedules define automated operations such as data refresh, report generation, or other
-        recurring tasks. Each schedule includes timing information and execution status.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
-      responses:
-        "200":
-          description: A list of scheduled tasks
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Schedule"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
-
   /connections/test:
     post:
       tags:
-        - connections
+        - connectionsTest
       operationId: test-connection-configuration
       summary: Test database connection configuration
       description: |
@@ -1672,6 +1597,23 @@ components:
           items:
             type: string
 
+    QueryRequest:
+      type: object
+      description: Request body for executing a Malloy query
+      properties:
+        query:
+          type: string
+          description: Query string to execute on the model. If the query parameter is set, the queryName parameter must be empty.
+        sourceName:
+          type: string
+          description: Name of the source in the model to use for queryName, search, and topValue requests.
+        queryName:
+          type: string
+          description: Name of a query to execute on a source in the model. Requires the sourceName parameter is set. If the queryName parameter is set, the query parameter must be empty.
+        versionId:
+          type: string
+          description: Version ID
+
     NotebookCell:
       type: object
       description: Individual cell within a Malloy notebook
@@ -1720,30 +1662,7 @@ components:
           description: Type of embedded database
           enum: ["embedded", "materialized"]
 
-    Schedule:
-      type: object
-      description: Scheduled task configuration and status
-      properties:
-        resource:
-          type: string
-          description: Resource path in the package that the schedule is attached to
-        schedule:
-          type: string
-          description: Schedule expression in cron format for executing the task
-        action:
-          type: string
-          description: Action to execute when the schedule triggers
-        connection:
-          type: string
-          description: Name of the connection to perform the action on
-        lastRunTime:
-          type: number
-          description: Unix timestamp in milliseconds of the last execution
-        lastRunStatus:
-          type: string
-          description: Status of the last execution
-
-    SchemaName:
+    Schema:
       description: A schema name in a Connection.
       type: object
       properties:

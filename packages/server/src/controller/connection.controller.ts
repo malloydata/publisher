@@ -1,25 +1,25 @@
 import {
-   RunSQLOptions,
-   TableSourceDef,
-   TestableConnection,
+   RunSQLOptions
 } from "@malloydata/malloy";
 import { Connection, PersistSQLResults } from "@malloydata/malloy/connection";
+import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
 import { logger } from "../logger";
-import { components } from "../api";
+import { testConnectionConfig } from "../service/connection";
 import {
+   getConnectionTableSource,
    getSchemasForConnection,
-   getTablesForSchema,
+   getTablesForSchema
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
-import { testConnectionConfig } from "../service/connection";
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
 type ApiSqlSource = components["schemas"]["SqlSource"];
 type ApiTableSource = components["schemas"]["TableSource"];
+type ApiTable = components["schemas"]["Table"];
 type ApiQueryData = components["schemas"]["QueryData"];
 type ApiTemporaryTable = components["schemas"]["TemporaryTable"];
-type ApiSchemaName = components["schemas"]["SchemaName"];
+type ApiSchema = components["schemas"]["Schema"];
 export class ConnectionController {
    private projectStore: ProjectStore;
 
@@ -44,7 +44,7 @@ export class ConnectionController {
    public async listSchemas(
       projectName: string,
       connectionName: string,
-   ): Promise<ApiSchemaName[]> {
+   ): Promise<ApiSchema[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
       return getSchemasForConnection(connection);
@@ -55,36 +55,12 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
       schemaName: string,
-   ): Promise<string[]> {
+   ): Promise<ApiTable[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
-      return getTablesForSchema(connection, schemaName);
+      return getTablesForSchema(connection, schemaName, this.projectStore, projectName, connectionName);
    }
 
-   public async testConnection(
-      projectName: string,
-      connectionName: string,
-   ): Promise<ApiConnectionStatus> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getMalloyConnection(
-         connectionName,
-      ) as Connection;
-      try {
-         await (connection as TestableConnection).test();
-         return {
-            status: "ok",
-            errorMessage: "",
-         };
-      } catch (error) {
-         if (error instanceof ConnectionError) {
-            return {
-               status: "failed",
-               errorMessage: error.message,
-            };
-         }
-         throw error;
-      }
-   }
 
    public async getConnectionSqlSource(
       projectName: string,
@@ -113,29 +89,13 @@ export class ConnectionController {
       tableKey: string,
       tablePath: string,
    ): Promise<ApiTableSource> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getMalloyConnection(connectionName);
-      try {
-         const source = await connection.fetchTableSchema(tableKey, tablePath);
-         if (source === undefined) {
-            throw new ConnectionError(`Table ${tablePath} not found`);
-         }
-         const malloyFields = (source as TableSourceDef).fields;
-         const fields = malloyFields.map((field) => {
-            return {
-               name: field.name,
-               type: field.type,
-            };
-         });
-         return {
-            source: JSON.stringify(source),
-            resource: tablePath,
-            columns: fields,
-         };
-      } catch (error) {
-         logger.error("error", { error });
-         throw new ConnectionError((error as Error).message);
-      }
+      return getConnectionTableSource(
+         this.projectStore,
+         projectName,
+         connectionName,
+         tableKey,
+         tablePath
+      );
    }
 
    public async getConnectionQueryData(

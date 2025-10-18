@@ -1,4 +1,6 @@
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import "@malloydata/malloy-explorer/styles.css";
+import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
+import ZoomOutMapIcon from "@mui/icons-material/ZoomOutMap";
 import {
    Box,
    IconButton,
@@ -7,17 +9,15 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import ZoomOutMapIcon from "@mui/icons-material/ZoomOutMap";
-import ShareIcon from "@mui/icons-material/Share";
-import "@malloydata/malloy-explorer/styles.css";
-import { QueryExplorerResult } from "./SourcesExplorer";
-import { Loading } from "../Loading";
-import { ModelExplorer } from "./ModelExplorer";
-import { ModelExplorerDialog } from "./ModelExplorerDialog";
-import { ModelCell } from "./ModelCell";
-import { useModelData } from "./useModelData";
 import React, { useState } from "react";
 import { parseResourceUri } from "../../utils/formatting";
+import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { Loading } from "../Loading";
+import { ModelCell } from "./ModelCell";
+import { ModelExplorer } from "./ModelExplorer";
+import { ModelExplorerDialog } from "./ModelExplorerDialog";
+import { QueryExplorerResult } from "./SourcesExplorer";
+import { useModelData } from "./useModelData";
 
 interface ModelProps {
    onChange?: (query: QueryExplorerResult) => void;
@@ -103,8 +103,8 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                         >
                            Sources
                         </Typography>
-                        <Tooltip title="Click to copy and share">
-                           <ShareIcon
+                        <Tooltip title="Click to copy link">
+                           <LinkOutlinedIcon
                               sx={{
                                  fontSize: "24px",
                                  color: "#666666",

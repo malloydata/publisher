@@ -16,9 +16,13 @@ import {
    TrinoConnection,
 } from "./model";
 
+import { TableSourceDef } from "@malloydata/malloy";
 import { BasicAuth, Trino } from "trino-client";
+import { ConnectionError } from "../errors";
 
-type ApiSchemaName = components["schemas"]["SchemaName"];
+type ApiSchema = components["schemas"]["Schema"];
+type ApiTable = components["schemas"]["Table"];
+type ApiTableSource = components["schemas"]["TableSource"];
 
 async function getPostgresConnection(
    apiPostgresConnection: PostgresConnection,
@@ -110,7 +114,7 @@ function getTrinoClient(trinoConn: TrinoConnection) {
 
 export async function getSchemasForConnection(
    connection: ApiConnection,
-): Promise<ApiSchemaName[]> {
+): Promise<ApiSchema[]> {
    if (connection.type === "bigquery") {
       if (!connection.bigqueryConnection) {
          throw new Error("BigQuery connection is required");
@@ -215,7 +219,83 @@ export async function getSchemasForConnection(
    }
 }
 
+
+
 export async function getTablesForSchema(
+   connection: ApiConnection,
+   schemaName: string,
+   projectStore: any,
+   projectName: string,
+   connectionName: string,
+): Promise<ApiTable[]> {
+   // First get the list of table names
+   const tableNames = await listTablesForSchema(connection, schemaName);
+
+   // Fetch all table sources in parallel
+   const tableSourcePromises = tableNames.map(async (tableName) => {
+      try {
+         const tablePath = `${schemaName}.${tableName}`;
+         const tableSource = await getConnectionTableSource(
+            projectStore,
+            projectName,
+            connectionName,
+            tableName,
+            tablePath
+         );
+
+         return {
+            resource: tablePath,
+            columns: tableSource.columns
+         };
+      } catch (error) {
+         logger.warn(`Failed to get schema for table ${tableName}`, { error });
+         // Return table without columns if schema fetch fails
+         return {
+            resource: `${schemaName}.${tableName}`,
+            columns: []
+         };
+      }
+   });
+
+   // Wait for all table sources to be fetched
+   const tableResults = await Promise.all(tableSourcePromises);
+
+   return tableResults;
+}
+
+export async function getConnectionTableSource(
+   projectStore: any,
+   projectName: string,
+   connectionName: string,
+   tableKey: string,
+   tablePath: string,
+): Promise<ApiTableSource> {
+   const project = await projectStore.getProject(projectName, false);
+   const connection = project.getMalloyConnection(connectionName);
+   try {
+      const source = await connection.fetchTableSchema(tableKey, tablePath);
+      if (source === undefined) {
+         throw new ConnectionError(`Table ${tablePath} not found`);
+      }
+      const malloyFields = (source as TableSourceDef).fields;
+      const fields = malloyFields.map((field) => {
+         return {
+            name: field.name,
+            type: field.type,
+         };
+      });
+      return {
+         source: JSON.stringify(source),
+         resource: tablePath,
+         columns: fields,
+      };
+   } catch (error) {
+      logger.error("error", { error });
+      throw new ConnectionError((error as Error).message);
+   }
+}
+
+export async function listTablesForSchema(
    connection: ApiConnection,
    schemaName: string,
 ): Promise<string[]> {
@@ -224,8 +304,8 @@ export async function getTablesForSchema(
          const bigquery = getBigqueryConnection(connection);
          const options = connection.bigqueryConnection?.defaultProjectId
             ? {
-                 projectId: connection.bigqueryConnection?.defaultProjectId,
-              }
+               projectId: connection.bigqueryConnection?.defaultProjectId,
+            }
             : {};
          const dataset = bigquery.dataset(schemaName, options);
          const [exists] = await dataset.exists();
@@ -377,7 +457,7 @@ async function getSnowflakeTables(
 
 async function getSnowflakeSchemas(
    connection: snowflake.Connection,
-): Promise<ApiSchemaName[]> {
+): Promise<ApiSchema[]> {
    return new Promise((resolve, reject) => {
       connection.execute({
          sqlText: "SHOW SCHEMAS",

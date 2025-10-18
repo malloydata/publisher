@@ -1,8 +1,8 @@
 import { Suspense, lazy } from "react";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { Loading } from "../Loading";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
+import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
@@ -77,14 +77,16 @@ export default function QueryResult({
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: [resourceUri, query, sourceName, queryName],
       queryFn: () =>
-         apiClients.queryResults.executeQuery(
+         apiClients.models.executeQueryModel(
             projectName,
             packageName,
             modelPath,
-            query,
-            sourceName,
-            queryName,
-            versionId,
+            {
+               query: query,
+               sourceName: sourceName,
+               queryName: queryName,
+               versionId: versionId,
+            },
          ),
    });
 

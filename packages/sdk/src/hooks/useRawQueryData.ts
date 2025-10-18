@@ -1,6 +1,6 @@
+import { useServer } from "../components/ServerProvider";
 import { parseResourceUri } from "../utils/formatting";
 import { useQueryWithApiError } from "./useQueryWithApiError";
-import { useServer } from "../components/ServerProvider";
 
 interface UseRawQueryDataProps {
    modelPath: string;
@@ -35,14 +35,16 @@ export function useRawQueryData({
          queryName,
       ],
       queryFn: () =>
-         apiClients.queryResults.executeQuery(
+         apiClients.models.executeQueryModel(
             projectName,
             packageName,
             modelPath,
-            query,
-            sourceName,
-            queryName,
-            versionId,
+            {
+               query: query,
+               sourceName: sourceName,
+               queryName: queryName,
+               versionId: versionId,
+            },
          ),
       enabled,
    });
@@ -51,15 +53,15 @@ export function useRawQueryData({
    const rawData =
       isSuccess && data?.data?.result
          ? (() => {
-              try {
-                 const parsed = JSON.parse(data.data.result);
-                 // Return the data.array_value array which contains the actual rows
-                 return parsed.data?.array_value || [];
-              } catch (e) {
-                 console.error("Failed to parse query result:", e);
-                 return [];
-              }
-           })()
+            try {
+               const parsed = JSON.parse(data.data.result);
+               // Return the data.array_value array which contains the actual rows
+               return parsed.data?.array_value || [];
+            } catch (e) {
+               console.error("Failed to parse query result:", e);
+               return [];
+            }
+         })()
          : [];
 
    return {

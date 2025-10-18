@@ -21,13 +21,11 @@ import { PackageNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { createConnections } from "./connection";
 import { Model } from "./model";
-import { Scheduler } from "./scheduler";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
-type ApiSchedule = components["schemas"]["Schedule"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 
@@ -38,7 +36,6 @@ export class Package {
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
-   private scheduler: Scheduler | undefined;
    private packagePath: string;
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
@@ -56,7 +53,6 @@ export class Package {
       packageMetadata: ApiPackage,
       databases: ApiDatabase[],
       models: Map<string, Model>,
-      scheduler: Scheduler | undefined,
    ) {
       this.projectName = projectName;
       this.packageName = packageName;
@@ -64,7 +60,6 @@ export class Package {
       this.packageMetadata = packageMetadata;
       this.databases = databases;
       this.models = models;
-      this.scheduler = scheduler;
    }
 
    static async create(
@@ -143,13 +138,6 @@ export class Package {
             duration: modelsTime - connectionsTime,
             unit: "ms",
          });
-         const scheduler = Scheduler.create(models);
-         const schedulerTime = performance.now();
-         logger.info("Scheduler created", {
-            packageName,
-            duration: schedulerTime - modelsTime,
-            unit: "ms",
-         });
          const endTime = performance.now();
          const executionTime = endTime - startTime;
          this.packageLoadHistogram.record(executionTime, {
@@ -168,7 +156,6 @@ export class Package {
             packageConfig,
             databases,
             models,
-            scheduler,
          );
       } catch (error) {
          logger.error(`Error loading package ${packageName}`, { error });
@@ -195,9 +182,6 @@ export class Package {
       return this.databases;
    }
 
-   public listSchedules(): ApiSchedule[] {
-      return this.scheduler ? this.scheduler.list() : [];
-   }
 
    public getModel(modelPath: string): Model | undefined {
       return this.models.get(modelPath);
