@@ -188,6 +188,7 @@ export const connectionFieldsByType: Record<
          type: "text",
       },
    ],
+   duckdb: [],
 };
 
 export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
@@ -196,4 +197,5 @@ export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
    snowflake: "snowflakeConnection",
    trino: "trinoConnection",
    mysql: "mysqlConnection",
+   duckdb: "duckdbConnection",
 };

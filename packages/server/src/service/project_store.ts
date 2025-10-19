@@ -232,7 +232,6 @@ export class ProjectStore {
          projectName,
          absoluteProjectPath,
          project.connections || [],
-         this.serverRootPath,
       );
       this.projects.set(projectName, newProject);
       projectConfig?.packages.forEach((_package) => {

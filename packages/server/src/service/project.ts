@@ -10,7 +10,7 @@ import {
    ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
-import { createConnections, InternalConnection } from "./connection";
+import { createProjectConnections, InternalConnection } from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 
@@ -37,7 +37,6 @@ export class Project {
    private apiConnections: ApiConnection[];
    private projectPath: string;
    private projectName: string;
-   private serverRootPath: string;
    public metadata: ApiProject;
 
    constructor(
@@ -45,11 +44,9 @@ export class Project {
       projectPath: string,
       malloyConnections: Map<string, BaseConnection>,
       apiConnections: InternalConnection[],
-      serverRootPath: string,
    ) {
       this.projectName = projectName;
       this.projectPath = projectPath;
-      this.serverRootPath = serverRootPath;
       this.malloyConnections = malloyConnections;
       this.apiConnections = apiConnections;
       this.metadata = {
@@ -73,8 +70,7 @@ export class Project {
          );
 
          // Reload connections with full config
-         const { malloyConnections, apiConnections } = await createConnections(
-            this.projectPath,
+         const { malloyConnections, apiConnections } = await createProjectConnections(
             payload.connections,
          );
 
@@ -98,8 +94,7 @@ export class Project {
    static async create(
       projectName: string,
       projectPath: string,
-      defaultConnections: ApiConnection[],
-      serverRootPath?: string,
+      connections: ApiConnection[],
    ): Promise<Project> {
       if (!(await fs.promises.stat(projectPath)).isDirectory()) {
          throw new ProjectNotFoundError(
@@ -107,18 +102,10 @@ export class Project {
          );
       }
 
-      let malloyConnections: Map<string, BaseConnection> = new Map();
-      let apiConnections: InternalConnection[] = [];
-
       logger.info(`Creating project with connection configuration`);
-      const result = await createConnections(
-         projectPath,
-         defaultConnections,
-         projectName,
-         serverRootPath,
+      const { malloyConnections, apiConnections } = await createProjectConnections(
+         connections,
       );
-      malloyConnections = result.malloyConnections;
-      apiConnections = result.apiConnections;
 
       logger.info(
          `Loaded ${malloyConnections.size + apiConnections.length} connections for project ${projectName}`,
@@ -133,7 +120,6 @@ export class Project {
          projectPath,
          malloyConnections,
          apiConnections,
-         serverRootPath || "",
       );
    }
 
@@ -188,7 +174,7 @@ export class Project {
                try {
                   const packageMetadata = (
                      this.packageStatuses.get(packageName)?.status ===
-                     PackageStatus.LOADING
+                        PackageStatus.LOADING
                         ? undefined
                         : await this.getPackage(packageName, false)
                   )?.getPackageMetadata();
@@ -264,7 +250,7 @@ export class Project {
                packageName,
                path.join(this.projectPath, packageName),
                this.malloyConnections,
-               this.serverRootPath,
+               this.apiConnections,
             );
             this.packages.set(packageName, _package);
 
@@ -309,7 +295,7 @@ export class Project {
                packageName,
                packagePath,
                this.malloyConnections,
-               this.serverRootPath,
+               this.apiConnections,
             ),
          );
       } catch (error) {
@@ -369,9 +355,9 @@ export class Project {
          });
          throw new Error(
             "Package loading. Can't unload. " +
-               this.projectName +
-               " " +
-               packageName,
+            this.projectName +
+            " " +
+            packageName,
          );
       } else if (packageStatus?.status === PackageStatus.SERVING) {
          this.setPackageStatus(packageName, PackageStatus.UNLOADING);

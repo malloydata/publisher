@@ -1692,7 +1692,7 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum: [postgres, bigquery, snowflake, trino, mysql]
+          enum: [postgres, bigquery, snowflake, trino, mysql, duckdb]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:
@@ -1705,6 +1705,8 @@ components:
           $ref: "#/components/schemas/TrinoConnection"
         mysqlConnection:
           $ref: "#/components/schemas/MysqlConnection"
+        duckdbConnection:
+          $ref: "#/components/schemas/DuckdbConnection"
 
     ConnectionAttributes:
       type: object
@@ -1840,6 +1842,35 @@ components:
         password:
           type: string
           description: Trino password for authentication
+
+    DuckdbConnection:
+      type: object
+      description: DuckDB database connection configuration
+      properties:
+        attachedDatabases:
+          array:
+            $ref: "#/components/schemas/AttachedDatabase"
+
+    AttachedDatabase:
+      type: object
+      description: Attached DuckDB database
+      properties:
+        name:
+          type: string
+          description: Name of the connection
+        type:
+          type: string
+          description: Type of database connection
+          enum: [bigquery, snowflake, postgres]
+        attributes:
+          $ref: "#/components/schemas/ConnectionAttributes"
+        bigqueryConnection:
+          $ref: "#/components/schemas/BigqueryConnection"
+        snowflakeConnection:
+          $ref: "#/components/schemas/SnowflakeConnection"
+        postgresConnection:
+          $ref: "#/components/schemas/PostgresConnection"
+
 
     # TODO: What is this?  Can we remove it?
     SqlSource:

@@ -56,7 +56,7 @@ export default function ConnectionExplorer({
    });
 
    const availableSchemas =
-      schemasData?.data?.map((schema: { name: string }) => schema.name) || [];
+      schemasData?.data?.map((schema: { name: string }) => schema.name).sort() || [];
 
    return (
       <Grid container spacing={1}>
@@ -176,14 +176,18 @@ function TableSchemaViewer({ table }: TableSchemaViewerProps) {
                      </TableRow>
                   </TableHead>
                   <TableBody>
-                     {table.columns.map(
-                        (column: { name: string; type: string }) => (
-                           <TableRow key={column.name}>
-                              <TableCell>{column.name}</TableCell>
-                              <TableCell>{column.type}</TableCell>
-                           </TableRow>
-                        ),
-                     )}
+                     {table.columns
+                        ?.sort((a: { name: string }, b: { name: string }) =>
+                           a.name.localeCompare(b.name)
+                        )
+                        ?.map(
+                           (column: { name: string; type: string }) => (
+                              <TableRow key={column.name}>
+                                 <TableCell>{column.name}</TableCell>
+                                 <TableCell>{column.type}</TableCell>
+                              </TableRow>
+                           ),
+                        )}
                   </TableBody>
                </Table>
             </TableContainer>
@@ -234,32 +238,39 @@ function TablesInSchema({
                   context={`${projectName} > ${connectionName} > ${schemaName}`}
                />
             )}
-            {isSuccess && data.data.length === 0 && (
+            {isSuccess && data?.data?.length === 0 && (
                <Typography variant="body2">No Tables</Typography>
             )}
-            {isSuccess && data.data.length > 0 && (
+            {isSuccess && data?.data && data.data.length > 0 && (
                <List dense disablePadding>
-                  {data.data.map(
-                     (table: {
-                        resource: string;
-                        columns: Array<{ name: string; type: string }>;
-                     }) => {
-                        // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
-                        const tableName =
-                           table.resource.split(".").pop() || table.resource;
-                        return (
-                           <ListItemButton
-                              key={table.resource}
-                              onClick={() => onTableClick(table)}
-                           >
-                              <ListItemText
-                                 primary={tableName}
-                                 secondary={`${table.columns.length} columns`}
-                              />
-                           </ListItemButton>
-                        );
-                     },
-                  )}
+                  {data.data
+                     .sort((a: { resource: string }, b: { resource: string }) => {
+                        // Extract table names for sorting
+                        const tableNameA = a.resource.split(".").pop() || a.resource;
+                        const tableNameB = b.resource.split(".").pop() || b.resource;
+                        return tableNameA.localeCompare(tableNameB);
+                     })
+                     .map(
+                        (table: {
+                           resource: string;
+                           columns: Array<{ name: string; type: string }>;
+                        }) => {
+                           // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
+                           const tableName =
+                              table.resource.split(".").pop() || table.resource;
+                           return (
+                              <ListItemButton
+                                 key={table.resource}
+                                 onClick={() => onTableClick(table)}
+                              >
+                                 <ListItemText
+                                    primary={tableName}
+                                    secondary={`${table.columns.length} columns`}
+                                 />
+                              </ListItemButton>
+                           );
+                        },
+                     )}
                </List>
             )}
          </Box>
