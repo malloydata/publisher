@@ -1,5 +1,5 @@
 import { BigQuery } from "@google-cloud/bigquery";
-import { TableSourceDef } from "@malloydata/malloy";
+import { Connection, TableSourceDef } from "@malloydata/malloy";
 import { components } from "../api";
 import { ConnectionError } from "../errors";
 import { logger } from "../logger";
@@ -12,6 +12,10 @@ type ApiTableSource = components["schemas"]["TableSource"];
 function createBigQueryClient(connection: ApiConnection): BigQuery {
    if (!connection.bigqueryConnection) {
       throw new Error("BigQuery connection is required");
+   }
+
+   if (!connection.bigqueryConnection.defaultProjectId) {
+      throw new Error("BigQuery defaultProjectId is required");
    }
 
    const config: {
@@ -47,7 +51,7 @@ function standardizeRunSQLResult(result: unknown): unknown[] {
 
 export async function getSchemasForConnection(
    connection: ApiConnection,
-   malloyConnection: BaseConnection,
+   malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
    if (connection.type === "bigquery") {
       if (!connection.bigqueryConnection) {
@@ -87,13 +91,16 @@ export async function getSchemasForConnection(
          );
 
          const rows = standardizeRunSQLResult(result);
-         return rows.map((row: Record<string, unknown>) => ({
-            name: row.schema_name as string,
-            isHidden: ["information_schema", "pg_catalog"].includes(
-               row.schema_name,
-            ),
-            isDefault: row.schema_name === "public",
-         }));
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return {
+               name: typedRow.schema_name as string,
+               isHidden: ["information_schema", "pg_catalog"].includes(
+                  typedRow.schema_name as string,
+               ),
+               isDefault: typedRow.schema_name === "public",
+            };
+         });
       } catch (error) {
          console.error(
             `Error getting schemas for Postgres connection ${connection.name}:`,
@@ -134,11 +141,14 @@ export async function getSchemasForConnection(
          const result = await malloyConnection.runSQL("SHOW SCHEMAS");
 
          const rows = standardizeRunSQLResult(result);
-         return rows.map((row: Record<string, unknown>) => ({
-            name: row.name as string,
-            isHidden: ["SNOWFLAKE", ""].includes(row.owner as string),
-            isDefault: row.isDefault === "Y",
-         }));
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return {
+               name: typedRow.name as string,
+               isHidden: ["SNOWFLAKE", ""].includes(typedRow.owner as string),
+               isDefault: typedRow.isDefault === "Y",
+            };
+         });
       } catch (error) {
          console.error(
             `Error getting schemas for Snowflake connection ${connection.name}:`,
@@ -159,11 +169,14 @@ export async function getSchemasForConnection(
          );
 
          const rows = standardizeRunSQLResult(result);
-         return rows.map((row: Record<string, unknown>) => ({
-            name: row.name as string,
-            isHidden: false,
-            isDefault: row.name === connection.trinoConnection?.schema,
-         }));
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return {
+               name: typedRow.name as string,
+               isHidden: false,
+               isDefault: typedRow.name === connection.trinoConnection?.schema,
+            };
+         });
       } catch (error) {
          console.error(
             `Error getting schemas for Trino connection ${connection.name}:`,
@@ -192,8 +205,9 @@ export async function getSchemasForConnection(
             Array.isArray(connection.duckdbConnection.attachedDatabases) &&
             connection.duckdbConnection.attachedDatabases.length > 0;
 
-         return rows.map((row: Record<string, unknown>) => {
-            let schemaName = row.schema_name as string;
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            let schemaName = typedRow.schema_name as string;
 
             // If we have attached databases and this is not the main schema, prepend the attached database name
             if (hasAttachedDatabases && schemaName !== "main") {
@@ -208,7 +222,7 @@ export async function getSchemasForConnection(
             return {
                name: schemaName,
                isHidden: false,
-               isDefault: row.schema_name === "main",
+               isDefault: typedRow.schema_name === "main",
             };
          });
       } catch (error) {
@@ -228,7 +242,7 @@ export async function getSchemasForConnection(
 export async function getTablesForSchema(
    connection: ApiConnection,
    schemaName: string,
-   malloyConnection: BaseConnection,
+   malloyConnection: Connection,
 ): Promise<ApiTable[]> {
    // First get the list of table names
    const tableNames = await listTablesForSchema(
@@ -277,7 +291,7 @@ export async function getTablesForSchema(
 }
 
 export async function getConnectionTableSource(
-   malloyConnection: BaseConnection,
+   malloyConnection: Connection,
    tableKey: string,
    tablePath: string,
 ): Promise<ApiTableSource> {
@@ -286,10 +300,14 @@ export async function getConnectionTableSource(
          tableKey,
          tablePath,
       });
-      const source = await malloyConnection.fetchTableSchema(
-         tableKey,
-         tablePath,
-      );
+      const source = await (
+         malloyConnection as Connection & {
+            fetchTableSchema: (
+               tableKey: string,
+               tablePath: string,
+            ) => Promise<TableSourceDef | undefined>;
+         }
+      ).fetchTableSchema(tableKey, tablePath);
       if (source === undefined) {
          throw new ConnectionError(`Table ${tablePath} not found`);
       }
@@ -317,7 +335,7 @@ export async function getConnectionTableSource(
 export async function listTablesForSchema(
    connection: ApiConnection,
    schemaName: string,
-   malloyConnection: BaseConnection,
+   malloyConnection: Connection,
 ): Promise<string[]> {
    if (connection.type === "bigquery") {
       try {
@@ -351,13 +369,13 @@ export async function listTablesForSchema(
       }
       try {
          const result = await malloyConnection.runSQL(
-            "SELECT TABLE_NAME FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE'",
-            [schemaName],
+            `SELECT TABLE_NAME FROM information_schema.tables WHERE table_schema = '${schemaName}' AND table_type = 'BASE TABLE'`,
          );
          const rows = standardizeRunSQLResult(result);
-         return rows.map(
-            (row: Record<string, unknown>) => row.TABLE_NAME as string,
-         );
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return typedRow.TABLE_NAME as string;
+         });
       } catch (error) {
          logger.error(
             `Error getting tables for MySQL schema ${schemaName} in connection ${connection.name}`,
@@ -373,13 +391,13 @@ export async function listTablesForSchema(
       }
       try {
          const result = await malloyConnection.runSQL(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = $1",
-            [schemaName],
+            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${schemaName}'`,
          );
          const rows = standardizeRunSQLResult(result);
-         return rows.map(
-            (row: Record<string, unknown>) => row.table_name as string,
-         );
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return typedRow.table_name as string;
+         });
       } catch (error) {
          logger.error(
             `Error getting tables for Postgres schema ${schemaName} in connection ${connection.name}`,
@@ -395,13 +413,13 @@ export async function listTablesForSchema(
       }
       try {
          const result = await malloyConnection.runSQL(
-            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'",
-            [schemaName],
+            `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${schemaName}' AND TABLE_TYPE = 'BASE TABLE'`,
          );
          const rows = standardizeRunSQLResult(result);
-         return rows.map(
-            (row: Record<string, unknown>) => row.TABLE_NAME as string,
-         );
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return typedRow.TABLE_NAME as string;
+         });
       } catch (error) {
          logger.error(
             `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
@@ -420,7 +438,10 @@ export async function listTablesForSchema(
             `SHOW TABLES FROM ${connection.trinoConnection.catalog}.${schemaName}`,
          );
          const rows = standardizeRunSQLResult(result);
-         return rows.map((row: Record<string, unknown>) => row.name as string);
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return typedRow.name as string;
+         });
       } catch (error) {
          logger.error(
             `Error getting tables for Trino schema ${schemaName} in connection ${connection.name}`,
@@ -465,9 +486,10 @@ export async function listTablesForSchema(
          );
 
          const rows = standardizeRunSQLResult(result);
-         return rows.map(
-            (row: Record<string, unknown>) => row.table_name as string,
-         );
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return typedRow.table_name as string;
+         });
       } catch (error) {
          logger.error(
             `Error getting tables for DuckDB schema ${schemaName} in connection ${connection.name}`,

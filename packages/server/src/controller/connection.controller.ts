@@ -1,4 +1,4 @@
-import { RunSQLOptions } from "@malloydata/malloy";
+import { Connection, RunSQLOptions } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
@@ -32,7 +32,7 @@ export class ConnectionController {
    private async getMalloyConnection(
       projectName: string,
       connectionName: string,
-   ): Promise<BaseConnection> {
+   ): Promise<Connection> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
 
@@ -114,7 +114,7 @@ export class ConnectionController {
          return {
             source: JSON.stringify(
                await (
-                  malloyConnection as BaseConnection & {
+                  malloyConnection as Connection & {
                      fetchSelectSchema: (params: {
                         connection: string;
                         selectStr: string;
