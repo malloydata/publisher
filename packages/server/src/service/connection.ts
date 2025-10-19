@@ -81,11 +81,14 @@ async function attachDatabasesToDuckDB(
             logger.debug(`Existing databases:`, rows);
 
             // Check if the database name exists in any column (handle different column names)
-            const isAlreadyAttached = rows.some((row: any) => {
-               return Object.values(row).some((value: any) =>
-                  typeof value === 'string' && value === attachedDb.name
-               );
-            });
+            const isAlreadyAttached = rows.some(
+               (row: Record<string, unknown>) => {
+                  return Object.values(row).some(
+                     (value: unknown) =>
+                        typeof value === "string" && value === attachedDb.name,
+                  );
+               },
+            );
 
             if (isAlreadyAttached) {
                logger.info(
@@ -94,7 +97,10 @@ async function attachDatabasesToDuckDB(
                continue;
             }
          } catch (error) {
-            logger.warn(`Failed to check existing databases, proceeding with attachment:`, error);
+            logger.warn(
+               `Failed to check existing databases, proceeding with attachment:`,
+               error,
+            );
          }
 
          switch (attachedDb.type) {
@@ -144,8 +150,12 @@ async function attachDatabasesToDuckDB(
                   logger.info(
                      `Successfully attached BigQuery database: ${attachedDb.name}`,
                   );
-               } catch (attachError: any) {
-                  if (attachError.message && attachError.message.includes('already exists')) {
+               } catch (attachError: unknown) {
+                  if (
+                     attachError instanceof Error &&
+                     attachError.message &&
+                     attachError.message.includes("already exists")
+                  ) {
                      logger.info(
                         `BigQuery database ${attachedDb.name} is already attached, skipping`,
                      );
@@ -198,8 +208,12 @@ async function attachDatabasesToDuckDB(
                   logger.info(
                      `Successfully attached Snowflake database: ${attachedDb.name}`,
                   );
-               } catch (attachError: any) {
-                  if (attachError.message && attachError.message.includes('already exists')) {
+               } catch (attachError: unknown) {
+                  if (
+                     attachError instanceof Error &&
+                     attachError.message &&
+                     attachError.message.includes("already exists")
+                  ) {
                      logger.info(
                         `Snowflake database ${attachedDb.name} is already attached, skipping`,
                      );
@@ -259,8 +273,12 @@ async function attachDatabasesToDuckDB(
                   logger.info(
                      `Successfully attached PostgreSQL database: ${attachedDb.name}`,
                   );
-               } catch (attachError: any) {
-                  if (attachError.message && attachError.message.includes('already exists')) {
+               } catch (attachError: unknown) {
+                  if (
+                     attachError instanceof Error &&
+                     attachError.message &&
+                     attachError.message.includes("already exists")
+                  ) {
                      logger.info(
                         `PostgreSQL database ${attachedDb.name} is already attached, skipping`,
                      );
@@ -621,12 +639,12 @@ export async function testConnectionConfig(
       // Test the connection - cast to union type of connection classes that have test method
       await (
          connection as
-         | PostgresConnection
-         | BigQueryConnection
-         | SnowflakeConnection
-         | TrinoConnection
-         | MySQLConnection
-         | DuckDBConnection
+            | PostgresConnection
+            | BigQueryConnection
+            | SnowflakeConnection
+            | TrinoConnection
+            | MySQLConnection
+            | DuckDBConnection
       ).test();
 
       return {

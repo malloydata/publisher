@@ -70,9 +70,8 @@ export class Project {
          );
 
          // Reload connections with full config
-         const { malloyConnections, apiConnections } = await createProjectConnections(
-            payload.connections,
-         );
+         const { malloyConnections, apiConnections } =
+            await createProjectConnections(payload.connections);
 
          // Update the project's connection maps
          this.malloyConnections = malloyConnections;
@@ -103,9 +102,8 @@ export class Project {
       }
 
       logger.info(`Creating project with connection configuration`);
-      const { malloyConnections, apiConnections } = await createProjectConnections(
-         connections,
-      );
+      const { malloyConnections, apiConnections } =
+         await createProjectConnections(connections);
 
       logger.info(
          `Loaded ${malloyConnections.size + apiConnections.length} connections for project ${projectName}`,
@@ -174,7 +172,7 @@ export class Project {
                try {
                   const packageMetadata = (
                      this.packageStatuses.get(packageName)?.status ===
-                        PackageStatus.LOADING
+                     PackageStatus.LOADING
                         ? undefined
                         : await this.getPackage(packageName, false)
                   )?.getPackageMetadata();
@@ -355,9 +353,9 @@ export class Project {
          });
          throw new Error(
             "Package loading. Can't unload. " +
-            this.projectName +
-            " " +
-            packageName,
+               this.projectName +
+               " " +
+               packageName,
          );
       } else if (packageStatus?.status === PackageStatus.SERVING) {
          this.setPackageStatus(packageName, PackageStatus.UNLOADING);

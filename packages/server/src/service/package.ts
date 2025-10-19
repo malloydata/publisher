@@ -102,7 +102,10 @@ export class Package {
          const connections = new Map<string, Connection>(projectConnections);
 
          // Add a duckdb connection for the package.
-         const duckdbConnections = await createPackageDuckDBConnections(packageConnections, packagePath);
+         const duckdbConnections = await createPackageDuckDBConnections(
+            packageConnections,
+            packagePath,
+         );
          duckdbConnections.malloyConnections.forEach((connection, name) => {
             connections.set(name, connection);
          });
@@ -171,7 +174,9 @@ export class Package {
    public getMalloyConnection(connectionName: string): Connection {
       const connection = this.connections.get(connectionName);
       if (!connection) {
-         throw new Error(`Connection ${connectionName} not found in package ${this.packageName}`);
+         throw new Error(
+            `Connection ${connectionName} not found in package ${this.packageName}`,
+         );
       }
       return connection;
    }

@@ -56,7 +56,9 @@ export default function ConnectionExplorer({
    });
 
    const availableSchemas =
-      schemasData?.data?.map((schema: { name: string }) => schema.name).sort() || [];
+      schemasData?.data
+         ?.map((schema: { name: string }) => schema.name)
+         .sort() || [];
 
    return (
       <Grid container spacing={1}>
@@ -178,16 +180,14 @@ function TableSchemaViewer({ table }: TableSchemaViewerProps) {
                   <TableBody>
                      {table.columns
                         ?.sort((a: { name: string }, b: { name: string }) =>
-                           a.name.localeCompare(b.name)
+                           a.name.localeCompare(b.name),
                         )
-                        ?.map(
-                           (column: { name: string; type: string }) => (
-                              <TableRow key={column.name}>
-                                 <TableCell>{column.name}</TableCell>
-                                 <TableCell>{column.type}</TableCell>
-                              </TableRow>
-                           ),
-                        )}
+                        ?.map((column: { name: string; type: string }) => (
+                           <TableRow key={column.name}>
+                              <TableCell>{column.name}</TableCell>
+                              <TableCell>{column.type}</TableCell>
+                           </TableRow>
+                        ))}
                   </TableBody>
                </Table>
             </TableContainer>
@@ -244,12 +244,16 @@ function TablesInSchema({
             {isSuccess && data?.data && data.data.length > 0 && (
                <List dense disablePadding>
                   {data.data
-                     .sort((a: { resource: string }, b: { resource: string }) => {
-                        // Extract table names for sorting
-                        const tableNameA = a.resource.split(".").pop() || a.resource;
-                        const tableNameB = b.resource.split(".").pop() || b.resource;
-                        return tableNameA.localeCompare(tableNameB);
-                     })
+                     .sort(
+                        (a: { resource: string }, b: { resource: string }) => {
+                           // Extract table names for sorting
+                           const tableNameA =
+                              a.resource.split(".").pop() || a.resource;
+                           const tableNameB =
+                              b.resource.split(".").pop() || b.resource;
+                           return tableNameA.localeCompare(tableNameB);
+                        },
+                     )
                      .map(
                         (table: {
                            resource: string;
