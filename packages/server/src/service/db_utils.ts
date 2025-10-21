@@ -14,29 +14,48 @@ function createBigQueryClient(connection: ApiConnection): BigQuery {
       throw new Error("BigQuery connection is required");
    }
 
-   if (!connection.bigqueryConnection.defaultProjectId) {
-      throw new Error("BigQuery defaultProjectId is required");
-   }
-
    const config: {
       projectId: string;
+      credentials?: object;
       keyFilename?: string;
    } = {
-      projectId: connection.bigqueryConnection.defaultProjectId,
+      projectId: connection.bigqueryConnection.defaultProjectId || "",
    };
 
    // Add service account key if provided
    if (connection.bigqueryConnection.serviceAccountKeyJson) {
       try {
-         config.keyFilename = JSON.parse(
+         const credentials = JSON.parse(
             connection.bigqueryConnection.serviceAccountKeyJson,
          );
+         config.credentials = credentials;
+
+         // Use project_id from credentials if defaultProjectId is not set
+         if (!config.projectId && credentials.project_id) {
+            config.projectId = credentials.project_id;
+         }
+
+         if (!config.projectId) {
+            throw new Error(
+               "BigQuery project ID is required. Either set the defaultProjectId in the connection configuration or the project_id in the service account key JSON.",
+            );
+         }
       } catch (error) {
          logger.warn(
             "Failed to parse service account key JSON, using default credentials",
             { error },
          );
       }
+   } else if (
+      Object.keys(connection.bigqueryConnection).length === 0 &&
+      process.env.GOOGLE_APPLICATION_CREDENTIALS
+   ) {
+      // Note: The BigQuery client will infer the project ID from the ADC file.
+      config.keyFilename = process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
+   } else {
+      throw new Error(
+         "BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+      );
    }
 
    return new BigQuery(config);
@@ -58,11 +77,6 @@ export async function getSchemasForConnection(
          throw new Error("BigQuery connection is required");
       }
       try {
-         const projectId = connection.bigqueryConnection?.defaultProjectId;
-         if (!projectId) {
-            throw new Error("BigQuery project ID is required");
-         }
-
          const bigquery = createBigQueryClient(connection);
          const [datasets] = await bigquery.getDatasets();
 
@@ -339,11 +353,6 @@ export async function listTablesForSchema(
 ): Promise<string[]> {
    if (connection.type === "bigquery") {
       try {
-         const projectId = connection.bigqueryConnection?.defaultProjectId;
-         if (!projectId) {
-            throw new Error("BigQuery project ID is required");
-         }
-
          // Use BigQuery client directly for efficient table listing
          // This is much faster than querying all regions
          const bigquery = createBigQueryClient(connection);
