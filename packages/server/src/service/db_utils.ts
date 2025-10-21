@@ -87,18 +87,16 @@ export async function getSchemasForConnection(
       try {
          // Use the connection's runSQL method to query schemas
          const result = await malloyConnection.runSQL(
-            "SELECT schema_name FROM information_schema.schemata",
+            "SELECT schema_name as row FROM information_schema.schemata ORDER BY schema_name",
          );
 
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
+            const schemaName = row as string;
             return {
-               name: typedRow.schema_name as string,
-               isHidden: ["information_schema", "pg_catalog"].includes(
-                  typedRow.schema_name as string,
-               ),
-               isDefault: typedRow.schema_name === "public",
+               name: schemaName,
+               isHidden: ["information_schema", "pg_catalog","pg_toast"].includes(schemaName),
+               isDefault: schemaName === "public",
             };
          });
       } catch (error) {
@@ -172,9 +170,9 @@ export async function getSchemasForConnection(
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
             return {
-               name: typedRow.name as string,
-               isHidden: false,
-               isDefault: typedRow.name === connection.trinoConnection?.schema,
+               name: typedRow.Schema as string,
+               isHidden: ["information_schema", "performance_schema"].includes(typedRow.Schema as string),
+               isDefault: typedRow.Schema === connection.trinoConnection?.schema,
             };
          });
       } catch (error) {
@@ -391,13 +389,10 @@ export async function listTablesForSchema(
       }
       try {
          const result = await malloyConnection.runSQL(
-            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${schemaName}'`,
+            `SELECT table_name as row FROM information_schema.tables WHERE table_schema = '${schemaName}' ORDER BY table_name`,
          );
          const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.table_name as string;
-         });
+         return rows as string[];
       } catch (error) {
          logger.error(
             `Error getting tables for Postgres schema ${schemaName} in connection ${connection.name}`,
@@ -440,7 +435,7 @@ export async function listTablesForSchema(
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
-            return typedRow.name as string;
+            return typedRow.Table as string;
          });
       } catch (error) {
          logger.error(
