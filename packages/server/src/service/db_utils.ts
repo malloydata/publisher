@@ -95,7 +95,11 @@ export async function getSchemasForConnection(
             const schemaName = row as string;
             return {
                name: schemaName,
-               isHidden: ["information_schema", "pg_catalog","pg_toast"].includes(schemaName),
+               isHidden: [
+                  "information_schema",
+                  "pg_catalog",
+                  "pg_toast",
+               ].includes(schemaName),
                isDefault: schemaName === "public",
             };
          });
@@ -171,8 +175,11 @@ export async function getSchemasForConnection(
             const typedRow = row as Record<string, unknown>;
             return {
                name: typedRow.Schema as string,
-               isHidden: ["information_schema", "performance_schema"].includes(typedRow.Schema as string),
-               isDefault: typedRow.Schema === connection.trinoConnection?.schema,
+               isHidden: ["information_schema", "performance_schema"].includes(
+                  typedRow.Schema as string,
+               ),
+               isDefault:
+                  typedRow.Schema === connection.trinoConnection?.schema,
             };
          });
       } catch (error) {
