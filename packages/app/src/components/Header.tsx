@@ -64,7 +64,7 @@ export default function Header({ logoHeader, endCap }: HeaderProps) {
             sx={{
                justifyContent: "space-between",
                flexWrap: "nowrap",
-               minHeight: 64,
+               minHeight: 44,
             }}
          >
             {logoHeader ? (
@@ -142,14 +142,11 @@ export default function Header({ logoHeader, endCap }: HeaderProps) {
 
          <Box
             sx={{
-               borderTop: "1px solid",
-               borderColor: "white",
-               paddingTop: "0px",
+               borderTop: "1px solid white",
+               paddingLeft: "16px",
+               paddingRight: "16px",
                marginBottom: "1px",
-               px: 2,
-               py: 1,
                overflowX: "auto",
-               bgcolor: "background.paper",
             }}
          >
             <BreadcrumbNav />
