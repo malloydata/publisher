@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/sdk",
    "description": "Malloy Publisher SDK",
-   "version": "0.0.116",
+   "version": "0.0.120",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
@@ -9,7 +9,7 @@
    "typesVersions": {
       "*": {
          "client": [
-            "dist/client/index.d.ts"
+            "dist/client-entry.d.ts"
          ],
          "client/*": [
             "dist/client/*.d.ts"
@@ -23,7 +23,7 @@
          "require": "./dist/index.cjs.js"
       },
       "./client": {
-         "types": "./dist/client/index.d.ts",
+         "types": "./dist/client-entry.d.ts",
          "import": "./dist/client/index.es.js",
          "require": "./dist/client/index.cjs.js"
       },
@@ -42,6 +42,11 @@
       }
    },
    "style": "./dist/malloy-explorer.css",
+   "sideEffects": [
+      "**/*.css",
+      "./src/index.ts",
+      "./dist/index.*.js"
+   ],
    "publishConfig": {
       "access": "public"
    },

@@ -1,5 +1,6 @@
-import { Box, Button, Stack } from "@mui/material";
-import { styled } from "@mui/material/styles";
+import { Box, Stack } from "@mui/material";
+import Autocomplete from "@mui/material/Autocomplete";
+import TextField from "@mui/material/TextField";
 import React from "react";
 import { CompiledModel } from "../../client";
 import { parseResourceUri } from "../../utils/formatting";
@@ -10,33 +11,33 @@ import { QueryExplorerResult, SourcesExplorer } from "./SourcesExplorer";
 import { useModelData } from "./useModelData";
 
 // Add a styled component for the multi-row tab bar
-const MultiRowTabBar = styled(Box)(({ theme }) => ({
-   display: "flex",
-   flexWrap: "wrap",
-   gap: theme.spacing(1),
-   borderBottom: "1px solid #f0f0f0",
-   minHeight: 48,
-   paddingBottom: "8px",
-}));
+// const MultiRowTabBar = styled(Box)(({ theme }) => ({
+//    display: "flex",
+//    flexWrap: "wrap",
+//    gap: theme.spacing(1),
+//    borderBottom: "1px solid #f0f0f0",
+//    minHeight: 48,
+//    paddingBottom: "8px",
+// }));
 
-const MultiRowTab = styled(Button)<{ selected?: boolean }>(
-   ({ theme, selected }) => ({
-      minHeight: 32,
-      padding: theme.spacing(0.75, 2),
-      borderRadius: "6px",
-      background: selected ? "#f8f9fa" : "transparent",
-      color: selected ? "#495057" : "#666666",
-      fontWeight: selected ? 600 : 500,
-      border: selected ? "1px solid #e9ecef" : "1px solid transparent",
-      boxShadow: "none",
-      textTransform: "none",
-      fontSize: "15px",
-      "&:hover": {
-         background: selected ? "#f8f9fa" : "#fafafa",
-         border: selected ? "1px solid #e9ecef" : "1px solid #f0f0f0",
-      },
-   }),
-);
+// const MultiRowTab = styled(Button)<{ selected?: boolean }>(
+//    ({ theme, selected }) => ({
+//       minHeight: 32,
+//       padding: theme.spacing(0.75, 2),
+//       borderRadius: "6px",
+//       background: selected ? "#f8f9fa" : "transparent",
+//       color: selected ? "#495057" : "#666666",
+//       fontWeight: selected ? 600 : 500,
+//       border: selected ? "1px solid #e9ecef" : "1px solid transparent",
+//       boxShadow: "none",
+//       textTransform: "none",
+//       fontSize: "15px",
+//       "&:hover": {
+//          background: selected ? "#f8f9fa" : "#fafafa",
+//          border: selected ? "1px solid #e9ecef" : "1px solid #f0f0f0",
+//       },
+//    }),
+// );
 
 export interface ModelExplorerProps {
    data?: CompiledModel;
@@ -103,43 +104,77 @@ export function ModelExplorer({
       return <Loading text="Loading..." />;
    }
 
+   const sourceOptions = (effectiveData?.sourceInfos || []).map(
+      (source, idx) => {
+         try {
+            const parsed = JSON.parse(source);
+            return parsed?.name || `Source ${idx + 1}`;
+         } catch {
+            return `Source ${idx + 1}`;
+         }
+      },
+   );
+   const selectedName = sourceOptions[selectedTab] || "";
+
    return (
       <StyledCard variant="outlined">
          <StyledCardContent>
             <Stack
                sx={{
                   flexDirection: "row",
-                  justifyContent: "space-between",
                }}
             >
                {/* Render the tabs for source selection */}
-               {Array.isArray(effectiveData.sourceInfos) &&
-                  effectiveData.sourceInfos.length > 0 && (
-                     <MultiRowTabBar>
-                        {effectiveData.sourceInfos.map((source, idx) => {
-                           let sourceInfo;
-                           try {
-                              sourceInfo = JSON.parse(source);
-                           } catch {
-                              sourceInfo = { name: String(idx) };
-                           }
-                           return (
-                              <MultiRowTab
-                                 key={sourceInfo.name || idx}
-                                 selected={selectedTab === idx}
-                                 onClick={() => {
-                                    setSelectedTab(idx);
-                                    if (onSourceChange) {
-                                       onSourceChange(idx);
-                                    }
-                                 }}
-                              >
-                                 {sourceInfo.name || `Source ${idx + 1}`}
-                              </MultiRowTab>
-                           );
-                        })}
-                     </MultiRowTabBar>
-                  )}
+               {/* {Array.isArray(effectiveData.sourceInfos) &&
+                     effectiveData.sourceInfos.length > 0 && (
+                        <MultiRowTabBar>
+                           {effectiveData.sourceInfos.map((source, idx) => {
+                              let sourceInfo;
+                              try {
+                                 sourceInfo = JSON.parse(source);
+                              } catch {
+                                 sourceInfo = { name: String(idx) };
+                              }
+                              return (
+                                 <MultiRowTab
+                                    key={sourceInfo.name || idx}
+                                    selected={selectedTab === idx}
+                                    onClick={() => {
+                                       setSelectedTab(idx);
+                                       if (onSourceChange) {
+                                          onSourceChange(idx);
+                                       }
+                                    }}
+                                 >
+                                    {sourceInfo.name || `Source ${idx + 1}`}
+                                 </MultiRowTab>
+                              );
+                           })}
+                        </MultiRowTabBar>
+                     )} */}
+               <Autocomplete
+                  size="small"
+                  id="size-small-standard"
+                  disablePortal
+                  options={sourceOptions}
+                  value={selectedName}
+                  onChange={(_e, newValue) => {
+                     if (!newValue) return;
+
+                     const idx = sourceOptions.indexOf(newValue);
+                     if (idx >= 0) {
+                        setSelectedTab(idx);
+                        onSourceChange?.(idx);
+                     }
+                  }}
+                  renderInput={(params) => <TextField {...params} />}
+                  style={{
+                     width: 350,
+                     marginTop: "3px",
+                     marginLeft: "6px",
+                     marginBottom: "8px",
+                  }}
+               />
             </Stack>
          </StyledCardContent>
          <StyledCardMedia>

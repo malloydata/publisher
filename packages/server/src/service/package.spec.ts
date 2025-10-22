@@ -1,16 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Stats } from "fs";
 import fs from "fs/promises";
 import { join } from "path";
 import sinon from "sinon";
 import { PackageNotFoundError } from "../errors";
-import { readConnectionConfig } from "./connection";
 import { Model } from "./model";
 import { Package } from "./package";
-import { Scheduler } from "./scheduler";
-import { Stats } from "fs";
 
 // Minimal partial types for mocking
-type PartialScheduler = Pick<Scheduler, "list">;
+type PartialModel = Pick<Model, "getPath">;
 
 describe("service/package", () => {
    const testPackageDirectory = "testPackage";
@@ -48,16 +46,13 @@ describe("service/package", () => {
          new Map([
             [
                "model1.malloy",
-               // @ts-expect-error PartialModel is a partial type
-               { getPath: () => "model1.malloy" } as PartialModel,
+               { getPath: () => "model1.malloy" } as unknown as Model,
             ],
             [
                "model2.malloynb",
-               // @ts-expect-error PartialModel is a partial type
-               { getPath: () => "model2.malloynb" } as PartialModel,
+               { getPath: () => "model2.malloynb" } as unknown as Model,
             ],
          ]),
-         undefined,
       );
 
       expect(pkg).toBeInstanceOf(Package);
@@ -75,7 +70,7 @@ describe("service/package", () => {
                   "testPackage",
                   testPackageDirectory,
                   new Map(),
-                  "/server/root",
+                  [],
                ),
             ).rejects.toThrowError(
                new PackageNotFoundError(
@@ -96,16 +91,10 @@ describe("service/package", () => {
                   );
 
                // Still use Partial<Model> for the stub resolution type
-               type PartialModel = Pick<Model, "getPath">;
                sinon
                   .stub(Model, "create")
                   // @ts-expect-error PartialModel is a partial type
                   .resolves({ getPath: () => "model1.model" } as PartialModel);
-
-               // @ts-expect-error PartialScheduler is a partial type
-               sinon.stub(Scheduler, "create").returns({
-                  list: () => [],
-               } as PartialScheduler);
 
                readFileStub.restore();
                readFileStub.resolves(Buffer.from(JSON.stringify([])));
@@ -115,7 +104,7 @@ describe("service/package", () => {
                   "testPackage",
                   testPackageDirectory,
                   new Map(),
-                  "/server/root",
+                  [],
                );
 
                expect(packageInstance).toBeInstanceOf(Package);
@@ -138,7 +127,6 @@ describe("service/package", () => {
                   },
                ]);
                expect(packageInstance.listModels()).toBeEmpty();
-               expect(packageInstance.listSchedules()).toBeEmpty();
             },
             { timeout: 15000 },
          );
@@ -159,8 +147,7 @@ describe("service/package", () => {
                      {
                         getPath: () => "model1.malloy",
                         getModel: () => "foo",
-                        // @ts-expect-error PartialModel is a partial type
-                     } as PartialModel,
+                     } as unknown as Model,
                   ],
                   [
                      "model2.malloynb",
@@ -171,11 +158,9 @@ describe("service/package", () => {
                               message: "This is the error",
                            };
                         },
-                        // @ts-expect-error PartialModel is a partial type
-                     } as PartialModel,
+                     } as unknown as Model,
                   ],
                ]),
-               undefined,
             );
 
             const models = await packageInstance.listModels();
@@ -220,80 +205,6 @@ describe("service/package", () => {
                ],
                rowCount: 3,
             });
-         });
-      });
-
-      describe("readConnectionConfig", () => {
-         it("should return an empty array if no project name or server root path is provided", async () => {
-            const config = await readConnectionConfig(testPackageDirectory);
-            expect(Array.isArray(config)).toBe(true);
-            expect(config).toHaveLength(0);
-         });
-
-         it("should return an empty array if project name or server root path is missing", async () => {
-            const config1 = await readConnectionConfig(
-               testPackageDirectory,
-               "testProject",
-            );
-            expect(Array.isArray(config1)).toBe(true);
-            expect(config1).toHaveLength(0);
-
-            const config2 = await readConnectionConfig(
-               testPackageDirectory,
-               undefined,
-               "/server/root",
-            );
-            expect(Array.isArray(config2)).toBe(true);
-            expect(config2).toHaveLength(0);
-         });
-
-         it("should return connections from publisher config when project name and server root are provided", async () => {
-            const tempServerRoot = "/tmp/test-server-root";
-            const tempConfigPath = join(
-               tempServerRoot,
-               "publisher.config.json",
-            );
-
-            // Create temp directory and config file
-            await fs.mkdir(tempServerRoot, { recursive: true });
-            await fs.writeFile(
-               tempConfigPath,
-               JSON.stringify({
-                  frozenConfig: false,
-                  projects: [
-                     {
-                        name: "testProject",
-                        packages: [],
-                        connections: [
-                           { name: "test-conn", type: "postgres" },
-                           { name: "test-conn2", type: "bigquery" },
-                        ],
-                     },
-                  ],
-               }),
-            );
-
-            const config = await readConnectionConfig(
-               testPackageDirectory,
-               "testProject",
-               tempServerRoot,
-            );
-
-            expect(Array.isArray(config)).toBe(true);
-            expect(config).toHaveLength(2);
-            expect(config[0]).toMatchObject({
-               name: "test-conn",
-               type: "postgres",
-               resource: "/api/v0/connections/test-conn",
-            });
-            expect(config[1]).toMatchObject({
-               name: "test-conn2",
-               type: "bigquery",
-               resource: "/api/v0/connections/test-conn2",
-            });
-
-            // Clean up
-            await fs.rm(tempServerRoot, { recursive: true, force: true });
          });
       });
    });

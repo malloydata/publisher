@@ -11,7 +11,6 @@ import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
-import { ScheduleController } from "./controller/schedule.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
 import { logger, loggerMiddleware } from "./logger";
@@ -89,7 +88,6 @@ const modelController = new ModelController(projectStore);
 const packageController = new PackageController(projectStore);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
-const scheduleController = new ScheduleController(projectStore);
 
 export const mcpApp = express();
 
@@ -326,23 +324,6 @@ app.post(`${API_PREFIX}/connections/test`, async (req, res) => {
       res.status(status).json(json);
    }
 });
-
-app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/test`,
-   async (req, res) => {
-      try {
-         const connectionStatus = await connectionController.testConnection(
-            req.params.projectName,
-            req.params.connectionName,
-         );
-         res.status(200).json(connectionStatus);
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
 
 app.get(
    `${API_PREFIX}/projects/:projectName/connections/:connectionName/schemas`,
@@ -715,10 +696,10 @@ app.get(
    },
 );
 
-app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/queryResults/*?`,
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
    async (req, res) => {
-      if (req.query.versionId) {
+      if (req.body.versionId) {
          setVersionIdError(res);
          return;
       }
@@ -730,32 +711,9 @@ app.get(
                req.params.projectName,
                req.params.packageName,
                req.params[zero as keyof typeof req.params],
-               req.query.sourceName as string,
-               req.query.queryName as string,
-               req.query.query as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/schedules`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await scheduleController.listSchedules(
-               req.params.projectName,
-               req.params.packageName,
+               req.body.sourceName as string,
+               req.body.queryName as string,
+               req.body.query as string,
             ),
          );
       } catch (error) {

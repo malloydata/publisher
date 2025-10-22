@@ -173,15 +173,16 @@ function SourceExplorerComponentInner({
             ...query,
             query: malloy,
          });
-         return apiClients.queryResults.executeQuery(
+         return apiClients.models.executeQueryModel(
             projectName,
             packageName,
             sourceAndPath.modelPath,
-            malloy,
-            undefined,
-            // sourceInfo.name,
-            undefined,
-            versionId,
+            {
+               query: malloy,
+               sourceName: undefined,
+               queryName: undefined,
+               versionId: versionId,
+            },
          );
       },
       onSuccess: (data) => {

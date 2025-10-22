@@ -1,4 +1,5 @@
 import { BigQueryConnection } from "@malloydata/db-bigquery";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { MySQLConnection } from "@malloydata/db-mysql";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { SnowflakeConnection } from "@malloydata/db-snowflake";
@@ -10,14 +11,10 @@ import fs from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { components } from "../api";
-import {
-   convertConnectionsToApiConnections,
-   getConnectionsFromPublisherConfig,
-} from "../config";
 import { TEMP_DIR_PATH } from "../constants";
-import { BadRequestError } from "../errors";
 import { logAxiosError, logger } from "../logger";
 
+type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionAttributes = components["schemas"]["ConnectionAttributes"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -30,25 +27,8 @@ export type InternalConnection = ApiConnection & {
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
    trinoConnection?: components["schemas"]["TrinoConnection"];
    mysqlConnection?: components["schemas"]["MysqlConnection"];
+   duckdbConnection?: components["schemas"]["DuckdbConnection"];
 };
-
-export async function readConnectionConfig(
-   _basePath: string,
-   projectName?: string,
-   serverRootPath?: string,
-): Promise<ApiConnection[]> {
-   // If no project name is provided, return empty array for backward compatibility
-   if (!projectName || !serverRootPath) {
-      return new Array<ApiConnection>();
-   }
-
-   // Get connections from publisher config
-   const connections = getConnectionsFromPublisherConfig(
-      serverRootPath,
-      projectName,
-   );
-   return convertConnectionsToApiConnections(connections);
-}
 
 function validateAndBuildTrinoConfig(
    trinoConfig: components["schemas"]["TrinoConnection"],
@@ -84,28 +64,256 @@ function validateAndBuildTrinoConfig(
    }
 }
 
-export async function createConnections(
-   basePath: string,
-   defaultConnections: ApiConnection[] = [],
-   projectName?: string,
-   serverRootPath?: string,
+async function attachDatabasesToDuckDB(
+   duckdbConnection: DuckDBConnection,
+   attachedDatabases: AttachedDatabase[],
+): Promise<void> {
+   for (const attachedDb of attachedDatabases) {
+      try {
+         // Check if database is already attached
+         try {
+            const checkQuery = `SHOW DATABASES`;
+            const existingDatabases = await duckdbConnection.runSQL(checkQuery);
+            const rows = Array.isArray(existingDatabases)
+               ? existingDatabases
+               : existingDatabases.rows || [];
+
+            logger.debug(`Existing databases:`, rows);
+
+            // Check if the database name exists in any column (handle different column names)
+            const isAlreadyAttached = rows.some(
+               (row: Record<string, unknown>) => {
+                  return Object.values(row).some(
+                     (value: unknown) =>
+                        typeof value === "string" && value === attachedDb.name,
+                  );
+               },
+            );
+
+            if (isAlreadyAttached) {
+               logger.info(
+                  `Database ${attachedDb.name} is already attached, skipping`,
+               );
+               continue;
+            }
+         } catch (error) {
+            logger.warn(
+               `Failed to check existing databases, proceeding with attachment:`,
+               error,
+            );
+         }
+
+         switch (attachedDb.type) {
+            case "bigquery": {
+               if (!attachedDb.bigqueryConnection) {
+                  throw new Error(
+                     `BigQuery connection configuration is missing for attached database: ${attachedDb.name}`,
+                  );
+               }
+
+               // Install and load the bigquery extension
+               await duckdbConnection.runSQL(
+                  "INSTALL bigquery FROM community;",
+               );
+               await duckdbConnection.runSQL("LOAD bigquery;");
+
+               // Build the ATTACH command for BigQuery
+               const bigqueryConfig = attachedDb.bigqueryConnection;
+               const attachParams = new URLSearchParams();
+
+               if (!bigqueryConfig.defaultProjectId) {
+                  throw new Error(
+                     `BigQuery defaultProjectId is required for attached database: ${attachedDb.name}`,
+                  );
+               }
+               attachParams.set("project", bigqueryConfig.defaultProjectId);
+
+               // Handle service account key if provided
+               if (bigqueryConfig.serviceAccountKeyJson) {
+                  const serviceAccountKeyPath = path.join(
+                     TEMP_DIR_PATH,
+                     `duckdb-${attachedDb.name}-${uuidv4()}-service-account-key.json`,
+                  );
+                  await fs.writeFile(
+                     serviceAccountKeyPath,
+                     bigqueryConfig.serviceAccountKeyJson as string,
+                  );
+                  attachParams.set(
+                     "service_account_key",
+                     serviceAccountKeyPath,
+                  );
+               }
+
+               const attachCommand = `ATTACH '${attachParams.toString()}' AS ${attachedDb.name} (TYPE bigquery, READ_ONLY);`;
+               try {
+                  await duckdbConnection.runSQL(attachCommand);
+                  logger.info(
+                     `Successfully attached BigQuery database: ${attachedDb.name}`,
+                  );
+               } catch (attachError: unknown) {
+                  if (
+                     attachError instanceof Error &&
+                     attachError.message &&
+                     attachError.message.includes("already exists")
+                  ) {
+                     logger.info(
+                        `BigQuery database ${attachedDb.name} is already attached, skipping`,
+                     );
+                  } else {
+                     throw attachError;
+                  }
+               }
+               break;
+            }
+
+            case "snowflake": {
+               if (!attachedDb.snowflakeConnection) {
+                  throw new Error(
+                     `Snowflake connection configuration is missing for attached database: ${attachedDb.name}`,
+                  );
+               }
+
+               // Install and load the snowflake extension
+               await duckdbConnection.runSQL(
+                  "INSTALL snowflake FROM community;",
+               );
+               await duckdbConnection.runSQL("LOAD snowflake;");
+
+               // Build the ATTACH command for Snowflake
+               const snowflakeConfig = attachedDb.snowflakeConnection;
+               const attachParams = new URLSearchParams();
+
+               if (snowflakeConfig.account) {
+                  attachParams.set("account", snowflakeConfig.account);
+               }
+               if (snowflakeConfig.username) {
+                  attachParams.set("username", snowflakeConfig.username);
+               }
+               if (snowflakeConfig.password) {
+                  attachParams.set("password", snowflakeConfig.password);
+               }
+               if (snowflakeConfig.database) {
+                  attachParams.set("database", snowflakeConfig.database);
+               }
+               if (snowflakeConfig.warehouse) {
+                  attachParams.set("warehouse", snowflakeConfig.warehouse);
+               }
+               if (snowflakeConfig.role) {
+                  attachParams.set("role", snowflakeConfig.role);
+               }
+
+               const attachCommand = `ATTACH '${attachParams.toString()}' AS ${attachedDb.name} (TYPE snowflake, READ_ONLY);`;
+               try {
+                  await duckdbConnection.runSQL(attachCommand);
+                  logger.info(
+                     `Successfully attached Snowflake database: ${attachedDb.name}`,
+                  );
+               } catch (attachError: unknown) {
+                  if (
+                     attachError instanceof Error &&
+                     attachError.message &&
+                     attachError.message.includes("already exists")
+                  ) {
+                     logger.info(
+                        `Snowflake database ${attachedDb.name} is already attached, skipping`,
+                     );
+                  } else {
+                     throw attachError;
+                  }
+               }
+               break;
+            }
+
+            case "postgres": {
+               if (!attachedDb.postgresConnection) {
+                  throw new Error(
+                     `PostgreSQL connection configuration is missing for attached database: ${attachedDb.name}`,
+                  );
+               }
+
+               // Install and load the postgres extension
+               await duckdbConnection.runSQL(
+                  "INSTALL postgres FROM community;",
+               );
+               await duckdbConnection.runSQL("LOAD postgres;");
+
+               // Build the ATTACH command for PostgreSQL
+               const postgresConfig = attachedDb.postgresConnection;
+               let attachString: string;
+
+               // Use connection string if provided, otherwise build from individual parameters
+               if (postgresConfig.connectionString) {
+                  attachString = postgresConfig.connectionString;
+               } else {
+                  // Build connection string from individual parameters
+                  const params = new URLSearchParams();
+
+                  if (postgresConfig.host) {
+                     params.set("host", postgresConfig.host);
+                  }
+                  if (postgresConfig.port) {
+                     params.set("port", postgresConfig.port.toString());
+                  }
+                  if (postgresConfig.databaseName) {
+                     params.set("dbname", postgresConfig.databaseName);
+                  }
+                  if (postgresConfig.userName) {
+                     params.set("user", postgresConfig.userName);
+                  }
+                  if (postgresConfig.password) {
+                     params.set("password", postgresConfig.password);
+                  }
+
+                  attachString = params.toString();
+               }
+
+               const attachCommand = `ATTACH '${attachString}' AS ${attachedDb.name} (TYPE postgres, READ_ONLY);`;
+               try {
+                  await duckdbConnection.runSQL(attachCommand);
+                  logger.info(
+                     `Successfully attached PostgreSQL database: ${attachedDb.name}`,
+                  );
+               } catch (attachError: unknown) {
+                  if (
+                     attachError instanceof Error &&
+                     attachError.message &&
+                     attachError.message.includes("already exists")
+                  ) {
+                     logger.info(
+                        `PostgreSQL database ${attachedDb.name} is already attached, skipping`,
+                     );
+                  } else {
+                     throw attachError;
+                  }
+               }
+               break;
+            }
+
+            default:
+               throw new Error(
+                  `Unsupported attached database type: ${attachedDb.type}`,
+               );
+         }
+      } catch (error) {
+         logger.error(`Failed to attach database ${attachedDb.name}:`, error);
+         throw new Error(
+            `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
+         );
+      }
+   }
+}
+
+export async function createProjectConnections(
+   connections: ApiConnection[] = [],
 ): Promise<{
    malloyConnections: Map<string, BaseConnection>;
    apiConnections: InternalConnection[];
 }> {
    const connectionMap = new Map<string, BaseConnection>();
-   const connectionConfig = await readConnectionConfig(
-      basePath,
-      projectName,
-      serverRootPath,
-   );
-
-   const allConnections = [...defaultConnections, ...connectionConfig];
-
    const processedConnections = new Set<string>();
    const apiConnections: InternalConnection[] = [];
 
-   for (const connection of allConnections) {
+   for (const connection of connections) {
       if (connection.name && processedConnections.has(connection.name)) {
          continue;
       }
@@ -268,6 +476,12 @@ export async function createConnections(
             break;
          }
 
+         case "duckdb": {
+            // DuckDB connections are created at the package level in package.ts
+            // to ensure the workingDirectory is set correctly for each connection
+            break;
+         }
+
          default: {
             throw new Error(`Unsupported connection type: ${connection.type}`);
          }
@@ -275,6 +489,105 @@ export async function createConnections(
 
       // Add the connection to apiConnections (this will be sanitized when returned)
       apiConnections.push(connection);
+   }
+
+   return {
+      malloyConnections: connectionMap,
+      apiConnections: apiConnections,
+   };
+}
+
+/**
+ * DuckDB connections need to be instantiated at the package level to ensure
+ * the workingDirectory is set correctly. This allows DuckDB to properly resolve
+ * relative paths for database files and attached databases within the project context.
+ */
+export async function createPackageDuckDBConnections(
+   connections: ApiConnection[] = [],
+   packagePath: string,
+): Promise<{
+   malloyConnections: Map<string, BaseConnection>;
+   apiConnections: InternalConnection[];
+}> {
+   const connectionMap = new Map<string, BaseConnection>();
+
+   const processedConnections = new Set<string>();
+   const apiConnections: InternalConnection[] = [];
+
+   for (const connection of connections) {
+      // Only process DuckDB connections
+      if (connection.type !== "duckdb") {
+         continue;
+      }
+
+      if (connection.name && processedConnections.has(connection.name)) {
+         throw new Error(
+            `CreatePackageDuckDBConnections only supports one DuckDB connection per name, got ${connection.name}`,
+         );
+      }
+
+      if (!connection.name) {
+         throw "Invalid connection configuration.  No name.";
+      }
+
+      logger.info(`Adding DuckDB connection ${connection.name}`, {
+         connection,
+      });
+
+      processedConnections.add(connection.name);
+
+      if (!connection.duckdbConnection) {
+         throw new Error("DuckDB connection configuration is missing.");
+      }
+
+      // Create DuckDB connection with project basePath as working directory
+      // This ensures relative paths in the project are resolved correctly
+      const duckdbConnection = new DuckDBConnection(
+         connection.name,
+         ":memory:",
+         packagePath,
+      );
+
+      // Attach databases if configured
+      if (
+         connection.duckdbConnection.attachedDatabases &&
+         Array.isArray(connection.duckdbConnection.attachedDatabases) &&
+         connection.duckdbConnection.attachedDatabases.length > 0
+      ) {
+         await attachDatabasesToDuckDB(
+            duckdbConnection,
+            connection.duckdbConnection.attachedDatabases,
+         );
+      }
+
+      connectionMap.set(connection.name, duckdbConnection);
+      connection.attributes = getConnectionAttributes(duckdbConnection);
+
+      // Add the connection to apiConnections (this will be sanitized when returned)
+      apiConnections.push(connection);
+   }
+
+   // Create default "duckdb" connection if it doesn't exist
+   if (!connectionMap.has("duckdb")) {
+      const defaultDuckDBConnection = new DuckDBConnection(
+         "duckdb",
+         ":memory:",
+         packagePath,
+      );
+      connectionMap.set("duckdb", defaultDuckDBConnection);
+
+      // Create API connection for the default DuckDB connection
+      const defaultApiConnection: ApiConnection = {
+         name: "duckdb",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [],
+         },
+      };
+      defaultApiConnection.attributes = getConnectionAttributes(
+         defaultDuckDBConnection,
+      );
+      apiConnections.push(defaultApiConnection);
    }
 
    return {
@@ -303,285 +616,51 @@ function getConnectionAttributes(
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
-   let testResult: { status: "ok" | "failed"; errorMessage?: string };
-
-   switch (connectionConfig.type) {
-      case "postgres": {
-         if (!connectionConfig.postgresConnection) {
-            throw new Error(
-               "Invalid connection configuration. No postgres connection.",
-            );
-         }
-
-         const postgresConfig = connectionConfig.postgresConnection;
-         if (
-            !postgresConfig.connectionString &&
-            (!postgresConfig.host ||
-               !postgresConfig.port ||
-               !postgresConfig.userName ||
-               !postgresConfig.databaseName)
-         ) {
-            throw new Error(
-               "PostgreSQL connection requires: either all of host, port, userName, and databaseName, or connectionString",
-            );
-         }
-
-         const configReader = async () => {
-            return {
-               host: postgresConfig.host,
-               port: postgresConfig.port,
-               username: postgresConfig.userName,
-               password: postgresConfig.password,
-               databaseName: postgresConfig.databaseName,
-               connectionString: postgresConfig.connectionString,
-            };
-         };
-
-         const postgresConnection = new PostgresConnection(
-            "testConnection",
-            () => ({}),
-            configReader,
-         );
-
-         try {
-            await postgresConnection.test();
-            testResult = { status: "ok" };
-         } catch (error) {
-            if (error instanceof AxiosError) {
-               logAxiosError(error);
-            } else {
-               logger.error(error);
-            }
-            testResult = {
-               status: "failed",
-               errorMessage: (error as Error).message,
-            };
-         }
-         break;
+   try {
+      // Validate that connection name is provided
+      if (!connectionConfig.name) {
+         throw new Error("Connection name is required");
       }
 
-      case "snowflake": {
-         if (!connectionConfig.snowflakeConnection) {
-            throw new Error(
-               "Invalid connection configuration. No snowflake connection.",
-            );
-         }
+      // Use createProjectConnections to create the connection, then test it
+      // TODO: Test duckdb connections?
+      const { malloyConnections } = await createProjectConnections(
+         [connectionConfig], // Pass the single connection config
+      );
 
-         const snowflakeConfig = connectionConfig.snowflakeConnection;
-         if (
-            !snowflakeConfig.account ||
-            !snowflakeConfig.username ||
-            !snowflakeConfig.password ||
-            !snowflakeConfig.warehouse
-         ) {
-            throw new Error(
-               "Snowflake connection requires: account, username, password, warehouse, database, and schema",
-            );
-         }
-
-         const snowflakeConnectionOptions = {
-            connOptions: {
-               account: snowflakeConfig.account,
-               username: snowflakeConfig.username,
-               password: snowflakeConfig.password,
-               warehouse: snowflakeConfig.warehouse,
-               database: snowflakeConfig.database,
-               schema: snowflakeConfig.schema,
-               role: snowflakeConfig.role,
-               timeout: snowflakeConfig.responseTimeoutMilliseconds,
-            },
-         };
-         const snowflakeConnection = new SnowflakeConnection(
-            "testConnection",
-            snowflakeConnectionOptions,
+      // Get the created connection
+      const connection = malloyConnections.get(connectionConfig.name);
+      if (!connection) {
+         throw new Error(
+            `Failed to create connection: ${connectionConfig.name}`,
          );
-
-         try {
-            await snowflakeConnection.test();
-            testResult = { status: "ok" };
-         } catch (error) {
-            if (error instanceof AxiosError) {
-               logAxiosError(error);
-            } else {
-               logger.error(error);
-            }
-            testResult = {
-               status: "failed",
-               errorMessage: (error as Error).message,
-            };
-         }
-         break;
       }
 
-      case "bigquery": {
-         if (!connectionConfig.bigqueryConnection) {
-            throw new Error(
-               "Invalid connection configuration. No bigquery connection.",
-            );
-         }
+      // Test the connection - cast to union type of connection classes that have test method
+      await (
+         connection as
+            | PostgresConnection
+            | BigQueryConnection
+            | SnowflakeConnection
+            | TrinoConnection
+            | MySQLConnection
+            | DuckDBConnection
+      ).test();
 
-         const bigqueryConfig = connectionConfig.bigqueryConnection;
-         let serviceAccountKeyPath = undefined;
-         try {
-            if (bigqueryConfig.serviceAccountKeyJson) {
-               serviceAccountKeyPath = path.join(
-                  TEMP_DIR_PATH,
-                  `test-${uuidv4()}-service-account-key.json`,
-               );
-               await fs.writeFile(
-                  serviceAccountKeyPath,
-                  bigqueryConfig.serviceAccountKeyJson as string,
-               );
-            }
-
-            const bigqueryConnectionOptions = {
-               projectId: connectionConfig.bigqueryConnection.defaultProjectId,
-               serviceAccountKeyPath: serviceAccountKeyPath,
-               location: connectionConfig.bigqueryConnection.location,
-               maximumBytesBilled:
-                  connectionConfig.bigqueryConnection.maximumBytesBilled,
-               timeoutMs:
-                  connectionConfig.bigqueryConnection.queryTimeoutMilliseconds,
-               billingProjectId:
-                  connectionConfig.bigqueryConnection.billingProjectId,
-            };
-            const bigqueryConnection = new BigQueryConnection(
-               "testConnection",
-               () => ({}),
-               bigqueryConnectionOptions,
-            );
-
-            await bigqueryConnection.test();
-            testResult = { status: "ok" };
-         } catch (error) {
-            if (error instanceof AxiosError) {
-               logAxiosError(error);
-            } else {
-               logger.error(error);
-            }
-            testResult = {
-               status: "failed",
-               errorMessage: (error as Error).message,
-            };
-         } finally {
-            try {
-               if (serviceAccountKeyPath) {
-                  await fs.unlink(serviceAccountKeyPath);
-               }
-            } catch (cleanupError) {
-               logger.warn(
-                  `Failed to cleanup temporary file ${serviceAccountKeyPath}:`,
-                  cleanupError,
-               );
-            }
-         }
-         break;
+      return {
+         status: "ok",
+         errorMessage: "",
+      };
+   } catch (error) {
+      if (error instanceof AxiosError) {
+         logAxiosError(error);
+      } else {
+         logger.error(error);
       }
 
-      case "trino": {
-         if (!connectionConfig.trinoConnection) {
-            throw new Error("Trino connection configuration is missing.");
-         }
-
-         const trinoConfig = connectionConfig.trinoConnection;
-         if (
-            !trinoConfig.server ||
-            !trinoConfig.port ||
-            !trinoConfig.catalog ||
-            !trinoConfig.schema ||
-            !trinoConfig.user
-         ) {
-            throw new Error(
-               "Trino connection requires server, port, catalog, schema, and user",
-            );
-         }
-
-         const trinoConnectionOptions =
-            validateAndBuildTrinoConfig(trinoConfig);
-         const trinoConnection = new TrinoConnection(
-            "testConnection",
-            {},
-            trinoConnectionOptions,
-         );
-
-         try {
-            await trinoConnection.test();
-            testResult = { status: "ok" };
-         } catch (error) {
-            if (error instanceof AxiosError) {
-               logAxiosError(error);
-            } else {
-               logger.error(error);
-            }
-            testResult = {
-               status: "failed",
-               errorMessage: (error as Error).message,
-            };
-         }
-         break;
-      }
-
-      case "mysql": {
-         if (!connectionConfig.mysqlConnection) {
-            throw new Error("MySQL connection configuration is missing.");
-         }
-
-         if (
-            !connectionConfig.mysqlConnection.host ||
-            !connectionConfig.mysqlConnection.port ||
-            !connectionConfig.mysqlConnection.user ||
-            !connectionConfig.mysqlConnection.password ||
-            !connectionConfig.mysqlConnection.database
-         ) {
-            throw new Error(
-               "MySQL connection requires: host, port, user, password, and database",
-            );
-         }
-
-         const mysqlConfig = connectionConfig.mysqlConnection;
-         const mysqlConnectionOptions = {
-            host: mysqlConfig.host,
-            port: mysqlConfig.port,
-            user: mysqlConfig.user,
-            password: mysqlConfig.password,
-            database: mysqlConfig.database,
-         };
-         const mysqlConnection = new MySQLConnection(
-            "testConnection",
-            mysqlConnectionOptions,
-         );
-         try {
-            await mysqlConnection.test();
-            testResult = { status: "ok" };
-         } catch (error) {
-            if (error instanceof AxiosError) {
-               logAxiosError(error);
-            } else {
-               logger.error(error);
-            }
-            testResult = {
-               status: "failed",
-               errorMessage: (error as Error).message,
-            };
-         }
-         break;
-      }
-
-      default:
-         throw new BadRequestError(
-            `Unsupported connection type: ${connectionConfig.type}`,
-         );
-   }
-
-   if (testResult.status === "failed") {
       return {
          status: "failed",
-         errorMessage: testResult.errorMessage || "Connection test failed",
+         errorMessage: (error as Error).message,
       };
    }
-
-   return {
-      status: "ok",
-      errorMessage: "",
-   };
 }
