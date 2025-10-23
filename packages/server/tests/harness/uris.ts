@@ -12,7 +12,10 @@ export interface FixtureUris {
  * Return canonical URIs used across integration tests, parametrised by project
  * and package. Most suites will call this with defaults.
  */
-export function malloyUris(project = "home", pkg = "faa"): FixtureUris {
+export function malloyUris(
+   project = "malloy-samples",
+   pkg = "faa",
+): FixtureUris {
    const base = `malloy://project/${project}`;
    const pkgUri = `${base}/package/${pkg}`;
    const model = `${pkgUri}/models/flights.malloy`;

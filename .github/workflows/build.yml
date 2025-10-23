@@ -51,7 +51,7 @@ jobs:
       - name: Build code
         run: docker exec -t publisher-ci bun run build
       - name: Run tests
-        run: docker exec -t publisher-ci sh -c "cd packages/server && bun test ./src/service/model.spec.ts ./src/service/package.spec.ts ./src/__tests__/setup.spec.ts ./src/__tests__/mcp_execute_query_tool.integration.spec.ts ./src/__tests__/mcp_resource.integration.spec.ts ./src/__tests__/mcp_transport.integration.spec.ts"
+        run: docker exec -t publisher-ci sh -c "cd packages/server && bun test"
   npx_test:
     name: npx test
     runs-on: ubuntu-latest

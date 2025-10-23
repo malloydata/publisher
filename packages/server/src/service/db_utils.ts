@@ -330,7 +330,21 @@ export async function getConnectionTableSource(
       if (source === undefined) {
          throw new ConnectionError(`Table ${tablePath} not found`);
       }
+
+      // Validate that source has the expected structure
+      if (!source || typeof source !== "object") {
+         throw new ConnectionError(
+            `Invalid table source returned for ${tablePath}`,
+         );
+      }
+
       const malloyFields = (source as TableSourceDef).fields;
+      if (!malloyFields || !Array.isArray(malloyFields)) {
+         throw new ConnectionError(
+            `Table ${tablePath} has no fields or invalid field structure`,
+         );
+      }
+
       const fields = malloyFields.map((field) => {
          return {
             name: field.name,
