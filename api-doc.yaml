@@ -407,7 +407,7 @@ paths:
           description: Full path to the table
           required: true
           schema:
-            $ref: "#/components/schemas/IdentifierPattern"
+            $ref: "#/components/schemas/PathPattern"
       responses:
         "200":
           description: Table information
