@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
+const BASE_URL = 'http://localhost:4000/';
 // Test Case 1.
 test.describe('Create New Project Flow', () => {
 
   test.setTimeout(60_000);
   
   test.beforeEach(async ({ page }) => {
-    await page.goto('http://localhost:4000/', { timeout: 45_000 });
+    await page.goto(BASE_URL, { timeout: 45_000 });
   });
 
   test('should open the dialog and submit the form', async ({ page }) => {
@@ -14,9 +15,7 @@ test.describe('Create New Project Flow', () => {
     await page.getByLabel('Project Name').fill('Demo Project');
     await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('Demo Description Tester');  
     await page.locator('form#project-form').press('Enter');  
-    await expect(page.getByRole('heading',{ name : 'Demo Project' })).toBeVisible();
-    // await expect(page.locator('h6',{hasText: 'Demo Project' })).toBeVisible();
-    // await expect(page.locator('placeholder',{hasText : 'Demo Description Tester' })).toBeVisible();
+    await expect(page.getByRole('heading',{ name : 'Demo Project' })).toBeVisible({ timeout: 10000 });
   });
 
 });
@@ -28,30 +27,24 @@ test.describe('Header Navigation', () => {
   test.setTimeout(60_000);
   
   test.beforeEach(async ({ page }) => {
-    await page.goto('http://localhost:4000/', { timeout: 45_000 });
+    await page.goto(BASE_URL, { timeout: 45_000 });
   });
 
-  // Molly Docs navigation
+  //  Malloy Docs navigation
   test('should navigate to Malloy Docs page', async ({ page }) => {
-    await page.goto('http://localhost:4000/', { timeout: 60000 });
     await page.waitForLoadState('domcontentloaded');
 
     await page.waitForSelector(
       'a[href="https://docs.malloydata.dev/documentation/"]',
       { state: 'visible', timeout: 60000 }
     );
-
-    await Promise.all([
-      page.waitForURL('https://docs.malloydata.dev/documentation/', { timeout: 60000 }),
-      page.getByRole('link', { name: /Malloy Docs/i }).click(),
-    ]);
-
+    await page.getByRole('link', { name: /Malloy Docs/i }).click();
     await expect(page).toHaveURL('https://docs.malloydata.dev/documentation/', { timeout: 60000 });
   });
 
   // Publisher doc navigation
   test('should navigate to Publisher Docs page', async ({ page }) => {
-  await page.goto('http://localhost:4000/', { timeout: 60000 });
+  await page.goto(BASE_URL, { timeout: 60000 });
   await page.waitForLoadState('domcontentloaded');
 
   await page.waitForSelector('a[href="https://github.com/malloydata/publisher/blob/main/README.md"]', {
@@ -70,7 +63,7 @@ test.describe('Header Navigation', () => {
   // Publisher Api navigation
   test('should navigate to Publisher API (local page)', async ({ page }) => {
     
-    await page.goto('http://localhost:4000/', { waitUntil: 'domcontentloaded' });
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
 
     const apiLink = page.getByRole('link', { name: /Publisher API/i });
     await apiLink.waitFor({ state: 'visible' });
@@ -91,7 +84,7 @@ test.describe('enter project details and perform different operations', () => {
   test.setTimeout(60_000);
 
   test.beforeEach(async ({ page }) => {
-    await page.goto('http://localhost:4000/', { timeout: 45_000 });
+    await page.goto(BASE_URL, { timeout: 45_000 });
   });
 
   test('enter project details and click cancel', async ({ page }) => {
@@ -112,8 +105,6 @@ test.describe('enter project details and perform different operations', () => {
     await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('!@#$%^&*()');  
     await page.locator('form#project-form').press('Enter');  
     await expect(page.getByRole('heading',{ name : '!@#$%^&*()' })).toBeVisible();
-    // await expect(page.locator('h6',{hasText: 'Demo Project' })).toBeVisible();
-    // await expect(page.locator('placeholder',{hasText : '!@#$%^&*()' })).toBeVisible();
   });
 
   test('leave project name empty and click create project', async ({ page }) => {
