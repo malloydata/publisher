@@ -121,9 +121,12 @@ export default function ConnectionExplorer({
                                        <ListItemButton
                                           key={schemaName}
                                           selected={isSelected}
-                                          onClick={() =>
-                                             setSelectedSchema(schemaName)
-                                          }
+                                          onClick={() => {
+                                             {
+                                                setSelectedSchema(schemaName);
+                                                setSelectedTable(undefined);
+                                             }
+                                          }}
                                        >
                                           <ListItemText primary={schemaName} />
                                        </ListItemButton>
