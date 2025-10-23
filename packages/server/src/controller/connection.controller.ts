@@ -148,7 +148,7 @@ export class ConnectionController {
    public async getTable(
       projectName: string,
       connectionName: string,
-      schemaName: string,
+      _schemaName: string,
       tablePath: string,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
@@ -158,7 +158,7 @@ export class ConnectionController {
 
       const tableSource = await getConnectionTableSource(
          malloyConnection,
-         schemaName,
+         tablePath.split(".").pop()!, // tableKey is the table name
          tablePath,
       );
 
