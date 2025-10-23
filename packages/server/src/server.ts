@@ -469,7 +469,7 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlQuery`,
    async (req, res) => {
       try {
          res.status(200).json(
@@ -511,7 +511,7 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/temporaryTable`,
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
    async (req, res) => {
       try {
          res.status(200).json(
