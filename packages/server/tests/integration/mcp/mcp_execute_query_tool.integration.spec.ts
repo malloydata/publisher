@@ -1,21 +1,21 @@
 // @ts-expect-error Bun test types are not recognized by ESLint
-import { describe, it, expect, beforeAll, afterAll, fail } from "bun:test";
-import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import { MCP_ERROR_MESSAGES } from "../../../src/mcp/mcp_constants"; // Keep for error message checks
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type {
-   Request,
    Notification,
+   Request,
    Result,
 } from "@modelcontextprotocol/sdk/types.js"; // Keep these base types
+import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { afterAll, beforeAll, describe, expect, fail, it } from "bun:test";
 import { URL } from "url";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { MCP_ERROR_MESSAGES } from "../../../src/mcp/mcp_constants"; // Keep for error message checks
 
 // --- Import E2E Test Setup ---
 import {
+   cleanupE2ETestEnvironment,
    McpE2ETestEnvironment,
    setupE2ETestEnvironment,
-   cleanupE2ETestEnvironment,
 } from "../../harness/mcp_test_setup";
 
 // --- Test Suite ---
@@ -23,7 +23,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
    let env: McpE2ETestEnvironment | null = null;
    let mcpClient: Client;
 
-   const PROJECT_NAME = "home";
+   const PROJECT_NAME = "malloy-samples";
    const PACKAGE_NAME = "faa";
 
    beforeAll(async () => {
@@ -45,7 +45,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          const result = await mcpClient.callTool({
             name: "malloy/executeQuery",
             arguments: {
-               projectName: "home",
+               projectName: "malloy-samples",
                packageName: PACKAGE_NAME,
                modelPath: "flights.malloy",
                query: "run: flights->{ aggregate: c is count() }",
