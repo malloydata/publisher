@@ -24,7 +24,6 @@ RUN bun install --frozen-lockfile
 RUN bun run build
 
 # Install app dependencies and build app
-COPY test/ ./test/
 WORKDIR /publisher/packages/app
 RUN bun install --frozen-lockfile
 COPY packages/app/ ./
