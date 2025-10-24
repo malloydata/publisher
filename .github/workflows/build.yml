@@ -70,6 +70,8 @@ jobs:
           bun-version: 1.2
       - name: build server
         run: bun install && bun run build
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
       - name: Link local package
         run: |
           cd packages/server && npm link

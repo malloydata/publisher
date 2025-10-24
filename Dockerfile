@@ -14,12 +14,8 @@ COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
 
-# Skip DuckDB postinstall to prevent 30+ min hangs
-ENV BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS=1
 # Install root dependencies first
 RUN bun install
-ENV BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS=0
-
 
 # Build SDK first (copy only SDK source)
 COPY packages/sdk/ ./packages/sdk/
@@ -67,7 +63,6 @@ COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
 COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
 
 # --- Install production-only deps ---
-ENV BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS=1
 RUN bun install --production
 
 # --- DuckDB CLI ---
