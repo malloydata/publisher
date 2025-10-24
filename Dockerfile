@@ -14,8 +14,12 @@ COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
 
+# Skip DuckDB postinstall to prevent 30+ min hangs
+ENV BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS=1
 # Install root dependencies first
 RUN bun install
+ENV BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS=0
+
 
 # Build SDK first (copy only SDK source)
 COPY packages/sdk/ ./packages/sdk/
@@ -24,6 +28,7 @@ RUN bun install --frozen-lockfile
 RUN bun run build
 
 # Install app dependencies and build app
+COPY test/ ./test/
 WORKDIR /publisher/packages/app
 RUN bun install --frozen-lockfile
 COPY packages/app/ ./
@@ -40,51 +45,51 @@ FROM debian:bookworm-slim AS runner
 WORKDIR /publisher
 
 # ---- Bun install (same version as builder) ----
-RUN apt-get update && apt-get install -y curl ca-certificates unzip && \
+RUN apt-get update && apt-get install -y curl ca-certificates unzip git && \
     curl -fsSL https://bun.sh/install | bash && \
     ln -s /root/.bun/bin/bun /usr/local/bin/bun && \
     rm -rf /var/lib/apt/lists/*
 
-# ---- System dependencies with correct OpenSSL (3.0.12+) ----
+# --- System dependencies with correct OpenSSL stack ---
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    git openssl libcurl4 libssl3 dnsutils iputils-ping unzip file && \
+    openssl libcurl4 libssl3 dnsutils iputils-ping unzip file && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # ---- Copy built artifacts from builder ----
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
-# Copy app runtime dependencies
 COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
 COPY --from=builder /publisher/packages/app/package.json /publisher/packages/app/package.json
-# Copy server runtime dependencies
 COPY --from=builder /publisher/packages/server/dist/ /publisher/packages/server/dist/
 COPY --from=builder /publisher/packages/server/package.json /publisher/packages/server/package.json
-# Copy sdk runtime dependencies
 COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
 COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
+
+# --- Install production-only deps ---
+ENV BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS=1
 RUN bun install --production
 
-# ---- DuckDB CLI -----------------------------------------------------
+# --- DuckDB CLI ---
 RUN curl -L https://install.duckdb.org | bash && \
     ln -s /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
 ENV PATH="/root/.duckdb/cli/latest:$PATH"
 
-# ---- ADBC Snowflake driver (binary build) ---------------------------
+# --- ADBC Snowflake driver ---
 RUN curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
     ldconfig && \
     echo "Verifying DuckDB Snowflake extension..." && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)"
 
-# ---- Runtime config -------------------------------------------------
+# --- Node 20 LTS runtime ---
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- Runtime config ---
 ENV NODE_ENV=production
 RUN mkdir -p /etc/publisher
 EXPOSE 4000
-
-# Install Node 20 LTS for production runtime 
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \ 
-    apt-get install -y nodejs && \ 
-    rm -rf /var/lib/apt/lists/*
 
 CMD ["node", "--require", "./packages/server/dist/instrumentation.js", "./packages/server/dist/server.js"]    
