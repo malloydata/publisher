@@ -363,6 +363,27 @@ app.get(
    },
 );
 
+app.get(
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
+   async (req, res) => {
+      logger.info("req.params", { params: req.params });
+      try {
+         const results = await connectionController.getTable(
+            req.params.projectName,
+            req.params.connectionName,
+            req.params.schemaName,
+            req.params.tablePath,
+         );
+         logger.info("results", { results });
+         res.status(200).json(results);
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 /**
  * @deprecated Use /projects/:projectName/connections/:connectionName/sqlSource POST method instead
  */
@@ -448,7 +469,7 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlQuery`,
    async (req, res) => {
       try {
          res.status(200).json(
@@ -490,7 +511,7 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/temporaryTable`,
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
    async (req, res) => {
       try {
          res.status(200).json(

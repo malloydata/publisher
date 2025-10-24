@@ -36,7 +36,7 @@ export function registerExecuteQueryTool(
    projectStore: ProjectStore,
 ): void {
    mcpServer.tool(
-      "malloy_executeQuery",
+      "malloy/executeQuery",
       "Executes a Malloy query (either ad-hoc or a named query/view defined in a model) against the specified model and returns the results as JSON.",
       executeQueryShape,
       /** Handles requests for the malloy/executeQuery tool */

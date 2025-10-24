@@ -145,6 +145,29 @@ export class ConnectionController {
       return getConnectionTableSource(malloyConnection, tableKey, tablePath);
    }
 
+   public async getTable(
+      projectName: string,
+      connectionName: string,
+      _schemaName: string,
+      tablePath: string,
+   ): Promise<ApiTable> {
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
+         connectionName,
+      );
+
+      const tableSource = await getConnectionTableSource(
+         malloyConnection,
+         tablePath.split(".").pop()!, // tableKey is the table name
+         tablePath,
+      );
+
+      return {
+         resource: tablePath,
+         columns: tableSource.columns,
+      };
+   }
+
    public async getConnectionQueryData(
       projectName: string,
       connectionName: string,
