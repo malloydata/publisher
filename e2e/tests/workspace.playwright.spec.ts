@@ -1,14 +1,14 @@
-import { test, expect, Page } from '@playwright/test';
+import { expect, Page, test } from '@playwright/test';
 const BASE_URL = 'http://localhost:4000/';
 test.setTimeout(60_000);
 
-async function gotoStartPage(page:Page, timeout = 45_000){
-  await page.goto(BASE_URL,{timeout});
+async function gotoStartPage(page: Page, timeout = 45_000) {
+  await page.goto(BASE_URL, { timeout });
 }
 
 // Test Case 1.
 test.describe('Create New Project Flow', () => {
-  
+
   test.beforeEach(async ({ page }) => {
     await gotoStartPage(page);
   });
@@ -17,9 +17,9 @@ test.describe('Create New Project Flow', () => {
     await page.getByRole('button', { name: 'Create New Project' }).click();
     await expect(page.getByRole('dialog', { name: 'Create New Project' })).toBeVisible();
     await page.getByLabel('Project Name').fill('Demo Project');
-    await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('Demo Description Tester');  
-    await page.locator('form#project-form').press('Enter');  
-    await expect(page.getByRole('heading',{ name : 'Demo Project' })).toBeVisible({ timeout: 10000 });
+    await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('Demo Description Tester');
+    await page.locator('form#project-form').press('Enter');
+    await expect(page.getByRole('heading', { name: 'Demo Project' })).toBeVisible({ timeout: 10000 });
   });
 
 });
@@ -27,7 +27,7 @@ test.describe('Create New Project Flow', () => {
 // Test Case 2.
 // Navigation of the top right button
 test.describe('Header Navigation', () => {
-  
+
   test.beforeEach(async ({ page }) => {
     await gotoStartPage(page);
   });
@@ -46,25 +46,25 @@ test.describe('Header Navigation', () => {
 
   // Publisher doc navigation
   test('should navigate to Publisher Docs page', async ({ page }) => {
-  await page.goto(BASE_URL, { timeout: 60000 });
-  await page.waitForLoadState('domcontentloaded');
+    await page.goto(BASE_URL, { timeout: 60000 });
+    await page.waitForLoadState('domcontentloaded');
 
-  await page.waitForSelector('a[href="https://github.com/malloydata/publisher/blob/main/README.md"]', {
-    state: 'visible',
-    timeout: 60000,
-  });
+    await page.waitForSelector('a[href="https://github.com/malloydata/publisher/blob/main/README.md"]', {
+      state: 'visible',
+      timeout: 60000,
+    });
 
-  await Promise.all([
-    page.waitForURL('https://github.com/malloydata/publisher/blob/main/README.md', { timeout: 60000 }),
-    page.getByRole('link', { name: /Publisher Docs/i }).click(),
-  ]);
+    await Promise.all([
+      page.waitForURL('https://github.com/malloydata/publisher/blob/main/README.md', { timeout: 60000 }),
+      page.getByRole('link', { name: /Publisher Docs/i }).click(),
+    ]);
 
-  await expect(page).toHaveURL('https://github.com/malloydata/publisher/blob/main/README.md');
+    await expect(page).toHaveURL('https://github.com/malloydata/publisher/blob/main/README.md');
   });
 
   // Publisher Api navigation
   test('should navigate to Publisher API (local page)', async ({ page }) => {
-    
+
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
 
     const apiLink = page.getByRole('link', { name: /Publisher API/i });
@@ -95,24 +95,41 @@ test.describe('enter project details and perform different operations', () => {
     await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards')
       .fill('My Project description');
     await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(dialog).toBeHidden(); 
+    await expect(dialog).toBeHidden();
   });
 
   test('enter invalid project details and click create project', async ({ page }) => {
     await page.getByRole('button', { name: 'Create New Project' }).click();
     await expect(page.getByRole('dialog', { name: 'Create New Project' })).toBeVisible();
     await page.getByLabel('Project Name').fill('!@#$%^&*()');
-    await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('!@#$%^&*()');  
-    await page.locator('form#project-form').press('Enter');  
-    await expect(page.getByRole('heading',{ name : '!@#$%^&*()' })).toBeVisible();
+    await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('!@#$%^&*()');
+    await page.locator('form#project-form').press('Enter');
+    await expect(page.getByRole('heading', { name: '!@#$%^&*()' })).toBeVisible();
   });
 
   test('leave project name empty and click create project', async ({ page }) => {
     await page.getByRole('button', { name: 'Create New Project' }).click();
     await expect(page.getByRole('dialog', { name: 'Create New Project' })).toBeVisible();
     await page.getByLabel('Project Name').fill('');
-    await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('');  
-    await page.locator('form#project-form').press('Enter');  
+    await page.getByPlaceholder('Explore semantic models, run queries, and build dashboards').fill('');
+    await page.locator('form#project-form').press('Enter');
   });
-  
+
+});
+
+//Test case 4.
+test.describe('Add packages', () => {
+  test.beforeEach(async ({ page }) => {
+    await gotoStartPage(page);
+  });
+
+  test('leave package blank page ', async ({ page }) => {
+    await page.waitForSelector('button:has-text("Add Package")');
+    await expect(page.getByRole('dialog', { name: 'Add Package' })).toBeVisible();
+    await page.getByLabel('Package Name').fill('');
+    await page.getByLabel('Description').fill('Demo Description');
+    await page.getByPlaceholder('E.g. s3://my-bucket/my-package.zip').fill('Demo Placeholder');
+    await page.locator('form#package-form').press('Enter');
+
+  })
 });
