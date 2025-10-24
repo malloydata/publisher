@@ -213,35 +213,33 @@ export async function getSchemasForConnection(
          // Use DuckDB's INFORMATION_SCHEMA.SCHEMATA to list schemas
          // Use DISTINCT to avoid duplicates from attached databases
          const result = await malloyConnection.runSQL(
-            "SELECT DISTINCT schema_name FROM information_schema.schemata ORDER BY schema_name",
+            "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
+            { rowLimit: 1000 },
          );
 
          const rows = standardizeRunSQLResult(result);
 
-         // Check if this DuckDB connection has attached databases
-         const hasAttachedDatabases =
-            connection.duckdbConnection?.attachedDatabases &&
-            Array.isArray(connection.duckdbConnection.attachedDatabases) &&
-            connection.duckdbConnection.attachedDatabases.length > 0;
-
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
-            let schemaName = typedRow.schema_name as string;
-
-            // If we have attached databases and this is not the main schema, prepend the attached database name
-            if (hasAttachedDatabases && schemaName !== "main") {
-               const attachedDbName = (
-                  connection.duckdbConnection!.attachedDatabases as Array<{
-                     name: string;
-                  }>
-               )[0].name;
-               schemaName = `${attachedDbName}.${schemaName}`;
-            }
+            const schemaName = typedRow.schema_name as string;
+            const catalogName = typedRow.catalog_name as string;
 
             return {
-               name: schemaName,
-               isHidden: false,
-               isDefault: typedRow.schema_name === "main",
+               name: `${catalogName}.${schemaName}`,
+               isHidden:
+                  [
+                     "information_schema",
+                     "performance_schema",
+                     "",
+                     "SNOWFLAKE",
+                     "information_schema",
+                     "pg_catalog",
+                     "pg_toast",
+                  ].includes(schemaName as string) ||
+                  ["md_information_schema", "system"].includes(
+                     catalogName as string,
+                  ),
+               isDefault: catalogName === "main",
             };
          });
       } catch (error) {
@@ -481,33 +479,11 @@ export async function listTablesForSchema(
          throw new Error("DuckDB connection is required");
       }
       try {
-         // Check if this DuckDB connection has attached databases and if the schema name is prepended
-         const hasAttachedDatabases =
-            connection.duckdbConnection?.attachedDatabases &&
-            Array.isArray(connection.duckdbConnection.attachedDatabases) &&
-            connection.duckdbConnection.attachedDatabases.length > 0;
-
-         let actualSchemaName = schemaName;
-
-         // If we have attached databases and the schema name is prepended, extract the actual schema name
-         if (hasAttachedDatabases && schemaName.includes(".")) {
-            const attachedDbName = (
-               connection.duckdbConnection!.attachedDatabases as Array<{
-                  name: string;
-               }>
-            )[0].name;
-            if (schemaName.startsWith(`${attachedDbName}.`)) {
-               actualSchemaName = schemaName.substring(
-                  attachedDbName.length + 1,
-               );
-            }
-         }
-
-         // Use DuckDB's INFORMATION_SCHEMA.TABLES to list tables in the specified schema
-         // This follows the DuckDB documentation for listing tables
-         // For DuckDB, we'll use string interpolation to avoid parameter binding issues
+         const catalogName = schemaName.split(".")[0];
+         schemaName = schemaName.split(".")[1];
          const result = await malloyConnection.runSQL(
-            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${actualSchemaName}' ORDER BY table_name`,
+            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${schemaName}' and table_catalog = '${catalogName}' ORDER BY table_name`,
+            { rowLimit: 1000 },
          );
 
          const rows = standardizeRunSQLResult(result);

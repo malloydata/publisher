@@ -64,235 +64,323 @@ function validateAndBuildTrinoConfig(
    }
 }
 
+// Shared utilities
+async function installAndLoadExtension(
+   connection: DuckDBConnection,
+   extensionName: string,
+   fromCommunity = false,
+): Promise<void> {
+   try {
+      const installCommand = fromCommunity
+         ? `FORCE INSTALL '${extensionName}' FROM community;`
+         : `INSTALL ${extensionName};`;
+      await connection.runSQL(installCommand);
+      logger.info(`${extensionName} extension installed`);
+   } catch (error) {
+      logger.info(
+         `${extensionName} extension already installed or install skipped`,
+         { error },
+      );
+   }
+
+   await connection.runSQL(`LOAD ${extensionName};`);
+   logger.info(`${extensionName} extension loaded`);
+}
+
+async function isDatabaseAttached(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<boolean> {
+   try {
+      const existingDatabases = await connection.runSQL("SHOW DATABASES");
+      const rows = Array.isArray(existingDatabases)
+         ? existingDatabases
+         : existingDatabases.rows || [];
+
+      logger.debug(`Existing databases:`, rows);
+
+      return rows.some((row: Record<string, unknown>) =>
+         Object.values(row).some(
+            (value) => typeof value === "string" && value === dbName,
+         ),
+      );
+   } catch (error) {
+      logger.warn(`Failed to check existing databases:`, error);
+      return false;
+   }
+}
+
+function sanitizeSecretName(name: string): string {
+   return `secret_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+}
+
+function escapeSQL(value: string): string {
+   return value.replace(/'/g, "''");
+}
+
+function handleAlreadyAttachedError(error: unknown, dbName: string): void {
+   if (error instanceof Error && error.message.includes("already exists")) {
+      logger.info(`Database ${dbName} is already attached, skipping`);
+   } else {
+      throw error;
+   }
+}
+
+// Database-specific attachment handlers
+async function attachBigQuery(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.bigqueryConnection) {
+      throw new Error(
+         `BigQuery connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const config = attachedDb.bigqueryConnection;
+   let projectId = config.defaultProjectId;
+   let serviceAccountJson: string | undefined;
+
+   // Parse and validate service account key
+   if (config.serviceAccountKeyJson) {
+      const keyData = JSON.parse(config.serviceAccountKeyJson as string);
+
+      const requiredFields = [
+         "type",
+         "project_id",
+         "private_key",
+         "client_email",
+      ];
+      for (const field of requiredFields) {
+         if (!keyData[field]) {
+            throw new Error(
+               `Invalid service account key: missing "${field}" field`,
+            );
+         }
+      }
+
+      if (keyData.type !== "service_account") {
+         throw new Error('Invalid service account key: incorrect "type" field');
+      }
+
+      projectId = keyData.project_id || config.defaultProjectId;
+      serviceAccountJson = config.serviceAccountKeyJson as string;
+      logger.info(`Using service account: ${keyData.client_email}`);
+   }
+
+   if (!projectId || !serviceAccountJson) {
+      throw new Error(
+         `BigQuery project_id and service account key required for: ${attachedDb.name}`,
+      );
+   }
+
+   await installAndLoadExtension(connection, "bigquery", true);
+
+   const secretName = sanitizeSecretName(`bigquery_${attachedDb.name}`);
+   const escapedJson = escapeSQL(serviceAccountJson);
+
+   const createSecretCommand = `
+      CREATE OR REPLACE SECRET ${secretName} (
+         TYPE BIGQUERY,
+         SCOPE 'bq://${projectId}',
+         SERVICE_ACCOUNT_JSON '${escapedJson}'
+      );
+   `;
+
+   await connection.runSQL(createSecretCommand);
+   logger.info(
+      `Created BigQuery secret: ${secretName} for project: ${projectId}`,
+   );
+
+   const attachCommand = `ATTACH 'project=${projectId}' AS ${attachedDb.name} (TYPE bigquery, READ_ONLY);`;
+   await connection.runSQL(attachCommand);
+   logger.info(`Successfully attached BigQuery database: ${attachedDb.name}`);
+}
+
+async function attachSnowflake(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.snowflakeConnection) {
+      throw new Error(
+         `Snowflake connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const config = attachedDb.snowflakeConnection;
+
+   // Validate required fields
+   const requiredFields = {
+      account: config.account,
+      username: config.username,
+      password: config.password,
+   };
+   for (const [field, value] of Object.entries(requiredFields)) {
+      if (!value) {
+         throw new Error(
+            `Snowflake ${field} is required for: ${attachedDb.name}`,
+         );
+      }
+   }
+
+   await installAndLoadExtension(connection, "snowflake", true);
+
+   // Verify ADBC driver
+   try {
+      const version = await connection.runSQL("SELECT snowflake_version();");
+      logger.info(`Snowflake ADBC driver verified with version:`, version.rows);
+   } catch (error) {
+      throw new Error(
+         `Snowflake ADBC driver verification failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
+
+   // Build connection parameters
+   const params = {
+      account: escapeSQL(config.account || ""),
+      user: escapeSQL(config.username || ""),
+      password: escapeSQL(config.password || ""),
+      database: config.database ? escapeSQL(config.database) : undefined,
+      warehouse: config.warehouse ? escapeSQL(config.warehouse) : undefined,
+      schema: config.schema ? escapeSQL(config.schema) : undefined,
+      role: config.role ? escapeSQL(config.role) : undefined,
+   };
+
+   // Create attach string
+   const attachParts = [
+      `account=${params.account}`,
+      `user=${params.user}`,
+      `password=${params.password}`,
+   ];
+
+   if (params.database) attachParts.push(`database=${params.database}`);
+   if (params.warehouse) attachParts.push(`warehouse=${params.warehouse}`);
+
+   const secretString = `CREATE OR REPLACE SECRET ${attachedDb.name}_secret (
+      TYPE snowflake,
+      ACCOUNT '${params.account}',
+      USER '${params.user}',
+      PASSWORD '${params.password}',
+      DATABASE '${params.database}',
+      WAREHOUSE '${params.warehouse}'
+   );`;
+
+   await connection.runSQL(secretString);
+
+   const testresult = await connection.runSQL(
+      `SELECT * FROM snowflake_scan('SELECT 1', '${attachedDb.name}_secret');`,
+   );
+   logger.info(`Testing Snowflake connection:`, testresult.rows);
+
+   const attachCommand = `ATTACH '${attachedDb.name}' AS ${attachedDb.name} (TYPE snowflake, SECRET ${attachedDb.name}_secret, READ_ONLY);`;
+   await connection.runSQL(attachCommand);
+   logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
+}
+
+async function attachPostgres(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.postgresConnection) {
+      throw new Error(
+         `PostgreSQL connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   await installAndLoadExtension(connection, "postgres");
+
+   const config = attachedDb.postgresConnection;
+   let attachString: string;
+
+   if (config.connectionString) {
+      attachString = config.connectionString;
+   } else {
+      const parts: string[] = [];
+      if (config.host) parts.push(`host=${config.host}`);
+      if (config.port) parts.push(`port=${config.port}`);
+      if (config.databaseName) parts.push(`dbname=${config.databaseName}`);
+      if (config.userName) parts.push(`user=${config.userName}`);
+      if (config.password) parts.push(`password=${config.password}`);
+      attachString = parts.join(" ");
+   }
+
+   const attachCommand = `ATTACH '${attachString}' AS ${attachedDb.name} (TYPE postgres, READ_ONLY);`;
+   await connection.runSQL(attachCommand);
+   logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
+}
+
+async function attachMotherDuck(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.motherDuckConnection) {
+      throw new Error(
+         `MotherDuck connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const config = attachedDb.motherDuckConnection;
+
+   if (!config.database) {
+      throw new Error(
+         `MotherDuck database name is required for: ${attachedDb.name}`,
+      );
+   }
+
+   await installAndLoadExtension(connection, "motherduck");
+
+   // Set token if provided
+   if (config.accessToken) {
+      const escapedToken = escapeSQL(config.accessToken);
+      await connection.runSQL(`SET motherduck_token = '${escapedToken}';`);
+   }
+
+   const connectionString = `md:${config.database}`;
+   logger.info(
+      `Connecting to MotherDuck database: ${config.database} as ${attachedDb.name}`,
+   );
+
+   const attachCommand = `ATTACH '${connectionString}' AS ${attachedDb.name} (TYPE motherduck, READ_ONLY);`;
+   await connection.runSQL(attachCommand);
+   logger.info(`Successfully attached MotherDuck database: ${attachedDb.name}`);
+}
+
+// Main attachment function
 async function attachDatabasesToDuckDB(
    duckdbConnection: DuckDBConnection,
    attachedDatabases: AttachedDatabase[],
 ): Promise<void> {
+   const attachHandlers = {
+      bigquery: attachBigQuery,
+      snowflake: attachSnowflake,
+      postgres: attachPostgres,
+      motherduck: attachMotherDuck,
+   };
+
    for (const attachedDb of attachedDatabases) {
       try {
-         // Check if database is already attached
-         try {
-            const checkQuery = `SHOW DATABASES`;
-            const existingDatabases = await duckdbConnection.runSQL(checkQuery);
-            const rows = Array.isArray(existingDatabases)
-               ? existingDatabases
-               : existingDatabases.rows || [];
-
-            logger.debug(`Existing databases:`, rows);
-
-            // Check if the database name exists in any column (handle different column names)
-            const isAlreadyAttached = rows.some(
-               (row: Record<string, unknown>) => {
-                  return Object.values(row).some(
-                     (value: unknown) =>
-                        typeof value === "string" && value === attachedDb.name,
-                  );
-               },
+         // Check if already attached
+         if (
+            await isDatabaseAttached(duckdbConnection, attachedDb.name || "")
+         ) {
+            logger.info(
+               `Database ${attachedDb.name} is already attached, skipping`,
             );
-
-            if (isAlreadyAttached) {
-               logger.info(
-                  `Database ${attachedDb.name} is already attached, skipping`,
-               );
-               continue;
-            }
-         } catch (error) {
-            logger.warn(
-               `Failed to check existing databases, proceeding with attachment:`,
-               error,
-            );
+            continue;
          }
 
-         switch (attachedDb.type) {
-            case "bigquery": {
-               if (!attachedDb.bigqueryConnection) {
-                  throw new Error(
-                     `BigQuery connection configuration is missing for attached database: ${attachedDb.name}`,
-                  );
-               }
+         // Get the appropriate handler
+         const handler =
+            attachHandlers[attachedDb.type as keyof typeof attachHandlers];
+         if (!handler) {
+            throw new Error(`Unsupported database type: ${attachedDb.type}`);
+         }
 
-               // Install and load the bigquery extension
-               await duckdbConnection.runSQL(
-                  "INSTALL bigquery FROM community;",
-               );
-               await duckdbConnection.runSQL("LOAD bigquery;");
-
-               // Build the ATTACH command for BigQuery
-               const bigqueryConfig = attachedDb.bigqueryConnection;
-               const attachParams = new URLSearchParams();
-
-               if (!bigqueryConfig.defaultProjectId) {
-                  throw new Error(
-                     `BigQuery defaultProjectId is required for attached database: ${attachedDb.name}`,
-                  );
-               }
-               attachParams.set("project", bigqueryConfig.defaultProjectId);
-
-               // Handle service account key if provided
-               if (bigqueryConfig.serviceAccountKeyJson) {
-                  const serviceAccountKeyPath = path.join(
-                     TEMP_DIR_PATH,
-                     `duckdb-${attachedDb.name}-${uuidv4()}-service-account-key.json`,
-                  );
-                  await fs.writeFile(
-                     serviceAccountKeyPath,
-                     bigqueryConfig.serviceAccountKeyJson as string,
-                  );
-                  attachParams.set(
-                     "service_account_key",
-                     serviceAccountKeyPath,
-                  );
-               }
-
-               const attachCommand = `ATTACH '${attachParams.toString()}' AS ${attachedDb.name} (TYPE bigquery, READ_ONLY);`;
-               try {
-                  await duckdbConnection.runSQL(attachCommand);
-                  logger.info(
-                     `Successfully attached BigQuery database: ${attachedDb.name}`,
-                  );
-               } catch (attachError: unknown) {
-                  if (
-                     attachError instanceof Error &&
-                     attachError.message &&
-                     attachError.message.includes("already exists")
-                  ) {
-                     logger.info(
-                        `BigQuery database ${attachedDb.name} is already attached, skipping`,
-                     );
-                  } else {
-                     throw attachError;
-                  }
-               }
-               break;
-            }
-
-            case "snowflake": {
-               if (!attachedDb.snowflakeConnection) {
-                  throw new Error(
-                     `Snowflake connection configuration is missing for attached database: ${attachedDb.name}`,
-                  );
-               }
-
-               // Install and load the snowflake extension
-               await duckdbConnection.runSQL(
-                  "INSTALL snowflake FROM community;",
-               );
-               await duckdbConnection.runSQL("LOAD snowflake;");
-
-               // Build the ATTACH command for Snowflake
-               const snowflakeConfig = attachedDb.snowflakeConnection;
-               const attachParams = new URLSearchParams();
-
-               if (snowflakeConfig.account) {
-                  attachParams.set("account", snowflakeConfig.account);
-               }
-               if (snowflakeConfig.username) {
-                  attachParams.set("username", snowflakeConfig.username);
-               }
-               if (snowflakeConfig.password) {
-                  attachParams.set("password", snowflakeConfig.password);
-               }
-               if (snowflakeConfig.database) {
-                  attachParams.set("database", snowflakeConfig.database);
-               }
-               if (snowflakeConfig.warehouse) {
-                  attachParams.set("warehouse", snowflakeConfig.warehouse);
-               }
-               if (snowflakeConfig.role) {
-                  attachParams.set("role", snowflakeConfig.role);
-               }
-
-               const attachCommand = `ATTACH '${attachParams.toString()}' AS ${attachedDb.name} (TYPE snowflake, READ_ONLY);`;
-               try {
-                  await duckdbConnection.runSQL(attachCommand);
-                  logger.info(
-                     `Successfully attached Snowflake database: ${attachedDb.name}`,
-                  );
-               } catch (attachError: unknown) {
-                  if (
-                     attachError instanceof Error &&
-                     attachError.message &&
-                     attachError.message.includes("already exists")
-                  ) {
-                     logger.info(
-                        `Snowflake database ${attachedDb.name} is already attached, skipping`,
-                     );
-                  } else {
-                     throw attachError;
-                  }
-               }
-               break;
-            }
-
-            case "postgres": {
-               if (!attachedDb.postgresConnection) {
-                  throw new Error(
-                     `PostgreSQL connection configuration is missing for attached database: ${attachedDb.name}`,
-                  );
-               }
-
-               // Install and load the postgres extension
-               await duckdbConnection.runSQL(
-                  "INSTALL postgres FROM community;",
-               );
-               await duckdbConnection.runSQL("LOAD postgres;");
-
-               // Build the ATTACH command for PostgreSQL
-               const postgresConfig = attachedDb.postgresConnection;
-               let attachString: string;
-
-               // Use connection string if provided, otherwise build from individual parameters
-               if (postgresConfig.connectionString) {
-                  attachString = postgresConfig.connectionString;
-               } else {
-                  // Build connection string from individual parameters
-                  const params = new URLSearchParams();
-
-                  if (postgresConfig.host) {
-                     params.set("host", postgresConfig.host);
-                  }
-                  if (postgresConfig.port) {
-                     params.set("port", postgresConfig.port.toString());
-                  }
-                  if (postgresConfig.databaseName) {
-                     params.set("dbname", postgresConfig.databaseName);
-                  }
-                  if (postgresConfig.userName) {
-                     params.set("user", postgresConfig.userName);
-                  }
-                  if (postgresConfig.password) {
-                     params.set("password", postgresConfig.password);
-                  }
-
-                  attachString = params.toString();
-               }
-
-               const attachCommand = `ATTACH '${attachString}' AS ${attachedDb.name} (TYPE postgres, READ_ONLY);`;
-               try {
-                  await duckdbConnection.runSQL(attachCommand);
-                  logger.info(
-                     `Successfully attached PostgreSQL database: ${attachedDb.name}`,
-                  );
-               } catch (attachError: unknown) {
-                  if (
-                     attachError instanceof Error &&
-                     attachError.message &&
-                     attachError.message.includes("already exists")
-                  ) {
-                     logger.info(
-                        `PostgreSQL database ${attachedDb.name} is already attached, skipping`,
-                     );
-                  } else {
-                     throw attachError;
-                  }
-               }
-               break;
-            }
-
-            default:
-               throw new Error(
-                  `Unsupported attached database type: ${attachedDb.type}`,
-               );
+         // Execute attachment
+         try {
+            await handler(duckdbConnection, attachedDb);
+         } catch (attachError) {
+            handleAlreadyAttachedError(attachError, attachedDb.name || "");
          }
       } catch (error) {
          logger.error(`Failed to attach database ${attachedDb.name}:`, error);
@@ -305,6 +393,7 @@ async function attachDatabasesToDuckDB(
 
 export async function createProjectConnections(
    connections: ApiConnection[] = [],
+   projectPath: string = "",
 ): Promise<{
    malloyConnections: Map<string, BaseConnection>;
    apiConnections: InternalConnection[];
@@ -477,8 +566,32 @@ export async function createProjectConnections(
          }
 
          case "duckdb": {
-            // DuckDB connections are created at the package level in package.ts
-            // to ensure the workingDirectory is set correctly for each connection
+            if (!connection.duckdbConnection) {
+               throw new Error("DuckDB connection configuration is missing.");
+            }
+
+            // Create DuckDB connection with project basePath as working directory
+            // This ensures relative paths in the project are resolved correctly
+            const duckdbConnection = new DuckDBConnection(
+               connection.name,
+               ":memory:",
+               projectPath,
+            );
+
+            // Attach databases if configured
+            if (
+               connection.duckdbConnection.attachedDatabases &&
+               Array.isArray(connection.duckdbConnection.attachedDatabases) &&
+               connection.duckdbConnection.attachedDatabases.length > 0
+            ) {
+               await attachDatabasesToDuckDB(
+                  duckdbConnection,
+                  connection.duckdbConnection.attachedDatabases,
+               );
+            }
+
+            connectionMap.set(connection.name, duckdbConnection);
+            connection.attributes = getConnectionAttributes(duckdbConnection);
             break;
          }
 
@@ -624,6 +737,13 @@ export async function testConnectionConfig(
 
       // Use createProjectConnections to create the connection, then test it
       // TODO: Test duckdb connections?
+      if (connectionConfig.type === "duckdb") {
+         return {
+            status: "ok",
+            errorMessage: "",
+         };
+      }
+
       const { malloyConnections } = await createProjectConnections(
          [connectionConfig], // Pass the single connection config
       );
