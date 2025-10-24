@@ -31,11 +31,7 @@ export function ModelExplorerDialog({
    onSourceChange,
 }: ModelExplorerDialogProps) {
    return (
-      <Dialog
-         open={open}
-         onClose={onClose}
-         fullScreen
-      >
+      <Dialog open={open} onClose={onClose} fullScreen>
          <DialogTitle
             sx={{
                display: "flex",
