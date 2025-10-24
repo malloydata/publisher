@@ -1,12 +1,16 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, Page } from '@playwright/test';
 const BASE_URL = 'http://localhost:4000/';
+test.setTimeout(60_000);
+
+async function gotoStartPage(page:Page, timeout = 45_000){
+  await page.goto(BASE_URL,{timeout});
+}
+
 // Test Case 1.
 test.describe('Create New Project Flow', () => {
-
-  test.setTimeout(60_000);
   
   test.beforeEach(async ({ page }) => {
-    await page.goto(BASE_URL, { timeout: 45_000 });
+    await gotoStartPage(page);
   });
 
   test('should open the dialog and submit the form', async ({ page }) => {
@@ -23,11 +27,9 @@ test.describe('Create New Project Flow', () => {
 // Test Case 2.
 // Navigation of the top right button
 test.describe('Header Navigation', () => {
-
-  test.setTimeout(60_000);
   
   test.beforeEach(async ({ page }) => {
-    await page.goto(BASE_URL, { timeout: 45_000 });
+    await gotoStartPage(page);
   });
 
   //  Malloy Docs navigation
@@ -81,10 +83,8 @@ test.describe('Header Navigation', () => {
 // Test Case 3.
 test.describe('enter project details and perform different operations', () => {
 
-  test.setTimeout(60_000);
-
   test.beforeEach(async ({ page }) => {
-    await page.goto(BASE_URL, { timeout: 45_000 });
+    await gotoStartPage(page);
   });
 
   test('enter project details and click cancel', async ({ page }) => {
