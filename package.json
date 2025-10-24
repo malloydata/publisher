@@ -14,7 +14,7 @@
     "build:app": "cd packages/app && bun run build ",
     "build:app:server": "cd packages/app && bun run build:server",
     "build:server": "cd packages/server && bun run build",
-    "build": "NODE_ENV=production && bun run build:sdk && bun run build:server && bun run install-adbc-driver",
+    "build": "NODE_ENV=production && bun run build:sdk && bun run build:server && bun run install-duckdb-snowflake",
     "build:server-deploy": "NODE_ENV=production && bun run build:sdk && bun run build:app:server && bun run build:server",
     "start": "cd packages/server && bun run start",
     "start:dev": "cd packages/server && bun run start:dev",
@@ -37,7 +37,7 @@
     "format:server": "cd packages/server && bun run format",
     "format": "bun run format:sdk && bun run format:app && bun run format:server",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
-    "install-adbc-driver": "curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | sh"
+    "install-duckdb-snowflake": "curl -L https://install.duckdb.org | bash && export PATH=\"$HOME/.duckdb/cli/latest:$PATH\" && curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash"
   },
   "devDependencies": {
     "@types/react": "^19.1.7",
