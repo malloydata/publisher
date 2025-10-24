@@ -34,15 +34,7 @@ export function ModelExplorerDialog({
       <Dialog
          open={open}
          onClose={onClose}
-         maxWidth={false}
-         fullWidth
-         sx={{
-            "& .MuiDialog-paper": {
-               width: "95vw",
-               height: "95vh",
-               maxWidth: "none",
-            },
-         }}
+         fullScreen
       >
          <DialogTitle
             sx={{
