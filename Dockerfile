@@ -35,8 +35,24 @@ RUN bun install --frozen-lockfile
 COPY packages/server/ ./
 RUN bun run build:server-only
 
-FROM oven/bun:1.2.19-slim AS runner
+# Production runtime
+FROM debian:bookworm-slim AS runner
 WORKDIR /publisher
+
+# ---- Bun install (same version as builder) ----
+RUN apt-get update && apt-get install -y curl ca-certificates unzip && \
+    curl -fsSL https://bun.sh/install | bash && \
+    ln -s /root/.bun/bin/bun /usr/local/bin/bun && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- System dependencies with correct OpenSSL (3.0.12+) ----
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    git openssl libcurl4 libssl3 dnsutils iputils-ping unzip file && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- Copy built artifacts from builder ----
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
 # Copy app runtime dependencies
 COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
@@ -49,10 +65,26 @@ COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
 COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
 RUN bun install --production
 
+# ---- DuckDB CLI -----------------------------------------------------
+RUN curl -L https://install.duckdb.org | bash && \
+    ln -s /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb
+ENV PATH="/root/.duckdb/cli/latest:$PATH"
+
+# ---- ADBC Snowflake driver (binary build) ---------------------------
+RUN curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
+    ldconfig && \
+    echo "Verifying DuckDB Snowflake extension..." && \
+    duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
+    echo "Snowflake verification skipped (offline build)"
+
+# ---- Runtime config -------------------------------------------------
 ENV NODE_ENV=production
 RUN mkdir -p /etc/publisher
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y git
 EXPOSE 4000
-CMD ["node", "--require", "./packages/server/dist/instrumentation.js", "./packages/server/dist/server.js"]
+
+# Install Node 20 LTS for production runtime 
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \ 
+    apt-get install -y nodejs && \ 
+    rm -rf /var/lib/apt/lists/*
+
+CMD ["node", "--require", "./packages/server/dist/instrumentation.js", "./packages/server/dist/server.js"]    

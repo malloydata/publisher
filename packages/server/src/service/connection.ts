@@ -68,38 +68,41 @@ function validateAndBuildTrinoConfig(
 async function installAndLoadExtension(
    connection: DuckDBConnection,
    extensionName: string,
-   fromCommunity = false
+   fromCommunity = false,
 ): Promise<void> {
    try {
-      const installCommand = fromCommunity 
+      const installCommand = fromCommunity
          ? `FORCE INSTALL '${extensionName}' FROM community;`
          : `INSTALL ${extensionName};`;
       await connection.runSQL(installCommand);
       logger.info(`${extensionName} extension installed`);
    } catch (error) {
-      logger.info(`${extensionName} extension already installed or install skipped`);
+      logger.info(
+         `${extensionName} extension already installed or install skipped`,
+         { error },
+      );
    }
-   
+
    await connection.runSQL(`LOAD ${extensionName};`);
    logger.info(`${extensionName} extension loaded`);
 }
 
 async function isDatabaseAttached(
    connection: DuckDBConnection,
-   dbName: string
+   dbName: string,
 ): Promise<boolean> {
    try {
       const existingDatabases = await connection.runSQL("SHOW DATABASES");
       const rows = Array.isArray(existingDatabases)
          ? existingDatabases
          : existingDatabases.rows || [];
-      
+
       logger.debug(`Existing databases:`, rows);
-      
+
       return rows.some((row: Record<string, unknown>) =>
          Object.values(row).some(
-            (value) => typeof value === "string" && value === dbName
-         )
+            (value) => typeof value === "string" && value === dbName,
+         ),
       );
    } catch (error) {
       logger.warn(`Failed to check existing databases:`, error);
@@ -108,7 +111,7 @@ async function isDatabaseAttached(
 }
 
 function sanitizeSecretName(name: string): string {
-   return `secret_${name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+   return `secret_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
 }
 
 function escapeSQL(value: string): string {
@@ -126,10 +129,12 @@ function handleAlreadyAttachedError(error: unknown, dbName: string): void {
 // Database-specific attachment handlers
 async function attachBigQuery(
    connection: DuckDBConnection,
-   attachedDb: AttachedDatabase
+   attachedDb: AttachedDatabase,
 ): Promise<void> {
    if (!attachedDb.bigqueryConnection) {
-      throw new Error(`BigQuery connection configuration missing for: ${attachedDb.name}`);
+      throw new Error(
+         `BigQuery connection configuration missing for: ${attachedDb.name}`,
+      );
    }
 
    const config = attachedDb.bigqueryConnection;
@@ -139,15 +144,22 @@ async function attachBigQuery(
    // Parse and validate service account key
    if (config.serviceAccountKeyJson) {
       const keyData = JSON.parse(config.serviceAccountKeyJson as string);
-      
-      const requiredFields = ['type', 'project_id', 'private_key', 'client_email'];
+
+      const requiredFields = [
+         "type",
+         "project_id",
+         "private_key",
+         "client_email",
+      ];
       for (const field of requiredFields) {
          if (!keyData[field]) {
-            throw new Error(`Invalid service account key: missing "${field}" field`);
+            throw new Error(
+               `Invalid service account key: missing "${field}" field`,
+            );
          }
       }
-      
-      if (keyData.type !== 'service_account') {
+
+      if (keyData.type !== "service_account") {
          throw new Error('Invalid service account key: incorrect "type" field');
       }
 
@@ -157,10 +169,12 @@ async function attachBigQuery(
    }
 
    if (!projectId || !serviceAccountJson) {
-      throw new Error(`BigQuery project_id and service account key required for: ${attachedDb.name}`);
+      throw new Error(
+         `BigQuery project_id and service account key required for: ${attachedDb.name}`,
+      );
    }
 
-   await installAndLoadExtension(connection, 'bigquery', true);
+   await installAndLoadExtension(connection, "bigquery", true);
 
    const secretName = sanitizeSecretName(`bigquery_${attachedDb.name}`);
    const escapedJson = escapeSQL(serviceAccountJson);
@@ -172,9 +186,11 @@ async function attachBigQuery(
          SERVICE_ACCOUNT_JSON '${escapedJson}'
       );
    `;
-   
+
    await connection.runSQL(createSecretCommand);
-   logger.info(`Created BigQuery secret: ${secretName} for project: ${projectId}`);
+   logger.info(
+      `Created BigQuery secret: ${secretName} for project: ${projectId}`,
+   );
 
    const attachCommand = `ATTACH 'project=${projectId}' AS ${attachedDb.name} (TYPE bigquery, READ_ONLY);`;
    await connection.runSQL(attachCommand);
@@ -183,32 +199,40 @@ async function attachBigQuery(
 
 async function attachSnowflake(
    connection: DuckDBConnection,
-   attachedDb: AttachedDatabase
+   attachedDb: AttachedDatabase,
 ): Promise<void> {
    if (!attachedDb.snowflakeConnection) {
-      throw new Error(`Snowflake connection configuration missing for: ${attachedDb.name}`);
+      throw new Error(
+         `Snowflake connection configuration missing for: ${attachedDb.name}`,
+      );
    }
 
    const config = attachedDb.snowflakeConnection;
 
    // Validate required fields
-   const requiredFields = { account: config.account, username: config.username, password: config.password };
+   const requiredFields = {
+      account: config.account,
+      username: config.username,
+      password: config.password,
+   };
    for (const [field, value] of Object.entries(requiredFields)) {
       if (!value) {
-         throw new Error(`Snowflake ${field} is required for: ${attachedDb.name}`);
+         throw new Error(
+            `Snowflake ${field} is required for: ${attachedDb.name}`,
+         );
       }
    }
 
-   await installAndLoadExtension(connection, 'snowflake', true);
-
-   await connection.runSQL(`SET enable_logging = 1;`);
+   await installAndLoadExtension(connection, "snowflake", true);
 
    // Verify ADBC driver
    try {
       const version = await connection.runSQL("SELECT snowflake_version();");
       logger.info(`Snowflake ADBC driver verified with version:`, version.rows);
    } catch (error) {
-      throw new Error(`Snowflake ADBC driver verification failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+         `Snowflake ADBC driver verification failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
    }
 
    // Build connection parameters
@@ -228,7 +252,7 @@ async function attachSnowflake(
       `user=${params.user}`,
       `password=${params.password}`,
    ];
-   
+
    if (params.database) attachParts.push(`database=${params.database}`);
    if (params.warehouse) attachParts.push(`warehouse=${params.warehouse}`);
 
@@ -243,36 +267,27 @@ async function attachSnowflake(
 
    await connection.runSQL(secretString);
 
-   const testresult: any = await Promise.race([
-   connection.runSQL(`SELECT * FROM snowflake_scan('SELECT 1', '${attachedDb.name}_secret');`),
-      new Promise((_, reject) => 
-         setTimeout(() => reject(new Error('snowflake_scan timed out after 30s')), 30000)
-      )
-   ]);
-   logger.info(`Test result:`, testresult.rows);
+   const testresult = await connection.runSQL(
+      `SELECT * FROM snowflake_scan('SELECT 1', '${attachedDb.name}_secret');`,
+   );
+   logger.info(`Testing Snowflake connection:`, testresult.rows);
 
-   const attachCommand = `ATTACH '' AS ${attachedDb.name} (TYPE snowflake, SECRET ${attachedDb.name}_secret, READ_ONLY);`;
-
-   logger.info(`Attach command: ${attachCommand}`);
-   const result: any = await Promise.race([
-      connection.runSQL(attachCommand),
-      new Promise((_, reject) => 
-         setTimeout(() => reject(new Error('ATTACH timed out after 120s')), 120000)
-      )
-   ]);
-   logger.info(`Result: ${result.totalRows}`);
+   const attachCommand = `ATTACH '${attachedDb.name}' AS ${attachedDb.name} (TYPE snowflake, SECRET ${attachedDb.name}_secret, READ_ONLY);`;
+   await connection.runSQL(attachCommand);
    logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
 }
 
 async function attachPostgres(
    connection: DuckDBConnection,
-   attachedDb: AttachedDatabase
+   attachedDb: AttachedDatabase,
 ): Promise<void> {
    if (!attachedDb.postgresConnection) {
-      throw new Error(`PostgreSQL connection configuration missing for: ${attachedDb.name}`);
+      throw new Error(
+         `PostgreSQL connection configuration missing for: ${attachedDb.name}`,
+      );
    }
 
-   await installAndLoadExtension(connection, 'postgres');
+   await installAndLoadExtension(connection, "postgres");
 
    const config = attachedDb.postgresConnection;
    let attachString: string;
@@ -286,7 +301,7 @@ async function attachPostgres(
       if (config.databaseName) parts.push(`dbname=${config.databaseName}`);
       if (config.userName) parts.push(`user=${config.userName}`);
       if (config.password) parts.push(`password=${config.password}`);
-      attachString = parts.join(' ');
+      attachString = parts.join(" ");
    }
 
    const attachCommand = `ATTACH '${attachString}' AS ${attachedDb.name} (TYPE postgres, READ_ONLY);`;
@@ -296,19 +311,23 @@ async function attachPostgres(
 
 async function attachMotherDuck(
    connection: DuckDBConnection,
-   attachedDb: AttachedDatabase
+   attachedDb: AttachedDatabase,
 ): Promise<void> {
    if (!attachedDb.motherDuckConnection) {
-      throw new Error(`MotherDuck connection configuration missing for: ${attachedDb.name}`);
+      throw new Error(
+         `MotherDuck connection configuration missing for: ${attachedDb.name}`,
+      );
    }
 
    const config = attachedDb.motherDuckConnection;
 
    if (!config.database) {
-      throw new Error(`MotherDuck database name is required for: ${attachedDb.name}`);
+      throw new Error(
+         `MotherDuck database name is required for: ${attachedDb.name}`,
+      );
    }
 
-   await installAndLoadExtension(connection, 'motherduck');
+   await installAndLoadExtension(connection, "motherduck");
 
    // Set token if provided
    if (config.accessToken) {
@@ -317,7 +336,9 @@ async function attachMotherDuck(
    }
 
    const connectionString = `md:${config.database}`;
-   logger.info(`Connecting to MotherDuck database: ${config.database} as ${attachedDb.name}`);
+   logger.info(
+      `Connecting to MotherDuck database: ${config.database} as ${attachedDb.name}`,
+   );
 
    const attachCommand = `ATTACH '${connectionString}' AS ${attachedDb.name} (TYPE motherduck, READ_ONLY);`;
    await connection.runSQL(attachCommand);
@@ -339,13 +360,18 @@ async function attachDatabasesToDuckDB(
    for (const attachedDb of attachedDatabases) {
       try {
          // Check if already attached
-         if (await isDatabaseAttached(duckdbConnection, attachedDb.name || "")) {
-            logger.info(`Database ${attachedDb.name} is already attached, skipping`);
+         if (
+            await isDatabaseAttached(duckdbConnection, attachedDb.name || "")
+         ) {
+            logger.info(
+               `Database ${attachedDb.name} is already attached, skipping`,
+            );
             continue;
          }
 
          // Get the appropriate handler
-         const handler = attachHandlers[attachedDb.type as keyof typeof attachHandlers];
+         const handler =
+            attachHandlers[attachedDb.type as keyof typeof attachHandlers];
          if (!handler) {
             throw new Error(`Unsupported database type: ${attachedDb.type}`);
          }
@@ -356,11 +382,10 @@ async function attachDatabasesToDuckDB(
          } catch (attachError) {
             handleAlreadyAttachedError(attachError, attachedDb.name || "");
          }
-
       } catch (error) {
          logger.error(`Failed to attach database ${attachedDb.name}:`, error);
          throw new Error(
-            `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`
+            `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
          );
       }
    }
@@ -544,7 +569,7 @@ export async function createProjectConnections(
             if (!connection.duckdbConnection) {
                throw new Error("DuckDB connection configuration is missing.");
             }
-      
+
             // Create DuckDB connection with project basePath as working directory
             // This ensures relative paths in the project are resolved correctly
             const duckdbConnection = new DuckDBConnection(
@@ -552,7 +577,7 @@ export async function createProjectConnections(
                ":memory:",
                projectPath,
             );
-      
+
             // Attach databases if configured
             if (
                connection.duckdbConnection.attachedDatabases &&
@@ -564,7 +589,7 @@ export async function createProjectConnections(
                   connection.duckdbConnection.attachedDatabases,
                );
             }
-      
+
             connectionMap.set(connection.name, duckdbConnection);
             connection.attributes = getConnectionAttributes(duckdbConnection);
             break;
@@ -712,6 +737,13 @@ export async function testConnectionConfig(
 
       // Use createProjectConnections to create the connection, then test it
       // TODO: Test duckdb connections?
+      if (connectionConfig.type === "duckdb") {
+         return {
+            status: "ok",
+            errorMessage: "",
+         };
+      }
+
       const { malloyConnections } = await createProjectConnections(
          [connectionConfig], // Pass the single connection config
       );

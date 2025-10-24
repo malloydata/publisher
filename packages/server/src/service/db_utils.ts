@@ -213,21 +213,32 @@ export async function getSchemasForConnection(
          // Use DuckDB's INFORMATION_SCHEMA.SCHEMATA to list schemas
          // Use DISTINCT to avoid duplicates from attached databases
          const result = await malloyConnection.runSQL(
-            "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name", {rowLimit: 1000}
+            "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
+            { rowLimit: 1000 },
          );
 
          const rows = standardizeRunSQLResult(result);
 
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
-            let schemaName = typedRow.schema_name as string;
-            let catalogName = typedRow.catalog_name as string;
+            const schemaName = typedRow.schema_name as string;
+            const catalogName = typedRow.catalog_name as string;
 
             return {
                name: `${catalogName}.${schemaName}`,
-               isHidden: ["information_schema", "performance_schema","","SNOWFLAKE","information_schema", "pg_catalog", "pg_toast"].includes(
-                  schemaName as string,
-               ) || ["md_information_schema","system"].includes(catalogName as string),
+               isHidden:
+                  [
+                     "information_schema",
+                     "performance_schema",
+                     "",
+                     "SNOWFLAKE",
+                     "information_schema",
+                     "pg_catalog",
+                     "pg_toast",
+                  ].includes(schemaName as string) ||
+                  ["md_information_schema", "system"].includes(
+                     catalogName as string,
+                  ),
                isDefault: catalogName === "main",
             };
          });
@@ -471,9 +482,9 @@ export async function listTablesForSchema(
          const catalogName = schemaName.split(".")[0];
          schemaName = schemaName.split(".")[1];
          const result = await malloyConnection.runSQL(
-               `SELECT table_name FROM information_schema.tables WHERE table_schema = '${schemaName}' and table_catalog = '${catalogName}' ORDER BY table_name`,
-               {rowLimit: 1000}
-            );
+            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${schemaName}' and table_catalog = '${catalogName}' ORDER BY table_name`,
+            { rowLimit: 1000 },
+         );
 
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
