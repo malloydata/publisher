@@ -92,4 +92,4 @@ ENV NODE_ENV=production
 RUN mkdir -p /etc/publisher
 EXPOSE 4000
 
-CMD ["node", "--require", "./packages/server/dist/instrumentation.js", "./packages/server/dist/server.js"]    
+CMD ["node", "--require", "./packages/server/dist/instrumentation.js", "./packages/server/dist/server.js"]
