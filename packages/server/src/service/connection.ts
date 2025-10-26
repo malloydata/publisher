@@ -301,6 +301,7 @@ async function attachPostgres(
       if (config.databaseName) parts.push(`dbname=${config.databaseName}`);
       if (config.userName) parts.push(`user=${config.userName}`);
       if (config.password) parts.push(`password=${config.password}`);
+      if (process.env.PGSSLMODE === "no-verify") parts.push(`sslmode=disable`);
       attachString = parts.join(" ");
    }
 
