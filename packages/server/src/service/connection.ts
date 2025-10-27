@@ -566,16 +566,15 @@ export async function createProjectConnections(
                );
             }
 
-            if (!connection.motherduckConnection.database) {
-               throw new Error("MotherDuck database name is required.");
-            }
-
             if (!connection.motherduckConnection.accessToken) {
                throw new Error("MotherDuck access token is required.");
             }
 
+            let databasePath = `md:`;
             // Build the MotherDuck database path
-            const databasePath = `md:${connection.motherduckConnection.database}`;
+            if (connection.motherduckConnection.database) {
+               databasePath = `md:${connection.motherduckConnection.database}?attach_mode=single`;
+            }
 
             // Create MotherDuck connection using DuckDBConnectionOptions interface
             const motherduckConnection = new DuckDBConnection({
@@ -733,12 +732,6 @@ export async function testConnectionConfig(
 
       // Use createProjectConnections to create the connection, then test it
       // TODO: Test duckdb connections?
-      if (connectionConfig.type === "duckdb") {
-         return {
-            status: "ok",
-            errorMessage: "",
-         };
-      }
 
       const { malloyConnections } = await createProjectConnections(
          [connectionConfig], // Pass the single connection config
