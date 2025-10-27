@@ -16,6 +16,8 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         # Building the SDK is necessary to generate the .d.ts files used for type checking.
+        with:
+          bun-version: 1.2
       - name: Typecheck
         run: |
           bun install
@@ -49,7 +51,7 @@ jobs:
       - name: Build code
         run: docker exec -t publisher-ci bun run build
       - name: Run tests
-        run: docker exec -t publisher-ci sh -c "cd packages/server && bun test ./src/service/model.spec.ts ./src/service/package.spec.ts ./src/__tests__/setup.spec.ts ./src/__tests__/mcp_execute_query_tool.integration.spec.ts ./src/__tests__/mcp_resource.integration.spec.ts ./src/__tests__/mcp_transport.integration.spec.ts"
+        run: docker exec -t publisher-ci sh -c "cd packages/server && bun test"
   npx_test:
     name: npx test
     runs-on: ubuntu-latest
@@ -61,10 +63,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "18"
+
       - name: Install Bun
-        run: curl -fsSL https://bun.sh/install | bash && echo "$HOME/.bun/bin" >> $GITHUB_PATH
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2
       - name: build server
         run: bun install && bun run build
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
       - name: Link local package
         run: |
           cd packages/server && npm link

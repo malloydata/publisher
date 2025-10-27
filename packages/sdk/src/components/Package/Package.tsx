@@ -1,17 +1,16 @@
-import { Grid, Box } from "@mui/material";
+import { Box, Grid } from "@mui/material";
+import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { Notebook } from "../Notebook";
-import Config from "./Config";
-import Connections from "./Connections";
-import Databases from "./Databases";
-import Models from "./Models";
-import Notebooks from "./Notebooks";
-import Schedules from "./Schedules";
 import {
    PackageCard,
    PackageCardContent,
    PackageSectionTitle,
 } from "../styles";
-import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
+import Config from "./Config";
+import Connections from "./Connections";
+import Databases from "./Databases";
+import Models from "./Models";
+import Notebooks from "./Notebooks";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -58,9 +57,6 @@ export default function Package({
             </Grid>
             <Grid size={{ xs: 12, md: 6 }}>
                <Connections resourceUri={resourceUri} />
-            </Grid>
-            <Grid size={{ xs: 12, md: 12 }}>
-               <Schedules resourceUri={resourceUri} />
             </Grid>
             <Grid size={{ xs: 12, md: 12 }}>
                <PackageCard>

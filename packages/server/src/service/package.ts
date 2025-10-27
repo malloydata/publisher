@@ -19,15 +19,13 @@ import {
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
 import { logger } from "../logger";
-import { createConnections } from "./connection";
-import { Model } from "./model";
-import { Scheduler } from "./scheduler";
+import { createPackageDuckDBConnections } from "./connection";
+import { ApiConnection, Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
-type ApiSchedule = components["schemas"]["Schedule"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 
@@ -38,8 +36,8 @@ export class Package {
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
-   private scheduler: Scheduler | undefined;
    private packagePath: string;
+   private connections: Map<string, Connection> = new Map();
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -56,7 +54,7 @@ export class Package {
       packageMetadata: ApiPackage,
       databases: ApiDatabase[],
       models: Map<string, Model>,
-      scheduler: Scheduler | undefined,
+      connections: Map<string, Connection> = new Map(),
    ) {
       this.projectName = projectName;
       this.packageName = packageName;
@@ -64,7 +62,7 @@ export class Package {
       this.packageMetadata = packageMetadata;
       this.databases = databases;
       this.models = models;
-      this.scheduler = scheduler;
+      this.connections = connections;
    }
 
    static async create(
@@ -72,7 +70,7 @@ export class Package {
       packageName: string,
       packagePath: string,
       projectConnections: Map<string, Connection>,
-      serverRootPath: string,
+      packageConnections: ApiConnection[],
    ): Promise<Package> {
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -102,34 +100,15 @@ export class Package {
             unit: "ms",
          });
          const connections = new Map<string, Connection>(projectConnections);
-         logger.info(`Project connections: ${connections.size}`, {
-            connections,
-            projectConnections,
-         });
-         // Package connections override project connections.
-         const { malloyConnections: packageConnections } =
-            await createConnections(
-               packagePath,
-               [],
-               projectName,
-               serverRootPath,
-            );
-         const connectionsTime = performance.now();
-         logger.info("Package connections created", {
-            packageName,
-            connectionCount: packageConnections.size,
-            duration: connectionsTime - databasesTime,
-            unit: "ms",
-         });
-         packageConnections.forEach((connection) => {
-            connections.set(connection.name, connection);
-         });
 
          // Add a duckdb connection for the package.
-         connections.set(
-            "duckdb",
-            new DuckDBConnection("duckdb", ":memory:", packagePath),
+         const duckdbConnections = await createPackageDuckDBConnections(
+            packageConnections,
+            packagePath,
          );
+         duckdbConnections.malloyConnections.forEach((connection, name) => {
+            connections.set(name, connection);
+         });
 
          const models = await Package.loadModels(
             packageName,
@@ -140,14 +119,7 @@ export class Package {
          logger.info("Models loaded", {
             packageName,
             modelCount: models.size,
-            duration: modelsTime - connectionsTime,
-            unit: "ms",
-         });
-         const scheduler = Scheduler.create(models);
-         const schedulerTime = performance.now();
-         logger.info("Scheduler created", {
-            packageName,
-            duration: schedulerTime - modelsTime,
+            duration: modelsTime - databasesTime,
             unit: "ms",
          });
          const endTime = performance.now();
@@ -168,7 +140,7 @@ export class Package {
             packageConfig,
             databases,
             models,
-            scheduler,
+            connections,
          );
       } catch (error) {
          logger.error(`Error loading package ${packageName}`, { error });
@@ -195,12 +167,18 @@ export class Package {
       return this.databases;
    }
 
-   public listSchedules(): ApiSchedule[] {
-      return this.scheduler ? this.scheduler.list() : [];
-   }
-
    public getModel(modelPath: string): Model | undefined {
       return this.models.get(modelPath);
+   }
+
+   public getMalloyConnection(connectionName: string): Connection {
+      const connection = this.connections.get(connectionName);
+      if (!connection) {
+         throw new Error(
+            `Connection ${connectionName} not found in package ${this.packageName}`,
+         );
+      }
+      return connection;
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {

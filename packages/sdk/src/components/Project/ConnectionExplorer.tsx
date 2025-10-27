@@ -1,27 +1,26 @@
-import React from "react";
 import {
    Box,
+   Divider,
+   FormControlLabel,
+   Grid,
    List,
    ListItemButton,
    ListItemText,
-   Typography,
-   Divider,
    Paper,
-   Grid,
    Switch,
-   FormControlLabel,
    Table,
    TableBody,
    TableCell,
    TableContainer,
    TableHead,
    TableRow,
-   Tooltip,
+   Typography,
 } from "@mui/material";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { Loading } from "../Loading";
+import React from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
+import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 
 interface ConnectionExplorerProps {
@@ -37,18 +36,26 @@ export default function ConnectionExplorer({
 }: ConnectionExplorerProps) {
    const { apiClients } = useServer();
    const { projectName: projectName } = parseResourceUri(resourceUri);
-   const [selectedTable, setSelectedTable] = React.useState<string | undefined>(
-      undefined,
-   );
+   const [selectedTable, setSelectedTable] = React.useState<
+      | { resource: string; columns: Array<{ name: string; type: string }> }
+      | undefined
+   >(undefined);
    const [selectedSchema, setSelectedSchema] = React.useState<string | null>(
       schema || null,
    );
    const [showHiddenSchemas, setShowHiddenSchemas] = React.useState(false);
-   const { data, isSuccess, isError, error, isLoading } = useQueryWithApiError({
-      queryKey: ["tablePath", projectName, connectionName],
+   const {
+      data: schemasData,
+      isError: schemasError,
+      isLoading: schemasLoading,
+      error: schemasErrorObj,
+   } = useQueryWithApiError({
+      queryKey: ["schemas", projectName, connectionName],
       queryFn: () =>
          apiClients.connections.listSchemas(projectName, connectionName),
    });
+
+   const availableSchemas = schemasData?.data || [];
 
    return (
       <Grid container spacing={1}>
@@ -82,74 +89,52 @@ export default function ConnectionExplorer({
                   <Box
                      sx={{ mt: "2px", maxHeight: "600px", overflowY: "auto" }}
                   >
-                     {isLoading && <Loading text="Fetching Table Paths..." />}
-                     {isError && (
+                     {schemasLoading && <Loading text="Loading schemas..." />}
+                     {schemasError && (
                         <ApiErrorDisplay
-                           error={error}
-                           context={`${projectName} > ${connectionName}`}
+                           error={schemasErrorObj}
+                           context={`${projectName} > ${connectionName} > Schemas`}
                         />
                      )}
-                     {isSuccess && data.data.length === 0 && (
-                        <Typography variant="body2">No Schemas</Typography>
-                     )}
-                     {isSuccess && data.data.length > 0 && (
-                        <List dense disablePadding>
-                           {data.data
-                              .filter(
-                                 ({ isHidden }) =>
-                                    showHiddenSchemas || !isHidden,
-                              )
-                              .sort((a, b) => {
-                                 if (a.isDefault === b.isDefault) return 0;
-                                 return a.isDefault ? -1 : 1;
-                              })
-                              .map(
+                     {!schemasLoading &&
+                        !schemasError &&
+                        availableSchemas.length === 0 && (
+                           <Typography variant="body2">No Schemas</Typography>
+                        )}
+                     {!schemasLoading &&
+                        !schemasError &&
+                        availableSchemas.length > 0 && (
+                           <List dense disablePadding>
+                              {availableSchemas.map(
                                  (schema: {
                                     name: string;
-                                    isDefault: boolean;
-                                    description?: string;
+                                    isHidden: boolean;
                                  }) => {
-                                    const fullDescription = (
-                                       schema.description || ""
-                                    ).trim();
-                                    const hasDescription =
-                                       fullDescription !== "";
-                                    const firstLine = hasDescription
-                                       ? fullDescription.split(/\r?\n/)[0]
-                                       : undefined;
-
-                                    const item = (
+                                    const schemaName = schema.name;
+                                    const isHidden = schema.isHidden;
+                                    if (isHidden && !showHiddenSchemas) {
+                                       return null;
+                                    }
+                                    const isSelected =
+                                       selectedSchema === schemaName;
+                                    return (
                                        <ListItemButton
-                                          key={schema.name}
-                                          selected={
-                                             selectedSchema === schema.name
-                                          }
-                                          onClick={() =>
-                                             setSelectedSchema(schema.name)
-                                          }
+                                          key={schemaName}
+                                          selected={isSelected}
+                                          onClick={() => {
+                                             {
+                                                setSelectedSchema(schemaName);
+                                                setSelectedTable(undefined);
+                                             }
+                                          }}
                                        >
-                                          <ListItemText
-                                             primary={schema.name}
-                                             secondary={firstLine}
-                                          />
+                                          <ListItemText primary={schemaName} />
                                        </ListItemButton>
-                                    );
-
-                                    return hasDescription ? (
-                                       <Tooltip
-                                          key={schema.name}
-                                          title={fullDescription}
-                                          arrow
-                                       >
-                                          {item}
-                                       </Tooltip>
-                                    ) : (
-                                       item
                                     );
                                  },
                               )}
-                        </List>
-                     )}
+                           </List>
+                        )}
                   </Box>
                </Paper>
             </Grid>
@@ -160,8 +145,8 @@ export default function ConnectionExplorer({
                   <TablesInSchema
                      connectionName={connectionName}
                      schemaName={selectedSchema}
-                     onTableClick={(tableName) => {
-                        setSelectedTable(tableName);
+                     onTableClick={(table) => {
+                        setSelectedTable(table);
                      }}
                      resourceUri={resourceUri}
                   />
@@ -169,14 +154,9 @@ export default function ConnectionExplorer({
             )}
          </Grid>
          <Grid size={{ xs: 12, md: schema ? 6 : 4 }}>
-            {selectedTable && selectedSchema && (
+            {selectedTable && (
                <Paper sx={{ p: 1, m: 0 }}>
-                  <TableSchemaViewer
-                     connectionName={connectionName}
-                     schemaName={selectedSchema}
-                     tableName={selectedTable}
-                     resourceUri={resourceUri}
-                  />
+                  <TableSchemaViewer table={selectedTable} />
                </Paper>
             )}
          </Grid>
@@ -185,76 +165,42 @@ export default function ConnectionExplorer({
 }
 
 type TableSchemaViewerProps = {
-   connectionName: string;
-   schemaName: string;
-   tableName: string;
-   resourceUri: string;
+   table: { resource: string; columns: Array<{ name: string; type: string }> };
 };
 
-function TableSchemaViewer({
-   connectionName,
-   schemaName,
-   tableName,
-   resourceUri,
-}: TableSchemaViewerProps) {
-   const { apiClients } = useServer();
-   const { projectName: projectName } = parseResourceUri(resourceUri);
-   const { data, isSuccess, isError, error, isLoading } = useQueryWithApiError({
-      queryKey: [
-         "tablePathSchema",
-         projectName,
-         connectionName,
-         schemaName,
-         tableName,
-      ],
-      queryFn: () =>
-         apiClients.connections.getTablesource(
-            projectName,
-            connectionName,
-            tableName,
-            `${schemaName}.${tableName}`,
-         ),
-   });
-
+function TableSchemaViewer({ table }: TableSchemaViewerProps) {
    return (
       <>
          <Typography variant="overline" fontWeight="bold">
-            Schema: {schemaName}.{tableName}
+            Schema: {table.resource}
          </Typography>
          <Divider />
          <Box sx={{ mt: "10px", maxHeight: "600px", overflowY: "auto" }}>
-            {isLoading && <Loading text="Fetching Table Details..." />}
-            {isError && (
-               <ApiErrorDisplay
-                  error={error}
-                  context={`${projectName} > ${connectionName} > ${schemaName}.${tableName}`}
-               />
-            )}
-            {isSuccess && data && (
-               <TableContainer>
-                  <Table
-                     size="small"
-                     sx={{ "& .MuiTableCell-root": { padding: "10px" } }}
-                  >
-                     <TableHead>
-                        <TableRow>
-                           <TableCell>NAME</TableCell>
-                           <TableCell>TYPE</TableCell>
-                        </TableRow>
-                     </TableHead>
-                     <TableBody>
-                        {data.data.columns?.map(
-                           (column: { name: string; type: string }) => (
-                              <TableRow key={column.name}>
-                                 <TableCell>{column.name}</TableCell>
-                                 <TableCell>{column.type}</TableCell>
-                              </TableRow>
-                           ),
-                        )}
-                     </TableBody>
-                  </Table>
-               </TableContainer>
-            )}
+            <TableContainer>
+               <Table
+                  size="small"
+                  sx={{ "& .MuiTableCell-root": { padding: "10px" } }}
+               >
+                  <TableHead>
+                     <TableRow>
+                        <TableCell>NAME</TableCell>
+                        <TableCell>TYPE</TableCell>
+                     </TableRow>
+                  </TableHead>
+                  <TableBody>
+                     {table.columns
+                        ?.sort((a: { name: string }, b: { name: string }) =>
+                           a.name.localeCompare(b.name),
+                        )
+                        ?.map((column: { name: string; type: string }) => (
+                           <TableRow key={column.name}>
+                              <TableCell>{column.name}</TableCell>
+                              <TableCell>{column.type}</TableCell>
+                           </TableRow>
+                        ))}
+                  </TableBody>
+               </Table>
+            </TableContainer>
          </Box>
       </>
    );
@@ -263,7 +209,10 @@ function TableSchemaViewer({
 interface TablesInSchemaProps {
    connectionName: string;
    schemaName: string;
-   onTableClick: (tableName: string) => void;
+   onTableClick: (table: {
+      resource: string;
+      columns: Array<{ name: string; type: string }>;
+   }) => void;
    resourceUri: string;
 }
 
@@ -299,19 +248,43 @@ function TablesInSchema({
                   context={`${projectName} > ${connectionName} > ${schemaName}`}
                />
             )}
-            {isSuccess && data.data.length === 0 && (
+            {isSuccess && data?.data?.length === 0 && (
                <Typography variant="body2">No Tables</Typography>
             )}
-            {isSuccess && data.data.length > 0 && (
+            {isSuccess && data?.data && data.data.length > 0 && (
                <List dense disablePadding>
-                  {data.data.map((tableName: string) => (
-                     <ListItemButton
-                        key={tableName}
-                        onClick={() => onTableClick(tableName)}
-                     >
-                        <ListItemText primary={tableName} />
-                     </ListItemButton>
-                  ))}
+                  {data.data
+                     .sort(
+                        (a: { resource: string }, b: { resource: string }) => {
+                           // Extract table names for sorting
+                           const tableNameA =
+                              a.resource.split(".").pop() || a.resource;
+                           const tableNameB =
+                              b.resource.split(".").pop() || b.resource;
+                           return tableNameA.localeCompare(tableNameB);
+                        },
+                     )
+                     .map(
+                        (table: {
+                           resource: string;
+                           columns: Array<{ name: string; type: string }>;
+                        }) => {
+                           // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
+                           const tableName =
+                              table.resource.split(".").pop() || table.resource;
+                           return (
+                              <ListItemButton
+                                 key={table.resource}
+                                 onClick={() => onTableClick(table)}
+                              >
+                                 <ListItemText
+                                    primary={tableName}
+                                    secondary={`${table.columns.length} columns`}
+                                 />
+                              </ListItemButton>
+                           );
+                        },
+                     )}
                </List>
             )}
          </Box>

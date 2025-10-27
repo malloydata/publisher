@@ -1,13 +1,13 @@
-import http from "http";
-import { URL } from "url";
-import path from "path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type {
-   Request,
    Notification,
+   Request,
    Result,
 } from "@modelcontextprotocol/sdk/types.js";
+import http from "http";
+import path from "path";
+import { URL } from "url";
 
 /**
  * E2E environment descriptor returned by {@link startE2E}.

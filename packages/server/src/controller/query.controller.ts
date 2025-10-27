@@ -34,7 +34,7 @@ export class QueryController {
          );
          return {
             result: JSON.stringify(result),
-            resource: `${API_PREFIX}/projects/${projectName}/packages/${packageName}/queryResults/${modelPath}`,
+            resource: `${API_PREFIX}/projects/${projectName}/packages/${packageName}/models/${modelPath}/query`,
          } as ApiQuery;
       }
    }

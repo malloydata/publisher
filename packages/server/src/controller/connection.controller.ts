@@ -1,30 +1,57 @@
-import {
-   RunSQLOptions,
-   TableSourceDef,
-   TestableConnection,
-} from "@malloydata/malloy";
-import { Connection, PersistSQLResults } from "@malloydata/malloy/connection";
+import { Connection, RunSQLOptions } from "@malloydata/malloy";
+import { PersistSQLResults } from "@malloydata/malloy/connection";
+import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
 import { logger } from "../logger";
-import { components } from "../api";
+import { testConnectionConfig } from "../service/connection";
 import {
+   getConnectionTableSource,
    getSchemasForConnection,
    getTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
-import { testConnectionConfig } from "../service/connection";
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
 type ApiSqlSource = components["schemas"]["SqlSource"];
 type ApiTableSource = components["schemas"]["TableSource"];
+type ApiTable = components["schemas"]["Table"];
 type ApiQueryData = components["schemas"]["QueryData"];
 type ApiTemporaryTable = components["schemas"]["TemporaryTable"];
-type ApiSchemaName = components["schemas"]["SchemaName"];
+type ApiSchema = components["schemas"]["Schema"];
 export class ConnectionController {
    private projectStore: ProjectStore;
 
    constructor(projectStore: ProjectStore) {
       this.projectStore = projectStore;
+   }
+
+   /**
+    * Gets the appropriate Malloy connection for a given connection name.
+    * For DuckDB connections, retrieves from package level; for others, from project level.
+    */
+   private async getMalloyConnection(
+      projectName: string,
+      connectionName: string,
+   ): Promise<Connection> {
+      const project = await this.projectStore.getProject(projectName, false);
+      const connection = project.getApiConnection(connectionName);
+
+      // For DuckDB connections, get the connection from a package
+      if (connection.type === "duckdb") {
+         const packages = await project.listPackages();
+         if (packages.length === 0) {
+            return project.getMalloyConnection(connectionName);
+         }
+         // For now, use the first package's DuckDB connection
+         const packageName = packages[0].name;
+         if (!packageName) {
+            throw new ConnectionError("Package name is undefined");
+         }
+         const pkg = await project.getPackage(packageName);
+         return pkg.getMalloyConnection(connectionName);
+      } else {
+         return project.getMalloyConnection(connectionName);
+      }
    }
 
    public async getConnection(
@@ -44,10 +71,15 @@ export class ConnectionController {
    public async listSchemas(
       projectName: string,
       connectionName: string,
-   ): Promise<ApiSchemaName[]> {
+   ): Promise<ApiSchema[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
-      return getSchemasForConnection(connection);
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
+         connectionName,
+      );
+
+      return getSchemasForConnection(connection, malloyConnection);
    }
 
    // Lists tables available in a schema. For postgres the schema is usually "public"
@@ -55,35 +87,15 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
       schemaName: string,
-   ): Promise<string[]> {
+   ): Promise<ApiTable[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
-      return getTablesForSchema(connection, schemaName);
-   }
-
-   public async testConnection(
-      projectName: string,
-      connectionName: string,
-   ): Promise<ApiConnectionStatus> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getMalloyConnection(
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
          connectionName,
-      ) as Connection;
-      try {
-         await (connection as TestableConnection).test();
-         return {
-            status: "ok",
-            errorMessage: "",
-         };
-      } catch (error) {
-         if (error instanceof ConnectionError) {
-            return {
-               status: "failed",
-               errorMessage: error.message,
-            };
-         }
-         throw error;
-      }
+      );
+
+      return getTablesForSchema(connection, schemaName, malloyConnection);
    }
 
    public async getConnectionSqlSource(
@@ -91,12 +103,22 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
    ): Promise<ApiSqlSource> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getMalloyConnection(connectionName);
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
+         connectionName,
+      );
+
       try {
          return {
             source: JSON.stringify(
-               await connection.fetchSelectSchema({
+               await (
+                  malloyConnection as Connection & {
+                     fetchSelectSchema: (params: {
+                        connection: string;
+                        selectStr: string;
+                     }) => Promise<unknown>;
+                  }
+               ).fetchSelectSchema({
                   connection: connectionName,
                   selectStr: sqlStatement,
                }),
@@ -113,29 +135,35 @@ export class ConnectionController {
       tableKey: string,
       tablePath: string,
    ): Promise<ApiTableSource> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getMalloyConnection(connectionName);
-      try {
-         const source = await connection.fetchTableSchema(tableKey, tablePath);
-         if (source === undefined) {
-            throw new ConnectionError(`Table ${tablePath} not found`);
-         }
-         const malloyFields = (source as TableSourceDef).fields;
-         const fields = malloyFields.map((field) => {
-            return {
-               name: field.name,
-               type: field.type,
-            };
-         });
-         return {
-            source: JSON.stringify(source),
-            resource: tablePath,
-            columns: fields,
-         };
-      } catch (error) {
-         logger.error("error", { error });
-         throw new ConnectionError((error as Error).message);
-      }
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
+         connectionName,
+      );
+
+      return getConnectionTableSource(malloyConnection, tableKey, tablePath);
+   }
+
+   public async getTable(
+      projectName: string,
+      connectionName: string,
+      _schemaName: string,
+      tablePath: string,
+   ): Promise<ApiTable> {
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
+         connectionName,
+      );
+
+      const tableSource = await getConnectionTableSource(
+         malloyConnection,
+         tablePath.split(".").pop()!, // tableKey is the table name
+         tablePath,
+      );
+
+      return {
+         resource: tablePath,
+         columns: tableSource.columns,
+      };
    }
 
    public async getConnectionQueryData(
@@ -144,8 +172,11 @@ export class ConnectionController {
       sqlStatement: string,
       options: string,
    ): Promise<ApiQueryData> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getMalloyConnection(connectionName);
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
+         connectionName,
+      );
+
       let runSQLOptions: RunSQLOptions = {};
       if (options) {
          runSQLOptions = JSON.parse(options) as RunSQLOptions;
@@ -159,7 +190,7 @@ export class ConnectionController {
       try {
          return {
             data: JSON.stringify(
-               await connection.runSQL(sqlStatement, runSQLOptions),
+               await malloyConnection.runSQL(sqlStatement, runSQLOptions),
             ),
          };
       } catch (error) {
@@ -172,17 +203,17 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
    ): Promise<ApiTemporaryTable> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getMalloyConnection(
+      const malloyConnection = await this.getMalloyConnection(
+         projectName,
          connectionName,
-      ) as Connection;
+      );
 
       try {
          return {
             table: JSON.stringify(
-               await (connection as PersistSQLResults).manifestTemporaryTable(
-                  sqlStatement,
-               ),
+               await (
+                  malloyConnection as PersistSQLResults
+               ).manifestTemporaryTable(sqlStatement),
             ),
          };
       } catch (error) {

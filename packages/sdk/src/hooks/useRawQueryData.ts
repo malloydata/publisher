@@ -1,6 +1,6 @@
+import { useServer } from "../components/ServerProvider";
 import { parseResourceUri } from "../utils/formatting";
 import { useQueryWithApiError } from "./useQueryWithApiError";
-import { useServer } from "../components/ServerProvider";
 
 interface UseRawQueryDataProps {
    modelPath: string;
@@ -35,14 +35,16 @@ export function useRawQueryData({
          queryName,
       ],
       queryFn: () =>
-         apiClients.queryResults.executeQuery(
+         apiClients.models.executeQueryModel(
             projectName,
             packageName,
             modelPath,
-            query,
-            sourceName,
-            queryName,
-            versionId,
+            {
+               query: query,
+               sourceName: sourceName,
+               queryName: queryName,
+               versionId: versionId,
+            },
          ),
       enabled,
    });

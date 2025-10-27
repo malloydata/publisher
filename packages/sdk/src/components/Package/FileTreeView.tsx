@@ -222,16 +222,16 @@ function getTreeViewRecursive(
          });
       } else {
          // This is a directory.
-         path += `${key}/`;
+         const childPath = path + key + "/";
          treeViewItems.push({
-            id: path,
+            id: childPath,
             label: key,
             fileType: "directory",
             selectable: true,
             link: undefined,
             children: getTreeViewRecursive(
                value as Map<string, unknown>,
-               path,
+               childPath,
                onClickNode,
             ),
          });

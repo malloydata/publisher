@@ -1,13 +1,13 @@
-import { Box, Typography, IconButton } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
+import { Box, IconButton, Typography } from "@mui/material";
 import React, { useEffect } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import ResultsDialog from "../ResultsDialog";
-import { CleanMetricCard, CleanNotebookCell } from "../styles";
-import { parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
+import { CleanMetricCard, CleanNotebookCell } from "../styles";
 
 interface ModelCellProps {
    sourceName?: string;
@@ -37,14 +37,16 @@ export function ModelCell({
    } = useQueryWithApiError({
       queryKey: ["namedQueryResult", resourceUri, queryName],
       queryFn: () =>
-         apiClients.queryResults.executeQuery(
+         apiClients.models.executeQueryModel(
             projectName,
             packageName,
             modelPath,
-            undefined, // query
-            undefined, // sourceName
-            queryName, // queryName
-            versionId, // versionId
+            {
+               query: undefined,
+               sourceName: undefined,
+               queryName: queryName,
+               versionId: versionId,
+            },
          ),
       enabled: true, // Always execute
    });

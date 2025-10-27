@@ -1,5 +1,5 @@
-import http from "k6/http";
 import { check } from "k6";
+import http from "k6/http";
 
 type ApiPackage = {
    name: string;
@@ -137,7 +137,16 @@ export const queryModelView = (
    const encodedModelPath = encodeURIComponent(modelPath);
    const encodedSourceName = encodeURIComponent(sourceName);
    const encodedQueryName = encodeURIComponent(queryName);
-   return http.get(
-      `${PUBLISHER_URL}/api/v0/projects/home/packages/${encodedPackageName}/queryResults/${encodedModelPath}?sourceName=${encodedSourceName}&queryName=${encodedQueryName}`,
+   return http.post(
+      `${PUBLISHER_URL}/api/v0/projects/home/packages/${encodedPackageName}/models/${encodedModelPath}/query`,
+      JSON.stringify({
+         sourceName: sourceName,
+         queryName: queryName,
+      }),
+      {
+         headers: {
+            "Content-Type": "application/json",
+         },
+      },
    );
 };
