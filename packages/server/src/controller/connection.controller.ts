@@ -165,6 +165,7 @@ export class ConnectionController {
       return {
          resource: tablePath,
          columns: tableSource.columns,
+         source: tableSource.source,
       };
    }
 

@@ -2,8 +2,8 @@ openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
   description: |
-    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources. 
-    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases 
+    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources.
+    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases
     (.parquet files) with a malloy-publisher.json manifest at the package's root directory.
 
     ## Key Features
@@ -1900,6 +1900,9 @@ components:
         resource:
           type: string
           description: Resource path to the table.
+        source:
+          type: string
+          description: Table source as a JSON string.
         columns:
           description: Table fields
           type: array

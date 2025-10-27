@@ -4,7 +4,7 @@
     "": {
       "name": "malloy-publisher",
       "dependencies": {
-        "duckdb": "^1.3.1",
+        "duckdb": "^1.4.1",
         "eslint-plugin-react": "^7.37.5",
         "eslint-plugin-react-hooks": "^7.0.0",
         "react": "^19.1.0",
@@ -24,7 +24,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.118",
+      "version": "0.0.122",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -48,7 +48,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.118",
+      "version": "0.0.122",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -96,7 +96,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.118",
+      "version": "0.0.122",
       "bin": {
         "malloy-publisher": "dist/server.js",
       },
@@ -166,7 +166,7 @@
     },
   },
   "overrides": {
-    "duckdb": "1.3.1",
+    "duckdb": "1.4.1",
     "esbuild": "0.25.9",
   },
   "packages": {
@@ -1762,7 +1762,7 @@
 
     "dot-case": ["dot-case@3.0.4", "", { "dependencies": { "no-case": "^3.0.4", "tslib": "^2.0.3" } }, "sha512-Kv5nKlh6yRrdrGvxeJ2e5y2eRUpkUosIW4A2AS38zwSz27zu7ufDwQPi5Jhs3XAlGNetl3bmnGhQsMtkKJnj3w=="],
 
-    "duckdb": ["duckdb@1.3.1", "", { "dependencies": { "@mapbox/node-pre-gyp": "^2.0.0", "node-addon-api": "^7.0.0", "node-gyp": "^9.3.0" } }, "sha512-wSCxu6zSkHkGHtLrI5MmHYUOpbi08s2eIY/QCg2f1YsSyohjA3MRnUMdDb88oqgLa7/h+/wHuIe1RXRu4k04Sw=="],
+    "duckdb": ["duckdb@1.4.1", "", { "dependencies": { "@mapbox/node-pre-gyp": "^2.0.0", "node-addon-api": "^7.0.0", "node-gyp": "^9.3.0" } }, "sha512-ynTVIsJjuUfF4GuTNpJn9xpVw8+gHz1wyHzQhfPJsVCemu3bf620HmJo5nRDTB0LMwfLW/3pTMmh+uze9kHAcw=="],
 
     "dunder-proto": ["dunder-proto@1.0.1", "", { "dependencies": { "call-bind-apply-helpers": "^1.0.1", "es-errors": "^1.3.0", "gopd": "^1.2.0" } }, "sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A=="],
 
