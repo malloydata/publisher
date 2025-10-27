@@ -225,7 +225,7 @@ function TablesInSchema({
 }: TablesInSchemaProps) {
    const { projectName: projectName } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
-    const [searchTerm, setSearchTerm] = useState("");
+   const [searchTerm, setSearchTerm] = useState("");
    const { data, isSuccess, isError, error, isLoading } = useQueryWithApiError({
       queryKey: ["tablesInSchema", projectName, connectionName, schemaName],
       queryFn: () =>
