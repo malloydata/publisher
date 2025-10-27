@@ -1691,7 +1691,8 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum: [postgres, bigquery, snowflake, trino, mysql, duckdb]
+          enum:
+            [postgres, bigquery, snowflake, trino, mysql, duckdb, motherduck]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:
@@ -1706,6 +1707,8 @@ components:
           $ref: "#/components/schemas/MysqlConnection"
         duckdbConnection:
           $ref: "#/components/schemas/DuckdbConnection"
+        motherduckConnection:
+          $ref: "#/components/schemas/MotherDuckConnection"
 
     ConnectionAttributes:
       type: object
@@ -1871,7 +1874,7 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum: [bigquery, snowflake, postgres, motherduck]
+          enum: [bigquery, snowflake, postgres]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         bigqueryConnection:
@@ -1880,8 +1883,6 @@ components:
           $ref: "#/components/schemas/SnowflakeConnection"
         postgresConnection:
           $ref: "#/components/schemas/PostgresConnection"
-        motherDuckConnection:
-          $ref: "#/components/schemas/MotherDuckConnection"
 
     # TODO: What is this?  Can we remove it?
     SqlSource:
