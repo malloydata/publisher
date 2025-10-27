@@ -268,6 +268,7 @@ export async function getSchemasForConnection(
          // Use MotherDuck's INFORMATION_SCHEMA.SCHEMATA to list schemas
          const result = await malloyConnection.runSQL(
             "SELECT DISTINCT schema_name as row FROM information_schema.schemata ORDER BY schema_name",
+            { rowLimit: 1000 },
          );
          const rows = standardizeRunSQLResult(result);
          console.log(rows);
@@ -548,6 +549,7 @@ export async function listTablesForSchema(
       try {
          const result = await malloyConnection.runSQL(
             `SELECT table_name as row FROM information_schema.tables WHERE table_schema = '${schemaName}' ORDER BY table_name`,
+            { rowLimit: 1000 },
          );
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
