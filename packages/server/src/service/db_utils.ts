@@ -260,6 +260,39 @@ export async function getSchemasForConnection(
             `Failed to get schemas for DuckDB connection ${connection.name}: ${(error as Error).message}`,
          );
       }
+   } else if (connection.type === "motherduck") {
+      if (!connection.motherduckConnection) {
+         throw new Error("MotherDuck connection is required");
+      }
+      try {
+         // Use MotherDuck's INFORMATION_SCHEMA.SCHEMATA to list schemas
+         const result = await malloyConnection.runSQL(
+            "SELECT DISTINCT schema_name as row FROM information_schema.schemata ORDER BY schema_name",
+            { rowLimit: 1000 },
+         );
+         const rows = standardizeRunSQLResult(result);
+         console.log(rows);
+         return rows.map((row: unknown) => {
+            const typedRow = row as { row: string };
+            return {
+               name: typedRow.row,
+               isHidden: [
+                  "information_schema",
+                  "performance_schema",
+                  "",
+               ].includes(typedRow.row),
+               isDefault: false,
+            };
+         });
+      } catch (error) {
+         console.error(
+            `Error getting schemas for MotherDuck connection ${connection.name}:`,
+            error,
+         );
+         throw new Error(
+            `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
+         );
+      }
    } else {
       throw new Error(`Unsupported connection type: ${connection.type}`);
    }
@@ -509,8 +542,30 @@ export async function listTablesForSchema(
             `Failed to get tables for DuckDB schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
          );
       }
+   } else if (connection.type === "motherduck") {
+      if (!connection.motherduckConnection) {
+         throw new Error("MotherDuck connection is required");
+      }
+      try {
+         const result = await malloyConnection.runSQL(
+            `SELECT table_name as row FROM information_schema.tables WHERE table_schema = '${schemaName}' ORDER BY table_name`,
+            { rowLimit: 1000 },
+         );
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as { row: string };
+            return typedRow.row;
+         });
+      } catch (error) {
+         logger.error(
+            `Error getting tables for MotherDuck schema ${schemaName} in connection ${connection.name}`,
+            { error },
+         );
+         throw new Error(
+            `Failed to get tables for MotherDuck schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         );
+      }
    } else {
-      // TODO(jjs) - implement
-      return [];
+      throw new Error(`Unsupported connection type: ${connection.type}`);
    }
 }

@@ -310,42 +310,6 @@ async function attachPostgres(
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
 
-async function attachMotherDuck(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.motherDuckConnection) {
-      throw new Error(
-         `MotherDuck connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-
-   const config = attachedDb.motherDuckConnection;
-
-   if (!config.database) {
-      throw new Error(
-         `MotherDuck database name is required for: ${attachedDb.name}`,
-      );
-   }
-
-   await installAndLoadExtension(connection, "motherduck");
-
-   // Set token if provided
-   if (config.accessToken) {
-      const escapedToken = escapeSQL(config.accessToken);
-      await connection.runSQL(`SET motherduck_token = '${escapedToken}';`);
-   }
-
-   const connectionString = `md:${config.database}`;
-   logger.info(
-      `Connecting to MotherDuck database: ${config.database} as ${attachedDb.name}`,
-   );
-
-   const attachCommand = `ATTACH '${connectionString}' AS ${attachedDb.name} (TYPE motherduck, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
-   logger.info(`Successfully attached MotherDuck database: ${attachedDb.name}`);
-}
-
 // Main attachment function
 async function attachDatabasesToDuckDB(
    duckdbConnection: DuckDBConnection,
@@ -355,7 +319,6 @@ async function attachDatabasesToDuckDB(
       bigquery: attachBigQuery,
       snowflake: attachSnowflake,
       postgres: attachPostgres,
-      motherduck: attachMotherDuck,
    };
 
    for (const attachedDb of attachedDatabases) {
@@ -596,6 +559,37 @@ export async function createProjectConnections(
             break;
          }
 
+         case "motherduck": {
+            if (!connection.motherduckConnection) {
+               throw new Error(
+                  "MotherDuck connection configuration is missing.",
+               );
+            }
+
+            if (!connection.motherduckConnection.accessToken) {
+               throw new Error("MotherDuck access token is required.");
+            }
+
+            let databasePath = `md:`;
+            // Build the MotherDuck database path
+            if (connection.motherduckConnection.database) {
+               databasePath = `md:${connection.motherduckConnection.database}?attach_mode=single`;
+            }
+
+            // Create MotherDuck connection using DuckDBConnectionOptions interface
+            const motherduckConnection = new DuckDBConnection({
+               name: connection.name,
+               databasePath: databasePath,
+               motherDuckToken: connection.motherduckConnection.accessToken,
+               workingDirectory: projectPath,
+            });
+
+            connectionMap.set(connection.name, motherduckConnection);
+            connection.attributes =
+               getConnectionAttributes(motherduckConnection);
+            break;
+         }
+
          default: {
             throw new Error(`Unsupported connection type: ${connection.type}`);
          }
@@ -738,12 +732,6 @@ export async function testConnectionConfig(
 
       // Use createProjectConnections to create the connection, then test it
       // TODO: Test duckdb connections?
-      if (connectionConfig.type === "duckdb") {
-         return {
-            status: "ok",
-            errorMessage: "",
-         };
-      }
 
       const { malloyConnections } = await createProjectConnections(
          [connectionConfig], // Pass the single connection config
