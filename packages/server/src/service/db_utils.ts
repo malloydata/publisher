@@ -80,11 +80,20 @@ export async function getSchemasForConnection(
          const bigquery = createBigQueryClient(connection);
          const [datasets] = await bigquery.getDatasets();
 
-         return datasets.map((dataset) => ({
-            name: dataset.id,
-            isHidden: false,
-            isDefault: false,
-         }));
+         const schemas = await Promise.all(
+            datasets.map(async (dataset) => {
+               const [metadata] = await dataset.getMetadata();
+               return {
+                  name: dataset.id,
+                  isHidden: false,
+                  isDefault: false,
+                  // Include description from dataset metadata if available
+                  description: (metadata as { description?: string })
+                     ?.description,
+               };
+            }),
+         );
+         return schemas;
       } catch (error) {
          console.error(
             `Error getting schemas for BigQuery connection ${connection.name}:`,
@@ -213,35 +222,33 @@ export async function getSchemasForConnection(
          // Use DuckDB's INFORMATION_SCHEMA.SCHEMATA to list schemas
          // Use DISTINCT to avoid duplicates from attached databases
          const result = await malloyConnection.runSQL(
-            "SELECT DISTINCT schema_name FROM information_schema.schemata ORDER BY schema_name",
+            "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
+            { rowLimit: 1000 },
          );
 
          const rows = standardizeRunSQLResult(result);
 
-         // Check if this DuckDB connection has attached databases
-         const hasAttachedDatabases =
-            connection.duckdbConnection?.attachedDatabases &&
-            Array.isArray(connection.duckdbConnection.attachedDatabases) &&
-            connection.duckdbConnection.attachedDatabases.length > 0;
-
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
-            let schemaName = typedRow.schema_name as string;
-
-            // If we have attached databases and this is not the main schema, prepend the attached database name
-            if (hasAttachedDatabases && schemaName !== "main") {
-               const attachedDbName = (
-                  connection.duckdbConnection!.attachedDatabases as Array<{
-                     name: string;
-                  }>
-               )[0].name;
-               schemaName = `${attachedDbName}.${schemaName}`;
-            }
+            const schemaName = typedRow.schema_name as string;
+            const catalogName = typedRow.catalog_name as string;
 
             return {
-               name: schemaName,
-               isHidden: false,
-               isDefault: typedRow.schema_name === "main",
+               name: `${catalogName}.${schemaName}`,
+               isHidden:
+                  [
+                     "information_schema",
+                     "performance_schema",
+                     "",
+                     "SNOWFLAKE",
+                     "information_schema",
+                     "pg_catalog",
+                     "pg_toast",
+                  ].includes(schemaName as string) ||
+                  ["md_information_schema", "system"].includes(
+                     catalogName as string,
+                  ),
+               isDefault: catalogName === "main",
             };
          });
       } catch (error) {
@@ -251,6 +258,39 @@ export async function getSchemasForConnection(
          );
          throw new Error(
             `Failed to get schemas for DuckDB connection ${connection.name}: ${(error as Error).message}`,
+         );
+      }
+   } else if (connection.type === "motherduck") {
+      if (!connection.motherduckConnection) {
+         throw new Error("MotherDuck connection is required");
+      }
+      try {
+         // Use MotherDuck's INFORMATION_SCHEMA.SCHEMATA to list schemas
+         const result = await malloyConnection.runSQL(
+            "SELECT DISTINCT schema_name as row FROM information_schema.schemata ORDER BY schema_name",
+            { rowLimit: 1000 },
+         );
+         const rows = standardizeRunSQLResult(result);
+         console.log(rows);
+         return rows.map((row: unknown) => {
+            const typedRow = row as { row: string };
+            return {
+               name: typedRow.row,
+               isHidden: [
+                  "information_schema",
+                  "performance_schema",
+                  "",
+               ].includes(typedRow.row),
+               isDefault: false,
+            };
+         });
+      } catch (error) {
+         console.error(
+            `Error getting schemas for MotherDuck connection ${connection.name}:`,
+            error,
+         );
+         throw new Error(
+            `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
          );
       }
    } else {
@@ -481,33 +521,11 @@ export async function listTablesForSchema(
          throw new Error("DuckDB connection is required");
       }
       try {
-         // Check if this DuckDB connection has attached databases and if the schema name is prepended
-         const hasAttachedDatabases =
-            connection.duckdbConnection?.attachedDatabases &&
-            Array.isArray(connection.duckdbConnection.attachedDatabases) &&
-            connection.duckdbConnection.attachedDatabases.length > 0;
-
-         let actualSchemaName = schemaName;
-
-         // If we have attached databases and the schema name is prepended, extract the actual schema name
-         if (hasAttachedDatabases && schemaName.includes(".")) {
-            const attachedDbName = (
-               connection.duckdbConnection!.attachedDatabases as Array<{
-                  name: string;
-               }>
-            )[0].name;
-            if (schemaName.startsWith(`${attachedDbName}.`)) {
-               actualSchemaName = schemaName.substring(
-                  attachedDbName.length + 1,
-               );
-            }
-         }
-
-         // Use DuckDB's INFORMATION_SCHEMA.TABLES to list tables in the specified schema
-         // This follows the DuckDB documentation for listing tables
-         // For DuckDB, we'll use string interpolation to avoid parameter binding issues
+         const catalogName = schemaName.split(".")[0];
+         schemaName = schemaName.split(".")[1];
          const result = await malloyConnection.runSQL(
-            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${actualSchemaName}' ORDER BY table_name`,
+            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${schemaName}' and table_catalog = '${catalogName}' ORDER BY table_name`,
+            { rowLimit: 1000 },
          );
 
          const rows = standardizeRunSQLResult(result);
@@ -524,8 +542,30 @@ export async function listTablesForSchema(
             `Failed to get tables for DuckDB schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
          );
       }
+   } else if (connection.type === "motherduck") {
+      if (!connection.motherduckConnection) {
+         throw new Error("MotherDuck connection is required");
+      }
+      try {
+         const result = await malloyConnection.runSQL(
+            `SELECT table_name as row FROM information_schema.tables WHERE table_schema = '${schemaName}' ORDER BY table_name`,
+            { rowLimit: 1000 },
+         );
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as { row: string };
+            return typedRow.row;
+         });
+      } catch (error) {
+         logger.error(
+            `Error getting tables for MotherDuck schema ${schemaName} in connection ${connection.name}`,
+            { error },
+         );
+         throw new Error(
+            `Failed to get tables for MotherDuck schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         );
+      }
    } else {
-      // TODO(jjs) - implement
-      return [];
+      throw new Error(`Unsupported connection type: ${connection.type}`);
    }
 }

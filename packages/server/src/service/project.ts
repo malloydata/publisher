@@ -71,7 +71,10 @@ export class Project {
 
          // Reload connections with full config
          const { malloyConnections, apiConnections } =
-            await createProjectConnections(payload.connections);
+            await createProjectConnections(
+               payload.connections,
+               this.projectPath,
+            );
 
          // Update the project's connection maps
          this.malloyConnections = malloyConnections;
@@ -103,7 +106,7 @@ export class Project {
 
       logger.info(`Creating project with connection configuration`);
       const { malloyConnections, apiConnections } =
-         await createProjectConnections(connections);
+         await createProjectConnections(connections, projectPath);
 
       logger.info(
          `Loaded ${malloyConnections.size + apiConnections.length} connections for project ${projectName}`,
