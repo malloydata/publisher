@@ -1,7 +1,7 @@
 {
   "name": "@malloy-publisher/server",
   "description": "Malloy Publisher Server",
-  "version": "0.0.126",
+  "version": "0.0.127",
   "main": "dist/server.js",
   "bin": {
     "malloy-publisher": "dist/server.js"
