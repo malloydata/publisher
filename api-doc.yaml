@@ -1861,7 +1861,8 @@ components:
       description: DuckDB database connection configuration
       properties:
         attachedDatabases:
-          array:
+          type: array
+          items:
             $ref: "#/components/schemas/AttachedDatabase"
 
     AttachedDatabase:
@@ -1870,7 +1871,8 @@ components:
       properties:
         name:
           type: string
-          description: Name of the connection
+          pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          example: "test_connection, _connection, test_connection_1"
         type:
           type: string
           description: Type of database connection
