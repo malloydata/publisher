@@ -313,7 +313,13 @@ export async function getTablesForSchema(
    // Fetch all table sources in parallel
    const tableSourcePromises = tableNames.map(async (tableName) => {
       try {
-         const tablePath = `${schemaName}.${tableName}`;
+         let tablePath: string;
+
+         if (connection.type === "trino") {
+            tablePath = `${connection.trinoConnection?.catalog}.${schemaName}.${tableName}`;
+         } else {
+            tablePath = `${schemaName}.${tableName}`;
+         }
 
          logger.info(
             `Processing table: ${tableName} in schema: ${schemaName}`,

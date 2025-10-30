@@ -162,6 +162,11 @@ export const connectionFieldsByType: Record<
          name: "password",
          type: "password",
       },
+      {
+         label: "Peaka Key",
+         name: "peakaKey",
+         type: "password",
+      },
    ],
    mysql: [
       {

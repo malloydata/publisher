@@ -1844,6 +1844,9 @@ components:
         password:
           type: string
           description: Trino password for authentication
+        peakaKey:
+          type: string
+          description: Peaka API key for authentication with Peaka-hosted Trino clusters
 
     MotherDuckConnection:
       type: object
