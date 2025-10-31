@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import fs from 'fs';
 import { spawn } from 'child_process';
 import { execSync } from 'child_process';
 const BASE_URL = 'http://localhost:4000/';
@@ -236,3 +237,38 @@ test.describe('Start Local Server and Open Application', () => {
  
 });
 
+// Test case 7
+
+test('Verify git clone and bun run start commands', async () => {
+  const repoUrl = 'https://github.com/malloydata/publisher.git';
+  const repoName = 'publisher';
+  if (fs.existsSync(repoName)) {
+    fs.rmSync(repoName, { recursive: true, force: true });
+  }
+  const cloneOutput = execSync(`git clone ${repoUrl}`, { encoding: 'utf-8', stdio: 'pipe' });
+
+  expect(fs.existsSync(repoName)).toBeTruthy();
+  process.chdir(repoName);
+
+  execSync('bun run build:server-deploy', { stdio: 'inherit' });
+  execSync('bun run start', { stdio: 'inherit' });
+
+});
+
+// Test Case 8.
+
+test('Setup MCP Server project successfully', async () => {
+  const nodeVersion = execSync('node -v').toString().trim();
+  const repoUrl = 'https://github.com/vercel/next.js.git';
+  const repoName = 'next.js';
+  if (fs.existsSync(repoName)) {
+    fs.rmSync(repoName, { recursive: true, force: true });
+  }
+
+  execSync(`git clone ${repoUrl}`, { stdio: 'inherit' });
+  expect(fs.existsSync(repoName)).toBeTruthy();
+  execSync('npm install', { cwd: repoName, stdio: 'inherit' });
+
+  expect(fs.existsSync(`${repoName}/package.json`)).toBeTruthy();
+
+});
