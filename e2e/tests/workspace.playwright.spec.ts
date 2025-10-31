@@ -272,3 +272,106 @@ test('Setup MCP Server project successfully', async () => {
   expect(fs.existsSync(`${repoName}/package.json`)).toBeTruthy();
 
 });
+
+// Test Case 9.
+
+test.describe('Verify successful execution shows results', () => {
+
+  test.beforeEach(async ({ page }) => {
+    await gotoStartPage(page);
+  });
+
+  test('should navigate to package, open ecommerce.malloy, add group, and run query', async ({ page }) => {
+    const openProjectButtons = page.getByRole('button', { name: 'Open Project' });
+    await openProjectButtons.first().waitFor({ state: 'visible', timeout: 20_000 });
+    await openProjectButtons.first().click();
+    await expect(page).toHaveURL(/malloy-samples/, { timeout: 30_000 });
+    await page.waitForLoadState('domcontentloaded');
+
+    const packageName = 'ecommerce';
+    const packageLocator = page.locator(`.MuiTypography-overline:has-text("${packageName.toUpperCase()}")`);
+    await packageLocator.first().waitFor({ state: 'visible', timeout: 20_000 });
+    await packageLocator.first().click();
+    await expect(page).toHaveURL(new RegExp(`${packageName}`, 'i'), { timeout: 30_000 });
+    await page.waitForLoadState('networkidle');
+
+    const possibleSelectors = [
+      'button:has-text("Semantic Models")',
+      '[role="tab"]:has-text("Semantic Models")',
+      'text=Semantic Models'
+    ];
+
+    let semanticModelLocator: any = null;
+    for (const selector of possibleSelectors) {
+      const loc = page.locator(selector);
+      if (await loc.count()) {
+        semanticModelLocator = loc.first();
+        break;
+      }
+    }
+
+    if (!semanticModelLocator) {
+      const visibleTexts = await page.locator('button, [role=tab], div, span').allInnerTexts();
+      console.log(' Could not find Semantic Models. Visible elements:', visibleTexts.slice(0, 20));
+      throw new Error(' "Semantic Models" button/tab not found.');
+    }
+
+    await semanticModelLocator.scrollIntoViewIfNeeded();
+    await semanticModelLocator.waitFor({ state: 'visible', timeout: 15_000 });
+    await semanticModelLocator.click({ timeout: 10_000 });
+
+    const modelFile = page.locator(`text=${packageName}.malloy`);
+    await modelFile.first().waitFor({ state: 'visible', timeout: 20_000 });
+    await modelFile.first().click();
+    const addButton = page.locator('[data-testid="icon-primary-insert"], .icon-primary-insert, button:has-text("+")');
+    await addButton.first().waitFor({ state: 'visible', timeout: 15_000 });
+    await addButton.first().click();
+
+    const addGroupOption = page.getByRole('menuitem', { name: /add group by/i });
+    await addGroupOption.waitFor({ state: 'visible', timeout: 15_000 });
+    await addGroupOption.click();
+
+    const possibleFieldSelectors = [
+      '.MuiMenuItem-root',                      
+      '[role="menuitem"]',                       
+      '.MuiList-root .MuiButtonBase-root',       
+      '.MuiDialog-container button',             
+      'div[role="option"]'                      
+    ];
+
+    let foundFieldLocator: any = null;
+    for (const selector of possibleFieldSelectors) {
+      const loc = page.locator(selector);
+      if (await loc.count() > 0) {
+        foundFieldLocator = loc.first();
+        break;
+      }
+    }
+
+    if (!foundFieldLocator) { 
+      await page.waitForTimeout(5000);
+      for (const selector of possibleFieldSelectors) {
+        const loc = page.locator(selector);
+        if (await loc.count() > 0) {
+          foundFieldLocator = loc.first();
+          break;
+        }
+      }
+    }
+    if (!foundFieldLocator) {
+  
+      await page.screenshot({ path: 'no-field-list.png', fullPage: true });
+      const visibleElements = await page.locator('button, div, span').allInnerTexts();
+      throw new Error(' Group-by field list not visible after Add group by click');
+    }
+
+    await foundFieldLocator.scrollIntoViewIfNeeded();
+    await foundFieldLocator.waitFor({ state: 'visible', timeout: 10_000 });
+    await foundFieldLocator.click();
+
+    const runButton = page.getByRole('button', { name: /^run$/i });
+    await runButton.waitFor({ state: 'visible', timeout: 20_000 });
+
+    const resultTable = page.locator('.result-table, text=Results');
+  });   
+});
