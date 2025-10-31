@@ -11,7 +11,6 @@ async function gotoStartPage(page: Page, timeout = 45_000) {
 
 // Test Case 1.
 test.describe('Create New Project Flow', () => {
-
   test.beforeEach(async ({ page }) => {
     await gotoStartPage(page);
   });
@@ -30,7 +29,6 @@ test.describe('Create New Project Flow', () => {
 // Test Case 2.
 // Navigation of the top right button
 test.describe('Header Navigation', () => {
-
   test.beforeEach(async ({ page }) => {
     await gotoStartPage(page);
   });
@@ -67,7 +65,6 @@ test.describe('Header Navigation', () => {
 
   // Publisher Api navigation
   test('should navigate to Publisher API (local page)', async ({ page }) => {
-
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
 
     const apiLink = page.getByRole('link', { name: /Publisher API/i });
