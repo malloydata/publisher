@@ -67,7 +67,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2
+          bun-version: 1.2.23
       - name: build server
         run: bun install && bun run build
         env:
