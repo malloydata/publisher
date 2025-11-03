@@ -37,29 +37,46 @@ function validateAndBuildTrinoConfig(
       trinoConfig.server = `${trinoConfig.server}:${trinoConfig.port}`;
    }
 
-   if (trinoConfig.server?.startsWith("http://")) {
-      return {
-         server: trinoConfig.server,
-         port: trinoConfig.port,
-         catalog: trinoConfig.catalog,
-         schema: trinoConfig.schema,
-         user: trinoConfig.user,
+   // Build base config
+   const baseConfig: {
+      server: string;
+      port?: number;
+      catalog?: string;
+      schema?: string;
+      user?: string;
+      password?: string;
+      extraConfig?: Record<string, unknown>;
+   } = {
+      server: trinoConfig.server,
+      port: trinoConfig.port,
+      catalog: trinoConfig.catalog,
+      schema: trinoConfig.schema,
+      user: trinoConfig.user,
+   };
+
+   if (trinoConfig.peakaKey) {
+      baseConfig.extraConfig = {
+         extraCredential: {
+            peakaKey: trinoConfig.peakaKey,
+         },
       };
+      delete baseConfig.password;
    } else if (
       trinoConfig.server?.startsWith("https://") &&
       trinoConfig.password
    ) {
-      return {
-         server: trinoConfig.server,
-         port: trinoConfig.port,
-         catalog: trinoConfig.catalog,
-         schema: trinoConfig.schema,
-         user: trinoConfig.user,
-         password: trinoConfig.password,
-      };
+      // Only add password if no peakaKey and HTTPS connection
+      baseConfig.password = trinoConfig.password;
+   }
+
+   if (trinoConfig.server?.startsWith("http://")) {
+      delete baseConfig.password;
+      return baseConfig;
+   } else if (trinoConfig.server?.startsWith("https://")) {
+      return baseConfig;
    } else {
       throw new Error(
-         `Invalid Trino connection: expected "http://server:port" (no password) or "https://server:port" (with username and password).`,
+         `Invalid Trino connection: expected "http://server:port" or "https://server:port".`,
       );
    }
 }

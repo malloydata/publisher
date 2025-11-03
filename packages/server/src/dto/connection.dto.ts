@@ -1,12 +1,12 @@
-import "reflect-metadata";
+import { Type } from "class-transformer";
 import {
-   IsOptional,
-   IsString,
    IsEnum,
    IsNumber,
+   IsOptional,
+   IsString,
    ValidateNested,
 } from "class-validator";
-import { Type } from "class-transformer";
+import "reflect-metadata";
 import { ApiConnection } from "../service/model";
 
 export class PostgresConnectionDto {
@@ -137,6 +137,10 @@ export class TrinoConnectionDto {
    @IsOptional()
    @IsString()
    password?: string;
+
+   @IsOptional()
+   @IsString()
+   peakaKey?: string;
 }
 
 export class ConnectionDto implements ApiConnection {

@@ -14,9 +14,10 @@ import {
    TableContainer,
    TableHead,
    TableRow,
+   TextField,
    Typography,
 } from "@mui/material";
-import React from "react";
+import React, { useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -224,6 +225,7 @@ function TablesInSchema({
 }: TablesInSchemaProps) {
    const { projectName: projectName } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
+   const [searchTerm, setSearchTerm] = useState("");
    const { data, isSuccess, isError, error, isLoading } = useQueryWithApiError({
       queryKey: ["tablesInSchema", projectName, connectionName, schemaName],
       queryFn: () =>
@@ -234,11 +236,37 @@ function TablesInSchema({
          ),
    });
 
+   const filteredTables =
+      isSuccess && data?.data
+         ? data.data
+              .filter((table: { resource: string }) => {
+                 const tableName =
+                    table.resource.split(".").pop()?.toLowerCase() || "";
+                 return tableName.includes(searchTerm.toLowerCase());
+              })
+              .sort((a: { resource: string }, b: { resource: string }) => {
+                 const tableNameA = a.resource.split(".").pop() || a.resource;
+                 const tableNameB = b.resource.split(".").pop() || b.resource;
+                 return tableNameA.localeCompare(tableNameB);
+              })
+         : [];
+
    return (
       <>
          <Typography variant="overline" fontWeight="bold">
             Tables in {schemaName}
          </Typography>
+         <Divider />
+         <Box sx={{ mt: 1, mb: 1 }}>
+            <TextField
+               size="small"
+               fullWidth
+               placeholder="Search tables..."
+               value={searchTerm}
+               onChange={(e) => setSearchTerm(e.target.value)}
+               variant="outlined"
+            />
+         </Box>
          <Divider />
          <Box sx={{ mt: "2px", maxHeight: "600px", overflowY: "auto" }}>
             {isLoading && <Loading text="Fetching Tables..." />}
@@ -248,43 +276,32 @@ function TablesInSchema({
                   context={`${projectName} > ${connectionName} > ${schemaName}`}
                />
             )}
-            {isSuccess && data?.data?.length === 0 && (
+            {isSuccess && filteredTables.length === 0 && (
                <Typography variant="body2">No Tables</Typography>
             )}
             {isSuccess && data?.data && data.data.length > 0 && (
                <List dense disablePadding>
-                  {data.data
-                     .sort(
-                        (a: { resource: string }, b: { resource: string }) => {
-                           // Extract table names for sorting
-                           const tableNameA =
-                              a.resource.split(".").pop() || a.resource;
-                           const tableNameB =
-                              b.resource.split(".").pop() || b.resource;
-                           return tableNameA.localeCompare(tableNameB);
-                        },
-                     )
-                     .map(
-                        (table: {
-                           resource: string;
-                           columns: Array<{ name: string; type: string }>;
-                        }) => {
-                           // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
-                           const tableName =
-                              table.resource.split(".").pop() || table.resource;
-                           return (
-                              <ListItemButton
-                                 key={table.resource}
-                                 onClick={() => onTableClick(table)}
-                              >
-                                 <ListItemText
-                                    primary={tableName}
-                                    secondary={`${table.columns.length} columns`}
-                                 />
-                              </ListItemButton>
-                           );
-                        },
-                     )}
+                  {filteredTables.map(
+                     (table: {
+                        resource: string;
+                        columns: Array<{ name: string; type: string }>;
+                     }) => {
+                        // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
+                        const tableName =
+                           table.resource.split(".").pop() || table.resource;
+                        return (
+                           <ListItemButton
+                              key={table.resource}
+                              onClick={() => onTableClick(table)}
+                           >
+                              <ListItemText
+                                 primary={tableName}
+                                 secondary={`${table.columns.length} columns`}
+                              />
+                           </ListItemButton>
+                        );
+                     },
+                  )}
                </List>
             )}
          </Box>
