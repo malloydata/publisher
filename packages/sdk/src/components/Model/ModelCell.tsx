@@ -17,6 +17,7 @@ interface ModelCellProps {
    annotations?: string[];
    resourceUri: string;
    runOnDemand?: boolean;
+   maxResultSize?: number;
 }
 
 export function ModelCell({
@@ -24,6 +25,7 @@ export function ModelCell({
    annotations,
    resourceUri,
    runOnDemand = false,
+   maxResultSize = 0,
 }: ModelCellProps) {
    const [highlightedAnnotations, setHighlightedAnnotations] =
       React.useState<string>();
@@ -176,6 +178,7 @@ export function ModelCell({
                      minHeight={300}
                      maxHeight={600}
                      hideToggle={false}
+                     maxResultSize={maxResultSize}
                   />
                )}
          </CleanMetricCard>

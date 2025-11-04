@@ -23,6 +23,7 @@ interface ModelProps {
    onChange?: (query: QueryExplorerResult) => void;
    resourceUri: string;
    runOnDemand?: boolean;
+   maxResultSize?: number;
 }
 
 // Note: For this to properly render outside of publisher,
@@ -33,6 +34,7 @@ export default function Model({
    onChange,
    resourceUri,
    runOnDemand = false,
+   maxResultSize = 0,
 }: ModelProps) {
    const { modelPath } = parseResourceUri(resourceUri);
    const { data, isError, isLoading, error } = useModelData(resourceUri);
@@ -190,6 +192,7 @@ export default function Model({
                         annotations={query.annotations}
                         resourceUri={resourceUri}
                         runOnDemand={runOnDemand}
+                        maxResultSize={maxResultSize}
                      />
                   ))}
                </Stack>
