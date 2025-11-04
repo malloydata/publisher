@@ -122,6 +122,25 @@ export class Package {
             duration: modelsTime - databasesTime,
             unit: "ms",
          });
+         for (const [modelPath, model] of models.entries()) {
+            if ((model as any).compilationError) {
+               const err = (model as any).compilationError;
+               const message =
+                  err instanceof Error
+                     ? err.message
+                     : `Unknown compilation error in ${modelPath}`;
+               logger.error("Model compilation failed", {
+                  packageName,
+                  modelPath,
+                  error: message,
+               });
+               this.packageLoadHistogram.record(performance.now() - startTime, {
+                  malloy_package_name: packageName,
+                  status: "compilation_error",
+               });
+               throw err;
+            }
+         }
          const endTime = performance.now();
          const executionTime = endTime - startTime;
          this.packageLoadHistogram.record(executionTime, {
