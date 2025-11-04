@@ -143,6 +143,39 @@ function handleAlreadyAttachedError(error: unknown, dbName: string): void {
    }
 }
 
+function normalizePrivateKey(privateKey: string): string {
+   let privateKeyContent = privateKey.trim();
+
+   if (!privateKeyContent.includes("\n")) {
+      const beginMatch = privateKeyContent.match(
+         /-----BEGIN\s+PRIVATE\s+KEY-----/i,
+      );
+      const endMatch = privateKeyContent.match(
+         /-----END\s+PRIVATE\s+KEY-----/i,
+      );
+
+      if (beginMatch && endMatch) {
+         const beginPos = beginMatch.index! + beginMatch[0].length;
+         const endPos = endMatch.index!;
+         const keyData = privateKeyContent
+            .substring(beginPos, endPos)
+            .replace(/\s+/g, "");
+
+         const lines: string[] = [];
+         for (let i = 0; i < keyData.length; i += 64) {
+            lines.push(keyData.slice(i, i + 64));
+         }
+         privateKeyContent = `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`;
+      }
+   } else {
+      if (!privateKeyContent.endsWith("\n")) {
+         privateKeyContent += "\n";
+      }
+   }
+
+   return privateKeyContent;
+}
+
 // Database-specific attachment handlers
 async function attachBigQuery(
    connection: DuckDBConnection,
@@ -497,23 +530,36 @@ export async function createProjectConnections(
                throw new Error("Snowflake username is required.");
             }
 
-            if (!connection.snowflakeConnection.password) {
-               throw new Error("Snowflake password is required.");
+            if (!connection.snowflakeConnection.password && !connection.snowflakeConnection.privateKey) {
+               throw new Error("Snowflake password or private key or private key path is required.");
             }
 
             if (!connection.snowflakeConnection.warehouse) {
                throw new Error("Snowflake warehouse is required.");
             }
 
+            if (connection.snowflakeConnection.privateKey) {
+               const privateKeyPath = path.join(
+                  TEMP_DIR_PATH,
+                  `${connection.name}-${uuidv4()}-private-key.pem`,
+               );
+               const normalizedKey = normalizePrivateKey(
+                  connection.snowflakeConnection.privateKey as string,
+               );
+               await fs.writeFile(privateKeyPath, normalizedKey);
+               connection.snowflakeConnection.privateKeyPath = privateKeyPath;
+            }
+
             const snowflakeConnectionOptions = {
                connOptions: {
                   account: connection.snowflakeConnection.account,
                   username: connection.snowflakeConnection.username,
-                  password: connection.snowflakeConnection.password,
                   warehouse: connection.snowflakeConnection.warehouse,
                   database: connection.snowflakeConnection.database,
                   schema: connection.snowflakeConnection.schema,
                   role: connection.snowflakeConnection.role,
+                  ...(connection.snowflakeConnection.privateKey ? { privateKeyPath: connection.snowflakeConnection.privateKeyPath, authenticator: 'SNOWFLAKE_JWT' , privateKeyPass: connection.snowflakeConnection.privateKeyPass || undefined}
+                     : {password: connection.snowflakeConnection.password || undefined}),
                   timeout:
                      connection.snowflakeConnection.responseTimeoutMilliseconds,
                },
@@ -523,8 +569,7 @@ export async function createProjectConnections(
                snowflakeConnectionOptions,
             );
             connectionMap.set(connection.name, snowflakeConnection);
-            connection.attributes =
-               getConnectionAttributes(snowflakeConnection);
+            connection.attributes = getConnectionAttributes(snowflakeConnection);
             break;
          }
 
