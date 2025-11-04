@@ -34,7 +34,7 @@ function ModelPage() {
       );
    }
    if (modelPath?.endsWith(".malloynb")) {
-      return <Notebook resourceUri={resourceUri} />;
+      return <Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />;
    }
    return (
       <div>
