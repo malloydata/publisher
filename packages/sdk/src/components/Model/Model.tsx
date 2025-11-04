@@ -22,13 +22,20 @@ import { useModelData } from "./useModelData";
 interface ModelProps {
    onChange?: (query: QueryExplorerResult) => void;
    resourceUri: string;
+   runOnDemand?: boolean;
+   maxResultSize?: number;
 }
 
 // Note: For this to properly render outside of publisher,
 // you must explicitly import the styles from the package:
 // import "@malloy-publisher/sdk/malloy-explorer.css";
 
-export default function Model({ onChange, resourceUri }: ModelProps) {
+export default function Model({
+   onChange,
+   resourceUri,
+   runOnDemand = false,
+   maxResultSize = 0,
+}: ModelProps) {
    const { modelPath } = parseResourceUri(resourceUri);
    const { data, isError, isLoading, error } = useModelData(resourceUri);
    const [dialogOpen, setDialogOpen] = React.useState(false);
@@ -184,6 +191,8 @@ export default function Model({ onChange, resourceUri }: ModelProps) {
                         queryName={query.name}
                         annotations={query.annotations}
                         resourceUri={resourceUri}
+                        runOnDemand={runOnDemand}
+                        maxResultSize={maxResultSize}
                      />
                   ))}
                </Stack>

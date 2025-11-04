@@ -40,6 +40,7 @@
     "install-duckdb-snowflake": "curl -L https://install.duckdb.org | bash && export PATH=\"$HOME/.duckdb/cli/latest:$PATH\" && curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.1",
     "@types/react": "^19.1.7",
     "@types/react-dom": "^19.1.6",
     "eslint": "^8.50.0",

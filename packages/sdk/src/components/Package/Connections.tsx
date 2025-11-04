@@ -36,7 +36,7 @@ type ConnectionProps = {
    connection: ApiConnection;
    onClick: () => void;
    onEdit: (connection: ApiConnection) => Promise<unknown>;
-   onDelete: (connection: ApiConnection) => Promise<unknown>;
+   onDelete: (connection: ApiConnection) => Promise<unknown> | void;
    isMutating: boolean;
    mutable: boolean;
 };
@@ -274,9 +274,19 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                  onEdit={(payload) =>
                                     updateConnection.mutateAsync(payload)
                                  }
-                                 onDelete={(payload) =>
-                                    deleteConnection.mutateAsync(payload)
-                                 }
+                                 onDelete={(payload) => {
+                                    if (
+                                       !selectedConnectionResourceUri.startsWith(
+                                          "publisher:",
+                                       )
+                                    ) {
+                                       deleteConnection.mutateAsync(payload);
+                                    } else {
+                                       setNotificationMessage(
+                                          "Cannot delete this connection (publisher: resource)",
+                                       );
+                                    }
+                                 }}
                                  isMutating={
                                     updateConnection.isPending ||
                                     deleteConnection.isPending
