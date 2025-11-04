@@ -139,7 +139,7 @@ export const connectionFieldsByType: Record<
          label: "Private Key Passphrase",
          name: "privateKeyPass",
          type: "password",
-      }
+      },
    ],
    trino: [
       {
