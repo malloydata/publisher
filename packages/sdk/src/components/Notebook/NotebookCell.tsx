@@ -32,6 +32,7 @@ interface NotebookCellProps {
    hideEmbeddingIcon?: boolean;
    resourceUri: string;
    index: number;
+   maxResultSize?: number;
 }
 
 export function NotebookCell({
@@ -40,6 +41,7 @@ export function NotebookCell({
    hideEmbeddingIcon,
    resourceUri,
    index,
+   maxResultSize,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -420,6 +422,7 @@ export function NotebookCell({
                         result={cell.result}
                         minHeight={300}
                         maxHeight={1000}
+                        maxResultSize={maxResultSize}
                      />
                   </Box>
 

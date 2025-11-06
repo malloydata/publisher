@@ -1,6 +1,6 @@
 import "@malloydata/malloy-explorer/styles.css";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
-import ZoomOutMapIcon from "@mui/icons-material/ZoomOutMap";
+import SearchIcon from "@mui/icons-material/Search";
 import {
    Box,
    IconButton,
@@ -23,6 +23,7 @@ interface ModelProps {
    onChange?: (query: QueryExplorerResult) => void;
    resourceUri: string;
    runOnDemand?: boolean;
+   maxResultSize?: number;
 }
 
 // Note: For this to properly render outside of publisher,
@@ -33,6 +34,7 @@ export default function Model({
    onChange,
    resourceUri,
    runOnDemand = false,
+   maxResultSize = 0,
 }: ModelProps) {
    const { modelPath } = parseResourceUri(resourceUri);
    const { data, isError, isLoading, error } = useModelData(resourceUri);
@@ -145,15 +147,13 @@ export default function Model({
                         }}
                         onClick={() => setDialogOpen(true)}
                      >
-                        <Tooltip title="Expanded view">
-                           <ZoomOutMapIcon
-                              sx={{
-                                 fontSize: "18px",
-                                 color: "#666666",
-                                 marginBottom: "5px",
-                              }}
-                           />
-                        </Tooltip>
+                        <SearchIcon
+                           sx={{
+                              fontSize: "18px",
+                              color: "#666666",
+                              marginBottom: "5px",
+                           }}
+                        />
                      </IconButton>
                   </Stack>
                )}
@@ -190,6 +190,7 @@ export default function Model({
                         annotations={query.annotations}
                         resourceUri={resourceUri}
                         runOnDemand={runOnDemand}
+                        maxResultSize={maxResultSize}
                      />
                   ))}
                </Stack>

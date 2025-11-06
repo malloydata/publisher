@@ -1806,6 +1806,12 @@ components:
         password:
           type: string
           description: Snowflake password for authentication
+        privateKey:
+          type: string
+          description: Snowflake private key for authentication
+        privateKeyPass:
+          type: string
+          description: Passphrase for the Snowflake private key
         warehouse:
           type: string
           description: Snowflake warehouse name
