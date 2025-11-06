@@ -130,6 +130,16 @@ export const connectionFieldsByType: Record<
          name: "responseTimeoutMilliseconds",
          type: "text",
       },
+      {
+         label: "Private Key",
+         name: "privateKey",
+         type: "password",
+      },
+      {
+         label: "Private Key Passphrase",
+         name: "privateKeyPass",
+         type: "password",
+      },
    ],
    trino: [
       {
