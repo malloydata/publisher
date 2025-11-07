@@ -371,3 +371,150 @@ test.describe('Verify successful execution shows results', () => {
     const resultTable = page.locator('.result-table, text=Results');
   });   
 });
+
+// Test Case 10.
+
+test.describe('Verify user can add a new database connection show list', () => {
+ 
+  test.beforeEach(async ({ page }) => {
+    await gotoStartPage(page);
+  });
+ 
+  test('should add a new Postgres connection successfully', async ({ page }) => {
+ 
+    const openProjectBtn = page.getByRole('button', { name: /Open Project/i });
+    await openProjectBtn.first().waitFor({ state: 'visible', timeout: 20_000 });
+    await openProjectBtn.first().click();
+    await expect(page).toHaveURL(/malloy-samples/, { timeout: 20_000 });
+ 
+    const packageLocator = page.locator('.MuiTypography-overline', { hasText: 'ECOMMERCE' });
+    await expect(packageLocator.first()).toBeVisible({ timeout: 10_000 });
+    await packageLocator.first().click();
+    await expect(page).toHaveURL(/ecommerce/i, { timeout: 20_000 });
+    await page.waitForLoadState('networkidle');
+ 
+    const addConnectionBtn = page.getByRole('button', { name: /Add Connection/i });
+    await addConnectionBtn.waitFor({ state: 'visible', timeout: 10_000 });
+    await addConnectionBtn.click();
+ 
+    const dialog = page.getByRole('dialog', { name: /Create New Connection/i });
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+ 
+    await dialog.getByLabel('Connection Name').fill('QA-testing');
+    await dialog.getByLabel('Connection Type').click();
+    await page.getByRole('option', { name: /Postgres/i }).click();
+ 
+    await dialog.getByLabel('Host').fill('134.192.232.134');
+    await dialog.getByLabel('Port').fill('5432');
+    await dialog.getByLabel('Database Name').fill('raavi_picking_system');
+    await dialog.getByLabel('User Name').fill('postgres');
+    await dialog.getByLabel('Password').fill('postgres123');
+ 
+ 
+    const createBtn = dialog.getByRole('button', { name: /^Create Connection$/i });
+    await expect(createBtn).toBeVisible({ timeout: 10_000 });
+    await createBtn.click();
+ 
+    const newConnection = page.locator('text=QA-testing');
+    await expect(newConnection.first()).toBeVisible({ timeout: 20_000 });
+ 
+    const connectionType = page.locator('tr:has-text("QA-testing") >> text=postgres');
+    await expect(connectionType).toBeVisible();
+ 
+  });
+});
+ 
+// Test Case 11.
+ 
+test.describe('Verify system behavior with invalid connection details', () => {
+ 
+  test.beforeEach(async ({ page }) => {
+    await gotoStartPage(page);
+  });
+ 
+  test('should show an error when user enters invalid DuckDB connection name', async ({ page }) => {
+ 
+    const openProjectBtn = page.getByRole('button', { name: /Open Project/i });
+    await openProjectBtn.first().waitFor({ state: 'visible', timeout: 20_000 });
+    await openProjectBtn.first().click();
+    await expect(page).toHaveURL(/malloy-samples/, { timeout: 20_000 });
+ 
+    const packageLocator = page.locator('.MuiTypography-overline', { hasText: 'ECOMMERCE' });
+    await expect(packageLocator.first()).toBeVisible({ timeout: 10_000 });
+    await packageLocator.first().click();
+    await expect(page).toHaveURL(/ecommerce/i, { timeout: 20_000 });
+    await page.waitForLoadState('networkidle');
+ 
+    const addConnectionBtn = page.getByRole('button', { name: /Add Connection/i });
+    await addConnectionBtn.waitFor({ state: 'visible', timeout: 10_000 });
+    await addConnectionBtn.click();
+ 
+    const dialog = page.getByRole('dialog', { name: /Create New Connection/i });
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+ 
+    const typeDropdown = dialog.getByLabel('Connection Type');
+    await typeDropdown.click();
+    await page.getByRole('option', { name: /DuckDB/i }).click();
+ 
+    const invalidName = '!@#$%^&&&&&*';
+    const nameField = dialog.getByLabel('Connection Name');
+    await nameField.fill(invalidName);
+ 
+    const createBtn = dialog.getByRole('button', { name: /^Create Connection$/i });
+    await expect(createBtn).toBeVisible({ timeout: 10_000 });
+    await createBtn.click();
+ 
+    const errorMsg = page.locator('text=/invalid|missing|error|configuration/i');
+    await expect(errorMsg.first()).toBeVisible({ timeout: 15_000 });
+ 
+    const invalidConnRow = page.locator(`text=${invalidName}`);
+    await expect(invalidConnRow).toHaveCount(0);
+  });
+});
+ 
+// Test Case 12.
+
+test.describe('Verify user can add a new database connection ', () => {
+ 
+  test.beforeEach(async ({ page }) => {
+    await gotoStartPage(page);
+  });
+ 
+  test('should add a new Postgres connection successfully ', async ({ page }) => {
+ 
+    const openProjectBtn = page.getByRole('button', { name: /Open Project/i });
+    await openProjectBtn.first().waitFor({ state: 'visible', timeout: 20_000 });
+    await openProjectBtn.first().click();
+    await expect(page).toHaveURL(/malloy-samples/, { timeout: 20_000 });
+ 
+    const packageLocator = page.locator('.MuiTypography-overline', { hasText: 'ECOMMERCE' });
+    await expect(packageLocator.first()).toBeVisible({ timeout: 10_000 });
+    await packageLocator.first().click();
+    await expect(page).toHaveURL(/ecommerce/i, { timeout: 20_000 });
+    await page.waitForLoadState('networkidle');
+ 
+    const addConnectionBtn = page.getByRole('button', { name: /Add Connection/i });
+    await addConnectionBtn.waitFor({ state: 'visible', timeout: 10_000 });
+    await addConnectionBtn.click();
+ 
+    const dialog = page.getByRole('dialog', { name: /Create New Connection/i });
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+ 
+    await dialog.getByLabel('Connection Name').fill('QA-testing');
+    await dialog.getByLabel('Connection Type').click();
+    await page.getByRole('option', { name: /Postgres/i }).click();
+ 
+    await dialog.getByLabel('Host').fill('134.192.232.134');
+    await dialog.getByLabel('Port').fill('5432');
+    await dialog.getByLabel('Database Name').fill('raavi_picking_system');
+    await dialog.getByLabel('User Name').fill('postgres');
+    await dialog.getByLabel('Password').fill('postgres123');
+ 
+ 
+    const createBtn = dialog.getByRole('button', { name: /^Create Connection$/i });
+    await expect(createBtn).toBeVisible({ timeout: 10_000 });
+    await createBtn.click();
+ 
+ 
+  });
+});
