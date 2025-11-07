@@ -2,8 +2,8 @@ openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
   description: |
-    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources.
-    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases
+    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources. 
+    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases 
     (.parquet files) with a malloy-publisher.json manifest at the package's root directory.
 
     ## Key Features
@@ -422,7 +422,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  # TODO: Remove this endpoint.
+  # TODO: Remove this endpoint. 
   /projects/{projectName}/connections/{connectionName}/sqlSource:
     get:
       tags:
@@ -611,7 +611,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  # TODO: Remove this endpoint.
+  # TODO: Remove this endpoint. 
   /projects/{projectName}/connections/{connectionName}/temporaryTable:
     get:
       tags:
@@ -709,7 +709,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-  # TODO: Remove this endpoint.
+  # TODO: Remove this endpoint. 
   /projects/{projectName}/connections/{connectionName}/queryData:
     get:
       tags:
@@ -1115,7 +1115,7 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
-
+  
   /projects/{projectName}/packages/{packageName}/notebooks:
     get:
       tags:
@@ -1216,6 +1216,7 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
+
   /projects/{projectName}/packages/{packageName}/databases:
     get:
       tags:
@@ -1279,14 +1280,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/Connection"
+              $ref: '#/components/schemas/Connection'
       responses:
         "200":
           description: Connection test result
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConnectionStatus"
+                $ref: '#/components/schemas/ConnectionStatus'
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1691,8 +1692,7 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum:
-            [postgres, bigquery, snowflake, trino, mysql, duckdb, motherduck]
+          enum: [postgres, bigquery, snowflake, trino, mysql, duckdb]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:
@@ -1707,8 +1707,6 @@ components:
           $ref: "#/components/schemas/MysqlConnection"
         duckdbConnection:
           $ref: "#/components/schemas/DuckdbConnection"
-        motherduckConnection:
-          $ref: "#/components/schemas/MotherDuckConnection"
 
     ConnectionAttributes:
       type: object
@@ -1844,28 +1842,13 @@ components:
         password:
           type: string
           description: Trino password for authentication
-        peakaKey:
-          type: string
-          description: Peaka API key for authentication with Peaka-hosted Trino clusters
-
-    MotherDuckConnection:
-      type: object
-      description: MotherDuck database connection configuration
-      properties:
-        accessToken:
-          type: string
-          description: MotherDuck access token
-        database:
-          type: string
-          description: MotherDuck database name
 
     DuckdbConnection:
       type: object
       description: DuckDB database connection configuration
       properties:
         attachedDatabases:
-          type: array
-          items:
+          array:
             $ref: "#/components/schemas/AttachedDatabase"
 
     AttachedDatabase:
@@ -1874,8 +1857,7 @@ components:
       properties:
         name:
           type: string
-          pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
-          example: "test_connection, _connection, test_connection_1"
+          description: Name of the connection
         type:
           type: string
           description: Type of database connection
@@ -1888,6 +1870,7 @@ components:
           $ref: "#/components/schemas/SnowflakeConnection"
         postgresConnection:
           $ref: "#/components/schemas/PostgresConnection"
+
 
     # TODO: What is this?  Can we remove it?
     SqlSource:
@@ -1906,9 +1889,6 @@ components:
         resource:
           type: string
           description: Resource path to the table.
-        source:
-          type: string
-          description: Table source as a JSON string.
         columns:
           description: Table fields
           type: array

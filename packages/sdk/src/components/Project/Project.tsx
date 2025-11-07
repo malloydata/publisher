@@ -5,7 +5,6 @@ import { PackageContainer } from "../styles";
 import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
 import Packages from "./Packages";
-import { useEffect } from "react";
 
 interface ProjectProps {
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
@@ -18,11 +17,6 @@ export default function Project({
 }: ProjectProps) {
    const { mutable } = useServer();
    const { projectName } = parseResourceUri(resourceUri);
-
-   useEffect(() => {
-      window.scrollTo({ top: 0, behavior: "auto" });
-   }, []);
-
    return (
       <>
          <PackageContainer>

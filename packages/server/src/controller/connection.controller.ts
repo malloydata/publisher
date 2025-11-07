@@ -40,7 +40,9 @@ export class ConnectionController {
       if (connection.type === "duckdb") {
          const packages = await project.listPackages();
          if (packages.length === 0) {
-            return project.getMalloyConnection(connectionName);
+            throw new ConnectionError(
+               "No packages found for DuckDB connection",
+            );
          }
          // For now, use the first package's DuckDB connection
          const packageName = packages[0].name;
@@ -163,7 +165,6 @@ export class ConnectionController {
       return {
          resource: tablePath,
          columns: tableSource.columns,
-         source: tableSource.source,
       };
    }
 

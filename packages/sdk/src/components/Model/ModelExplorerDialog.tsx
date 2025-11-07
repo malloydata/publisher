@@ -31,7 +31,19 @@ export function ModelExplorerDialog({
    onSourceChange,
 }: ModelExplorerDialogProps) {
    return (
-      <Dialog open={open} onClose={onClose} fullScreen>
+      <Dialog
+         open={open}
+         onClose={onClose}
+         maxWidth={false}
+         fullWidth
+         sx={{
+            "& .MuiDialog-paper": {
+               width: "95vw",
+               height: "95vh",
+               maxWidth: "none",
+            },
+         }}
+      >
          <DialogTitle
             sx={{
                display: "flex",

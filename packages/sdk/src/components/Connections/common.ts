@@ -2,7 +2,6 @@ import { HTMLInputTypeAttribute } from "react";
 import type {
    BigqueryConnection,
    ConnectionTypeEnum,
-   MotherDuckConnection,
    MysqlConnection,
    PostgresConnection,
    SnowflakeConnection,
@@ -15,8 +14,7 @@ type ConnectionField = {
       BigqueryConnection &
       SnowflakeConnection &
       TrinoConnection &
-      MysqlConnection &
-      MotherDuckConnection);
+      MysqlConnection);
    type: HTMLInputTypeAttribute;
    required?: boolean;
 };
@@ -162,11 +160,6 @@ export const connectionFieldsByType: Record<
          name: "password",
          type: "password",
       },
-      {
-         label: "Peaka Key",
-         name: "peakaKey",
-         type: "password",
-      },
    ],
    mysql: [
       {
@@ -196,18 +189,6 @@ export const connectionFieldsByType: Record<
       },
    ],
    duckdb: [],
-   motherduck: [
-      {
-         label: "Access Token",
-         name: "accessToken",
-         type: "text",
-      },
-      {
-         label: "Database",
-         name: "database",
-         type: "text",
-      },
-   ],
 };
 
 export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
@@ -217,5 +198,4 @@ export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
    trino: "trinoConnection",
    mysql: "mysqlConnection",
    duckdb: "duckdbConnection",
-   motherduck: "motherduckConnection",
 };

@@ -50,7 +50,6 @@ export default function AddConnectionDialog({
          snowflake: "snowflakeConnection",
          trino: "trinoConnection",
          mysql: "mysqlConnection",
-         motherduck: "motherduckConnection",
       };
       const connectionPayload = {
          name,
