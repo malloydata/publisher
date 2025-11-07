@@ -1,5 +1,5 @@
-import { ExpandLess, ExpandMore } from "@mui/icons-material";
-import { Box, IconButton } from "@mui/material";
+import { ExpandLess, ExpandMore, Warning } from "@mui/icons-material";
+import { Box, Button, IconButton, Typography } from "@mui/material";
 import {
    lazy,
    Suspense,
@@ -17,6 +17,10 @@ interface ResultContainerProps {
    minHeight: number;
    maxHeight: number;
    hideToggle?: boolean;
+   // if Results are larger than this size, show a warning and a button to proceed
+   // this is to prevent performance issues with large results.
+   // the default is 0, which means no warning will be shown.
+   maxResultSize?: number;
 }
 
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
@@ -28,6 +32,7 @@ export default function ResultContainer({
    minHeight,
    maxHeight,
    hideToggle = false,
+   maxResultSize = 0,
 }: ResultContainerProps) {
    const [isExpanded, setIsExpanded] = useState(false);
    const [contentHeight, setContentHeight] = useState<number>(0);
@@ -36,6 +41,7 @@ export default function ResultContainer({
    const containerRef = useRef<HTMLDivElement>(null);
    const [explicitHeight, setExplicitHeight] = useState<number>(undefined);
    const [isFillElement, setIsFillElement] = useState(false);
+   const [userAcknowledged, setUserAcknowledged] = useState(false);
    const handleToggle = useCallback(() => {
       const wasExpanded = isExpanded;
       setIsExpanded(!isExpanded);
@@ -85,6 +91,42 @@ export default function ResultContainer({
    if (!result) {
       return null;
    }
+
+   // Check if result exceeds max size and user hasn't acknowledged yet
+   const exceedsMaxSize = maxResultSize > 0 && result.length > maxResultSize;
+   if (exceedsMaxSize && !userAcknowledged) {
+      return (
+         <Box
+            sx={{
+               minHeight: `${minHeight}px`,
+               display: "flex",
+               flexDirection: "column",
+               alignItems: "center",
+               justifyContent: "center",
+               gap: 2,
+               p: 4,
+               backgroundColor: "#fafafa",
+               border: "1px solid",
+               borderColor: "#e0e0e0",
+               borderRadius: 1,
+            }}
+         >
+            <Warning sx={{ fontSize: 48, color: "#757575" }} />
+            <Typography variant="h6" color="text.secondary" align="center">
+               Processing large results may cause browser performance issues.
+               Proceed?
+            </Typography>
+            <Button
+               variant="contained"
+               color="primary"
+               onClick={() => setUserAcknowledged(true)}
+            >
+               Proceed
+            </Button>
+         </Box>
+      );
+   }
+
    const loading = <Loading text="Loading..." centered={true} size={32} />;
    const renderedHeight = isFillElement
       ? isExpanded

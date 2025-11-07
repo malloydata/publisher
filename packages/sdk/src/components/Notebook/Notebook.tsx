@@ -4,18 +4,22 @@ import { CompiledNotebook } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 
+import { parseResourceUri } from "../../utils/formatting";
 import { Loading } from "../Loading";
+import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 import { NotebookCell } from "./NotebookCell";
-import { parseResourceUri } from "../../utils/formatting";
-import { useServer } from "../ServerProvider";
 
 interface NotebookProps {
    resourceUri: string;
+   maxResultSize?: number;
 }
 
 // Requires PackageProvider
-export default function Notebook({ resourceUri }: NotebookProps) {
+export default function Notebook({
+   resourceUri,
+   maxResultSize = 0,
+}: NotebookProps) {
    const { apiClients } = useServer();
    const {
       projectName,
@@ -55,6 +59,7 @@ export default function Notebook({ resourceUri }: NotebookProps) {
                         key={index}
                         index={index}
                         resourceUri={resourceUri}
+                        maxResultSize={maxResultSize}
                      />
                   ))}
                {isError && error.status === 404 && (

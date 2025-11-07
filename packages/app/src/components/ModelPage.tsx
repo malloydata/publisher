@@ -25,10 +25,16 @@ function ModelPage() {
    });
 
    if (modelPath?.endsWith(".malloy")) {
-      return <Model resourceUri={resourceUri} runOnDemand={true} />;
+      return (
+         <Model
+            resourceUri={resourceUri}
+            runOnDemand={true}
+            maxResultSize={512 * 1024}
+         />
+      );
    }
    if (modelPath?.endsWith(".malloynb")) {
-      return <Notebook resourceUri={resourceUri} />;
+      return <Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />;
    }
    return (
       <div>
