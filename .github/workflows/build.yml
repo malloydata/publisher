@@ -17,7 +17,7 @@ jobs:
         uses: oven-sh/setup-bun@v2
         # Building the SDK is necessary to generate the .d.ts files used for type checking.
         with:
-          bun-version: 1.2
+          bun-version: 1.2.23
       - name: Typecheck
         run: |
           bun install
@@ -62,14 +62,16 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "20"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2
+          bun-version: 1.2.23
       - name: build server
         run: bun install && bun run build
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
       - name: Link local package
         run: |
           cd packages/server && npm link

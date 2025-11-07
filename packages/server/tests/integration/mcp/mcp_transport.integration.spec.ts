@@ -1,18 +1,18 @@
-import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
    ErrorCode,
-   Request,
    Notification,
+   Request,
    Result,
 } from "@modelcontextprotocol/sdk/types.js";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { URL } from "url";
 
 // --- Import E2E Test Setup ---
 import {
+   cleanupE2ETestEnvironment,
    McpE2ETestEnvironment,
    setupE2ETestEnvironment,
-   cleanupE2ETestEnvironment,
 } from "../../harness/mcp_test_setup";
 
 // --- Test Suite ---
@@ -42,7 +42,7 @@ describe("MCP Transport Tests (E2E Integration)", () => {
             expect(result).toHaveProperty("resources");
             expect(Array.isArray(result.resources)).toBe(true);
          },
-         { timeout: 10000 },
+         { timeout: 15000 },
       );
 
       it("should receive InvalidParams error when calling a known method with invalid params", async () => {

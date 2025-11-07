@@ -1,5 +1,6 @@
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import SearchIcon from "@mui/icons-material/Search";
-import { Box, IconButton, Typography } from "@mui/material";
+import { Box, Button, IconButton, Typography } from "@mui/material";
 import React, { useEffect } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
@@ -15,16 +16,19 @@ interface ModelCellProps {
    noView?: boolean;
    annotations?: string[];
    resourceUri: string;
+   runOnDemand?: boolean;
 }
 
 export function ModelCell({
    queryName,
    annotations,
    resourceUri,
+   runOnDemand = false,
 }: ModelCellProps) {
    const [highlightedAnnotations, setHighlightedAnnotations] =
       React.useState<string>();
    const [resultsDialogOpen, setResultsDialogOpen] = React.useState(false);
+   const [hasRun, setHasRun] = React.useState(false);
 
    const { packageName, projectName, versionId, modelPath } =
       parseResourceUri(resourceUri);
@@ -48,7 +52,7 @@ export function ModelCell({
                versionId: versionId,
             },
          ),
-      enabled: true, // Always execute
+      enabled: runOnDemand ? hasRun : true, // Execute on demand or always
    });
 
    useEffect(() => {
@@ -126,19 +130,54 @@ export function ModelCell({
                position: "relative",
             }}
          >
-            {isLoading && (
+            {runOnDemand && !hasRun && (
+               <Box
+                  sx={{
+                     padding: "40px 20px",
+                     textAlign: "center",
+                     display: "flex",
+                     flexDirection: "column",
+                     alignItems: "center",
+                     gap: "16px",
+                  }}
+               >
+                  <Typography variant="body2" color="text.secondary">
+                     Click Run to execute the query
+                  </Typography>
+                  <Button
+                     variant="contained"
+                     startIcon={<PlayArrowIcon />}
+                     onClick={() => setHasRun(true)}
+                     sx={{
+                        backgroundColor: "#1976d2",
+                        "&:hover": {
+                           backgroundColor: "#1565c0",
+                        },
+                        textTransform: "none",
+                        fontSize: "14px",
+                        fontWeight: 600,
+                        padding: "8px 24px",
+                     }}
+                  >
+                     Run Query
+                  </Button>
+               </Box>
+            )}
+            {(!runOnDemand || hasRun) && isLoading && (
                <Box sx={{ padding: "20px", textAlign: "center" }}>
                   <Typography>Loading results...</Typography>
                </Box>
             )}
-            {isSuccess && queryData?.data?.result && (
-               <ResultContainer
-                  result={queryData.data.result}
-                  minHeight={300}
-                  maxHeight={600}
-                  hideToggle={false}
-               />
-            )}
+            {(!runOnDemand || hasRun) &&
+               isSuccess &&
+               queryData?.data?.result && (
+                  <ResultContainer
+                     result={queryData.data.result}
+                     minHeight={300}
+                     maxHeight={600}
+                     hideToggle={false}
+                  />
+               )}
          </CleanMetricCard>
 
          {/* Results Dialog */}

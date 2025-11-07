@@ -25,7 +25,7 @@ function ModelPage() {
    });
 
    if (modelPath?.endsWith(".malloy")) {
-      return <Model resourceUri={resourceUri} />;
+      return <Model resourceUri={resourceUri} runOnDemand={true} />;
    }
    if (modelPath?.endsWith(".malloynb")) {
       return <Notebook resourceUri={resourceUri} />;
