@@ -1085,7 +1085,7 @@ paths:
           description: Name of the package
           required: true
           schema:
-            $ref: "#/components/schemas/IdentifierPattern"
+            $ref: "#/components/schemas/VersionIdPattern"
         - name: path
           in: path
           description: Path to the model within the package

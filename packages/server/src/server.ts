@@ -788,6 +788,10 @@ app.use(
 
 const mainServer = http.createServer(app);
 
+mainServer.timeout = 600000;
+mainServer.keepAliveTimeout = 600000;
+mainServer.headersTimeout = 600000;
+
 mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
    const address = mainServer.address() as AddressInfo;
    logger.info(
@@ -799,6 +803,10 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
       );
    }
 });
-mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
+const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
    logger.info(`MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`);
 });
+
+mcpServer.timeout = 600000;
+mcpServer.keepAliveTimeout = 600000;
+mcpServer.headersTimeout = 600000;
