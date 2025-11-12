@@ -269,7 +269,42 @@ export class Model {
          (await runnable.getPreparedResult()).resultExplore.limit || ROW_LIMIT;
       const endTime = performance.now();
       const executionTime = endTime - startTime;
-      const queryResults = await runnable.run({ rowLimit });
+
+      let queryResults;
+      try {
+         queryResults = await runnable.run({ rowLimit });
+      } catch (error) {
+         // Record error metrics
+         const errorEndTime = performance.now();
+         const errorExecutionTime = errorEndTime - startTime;
+         this.queryExecutionHistogram.record(errorExecutionTime, {
+            "malloy.model.path": this.modelPath,
+            "malloy.model.query.name": queryName,
+            "malloy.model.query.source": sourceName,
+            "malloy.model.query.query": query,
+            "malloy.model.query.status": "error",
+         });
+
+         // Re-throw Malloy errors as-is (they will be handled by error handler)
+         if (error instanceof MalloyError) {
+            throw error;
+         }
+
+         // For other runtime errors (like divide by zero), throw as BadRequestError
+         const errorMessage =
+            error instanceof Error ? error.message : String(error);
+         logger.error("Query execution error", {
+            error,
+            errorMessage,
+            projectName: this.packageName,
+            modelPath: this.modelPath,
+            query,
+            queryName,
+            sourceName,
+         });
+         throw new BadRequestError(`Query execution failed: ${errorMessage}`);
+      }
+
       this.queryExecutionHistogram.record(executionTime, {
          "malloy.model.path": this.modelPath,
          "malloy.model.query.name": queryName,

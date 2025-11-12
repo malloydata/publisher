@@ -374,14 +374,18 @@ export async function getConnectionTableSource(
          }
       ).fetchTableSchema(tableKey, tablePath);
       if (source === undefined) {
-         throw new ConnectionError(`Table ${tablePath} not found`);
+         throw new ConnectionError(
+            `Table ${tablePath} not found: ${JSON.stringify(source)}`,
+         );
       }
 
       // Validate that source has the expected structure
-      if (!source || typeof source !== "object") {
+      if (!source) {
          throw new ConnectionError(
             `Invalid table source returned for ${tablePath}`,
          );
+      } else if (typeof source !== "object") {
+         throw new ConnectionError(JSON.stringify(source));
       }
 
       const malloyFields = (source as TableSourceDef).fields;
@@ -406,8 +410,18 @@ export async function getConnectionTableSource(
          columns: fields,
       };
    } catch (error) {
-      logger.error("fetchTableSchema error", { error, tableKey, tablePath });
-      throw new ConnectionError((error as Error).message);
+      const errorMessage =
+         error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : JSON.stringify(error);
+      logger.error("fetchTableSchema error", {
+         error,
+         tableKey,
+         tablePath,
+      });
+      throw new ConnectionError(errorMessage);
    }
 }
 

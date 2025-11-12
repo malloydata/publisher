@@ -9,6 +9,7 @@ import {
 import React, { useEffect, useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
+import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";
 
 type ExplorerComponents = typeof import("@malloydata/malloy-explorer");
@@ -163,7 +164,10 @@ function SourceExplorerComponentInner({
             executionState: "running",
             query: query?.malloyQuery,
             queryResolutionStartMillis: Date.now(),
-            onCancel: mutation.reset,
+            onCancel: () => {
+               mutation.reset();
+               setSubmittedQuery(undefined);
+            },
             response: {
                result: {} as Malloy.Result, // placeholder
             },
@@ -205,6 +209,10 @@ function SourceExplorerComponentInner({
                   : undefined,
             );
          }
+      },
+      onError: (error) => {
+         setSubmittedQuery(undefined);
+         console.error("Query execution error:", error);
       },
    });
 
@@ -288,15 +296,24 @@ function SourceExplorerComponentInner({
                      }}
                   />
                </ResizableCollapsiblePanel>
-               <ResultPanel
-                  source={sourceAndPath.sourceInfo}
-                  draftQuery={query?.malloyQuery}
-                  setDraftQuery={(malloyQuery) =>
-                     setQuery({ ...query, malloyQuery: malloyQuery })
-                  }
-                  submittedQuery={submittedQuery}
-                  options={{ showRawQuery: true }}
-               />
+               {mutation.isError && mutation.error ? (
+                  <Box sx={{ p: 2 }}>
+                     <ApiErrorDisplay
+                        error={mutation.error}
+                        context={`Query execution error`}
+                     />
+                  </Box>
+               ) : (
+                  <ResultPanel
+                     source={sourceAndPath.sourceInfo}
+                     draftQuery={query?.malloyQuery}
+                     setDraftQuery={(malloyQuery) =>
+                        setQuery({ ...query, malloyQuery: malloyQuery })
+                     }
+                     submittedQuery={submittedQuery}
+                     options={{ showRawQuery: true }}
+                  />
+               )}
             </div>
          </MalloyExplorerProvider>
       </StyledExplorerContent>
