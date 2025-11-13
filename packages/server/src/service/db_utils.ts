@@ -353,7 +353,12 @@ export async function getTablesForSchema(
          let tablePath: string;
 
          if (connection.type === "trino") {
-            tablePath = `${connection.trinoConnection?.catalog}.${schemaName}.${tableName}`;
+            if (connection.trinoConnection?.catalog) {
+               tablePath = `${connection.trinoConnection?.catalog}.${schemaName}.${tableName}`;
+            } else {
+               // Catalog name is included in the schema name
+               tablePath = `${schemaName}.${tableName}`;
+            }
          } else {
             tablePath = `${schemaName}.${tableName}`;
          }
@@ -556,9 +561,19 @@ export async function listTablesForSchema(
          throw new Error("Trino connection is required");
       }
       try {
-         const result = await malloyConnection.runSQL(
-            `SHOW TABLES FROM ${connection.trinoConnection.catalog}.${schemaName}`,
-         );
+
+         let result: unknown;
+
+         if (connection.trinoConnection?.catalog) {
+            result = await malloyConnection.runSQL(
+               `SHOW TABLES FROM ${connection.trinoConnection.catalog}.${schemaName}`,
+            );
+         } else {
+            // Catalog name is included in the schema name
+            result = await malloyConnection.runSQL(
+               `SHOW TABLES FROM ${schemaName}`,
+            );
+         }
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
