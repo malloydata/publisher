@@ -195,9 +195,7 @@ export async function getSchemasForConnection(
                `SHOW SCHEMAS FROM ${connection.trinoConnection.catalog}`,
             );
          } else {
-            const catalogs = await malloyConnection.runSQL(
-               `SHOW CATALOGS`,
-            );
+            const catalogs = await malloyConnection.runSQL(`SHOW CATALOGS`);
             console.log("catalogs", catalogs);
             let catalogNames = standardizeRunSQLResult(catalogs);
             catalogNames = catalogNames.map((catalog: unknown) => {
@@ -205,7 +203,7 @@ export async function getSchemasForConnection(
                return typedCatalog.Catalog as string;
             });
 
-            let schemas: unknown[] = [];
+            const schemas: unknown[] = [];
 
             console.log("catalogNames", catalogNames);
             for (const catalog of catalogNames) {
@@ -216,14 +214,16 @@ export async function getSchemasForConnection(
                console.log("schemasResultRows", schemasResultRows);
 
                // Concat catalog name to schema name for each schema row
-               const schemasWithCatalog = schemasResultRows.map((row: unknown) => {
-                  const typedRow = row as Record<string, unknown>;
-                  // For display, use the convention "catalog.schema"
-                  return {
-                     ...typedRow,
-                     Schema: `${catalog}.${typedRow.Schema ?? typedRow.schema ?? ""}`,
-                  };
-               });
+               const schemasWithCatalog = schemasResultRows.map(
+                  (row: unknown) => {
+                     const typedRow = row as Record<string, unknown>;
+                     // For display, use the convention "catalog.schema"
+                     return {
+                        ...typedRow,
+                        Schema: `${catalog}.${typedRow.Schema ?? typedRow.schema ?? ""}`,
+                     };
+                  },
+               );
                schemas.push(...schemasWithCatalog);
                console.log("schemas", schemas);
             }
