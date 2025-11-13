@@ -61,6 +61,8 @@ function validateAndBuildTrinoConfig(
          },
       };
       delete baseConfig.password;
+      delete baseConfig.catalog;
+      delete baseConfig.schema;
    } else if (
       trinoConfig.server?.startsWith("https://") &&
       trinoConfig.password
