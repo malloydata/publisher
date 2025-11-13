@@ -561,7 +561,6 @@ export async function listTablesForSchema(
          throw new Error("Trino connection is required");
       }
       try {
-
          let result: unknown;
 
          if (connection.trinoConnection?.catalog) {
