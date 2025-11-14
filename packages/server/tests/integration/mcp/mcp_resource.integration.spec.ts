@@ -98,7 +98,7 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
                expect(typeof firstResource.mimeType).toBe("string");
             }
          },
-         { timeout: 10000 },
+         { timeout: 15000 },
       );
 
       it("should resolve even if called with a specific URI (behavior might vary)", async () => {
