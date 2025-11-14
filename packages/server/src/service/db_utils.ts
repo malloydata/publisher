@@ -437,6 +437,13 @@ export async function getConnectionTableSource(
          );
       }
 
+      //This is for the Trino connection. The connection will not throw an error if the table is not found.
+      // Instead it will return an empty fields array. So we need to check for that.
+      // But it is fine to have it for all other connections as well.
+      if (malloyFields.length === 0) {
+         throw new ConnectionError(`Table ${tablePath} not found`);
+      }
+
       const fields = malloyFields.map((field) => {
          return {
             name: field.name,
