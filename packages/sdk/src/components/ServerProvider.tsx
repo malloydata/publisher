@@ -52,6 +52,7 @@ const getApiClients = (
    const axiosInstance = axios.create({
       baseURL: baseURL || basePath,
       withCredentials: true,
+      timeout: 600000,
    });
 
    axiosInstance.interceptors.request.use(async (config) => {
