@@ -122,7 +122,6 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
       connectionName: selectedConnection,
    });
 
-   console.log("selectedConnectionResourceUri", selectedConnectionResourceUri);
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["connections", projectName],
       queryFn: () => apiClients.connections.listConnections(projectName),
