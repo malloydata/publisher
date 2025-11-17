@@ -121,6 +121,8 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
       projectName: projectName,
       connectionName: selectedConnection,
    });
+
+   console.log("selectedConnectionResourceUri", selectedConnectionResourceUri);
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["connections", projectName],
       queryFn: () => apiClients.connections.listConnections(projectName),
@@ -275,15 +277,11 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                     updateConnection.mutateAsync(payload)
                                  }
                                  onDelete={(payload) => {
-                                    if (
-                                       !selectedConnectionResourceUri.startsWith(
-                                          "publisher:",
-                                       )
-                                    ) {
+                                    if (!conn.resource) {
                                        deleteConnection.mutateAsync(payload);
                                     } else {
                                        setNotificationMessage(
-                                          "Cannot delete this connection (publisher: resource)",
+                                          "Cannot delete this connection",
                                        );
                                     }
                                  }}
