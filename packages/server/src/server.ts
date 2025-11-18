@@ -54,6 +54,8 @@ function parseArgs() {
          );
          console.log("  --help, -h             Show this help message");
          process.exit(0);
+      } else if (arg === "--initializeStorage") {
+         process.env.INITIALIZE_STORAGE = "true";
       }
    }
 }

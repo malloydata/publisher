@@ -14,7 +14,8 @@
     "build": "bun generate-api-types && bun build:app && NODE_ENV=production bun run build.ts",
     "build:server-only": "bun generate-api-types && NODE_ENV=production bun run build.ts",
     "start": "NODE_ENV=production node ./dist/server.js",
-    "start:dev": "NODE_ENV=development bun --watch src/server.ts",
+    "start:dev": "NODE_ENV=development bun src/server.ts",
+    "start:dev:init": "NODE_ENV=development INITIALIZE_STORAGE=true bun src/server.ts",
     "start:instrumented": "node --require ./dist/instrumentation.js ./dist/server.js",
     "lint": "bunx eslint \"./src/**/*.ts\"",
     "format": "bunx prettier --write '**/*.{ts,tsx}'",
@@ -22,7 +23,10 @@
     "generate-api-types": "bunx openapi-typescript ../../api-doc.yaml --output src/api.ts"
   },
   "dependencies": {
-    "@google-cloud/storage": "^7.16.0",
+    "@aws-sdk/client-s3": "^3.933.0",
+    "@duckdb/node-api": "^1.4.2-r.1",
+    "@google-cloud/bigquery": "^8.1.1",
+    "@google-cloud/storage": "^7.17.3",
     "@malloydata/db-bigquery": "^0.0.318",
     "@malloydata/db-duckdb": "^0.0.318",
     "@malloydata/db-mysql": "^0.0.318",
@@ -41,6 +45,7 @@
     "adm-zip": "^0.5.16",
     "async-mutex": "^0.5.0",
     "aws-sdk": "^2.1692.0",
+    "axios": "^1.13.2",
     "body-parser": "^1.20.2",
     "chokidar": "^4.0.3",
     "class-transformer": "^0.5.1",
@@ -53,9 +58,10 @@
     "morgan": "^1.10.0",
     "node-cron": "^3.0.3",
     "recursive-readdir": "^2.2.3",
-    "simple-git": "^3.28.0",
+    "simple-git": "^3.30.0",
     "trino": "^1.1.1",
-    "uuid": "^11.0.3"
+    "uuid": "^11.0.3",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@anthropic-ai/dxt": "^0.1.0",

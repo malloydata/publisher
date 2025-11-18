@@ -20,25 +20,30 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { PackageStatus, Project } from "./project";
+import { createStorage } from "../storage";
+import type { StorageAdapter } from "../storage/storage-adapter";
+
 type ApiProject = components["schemas"]["Project"];
 
-export class ProjectStore {
-   public serverRootPath: string;
-   private projects: Map<string, Project> = new Map();
-   public publisherConfigIsFrozen: boolean;
-   public finishedInitialization: Promise<void>;
-   private isInitialized: boolean = false;
-   private s3Client = new S3({
-      followRegionRedirects: true,
-   });
-   private gcsClient: Storage;
+   export class ProjectStore {
+      public serverRootPath: string;
+      public storage: StorageAdapter;
+      private projects: Map<string, Project> = new Map();
+      public publisherConfigIsFrozen: boolean;
+      public finishedInitialization: Promise<void>;
+      private isInitialized: boolean = false;
+      private s3Client = new S3({
+         followRegionRedirects: true,
+      });
+      private gcsClient: Storage;
 
-   constructor(serverRootPath: string) {
-      this.serverRootPath = serverRootPath;
-      this.gcsClient = new Storage();
+      constructor(serverRootPath: string) {
+         this.serverRootPath = serverRootPath;
+         this.storage = createStorage(serverRootPath);
+         this.gcsClient = new Storage();
 
-      this.finishedInitialization = this.initialize();
-   }
+         this.finishedInitialization = this.initialize();
+      }
 
    private async initialize() {
       const initialTime = performance.now();
@@ -46,25 +51,42 @@ export class ProjectStore {
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
             this.serverRootPath,
          );
-         const projectManifest = await ProjectStore.reloadProjectManifest(
-            this.serverRootPath,
-         );
-         await this.cleanupAndCreatePublisherPath();
-         logger.info(`Initializing project store.`);
-         await Promise.all(
-            projectManifest.projects.map(async (project) => {
-               logger.info(`Adding project "${project.name}"`);
-               const projectInstance = await this.addProject(
+
+         if (process.env.INITIALIZE_STORAGE === "true") {
+            logger.info("INITIALIZE_STORAGE=true → resetting storage and publisherPath");
+            await this.cleanupAndCreatePublisherPath();
+         }
+
+         await this.storage.init();
+
+         const savedProjects = await this.storage.getState("projects");
+
+         if (savedProjects && Array.isArray(savedProjects) && savedProjects.length > 0) {
+            logger.info("Restoring projects from DuckDB");
+            for (const p of savedProjects) {
+               await this.addProject(
+                  { name: p.name, resource: `${API_PREFIX}/projects/${p.name}`, connections: p.connections },
+                  true
+               );
+            }
+         } else {
+            logger.info("No saved state found → loading project manifest");
+            const projectManifest = await ProjectStore.reloadProjectManifest(this.serverRootPath);
+
+            for (const project of projectManifest.projects) {
+               const proj = await this.addProject(
                   {
                      name: project.name,
                      resource: `${API_PREFIX}/projects/${project.name}`,
                      connections: project.connections,
                   },
-                  true,
+                  true
                );
-               return projectInstance.listPackages();
-            }),
-         );
+
+               await proj.listPackages();
+            }
+            // await this.storage.setState("projects", await this.listProjects(true));
+         }
          this.isInitialized = true;
          logger.info(
             `Project store successfully initialized in ${performance.now() - initialTime}ms`,
@@ -78,19 +100,10 @@ export class ProjectStore {
 
    private async cleanupAndCreatePublisherPath() {
       logger.info(`Cleaning up publisher path ${publisherPath}`);
-      try {
-         await fs.promises.rm(publisherPath, { recursive: true, force: true });
-      } catch (error) {
-         if ((error as NodeJS.ErrnoException).code === "EACCES") {
-            logger.warn(
-               `Permission denied, skipping cleanup of publisher path ${publisherPath}`,
-            );
-         } else {
-            throw error;
-         }
-      }
+      await fs.promises.rm(publisherPath, { recursive: true, force: true });
       await fs.promises.mkdir(publisherPath, { recursive: true });
    }
+
 
    public async listProjects(skipInitializationCheck: boolean = false) {
       if (!skipInitializationCheck) {

@@ -35,6 +35,9 @@
   },
   "dependencies": {
     "@malloy-publisher/sdk": "workspace:*",
+    "@malloydata/malloy-explorer": "^0.0.305-dev250819202105",
+    "@malloydata/malloy-query-builder": "^0.0.323",
+    "@malloydata/render": "^0.0.323",
     "@mui/icons-material": "^7.0.2",
     "@mui/material": "^7.0.2",
     "@vitejs/plugin-react": "^4.3.1",
