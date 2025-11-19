@@ -5,7 +5,7 @@ import { ProjectStore } from "../service/project_store";
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
-type ApiCompiledNotebook = components["schemas"]["CompiledNotebook"];
+type ApiRawNotebook = components["schemas"]["RawNotebook"];
 export type ListModelsFilterEnum =
    components["parameters"]["ListModelsFilterEnum"];
 export class ModelController {
@@ -54,7 +54,7 @@ export class ModelController {
       projectName: string,
       packageName: string,
       notebookPath: string,
-   ): Promise<ApiCompiledNotebook> {
+   ): Promise<ApiRawNotebook> {
       const project = await this.projectStore.getProject(projectName, false);
       const p = await project.getPackage(packageName, false);
       const model = p.getModel(notebookPath);
@@ -66,5 +66,30 @@ export class ModelController {
       }
 
       return model.getNotebook();
+   }
+
+   public async executeNotebookCell(
+      projectName: string,
+      packageName: string,
+      notebookPath: string,
+      cellIndex: number,
+   ): Promise<{
+      type: "code" | "markdown";
+      text: string;
+      queryName?: string;
+      result?: string;
+      newSources?: string[];
+   }> {
+      const project = await this.projectStore.getProject(projectName, false);
+      const p = await project.getPackage(packageName, false);
+      const model = p.getModel(notebookPath);
+      if (!model) {
+         throw new ModelNotFoundError(`${notebookPath} does not exist`);
+      }
+      if (model.getType() === "model") {
+         throw new ModelNotFoundError(`${notebookPath} is a model`);
+      }
+
+      return model.executeNotebookCell(cellIndex);
    }
 }
