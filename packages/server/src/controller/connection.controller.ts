@@ -30,29 +30,35 @@ export class ConnectionController {
     * For DuckDB connections, retrieves from package level; for others, from project level.
     */
    private async getMalloyConnection(
-      projectName: string,
-      connectionName: string,
+   projectName: string,
+   connectionName: string,
    ): Promise<Connection> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getApiConnection(connectionName);
+   const project = await this.projectStore.getProject(projectName, false);
+   const connection = project.getApiConnection(connectionName);
 
-      // For DuckDB connections, get the connection from a package
-      if (connection.type === "duckdb") {
-         const packages = await project.listPackages();
-         if (packages.length === 0) {
-            return project.getMalloyConnection(connectionName);
-         }
-         // For now, use the first package's DuckDB connection
-         const packageName = packages[0].name;
-         if (!packageName) {
-            throw new ConnectionError("Package name is undefined");
-         }
-         const pkg = await project.getPackage(packageName);
-         return pkg.getMalloyConnection(connectionName);
-      } else {
-         return project.getMalloyConnection(connectionName);
-      }
+   if (connection.type !== "duckdb") {
+      return project.getMalloyConnection(connectionName);
    }
+
+   // DUCKDB path
+   const packages = await project.listPackages();
+
+   // If restore failed → fallback
+   if (!packages || packages.length === 0) {
+      logger.warn(`DuckDB connection requested but no packages found for project "${projectName}". Falling back to project-level connection.`);
+      return project.getMalloyConnection(connectionName);
+   }
+
+   // Prefer first valid package
+   const firstPkgName = packages.find(p => p?.name)?.name;
+   if (!firstPkgName) {
+      throw new ConnectionError("No valid package found for DuckDB connection");
+   }
+
+   const pkg = await project.getPackage(firstPkgName);
+   return pkg.getMalloyConnection(connectionName);
+   }
+
 
    public async getConnection(
       projectName: string,

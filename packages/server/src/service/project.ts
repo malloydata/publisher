@@ -212,6 +212,41 @@ export class Project {
       }
    }
 
+   /**
+    * Scans the project directory for package subdirectories and adds them to packageStatuses
+   */
+   public async scanDiskForPackages(): Promise<void> {
+      logger.info("Scanning disk for packages", { projectPath: this.projectPath });
+      
+      try {
+         const entries = await fs.promises.readdir(this.projectPath, { withFileTypes: true });
+         
+         for (const entry of entries) {
+               if (!entry.isDirectory()) continue;
+               
+               const packageName = entry.name;
+               const packagePath = path.join(this.projectPath, packageName);
+               
+               // Check if this directory has a publisher.json (valid package)
+               const manifestPath = path.join(packagePath, "publisher.json");
+               try {
+                  await fs.promises.access(manifestPath);
+                  
+                  // Only add if not already tracked
+                  if (!this.packageStatuses.has(packageName)) {
+                     logger.info(`Found package on disk: ${packageName}`);
+                     this.setPackageStatus(packageName, PackageStatus.SERVING);
+                  }
+               } catch {
+                  // No publisher.json - skip this directory
+                  logger.debug(`Skipping directory ${packageName} - no publisher.json found`);
+               }
+         }
+      } catch (error) {
+         logger.error("Error scanning disk for packages", { error });
+      }
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,

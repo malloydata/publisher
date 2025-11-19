@@ -11,10 +11,6 @@
         {
           "name": "imdb",
           "location": "https://github.com/credibledata/malloy-samples/tree/main/imdb"
-        },
-        {
-          "name": "faa",
-          "location": "https://github.com/credibledata/malloy-samples/tree/main/faa"
         }
       ],
       "connections": [

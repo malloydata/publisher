@@ -22,6 +22,7 @@ import { logger } from "../logger";
 import { PackageStatus, Project } from "./project";
 import { createStorage } from "../storage";
 import type { StorageAdapter } from "../storage/storage-adapter";
+import { Package } from "./package";
 
 type ApiProject = components["schemas"]["Project"];
 
@@ -64,11 +65,65 @@ type ApiProject = components["schemas"]["Project"];
          if (savedProjects && Array.isArray(savedProjects) && savedProjects.length > 0) {
             logger.info("Restoring projects from DuckDB");
             for (const p of savedProjects) {
-               await this.addProject(
-                  { name: p.name, resource: `${API_PREFIX}/projects/${p.name}`, connections: p.connections },
-                  true
+               const proj = await this.addProject(
+                     {
+                        name: p.name,
+                        resource: `${API_PREFIX}/projects/${p.name}`,
+                        connections: p.connections,
+                        projectPath: p.projectPath,
+                     },
+                     true
                );
+               
+               // ⭐ FIRST: Scan disk to populate packageStatuses
+               await proj.scanDiskForPackages();
+               
+               // ⭐ THEN: Restore packages from saved state (this will load the actual Package instances)
+               if (p.packages && Array.isArray(p.packages)) {
+                     for (const pkgInfo of p.packages) {
+                        try {
+                           logger.info(`Restoring package ${pkgInfo.name} for project ${p.name}`);
+                           
+                           // Re-load the package from disk
+                           const pkg = await Package.create(
+                                 p.name,
+                                 pkgInfo.name,
+                                 pkgInfo.location,
+                                 proj.malloyConnections,
+                                 []
+                           );
+                           
+                           proj.packages.set(pkgInfo.name, pkg);
+                           proj.setPackageStatus(pkgInfo.name, PackageStatus.SERVING);
+                           
+                           logger.info(`Successfully restored package ${pkgInfo.name}`);
+                        } catch (error) {
+                           logger.error(`Failed to restore package ${pkgInfo.name}`, { error });
+                        }
+                     }
+               }
+               
+               // ⭐ FINALLY: List packages will now work because packageStatuses is populated
+               // (No need to call listPackages here since we already loaded everything)
             }
+            
+            // Save the complete state back to DuckDB
+            const serialized = Array.from(this.projects.values()).map(p => ({
+               name: p.projectName,
+               projectPath: p.projectPath,
+               connections: p.listApiConnections(),
+               packages: Array.from(p.packageStatuses.keys()).map(pkgName => {
+                     const pkg = p.packages.get(pkgName);
+                     const meta = pkg?.getPackageMetadata?.();
+                     return {
+                        name: pkgName,
+                        location: meta?.location ?? path.join(p.projectPath, pkgName),
+                     };
+               }),
+            }));
+
+            await this.storage.setState("projects", serialized);
+            logger.info(`Restored and saved ${this.projects.size} projects with packages to DuckDB`);
          } else {
             logger.info("No saved state found → loading project manifest");
             const projectManifest = await ProjectStore.reloadProjectManifest(this.serverRootPath);
@@ -85,7 +140,22 @@ type ApiProject = components["schemas"]["Project"];
 
                await proj.listPackages();
             }
-            // await this.storage.setState("projects", await this.listProjects(true));
+            const serialized = Array.from(this.projects.values()).map(p => ({
+               name: p.projectName,
+               projectPath: p.projectPath,            // NEW
+               connections: p.listApiConnections(),  // existing
+               packages: Array.from(p.packageStatuses.keys()).map(pkgName => {
+                  const pkg = p.packages.get(pkgName);
+                  const meta = pkg?.getPackageMetadata?.();
+                  return {
+                     name: pkgName,
+                     location: meta?.location ?? path.join(p.projectPath, pkgName),
+                  };
+               }),// NEW
+               }));
+
+               await this.storage.setState("projects", serialized);
+
          }
          this.isInitialized = true;
          logger.info(
@@ -213,8 +283,92 @@ type ApiProject = components["schemas"]["Project"];
          logger.info(`Project ${projectName} already exists, updating it`);
          const updatedProject = await existingProject.update(project);
          this.projects.set(projectName, updatedProject);
+          await this.storage.setState(
+               "projects",
+               Array.from(this.projects.values()).map(p => ({
+               name: p.projectName,
+               projectPath: p.projectPath,
+               connections: p.listApiConnections(),
+               packages: Array.from(p.packageStatuses.keys()).map(pkgName => {
+                  const pkg = p.packages.get(pkgName);
+                  const meta = pkg?.getPackageMetadata?.();
+                  return {
+                     name: pkgName,
+                     location: meta?.location ?? path.join(p.projectPath, pkgName),
+                  };
+               }),
+               }))
+            );
+
+            this.projects.set(projectName, updatedProject);
          return updatedProject;
       }
+
+      const isRestore = !!(project as any).projectPath;
+
+      if (isRestore) {
+         logger.info(`Restoring project "${projectName}" from DuckDB state`);
+
+         const savedPath =
+            project.projectPath ||
+            path.join(publisherPath, project.name);
+
+         await fs.promises.mkdir(savedPath, { recursive: true });
+
+         // Load project and its connections
+         const restoredProject = await Project.create(
+            projectName,
+            savedPath,
+            project.connections || [],
+         );
+
+         // Restore packages
+         if (project.packages) {
+            for (const pkg of project.packages) {
+
+               const projectConnections = restoredProject.malloyConnections;
+
+               // Package-specific API connections not stored yet → empty for now
+               const packageConnections: any[] = [];
+
+               // Re-create package instance
+               const packageInstance = await Package.create(
+               projectName,
+               pkg.name,
+               pkg.location,
+               projectConnections,
+               packageConnections
+               );
+
+               restoredProject.packages.set(pkg.name, packageInstance);
+               restoredProject.setPackageStatus(pkg.name, PackageStatus.SERVING);
+            }
+         }
+
+         this.projects.set(projectName, restoredProject);
+
+         await this.storage.setState(
+            "projects",
+            Array.from(this.projects.values()).map(p => ({
+               name: p.projectName,
+               projectPath: p.projectPath,
+               connections: p.listApiConnections(),
+               packages: Array.from(p.packageStatuses.keys()).map(pkgName => {
+               const pkg = p.packages.get(pkgName);
+               const meta = pkg?.getPackageMetadata?.();
+               return {
+                  name: pkgName,
+                  location: meta?.location ?? path.join(p.projectPath, pkgName),
+               };
+               }),
+            }))
+         );
+
+         return restoredProject;
+      }
+
+
+
 
       const projectManifest = await ProjectStore.reloadProjectManifest(
          this.serverRootPath,
@@ -250,6 +404,22 @@ type ApiProject = components["schemas"]["Project"];
       projectConfig?.packages.forEach((_package) => {
          newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
       });
+      await this.storage.setState(
+         "projects",
+         Array.from(this.projects.values()).map(p => ({
+            name: p.projectName,
+            projectPath: p.projectPath,
+            connections: p.listApiConnections(),
+             packages: Array.from(p.packageStatuses.keys()).map(pkgName => {
+               const pkg = p.packages.get(pkgName);
+               const meta = pkg?.getPackageMetadata?.();
+               return {
+                  name: pkgName,
+                  location: meta?.location ?? path.join(p.projectPath, pkgName),
+               };
+            }),
+         }))
+      );
       return newProject;
    }
 
