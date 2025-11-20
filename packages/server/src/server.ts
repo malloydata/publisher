@@ -34,6 +34,8 @@ function parseArgs() {
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
          i++;
+      } else if (arg === "--init") {
+         process.env.FORCE_INIT = "true";
       } else if (arg === "--help" || arg === "-h") {
          console.log("Malloy Publisher Server");
          console.log("");
@@ -552,6 +554,8 @@ app.post(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
          req.params.projectName,
          req.body,
       );
+      const project = await projectStore.getProject(req.params.projectName);
+      await projectStore.syncProjectToDatabase(project);
       res.status(200).json(_package?.getPackageMetadata());
    } catch (error) {
       logger.error(error);
@@ -588,13 +592,19 @@ app.patch(
    `${API_PREFIX}/projects/:projectName/packages/:packageName`,
    async (req, res) => {
       try {
-         res.status(200).json(
-            await packageController.updatePackage(
-               req.params.projectName,
-               req.params.packageName,
-               req.body,
-            ),
+         const projectName = req.params.projectName;
+         const packageName = req.params.packageName;
+
+         const updated = await packageController.updatePackage(
+            projectName,
+            packageName,
+            req.body,
          );
+
+         const project = await projectStore.getProject(projectName);
+         await projectStore.syncProjectToDatabase(project);
+
+         res.status(200).json(updated);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -607,12 +617,15 @@ app.delete(
    `${API_PREFIX}/projects/:projectName/packages/:packageName`,
    async (req, res) => {
       try {
-         res.status(200).json(
-            await packageController.deletePackage(
-               req.params.projectName,
-               req.params.packageName,
-            ),
-         );
+         const projectName = req.params.projectName;
+         const packageName = req.params.packageName;
+
+         await packageController.deletePackage(projectName, packageName);
+
+         const project = await projectStore.getProject(projectName);
+         await projectStore.syncProjectToDatabase(project);
+
+         res.status(200).json({ success: true });
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);

@@ -21,6 +21,7 @@ import {
 import { logger } from "../logger";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
+import { StorageManager, StorageConfig } from '../storage/StorageManager';
 
 export class ProjectStore {
    public serverRootPath: string;
@@ -28,6 +29,7 @@ export class ProjectStore {
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
+   private storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
    });
@@ -37,58 +39,260 @@ export class ProjectStore {
       this.serverRootPath = serverRootPath;
       this.gcsClient = new Storage();
 
+      const storageConfig: StorageConfig = {
+         type: 'duckdb',
+         duckdb: {
+            path: path.join(serverRootPath, 'publisher.db')
+         }
+      };
+      this.storageManager = new StorageManager(storageConfig);
+
       this.finishedInitialization = this.initialize();
    }
 
    private async initialize() {
       const initialTime = performance.now();
+      const forceInit = process.env.FORCE_INIT === "true";
+
       try {
+         await this.storageManager.initialize(forceInit);
+
          this.publisherConfigIsFrozen = isPublisherConfigFrozen(
             this.serverRootPath,
          );
+
          const projectManifest = await ProjectStore.reloadProjectManifest(
             this.serverRootPath,
          );
+
          await this.cleanupAndCreatePublisherPath();
-         logger.info(`Initializing project store.`);
-         await Promise.all(
-            projectManifest.projects.map(async (project) => {
-               logger.info(`Adding project "${project.name}"`);
-               const projectInstance = await this.addProject(
-                  {
-                     name: project.name,
-                     resource: `${API_PREFIX}/projects/${project.name}`,
-                     connections: project.connections,
-                  },
-                  true,
+
+         const repository = this.storageManager.getRepository();
+
+         if (forceInit) {
+
+            // Load projects from config file
+            await Promise.all(
+               projectManifest.projects.map(async (project) => {
+                  const projectInstance = await this.addProject(
+                     {
+                        name: project.name,
+                        resource: `${API_PREFIX}/projects/${project.name}`,
+                        connections: project.connections,
+                        packages: project.packages,
+                     },
+                     true,
+                  );
+
+                  // Sync to database
+                  await this.syncProjectToDatabase(projectInstance);
+
+                  return projectInstance.listPackages();
+               }),
+            );
+         } else {
+
+            // Load existing projects from database
+            const existingProjects = await repository.getProjects();
+
+            if (existingProjects.length > 0) {
+
+               // Load projects from database
+               await Promise.all(
+                  existingProjects.map(async (dbProject) => {
+
+                     // Check if project files exist on disk
+                     const projectExists = await fs.promises.access(dbProject.path)
+                        .then(() => true)
+                        .catch(() => false);
+
+                     if (!projectExists) {
+
+                        // Try to find in config and reload
+                        const projectConfig = projectManifest.projects.find(
+                           (p) => p.name === dbProject.name,
+                        );
+
+                        if (projectConfig) {
+                           const projectInstance = await this.addProject(
+                              {
+                                 name: projectConfig.name,
+                                 resource: `${API_PREFIX}/projects/${projectConfig.name}`,
+                                 connections: projectConfig.connections,
+                                 packages: projectConfig.packages,
+                              },
+                              true,
+                           );
+
+                           // Update database with new path
+                           await repository.updateProject(dbProject.id, {
+                              path: projectInstance.metadata.location,
+                           });
+
+                           return projectInstance.listPackages();
+                        } else {
+                           logger.error(`Project "${dbProject.name}" not found in config and files missing`);
+                           return;
+                        }
+                     }
+
+                     // Get connections from database
+                     const connections = await repository.getConnections(dbProject.id);
+
+                     const projectInstance = await Project.create(
+                        dbProject.name,
+                        dbProject.path,
+                        connections.map(conn => ({
+                           name: conn.name,
+                           type: conn.type,
+                           resource: `${API_PREFIX}/connections/${conn.name}`,
+                           ...conn.config
+                        })),
+                     );
+
+                     this.projects.set(dbProject.name, projectInstance);
+
+                     // Get packages from database
+                     const packages = await repository.getPackages(dbProject.id);
+                     packages.forEach(pkg => {
+                        projectInstance.setPackageStatus(pkg.name, PackageStatus.SERVING);
+                     });
+
+                     return projectInstance.listPackages();
+                  }),
                );
-               return projectInstance.listPackages();
-            }),
-         );
+            } else {
+
+               // Fallback to config file if database is empty
+               await Promise.all(
+                  projectManifest.projects.map(async (project) => {
+
+                     const projectInstance = await this.addProject(
+                        {
+                           name: project.name,
+                           resource: `${API_PREFIX}/projects/${project.name}`,
+                           connections: project.connections,
+                           packages: project.packages,
+                        },
+                        true,
+                     );
+
+                     return projectInstance.listPackages();
+                  }),
+               );
+            }
+         }
+
          this.isInitialized = true;
-         logger.info(
-            `Project store successfully initialized in ${performance.now() - initialTime}ms`,
-         );
       } catch (error) {
          logger.error("Error initializing project store", { error });
-         console.error(error);
          process.exit(1);
       }
    }
 
-   private async cleanupAndCreatePublisherPath() {
-      logger.info(`Cleaning up publisher path ${publisherPath}`);
-      try {
-         await fs.promises.rm(publisherPath, { recursive: true, force: true });
-      } catch (error) {
-         if ((error as NodeJS.ErrnoException).code === "EACCES") {
-            logger.warn(
-               `Permission denied, skipping cleanup of publisher path ${publisherPath}`,
-            );
-         } else {
-            throw error;
+   private async cleanupOrphanedPackages(projectId: string, actualPackages: string[]): Promise<void> {
+      const repository = this.storageManager.getRepository();
+      const dbPackages = await repository.getPackages(projectId);
+
+      for (const dbPackage of dbPackages) {
+         if (!actualPackages.includes(dbPackage.name)) {
+            await repository.deletePackage(dbPackage.id);
          }
       }
+   }
+
+   private async syncProjectToDatabase(project: Project): Promise<void> {
+      const repository = this.storageManager.getRepository();
+
+      // Extract project name from metadata if not available at top level
+      const projectName = project.name || project.metadata?.name;
+      const projectPath = project.metadata?.location || '';
+      const projectDescription = project.metadata?.description || null;
+
+      if (!projectName) {
+         throw new Error('Project name is required but not found');
+      }
+
+      // Create or update project
+      const projectData = {
+         name: projectName,
+         path: projectPath,
+         description: projectDescription,
+         metadata: project.metadata || {}
+      };
+
+      const dbProject = await repository.createProject(projectData).catch(async (err) => {
+
+         // If project exists, update it
+         const existing = await repository.getProjects();
+         const existingProject = existing.find(p => p.name === projectName);
+         if (existingProject) {
+            return repository.updateProject(existingProject.id, projectData);
+         }
+         throw err;
+      });
+
+      // Sync packages
+      const packages = await project.listPackages();
+      const packageNames = packages.map(p => p.name);
+
+      await this.cleanupOrphanedPackages(dbProject.id, packageNames);
+
+      for (const pkg of packages) {
+         try {
+            await repository.createPackage({
+               projectId: dbProject.id,
+               name: pkg.name,
+               version: pkg.version || '1.0.0',
+               description: pkg.description || null,
+               manifestPath: pkg.manifestPath || '',
+               metadata: pkg.metadata || {}
+            });
+         } catch (err: any) {
+            logger.warn(`Failed to sync package ${pkg.name}:`, err.message);
+         }
+      }
+
+      // Sync connections
+      const connections = project.connections || [];
+
+      for (const conn of connections) {
+         try {
+            await repository.createConnection({
+               projectId: dbProject.id,
+               name: conn.name,
+               type: conn.type as any,
+               config: conn
+            });
+         } catch (err: any) {
+            logger.warn(`Failed to sync connection ${conn.name}:`, err.message);
+         }
+      }
+
+      logger.info(`Synced project "${projectName}" to database`);
+   }
+
+
+   private async cleanupAndCreatePublisherPath() {
+      const forceInit = process.env.FORCE_INIT === "true";
+
+      if (forceInit) {
+         logger.info(`Force init: Cleaning up publisher path ${publisherPath}`);
+         try {
+            await fs.promises.rm(publisherPath, { recursive: true, force: true });
+         } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EACCES") {
+               logger.warn(
+                  `Permission denied, skipping cleanup of publisher path ${publisherPath}`,
+               );
+            } else {
+               throw error;
+            }
+         }
+      } else {
+         logger.info(`Using existing publisher path ${publisherPath}`);
+      }
+
       await fs.promises.mkdir(publisherPath, { recursive: true });
    }
 
@@ -188,28 +392,24 @@ export class ProjectStore {
       if (!skipInitialization && this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
-
       const projectName = project.name;
       if (!projectName) {
          throw new Error("Project name is required");
       }
-
       // Check if project already exists and update it instead of creating a new one
       const existingProject = this.projects.get(projectName);
       if (existingProject) {
-         logger.info(`Project ${projectName} already exists, updating it`);
          const updatedProject = await existingProject.update(project);
          this.projects.set(projectName, updatedProject);
+         await this.syncProjectToDatabase(updatedProject);
          return updatedProject;
       }
-
       const projectManifest = await ProjectStore.reloadProjectManifest(
          this.serverRootPath,
       );
       const projectConfig = projectManifest.projects.find(
          (p) => p.name === projectName,
       );
-
       const hasPackages =
          (project?.packages && project.packages.length > 0) ||
          (projectConfig?.packages && projectConfig.packages.length > 0);
@@ -233,10 +433,20 @@ export class ProjectStore {
          absoluteProjectPath,
          project.connections || [],
       );
+
+      if (!newProject.metadata) newProject.metadata = {};
+      newProject.metadata.location = absoluteProjectPath;
+
       this.projects.set(projectName, newProject);
-      projectConfig?.packages.forEach((_package) => {
+
+      (project?.packages || projectConfig?.packages || []).forEach((_package) => {
          newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
       });
+
+      await this.syncProjectToDatabase(newProject);
+
+      await newProject.scanForPackages();
+
       return newProject;
    }
 

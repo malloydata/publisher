@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "malloy-publisher",
@@ -27,7 +28,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.128",
+      "version": "0.0.137",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -51,7 +52,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.128",
+      "version": "0.0.137",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -99,7 +100,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.128",
+      "version": "0.0.137",
       "bin": {
         "malloy-publisher": "dist/server.js",
       },
@@ -128,6 +129,7 @@
         "class-transformer": "^0.5.1",
         "class-validator": "^0.14.1",
         "cors": "^2.8.5",
+        "duckdb": "^1.4.1",
         "express": "^4.21.0",
         "globals": "^15.9.0",
         "handlebars": "^4.7.8",
@@ -150,6 +152,7 @@
         "@types/cors": "^2.8.12",
         "@types/express": "^4.17.14",
         "@types/morgan": "^1.9.9",
+        "@types/node": "^24.10.1",
         "@types/node-cron": "^3.0.11",
         "@types/recursive-readdir": "^2.2.4",
         "@types/sinon": "^17.0.4",
@@ -3676,6 +3679,8 @@
     "@malloy-publisher/sdk/eslint-plugin-react-hooks": ["eslint-plugin-react-hooks@5.0.0", "", { "peerDependencies": { "eslint": "^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0-0 || ^9.0.0" } }, "sha512-hIOwI+5hYGpJEc4uPRmz2ulCjAGD/N13Lukkh8cLV0i2IRk/bdZDYjgLVHj+U9Z704kLIdIO6iueGvxNur0sgw=="],
 
     "@malloy-publisher/server/@malloydata/render": ["@malloydata/render@0.0.318", "", { "dependencies": { "@malloydata/malloy": "0.0.318", "@malloydata/malloy-interfaces": "0.0.318", "@malloydata/malloy-tag": "0.0.318", "@tanstack/solid-virtual": "^3.10.4", "lodash": "^4.17.20", "luxon": "^2.4.0", "solid-js": "^1.8.15", "ssf": "^0.11.2", "us-atlas": "^3.0.0", "vega": "^5.21.0", "vega-interpreter": "^2.0.0", "vega-lite": "^5.2.0" } }, "sha512-C8HGnr/SdxL/KtF3Wf1T9lY1oqLdq2PmKuis1V5vKgvaa00wWeRY1e1nW5fr+oTQeas2iHanfLkF1bg/rp8tyQ=="],
+
+    "@malloy-publisher/server/@types/node": ["@types/node@24.10.1", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-GNWcUTRBgIRJD5zj+Tq0fKOJ5XZajIiBroOF0yvj2bSU1WvNdYS/dn9UxwsujGW4JX06dnHyjV2y9rRaybH0iQ=="],
 
     "@malloy-publisher/server/eslint-plugin-react-hooks": ["eslint-plugin-react-hooks@5.0.0", "", { "peerDependencies": { "eslint": "^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0-0 || ^9.0.0" } }, "sha512-hIOwI+5hYGpJEc4uPRmz2ulCjAGD/N13Lukkh8cLV0i2IRk/bdZDYjgLVHj+U9Z704kLIdIO6iueGvxNur0sgw=="],
 

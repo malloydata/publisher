@@ -18,6 +18,7 @@
     "build:server-deploy": "NODE_ENV=production && bun run build:sdk && bun run build:app:server && bun run build:server",
     "start": "cd packages/server && bun run start",
     "start:dev": "cd packages/server && bun run start:dev",
+    "start:dev:init": "cd packages/server && bun run start:dev:init",
     "start:dev:react": "cd packages/app && bun run dev",
     "test:server": "cd packages/server && bun run test",
     "test": "bun run test:server",
