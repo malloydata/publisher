@@ -266,6 +266,7 @@ app.get(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
 app.patch(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
    try {
       const project = await projectStore.updateProject(req.body);
+      await projectStore.syncProjectToDatabase(project);
       res.status(200).json(await project.serialize());
    } catch (error) {
       logger.error(error);

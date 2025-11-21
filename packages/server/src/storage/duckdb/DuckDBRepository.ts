@@ -220,11 +220,16 @@ export class DuckDBRepository implements ResourceRepository {
   // ==================== CONNECTIONS ====================
 
   async getConnections(projectId: string): Promise<Connection[]> {
-    const rows = await this.db.all<any>(
-      'SELECT * FROM connections WHERE project_id = ? ORDER BY name',
-      [projectId]
-    );
-    return rows.map(this.mapToConnection);
+    try {
+      const rows = await this.db.all<any>(
+        'SELECT * FROM connections WHERE project_id = ? ORDER BY name',
+        [projectId]
+      );
+      return rows.map(this.mapToConnection);
+    } catch (err: any) {
+      console.error('Failed to get connections:', err.message);
+      throw err;
+    }
   }
 
   async getConnection(id: string): Promise<Connection | null> {
@@ -235,27 +240,34 @@ export class DuckDBRepository implements ResourceRepository {
   async createConnection(connection: Omit<Connection, 'id' | 'createdAt' | 'updatedAt'>): Promise<Connection> {
     const id = this.generateId();
     const now = this.now();
+    
+    try {
+      const configJson = JSON.stringify(connection.config);
+      
+      await this.db.run(
+        `INSERT INTO connections (id, project_id, name, type, config, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          connection.projectId,
+          connection.name,
+          connection.type,
+          configJson,
+          now.toISOString(),
+          now.toISOString()
+        ]
+      );
 
-    await this.db.run(
-      `INSERT INTO connections (id, project_id, name, type, config, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
+      return {
         id,
-        connection.projectId,
-        connection.name,
-        connection.type,
-        JSON.stringify(connection.config),
-        now.toISOString(),
-        now.toISOString()
-      ]
-    );
-
-    return {
-      id,
-      ...connection,
-      createdAt: now,
-      updatedAt: now
-    };
+        ...connection,
+        createdAt: now,
+        updatedAt: now
+      };
+    } catch (err: any) {
+      console.error('Failed to create connection:', err.message);
+      throw err;
+    }
   }
 
   async updateConnection(id: string, updates: Partial<Connection>): Promise<Connection> {

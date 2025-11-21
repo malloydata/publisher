@@ -201,18 +201,23 @@ export class ProjectStore {
       }
    }
 
-   private async syncProjectToDatabase(project: Project): Promise<void> {
+   public async syncProjectToDatabase(project: Project): Promise<void> {
       const repository = this.storageManager.getRepository();
+
+      if (!project) {
+         logger.error('Cannot sync: project is null or undefined');
+         return;
+      }
 
       // Extract project name from metadata if not available at top level
       const projectName = project.name || project.metadata?.name;
-      const projectPath = project.metadata?.location || '';
-      const projectDescription = project.metadata?.description || null;
-
+      
       if (!projectName) {
          throw new Error('Project name is required but not found');
       }
-
+      const projectPath = project.metadata?.location || '';
+      const projectDescription = project.metadata?.description || null;
+      
       // Create or update project
       const projectData = {
          name: projectName,
@@ -248,14 +253,39 @@ export class ProjectStore {
                manifestPath: pkg.manifestPath || '',
                metadata: pkg.metadata || {}
             });
+            logger.info(`Synced package: ${pkg.name}`);
          } catch (err: any) {
-            logger.warn(`Failed to sync package ${pkg.name}:`, err.message);
+            if (err.message?.includes('UNIQUE') || err.message?.includes('Constraint')) {
+               const existingPackages = await repository.getPackages(dbProject.id);
+               const existingPackage = existingPackages.find(p => p.name === pkg.name);
+               if (existingPackage) {
+                  await repository.updatePackage(existingPackage.id, {
+                     version: pkg.version || '1.0.0',
+                     description: pkg.description || null,
+                     manifestPath: pkg.manifestPath || '',
+                     metadata: pkg.metadata || {}
+                  });
+               }
+            } else {
+               logger.warn(`Failed to sync package ${pkg.name}:`, err.message);
+            }
          }
       }
 
-      // Sync connections
-      const connections = project.connections || [];
+      try {
+      const connections = project.listApiConnections();
 
+      const existingConnections = await repository.getConnections(dbProject.id);
+      
+      // Clean up orphaned connections
+      for (const existingConn of existingConnections) {
+         const stillExists = connections.some(c => c.name === existingConn.name);
+         if (!stillExists) {
+            await repository.deleteConnection(existingConn.id);
+         }
+      }
+      
+      // Add/update connections
       for (const conn of connections) {
          try {
             await repository.createConnection({
@@ -265,12 +295,26 @@ export class ProjectStore {
                config: conn
             });
          } catch (err: any) {
-            logger.warn(`Failed to sync connection ${conn.name}:`, err.message);
+            if (err.message?.includes('UNIQUE') || err.message?.includes('Constraint')) {
+               const existingConn = existingConnections.find(c => c.name === conn.name);
+               if (existingConn) {
+                  await repository.updateConnection(existingConn.id, {
+                     type: conn.type as any,
+                     config: conn
+                  });
+               }
+            } else {
+               logger.error(`Failed to sync connection ${conn.name}:`, err);
+               throw err;
+            }
          }
       }
-
-      logger.info(`Synced project "${projectName}" to database`);
+   } catch (err: any) {
+      logger.error(`Error syncing connections for "${projectName}":`, err);
    }
+
+   logger.info(`Synced project "${projectName}" to database`);
+}
 
 
    private async cleanupAndCreatePublisherPath() {
@@ -445,7 +489,6 @@ export class ProjectStore {
 
       await this.syncProjectToDatabase(newProject);
 
-      await newProject.scanForPackages();
 
       return newProject;
    }
