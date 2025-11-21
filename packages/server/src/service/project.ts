@@ -173,7 +173,7 @@ export class Project {
       return connection;
    }
 
-   private async scanForPackages(): Promise<void> {
+   public async scanForPackages(): Promise<void> {
       try {
          const entries = await fs.promises.readdir(this.projectPath, { withFileTypes: true });
          
