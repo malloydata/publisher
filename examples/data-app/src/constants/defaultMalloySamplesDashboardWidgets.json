@@ -1,7 +1,7 @@
 [
   {
     "id": "60f7204f-01f0-4f37-a4a4-fff3bb14be8b",
-    "queryResultString": "{\"modelPath\":\"names2.malloynb\",\"query\":\"run: names2 -> top_names +{ \\n  # line_chart\\n  nest: by_decade\\n  # shape_map\\n  nest: by_state\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\"}",
+    "queryResultString": "{\"modelPath\":\"names2.malloynb\",\"query\":\"run: names2 -> top_names +{ \\n  # line_chart\\n  nest: by_decade\\n  # shape_map\\n  nest: by_state\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\",\"resourceUri\":\"publisher://projects/malloy-samples/packages/names/models/names2.malloynb\"}",
     "title": "Name Popularity Dashboard",
     "layout": {
       "w": 11,
@@ -16,7 +16,7 @@
   },
   {
     "id": "ad105d73-ecca-4847-a53e-f201f4ae2c41",
-    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"run: names-> {\\n  aggregate: total_population\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\"}",
+    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"run: names-> {\\n  aggregate: total_population\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\",\"resourceUri\":\"publisher://projects/malloy-samples/packages/names/models/names1.malloynb\"}",
     "title": "Dataset Population",
     "layout": {
       "w": 3,
@@ -34,7 +34,7 @@
     "projectName": "malloy-samples",
     "packageName": "names",
     "modelPath": "names1.malloynb",
-    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"# line_chart\\nrun: names -> {\\n group_by: decade\\n  aggregate: total_population\\n  order_by: decade\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\"}",
+    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"# line_chart\\nrun: names -> {\\n group_by: decade\\n  aggregate: total_population\\n  order_by: decade\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\",\"resourceUri\":\"publisher://projects/malloy-samples/packages/names/models/names1.malloynb\"}",
     "title": "Population Over Time",
     "layout": {
       "w": 8,
@@ -49,7 +49,7 @@
   },
   {
     "id": "ebe0fcc1-670e-4685-8a4e-9f6984cc2387",
-    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"run: names-> {\\n  where: gender = 'F'\\n  group_by: \\n    name\\n  aggregate: \\n    total_population\\n  limit: 10\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\"}",
+    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"run: names-> {\\n  where: gender = 'F'\\n  group_by: \\n    name\\n  aggregate: \\n    total_population\\n  limit: 10\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\",\"resourceUri\":\"publisher://projects/malloy-samples/packages/names/models/names1.malloynb\"}",
     "title": "Top Female Names",
     "layout": {
       "w": 3,
@@ -64,7 +64,7 @@
   },
   {
     "id": "67e86d49-3566-4972-8c29-a35021590b6e",
-    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"run: names-> {\\n  where: gender = 'M'\\n  group_by: \\n    name\\n  aggregate: \\n    total_population\\n  limit: 10\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\"}",
+    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"run: names-> {\\n  where: gender = 'M'\\n  group_by: \\n    name\\n  aggregate: \\n    total_population\\n  limit: 10\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\",\"resourceUri\":\"publisher://projects/malloy-samples/packages/names/models/names1.malloynb\"}",
     "title": "Top Male Names",
     "layout": {
       "w": 7,
@@ -79,7 +79,7 @@
   },
   {
     "id": "4a637681-8475-4f6c-b290-32c136b04a99",
-    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"# line_chart\\nrun: names -> {\\n  where: name = 'Elizabeth' | 'Linda' \\n  group_by: decade\\n  aggregate:\\n    total_population\\n  group_by: name\\n  order_by: decade\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\"}",
+    "queryResultString": "{\"modelPath\":\"names1.malloynb\",\"query\":\"# line_chart\\nrun: names -> {\\n  where: name = 'Elizabeth' | 'Linda' \\n  group_by: decade\\n  aggregate:\\n    total_population\\n  group_by: name\\n  order_by: decade\\n}\",\"optionalPackageName\":\"names\",\"optionalProjectName\":\"malloy-samples\",\"resourceUri\":\"publisher://projects/malloy-samples/packages/names/models/names1.malloynb\"}",
     "title": "Linda vs. Elizabeth",
     "layout": {
       "w": 4,

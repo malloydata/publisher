@@ -25,7 +25,7 @@ export default function MalloySamplesDashboard({
   return (
     <Dashboard
       selectedView={selectedView}
-      storageKey="my-dashboard-widgets-malloy-samples"
+      storageKey="my-dashboard-widgets-malloy-samples-v2"
       defaultWidgets={defaultWidgets}
       customizeWidgetsEffect={customizeWidgetsEffect}
       resourceUri={`publisher://projects/malloy-samples`}
