@@ -653,12 +653,13 @@ app.get(
       }
 
       try {
-         const zero = 0 as unknown;
+         // Express stores wildcard matches in params['0']
+         const modelPath = (req.params as Record<string, string>)["0"];
          res.status(200).json(
             await modelController.getModel(
                req.params.projectName,
                req.params.packageName,
-               req.params[zero as keyof typeof req.params],
+               modelPath,
             ),
          );
       } catch (error) {
@@ -692,6 +693,44 @@ app.get(
    },
 );
 
+// Execute notebook cell route must come BEFORE the general get notebook route
+// to avoid the wildcard matching incorrectly
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         const cellIndex = parseInt(req.params.cellIndex, 10);
+         if (isNaN(cellIndex)) {
+            res.status(400).json({
+               error: "Invalid cell index",
+            });
+            return;
+         }
+
+         // Express stores wildcard matches in params['0']
+         const notebookPath = (req.params as Record<string, string>)["0"];
+
+         res.status(200).json(
+            await modelController.executeNotebookCell(
+               req.params.projectName,
+               req.params.packageName,
+               notebookPath,
+               cellIndex,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.get(
    `${API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
    async (req, res) => {
@@ -701,12 +740,13 @@ app.get(
       }
 
       try {
-         const zero = 0 as unknown;
+         // Express stores wildcard matches in params['0']
+         const notebookPath = (req.params as Record<string, string>)["0"];
          res.status(200).json(
             await modelController.getNotebook(
                req.params.projectName,
                req.params.packageName,
-               req.params[zero as keyof typeof req.params],
+               notebookPath,
             ),
          );
       } catch (error) {
@@ -726,12 +766,13 @@ app.post(
       }
 
       try {
-         const zero = 0 as unknown;
+         // Express stores wildcard matches in params['0']
+         const modelPath = (req.params as Record<string, string>)["0"];
          res.status(200).json(
             await queryController.getQuery(
                req.params.projectName,
                req.params.packageName,
-               req.params[zero as keyof typeof req.params],
+               modelPath,
                req.body.sourceName as string,
                req.body.queryName as string,
                req.body.query as string,

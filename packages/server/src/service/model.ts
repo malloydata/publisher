@@ -41,7 +41,7 @@ import { URL_READER } from "../utils";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
-type ApiCompiledNotebook = components["schemas"]["CompiledNotebook"];
+type ApiRawNotebook = components["schemas"]["RawNotebook"];
 // @ts-expect-error TODO: Fix missing Source type in API
 type ApiSource = components["schemas"]["Source"];
 type ApiView = components["schemas"]["View"];
@@ -155,7 +155,15 @@ export class Model {
          );
       } catch (error) {
          let computedError = error;
+         if (error instanceof Error && error.stack) {
+            console.error("Error stack", error.stack);
+         }
+
          if (error instanceof MalloyError) {
+            const problems = error.problems;
+            for (const problem of problems) {
+               console.error("Problem", problem);
+            }
             computedError = new ModelCompilationError(error);
          }
          return new Model(
@@ -215,7 +223,7 @@ export class Model {
       return this.compilationError;
    }
 
-   public async getNotebook(): Promise<ApiCompiledNotebook> {
+   public async getNotebook(): Promise<ApiRawNotebook> {
       if (this.compilationError) {
          throw this.compilationError;
       }
@@ -341,42 +349,16 @@ export class Model {
       } as ApiCompiledModel;
    }
 
-   private async getNotebookModel(): Promise<ApiCompiledNotebook> {
-      const notebookCells: ApiNotebookCell[] = await Promise.all(
-         (this.runnableNotebookCells as RunnableNotebookCell[]).map(
-            async (cell) => {
-               let queryName: string | undefined = undefined;
-               let queryResult: string | undefined = undefined;
-               if (cell.runnable) {
-                  try {
-                     const rowLimit =
-                        (await cell.runnable.getPreparedResult()).resultExplore
-                           .limit || ROW_LIMIT;
-                     const result = await cell.runnable.run({ rowLimit });
-                     const query = (await cell.runnable.getPreparedQuery())
-                        ._query;
-                     queryName = (query as NamedQuery).as || query.name;
-                     queryResult =
-                        result?._queryResult &&
-                        this.modelInfo &&
-                        JSON.stringify(API.util.wrapResult(result));
-                  } catch {
-                     // Catch block intentionally left empty as per previous logic review.
-                     // Error handling for specific cases might be added here if needed.
-                  }
-               }
-               return {
-                  type: cell.type,
-                  text: cell.text,
-                  queryName: queryName,
-                  result: queryResult,
-                  newSources: cell.newSources?.map((source) =>
-                     JSON.stringify(source),
-                  ),
-               } as ApiNotebookCell;
-            },
-         ),
-      );
+   private async getNotebookModel(): Promise<ApiRawNotebook> {
+      // Return raw cell contents without executing them
+      const notebookCells: ApiNotebookCell[] = (
+         this.runnableNotebookCells as RunnableNotebookCell[]
+      ).map((cell) => {
+         return {
+            type: cell.type,
+            text: cell.text,
+         } as ApiNotebookCell;
+      });
 
       return {
          type: "notebook",
@@ -389,7 +371,82 @@ export class Model {
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          notebookCells,
-      } as ApiCompiledModel;
+      } as ApiRawNotebook;
+   }
+
+   public async executeNotebookCell(cellIndex: number): Promise<{
+      type: "code" | "markdown";
+      text: string;
+      queryName?: string;
+      result?: string;
+      newSources?: string[];
+   }> {
+      if (this.compilationError) {
+         throw this.compilationError;
+      }
+
+      if (!this.runnableNotebookCells) {
+         throw new BadRequestError("No notebook cells available");
+      }
+
+      if (cellIndex < 0 || cellIndex >= this.runnableNotebookCells.length) {
+         throw new BadRequestError(
+            `Cell index ${cellIndex} out of range (0-${this.runnableNotebookCells.length - 1})`,
+         );
+      }
+
+      const cell = this.runnableNotebookCells[cellIndex];
+
+      if (cell.type === "markdown") {
+         return {
+            type: cell.type,
+            text: cell.text,
+         };
+      }
+
+      // For code cells, execute the runnable if available
+      let queryName: string | undefined = undefined;
+      let queryResult: string | undefined = undefined;
+
+      if (cell.runnable) {
+         try {
+            const rowLimit =
+               (await cell.runnable.getPreparedResult()).resultExplore.limit ||
+               ROW_LIMIT;
+            const result = await cell.runnable.run({ rowLimit });
+            const query = (await cell.runnable.getPreparedQuery())._query;
+            queryName = (query as NamedQuery).as || query.name;
+            queryResult =
+               result?._queryResult &&
+               this.modelInfo &&
+               JSON.stringify(API.util.wrapResult(result));
+         } catch (error) {
+            // Re-throw execution errors so the client knows about them
+            if (error instanceof MalloyError) {
+               throw error;
+            }
+            const errorMessage =
+               error instanceof Error ? error.message : String(error);
+            if (errorMessage.trim() === "Model has no queries.") {
+               return {
+                  type: "code",
+                  text: cell.text,
+               };
+            } else {
+               console.log("Error message: ", errorMessage);
+            }
+            console.log("Cell content: ", cellIndex, cell.type, cell.text);
+            throw new BadRequestError(`Cell execution failed: ${errorMessage}`);
+         }
+      }
+
+      return {
+         type: cell.type,
+         text: cell.text,
+         queryName: queryName,
+         result: queryResult,
+         newSources: cell.newSources?.map((source) => JSON.stringify(source)),
+      };
    }
 
    static async getModelRuntime(
