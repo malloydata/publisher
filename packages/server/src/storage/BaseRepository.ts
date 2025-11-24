@@ -12,8 +12,8 @@ export abstract class BaseRepository {
    }
 
    protected async executeQuery<T>(
-      query: string,
-      params?: any[],
+      _query: string,
+      _params?: any[],
    ): Promise<T[]> {
       // This will be implemented by specific database implementations
       throw new Error(

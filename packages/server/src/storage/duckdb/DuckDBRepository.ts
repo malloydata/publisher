@@ -129,12 +129,6 @@ export class DuckDBRepository implements ResourceRepository {
       // First delete all related records
       await this.db.run("DELETE FROM connections WHERE project_id = ?", [id]);
 
-      // Get all packages for this project
-      const packages = await this.db.all<{ id: string }>(
-         "SELECT id FROM packages WHERE project_id = ?",
-         [id],
-      );
-
       // Delete packages
       await this.db.run("DELETE FROM packages WHERE project_id = ?", [id]);
 

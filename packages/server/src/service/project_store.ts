@@ -220,7 +220,7 @@ export class ProjectStore {
          throw new Error("Project name is required but not found");
       }
       const projectPath = project.metadata?.location || "";
-      const projectDescription = project.metadata?.description || null;
+      const projectDescription = (project.metadata as { description?: string })?.description ?? undefined;
 
       // Create or update project
       const projectData = {
@@ -258,13 +258,21 @@ export class ProjectStore {
                continue;
             }
 
+            const pkgWithExtras = pkg as {
+               name: string;
+               version?: string;
+               description?: string;
+               manifestPath?: string;
+               metadata?: any;
+            };
+
             await repository.createPackage({
                projectId: dbProject.id,
-               name: pkg.name,
-               version: pkg.version ?? "1.0.0",
-               description: pkg.description ?? undefined,
-               manifestPath: (pkg as any).manifestPath ?? "",
-               metadata: (pkg as any).metadata ?? {},
+               name: pkgWithExtras.name,
+               version: pkgWithExtras.version ?? "1.0.0",
+               description: pkgWithExtras.description ?? undefined,
+               manifestPath: pkgWithExtras.manifestPath ?? "",
+               metadata: pkgWithExtras.metadata ?? {},
             });
             logger.info(`Synced package: ${pkg.name}`);
          } catch (err: any) {
@@ -279,11 +287,18 @@ export class ProjectStore {
                   (p) => p.name === pkg.name,
                );
                if (existingPackage) {
+                  const pkgWithExtras = pkg as {
+                     version?: string;
+                     description?: string;
+                     manifestPath?: string;
+                     metadata?: any;
+                  };
+
                   await repository.updatePackage(existingPackage.id, {
-                     version: pkg.version ?? "1.0.0",
-                     description: pkg.description ?? undefined,
-                     manifestPath: (pkg as any).manifestPath ?? "",
-                     metadata: (pkg as any).metadata ?? {},
+                     version: pkgWithExtras.version ?? "1.0.0",
+                     description: pkgWithExtras.description ?? undefined,
+                     manifestPath: pkgWithExtras.manifestPath ?? "",
+                     metadata: pkgWithExtras.metadata ?? {},
                   });
                }
             } else {
@@ -522,7 +537,9 @@ export class ProjectStore {
 
       (project?.packages || projectConfig?.packages || []).forEach(
          (_package) => {
-            newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
+            if (_package.name) {
+               newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
+            }
          },
       );
 
