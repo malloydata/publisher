@@ -51,7 +51,6 @@ export class ProjectStore {
    }
 
    private async initialize() {
-      const initialTime = performance.now();
       const forceInit = process.env.FORCE_INIT === "true";
 
       try {
@@ -215,8 +214,7 @@ export class ProjectStore {
          return;
       }
 
-      // Extract project name from metadata if not available at top level
-      const projectName = project.name || project.metadata?.name;
+      const projectName = project.metadata?.name;
 
       if (!projectName) {
          throw new Error("Project name is required but not found");
@@ -246,21 +244,27 @@ export class ProjectStore {
             throw err;
          });
 
-      // Sync packages
       const packages = await project.listPackages();
-      const packageNames = packages.map((p) => p.name);
+      const packageNames = packages
+         .map((p) => p.name)
+         .filter((name): name is string => name !== undefined);
 
       await this.cleanupOrphanedPackages(dbProject.id, packageNames);
 
       for (const pkg of packages) {
          try {
+            if (!pkg.name) {
+               logger.warn(`Skipping package with undefined name`);
+               continue;
+            }
+
             await repository.createPackage({
                projectId: dbProject.id,
                name: pkg.name,
-               version: pkg.version || "1.0.0",
-               description: pkg.description || null,
-               manifestPath: pkg.manifestPath || "",
-               metadata: pkg.metadata || {},
+               version: pkg.version ?? "1.0.0",
+               description: pkg.description ?? undefined,
+               manifestPath: (pkg as any).manifestPath ?? "",
+               metadata: (pkg as any).metadata ?? {},
             });
             logger.info(`Synced package: ${pkg.name}`);
          } catch (err: any) {
@@ -276,10 +280,10 @@ export class ProjectStore {
                );
                if (existingPackage) {
                   await repository.updatePackage(existingPackage.id, {
-                     version: pkg.version || "1.0.0",
-                     description: pkg.description || null,
-                     manifestPath: pkg.manifestPath || "",
-                     metadata: pkg.metadata || {},
+                     version: pkg.version ?? "1.0.0",
+                     description: pkg.description ?? undefined,
+                     manifestPath: (pkg as any).manifestPath ?? "",
+                     metadata: (pkg as any).metadata ?? {},
                   });
                }
             } else {
@@ -308,6 +312,12 @@ export class ProjectStore {
          // Add/update connections
          for (const conn of connections) {
             try {
+               // FIX: Ensure connection name is defined
+               if (!conn.name) {
+                  logger.warn(`Skipping connection with undefined name`);
+                  continue;
+               }
+
                await repository.createConnection({
                   projectId: dbProject.id,
                   name: conn.name,
