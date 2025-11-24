@@ -220,7 +220,9 @@ export class ProjectStore {
          throw new Error("Project name is required but not found");
       }
       const projectPath = project.metadata?.location || "";
-      const projectDescription = (project.metadata as { description?: string })?.description ?? undefined;
+      const projectDescription =
+         (project.metadata as { description?: string })?.description ??
+         undefined;
 
       // Create or update project
       const projectData = {
@@ -538,7 +540,10 @@ export class ProjectStore {
       (project?.packages || projectConfig?.packages || []).forEach(
          (_package) => {
             if (_package.name) {
-               newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
+               newProject.setPackageStatus(
+                  _package.name,
+                  PackageStatus.SERVING,
+               );
             }
          },
       );
