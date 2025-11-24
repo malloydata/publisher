@@ -234,7 +234,7 @@ export class ProjectStore {
 
       const dbProject = await repository
          .createProject(projectData)
-         .catch(async (err) => {
+         .catch(async (err: Error) => {
             // If project exists, update it
             const existing = await repository.getProjects();
             const existingProject = existing.find(
@@ -265,7 +265,7 @@ export class ProjectStore {
                version?: string;
                description?: string;
                manifestPath?: string;
-               metadata?: any;
+               metadata?: Record<string, unknown>; 
             };
 
             await repository.createPackage({
@@ -277,10 +277,11 @@ export class ProjectStore {
                metadata: pkgWithExtras.metadata ?? {},
             });
             logger.info(`Synced package: ${pkg.name}`);
-         } catch (err: any) {
+         } catch (err: unknown) {
+            const error = err as Error;
             if (
-               err.message?.includes("UNIQUE") ||
-               err.message?.includes("Constraint")
+               error.message?.includes("UNIQUE") ||
+               error.message?.includes("Constraint")
             ) {
                const existingPackages = await repository.getPackages(
                   dbProject.id,
@@ -293,7 +294,7 @@ export class ProjectStore {
                      version?: string;
                      description?: string;
                      manifestPath?: string;
-                     metadata?: any;
+                     metadata?: Record<string, unknown>;
                   };
 
                   await repository.updatePackage(existingPackage.id, {
@@ -304,7 +305,7 @@ export class ProjectStore {
                   });
                }
             } else {
-               logger.warn(`Failed to sync package ${pkg.name}:`, err.message);
+               logger.warn(`Failed to sync package ${pkg.name}:`, error.message);
             }
          }
       }
@@ -341,10 +342,11 @@ export class ProjectStore {
                   type: conn.type as any,
                   config: conn,
                });
-            } catch (err: any) {
+            } catch (err: unknown) {
+               const error = err as Error;
                if (
-                  err.message?.includes("UNIQUE") ||
-                  err.message?.includes("Constraint")
+                  error.message?.includes("UNIQUE") ||
+                  error.message?.includes("Constraint")
                ) {
                   const existingConn = existingConnections.find(
                      (c) => c.name === conn.name,
@@ -356,13 +358,14 @@ export class ProjectStore {
                      });
                   }
                } else {
-                  logger.error(`Failed to sync connection ${conn.name}:`, err);
-                  throw err;
+                  logger.error(`Failed to sync connection ${conn.name}:`, error);
+                  throw error;
                }
             }
          }
-      } catch (err: any) {
-         logger.error(`Error syncing connections for "${projectName}":`, err);
+      } catch (err: unknown) {
+         const error = err as Error;
+         logger.error(`Error syncing connections for "${projectName}":`, error);
       }
 
       logger.info(`Synced project "${projectName}" to database`);

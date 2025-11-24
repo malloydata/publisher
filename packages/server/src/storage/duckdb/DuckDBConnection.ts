@@ -22,7 +22,7 @@ export class DuckDBConnection implements DatabaseConnection {
             }
 
             // Connect synchronously
-            this.connection = (this.db as any).connect();
+            this.connection = (this.db as duckdb.Database & { connect(): duckdb.Connection }).connect();
 
             if (!this.connection) {
                reject(new Error("Failed to create connection object"));
@@ -100,7 +100,7 @@ export class DuckDBConnection implements DatabaseConnection {
       });
    }
 
-   async run(query: string, params?: any[]): Promise<void> {
+   async run(query: string, params?: unknown[]): Promise<void> {
       if (!this.connection) {
          throw new Error("Database not initialized");
       }
@@ -127,7 +127,7 @@ export class DuckDBConnection implements DatabaseConnection {
       });
    }
 
-   async all<T>(query: string, params?: any[]): Promise<T[]> {
+   async all<T>(query: string, params?: unknown[]): Promise<T[]> {
       if (!this.connection) {
          throw new Error("Database not initialized");
       }
@@ -153,7 +153,7 @@ export class DuckDBConnection implements DatabaseConnection {
       });
    }
 
-   async get<T>(query: string, params?: any[]): Promise<T | null> {
+   async get<T>(query: string, params?: unknown[]): Promise<T | null> {
       const rows = await this.all<T>(query, params);
       return rows.length > 0 ? rows[0] : null;
    }

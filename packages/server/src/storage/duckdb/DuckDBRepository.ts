@@ -20,14 +20,14 @@ export class DuckDBRepository implements ResourceRepository {
    // ==================== PROJECTS ====================
 
    async getProjects(): Promise<Project[]> {
-      const rows = await this.db.all<any>(
+      const rows = await this.db.all<Record<string, unknown>>(
          "SELECT * FROM projects ORDER BY name",
       );
       return rows.map(this.mapToProject);
    }
 
    async getProject(id: string): Promise<Project | null> {
-      const row = await this.db.get<any>(
+      const row = await this.db.get<Record<string, unknown>>(
          "SELECT * FROM projects WHERE id = ?",
          [id],
       );
@@ -63,13 +63,14 @@ export class DuckDBRepository implements ResourceRepository {
             createdAt: now,
             updatedAt: now,
          };
-      } catch (err: any) {
+      } catch (err: unknown) {
+         const error = err as Error;
          // If unique constraint violation, return existing project
          if (
-            err.message?.includes("UNIQUE") ||
-            err.message?.includes("Constraint")
+            error.message?.includes("UNIQUE") ||
+            error.message?.includes("Constraint")
          ) {
-            const existing = await this.db.get<any>(
+            const existing = await this.db.get<Record<string, unknown>>(
                "SELECT * FROM projects WHERE name = ?",
                [project.name],
             );
@@ -78,7 +79,7 @@ export class DuckDBRepository implements ResourceRepository {
                return this.mapToProject(existing);
             }
          }
-         throw err;
+         throw error;
       }
    }
 
@@ -93,7 +94,7 @@ export class DuckDBRepository implements ResourceRepository {
 
       const now = this.now();
       const setClauses: string[] = [];
-      const params: any[] = [];
+      const params: unknown[] = [];
       let paramIndex = 1;
 
       if (updates.name !== undefined) {
@@ -139,7 +140,7 @@ export class DuckDBRepository implements ResourceRepository {
    // ==================== PACKAGES ====================
 
    async getPackages(projectId: string): Promise<Package[]> {
-      const rows = await this.db.all<any>(
+      const rows = await this.db.all<Record<string, unknown>>(
          "SELECT * FROM packages WHERE project_id = ? ORDER BY name",
          [projectId],
       );
@@ -147,7 +148,7 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async getPackage(id: string): Promise<Package | null> {
-      const row = await this.db.get<any>(
+      const row = await this.db.get<Record<string, unknown>>(
          "SELECT * FROM packages WHERE id = ?",
          [id],
       );
@@ -195,7 +196,7 @@ export class DuckDBRepository implements ResourceRepository {
 
       const now = this.now();
       const setClauses: string[] = [];
-      const params: any[] = [];
+      const params: unknown[] = [];
       let paramIndex = 1;
 
       if (updates.name !== undefined) {
@@ -239,19 +240,20 @@ export class DuckDBRepository implements ResourceRepository {
 
    async getConnections(projectId: string): Promise<Connection[]> {
       try {
-         const rows = await this.db.all<any>(
+         const rows = await this.db.all<Record<string, unknown>>(
             "SELECT * FROM connections WHERE project_id = ? ORDER BY name",
             [projectId],
          );
          return rows.map(this.mapToConnection);
-      } catch (err: any) {
-         console.error("Failed to get connections:", err.message);
-         throw err;
+      } catch (err: unknown) {
+         const error = err as Error;
+         console.error("Failed to get connections:", error.message);
+         throw error;
       }
    }
 
    async getConnection(id: string): Promise<Connection | null> {
-      const row = await this.db.get<any>(
+      const row = await this.db.get<Record<string, unknown>>(
          "SELECT * FROM connections WHERE id = ?",
          [id],
       );
@@ -287,9 +289,10 @@ export class DuckDBRepository implements ResourceRepository {
             createdAt: now,
             updatedAt: now,
          };
-      } catch (err: any) {
-         console.error("Failed to create connection:", err.message);
-         throw err;
+      } catch (err: unknown) {
+        const error = err as Error;
+        console.error("Failed to create connection:", error.message);
+        throw error;
       }
    }
 
@@ -304,7 +307,7 @@ export class DuckDBRepository implements ResourceRepository {
 
       const now = this.now();
       const setClauses: string[] = [];
-      const params: any[] = [];
+      const params: unknown[] = [];
       let paramIndex = 1;
 
       if (updates.name !== undefined) {
@@ -338,41 +341,41 @@ export class DuckDBRepository implements ResourceRepository {
 
    // ==================== MAPPERS ====================
 
-   private mapToProject(row: any): Project {
+   private mapToProject(row: Record<string, unknown>): Project {
       return {
-         id: row.id,
-         name: row.name,
-         path: row.path,
-         description: row.description,
-         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-         createdAt: new Date(row.created_at),
-         updatedAt: new Date(row.updated_at),
+        id: row.id as string,
+        name: row.name as string,
+        path: row.path as string,
+        description: row.description as string | undefined,
+        metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+        createdAt: new Date(row.created_at as string),
+        updatedAt: new Date(row.updated_at as string),
       };
    }
 
    private mapToPackage(row: any): Package {
       return {
-         id: row.id,
-         projectId: row.project_id,
-         name: row.name,
-         version: row.version,
-         description: row.description,
-         manifestPath: row.manifest_path,
-         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-         createdAt: new Date(row.created_at),
-         updatedAt: new Date(row.updated_at),
+        id: row.id as string,
+        projectId: row.project_id as string,
+        name: row.name as string,
+        version: row.version as string,
+        description: row.description as string | undefined,
+        manifestPath: row.manifest_path as string,
+        metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+        createdAt: new Date(row.created_at as string),
+        updatedAt: new Date(row.updated_at as string),
       };
    }
 
-   private mapToConnection(row: any): Connection {
+   private mapToConnection(row: Record<string, unknown>): Connection {
       return {
-         id: row.id,
-         projectId: row.project_id,
-         name: row.name,
-         type: row.type,
-         config: JSON.parse(row.config),
-         createdAt: new Date(row.created_at),
-         updatedAt: new Date(row.updated_at),
+        id: row.id as string,
+        projectId: row.project_id as string,
+        name: row.name as string,
+        type: row.type as Connection["type"],
+        config: JSON.parse(row.config as string),
+        createdAt: new Date(row.created_at as string),
+        updatedAt: new Date(row.updated_at as string),
       };
    }
 }

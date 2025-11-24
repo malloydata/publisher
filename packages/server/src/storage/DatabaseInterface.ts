@@ -47,7 +47,7 @@ export interface Project {
    description?: string;
    createdAt: Date;
    updatedAt: Date;
-   metadata?: Record<string, any>;
+   metadata?: Record<string, unknown>;
 }
 
 export interface Package {
@@ -59,7 +59,7 @@ export interface Package {
    manifestPath: string;
    createdAt: Date;
    updatedAt: Date;
-   metadata?: Record<string, any>;
+   metadata?: Record<string, unknown>;
 }
 
 export interface Connection {
@@ -67,7 +67,7 @@ export interface Connection {
    projectId: string;
    name: string;
    type: "bigquery" | "postgres" | "duckdb" | "mysql" | "snowflake" | "trino";
-   config: Record<string, any>;
+   config: Record<string, unknown>;
    createdAt: Date;
    updatedAt: Date;
 }
