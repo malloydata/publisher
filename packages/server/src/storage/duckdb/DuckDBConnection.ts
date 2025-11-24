@@ -135,7 +135,7 @@ export class DuckDBConnection implements DatabaseConnection {
       }
 
       return new Promise((resolve, reject) => {
-         const callback = (err: Error | null, rows: any[]) => {
+         const callback = (err: Error | null, rows: unknown[]) => {
             if (err) {
                reject(
                   new Error(

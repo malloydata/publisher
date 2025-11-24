@@ -23,7 +23,7 @@ export abstract class BaseRepository {
 
    protected async executeOne<T>(
       query: string,
-      params?: any[],
+      params?: unknown[],
    ): Promise<T | null> {
       const results = await this.executeQuery<T>(query, params);
       return results.length > 0 ? results[0] : null;

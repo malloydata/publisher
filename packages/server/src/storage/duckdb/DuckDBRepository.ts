@@ -355,7 +355,7 @@ export class DuckDBRepository implements ResourceRepository {
       };
    }
 
-   private mapToPackage(row: any): Package {
+   private mapToPackage(row: Record<string, unknown>): Package {
       return {
          id: row.id as string,
          projectId: row.project_id as string,

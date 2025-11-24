@@ -22,6 +22,7 @@ import { logger } from "../logger";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
 import { StorageManager, StorageConfig } from "../storage/StorageManager";
+import { Connection } from "../storage/DatabaseInterface";
 
 export class ProjectStore {
    public serverRootPath: string;
@@ -342,7 +343,7 @@ export class ProjectStore {
                await repository.createConnection({
                   projectId: dbProject.id,
                   name: conn.name,
-                  type: conn.type as any,
+                  type: conn.type as Connection["type"],
                   config: conn,
                });
             } catch (err: unknown) {
@@ -356,7 +357,7 @@ export class ProjectStore {
                   );
                   if (existingConn) {
                      await repository.updateConnection(existingConn.id, {
-                        type: conn.type as any,
+                        type: conn.type as Connection["type"],
                         config: conn,
                      });
                   }
