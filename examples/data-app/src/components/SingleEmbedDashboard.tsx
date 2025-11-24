@@ -14,8 +14,8 @@ export default function SingleEmbedDashboard({
   // TODO: Replace this embedded query with your own!
   // Copy the embedded query string from your dashboard or notebook
   // and paste it here. Make sure to keep the backticks and quotes intact.
-  // Example format: {"modelPath":"your-model.malloynb","query":"your query here","optionalPackageName":"your-package","optionalProjectName":"your-project"}
-  const rawEmbeddedQuery = `{"modelPath":"README.malloynb","query":"# dashboard\nrun: stories -> term_dashboard + {\n  where: title ~ r'BigQuery'\n}","optionalPackageName":"bigquery-hackernews","optionalProjectName":"malloy-samples"}`;
+  // Example format: {"modelPath":"your-model.malloynb","query":"your query here","optionalPackageName":"your-package","optionalProjectName":"your-project","resourceUri":"..."}
+  const rawEmbeddedQuery = `{"modelPath":"names1.malloynb","query":"# line_chart\\nrun: names -> {\\n group_by: decade\\n  aggregate: total_population\\n  order_by: decade\\n}","optionalPackageName":"names","optionalProjectName":"malloy-samples","resourceUri":"publisher://projects/malloy-samples/packages/names/models/names1.malloynb"}`;
   
   // Process the query string the same way the UI does
   const embeddedQuery = rawEmbeddedQuery.replace(/\\n/g, '\n').replace(/\n/g, '\\n');
@@ -61,8 +61,8 @@ export default function SingleEmbedDashboard({
         <Box sx={{ 
           border: '1px solid #e0e0e0', 
           borderRadius: 2, 
-          p: 2,
-          minHeight: 400,
+          p: 2, 
+          minHeight: 400, 
           backgroundColor: '#fafafa'
         }}>
           <Box
