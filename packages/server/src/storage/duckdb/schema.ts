@@ -1,21 +1,26 @@
-import { DuckDBConnection } from './DuckDBConnection';
+import { DuckDBConnection } from "./DuckDBConnection";
 
-export async function initializeSchema(db: DuckDBConnection, force: boolean = false): Promise<void> {
-  const initialized = await db.isInitialized();
+export async function initializeSchema(
+   db: DuckDBConnection,
+   force: boolean = false,
+): Promise<void> {
+   const initialized = await db.isInitialized();
 
-  if (initialized && !force) {
-    return;
-  }
+   if (initialized && !force) {
+      return;
+   }
 
-  if (force) {
-    console.log('Forcing database schema initialization (dropping existing tables)...');
-    await dropAllTables(db);
-  } else {
-    console.log('Creating database schema for the first time...');
-  }
+   if (force) {
+      console.log(
+         "Forcing database schema initialization (dropping existing tables)...",
+      );
+      await dropAllTables(db);
+   } else {
+      console.log("Creating database schema for the first time...");
+   }
 
-  // Projects table
-  await db.run(`
+   // Projects table
+   await db.run(`
     CREATE TABLE IF NOT EXISTS projects (
       id VARCHAR PRIMARY KEY,
       name VARCHAR NOT NULL UNIQUE,
@@ -27,8 +32,8 @@ export async function initializeSchema(db: DuckDBConnection, force: boolean = fa
     )
   `);
 
-  // Packages table
-  await db.run(`
+   // Packages table
+   await db.run(`
     CREATE TABLE IF NOT EXISTS packages (
       id VARCHAR PRIMARY KEY,
       project_id VARCHAR NOT NULL,
@@ -44,8 +49,8 @@ export async function initializeSchema(db: DuckDBConnection, force: boolean = fa
     )
   `);
 
-  // Connections table
-  await db.run(`
+   // Connections table
+   await db.run(`
     CREATE TABLE IF NOT EXISTS connections (
       id VARCHAR PRIMARY KEY,
       project_id VARCHAR NOT NULL,
@@ -59,23 +64,26 @@ export async function initializeSchema(db: DuckDBConnection, force: boolean = fa
     )
   `);
 
-  // Create indexes for better query performance
-  await db.run('CREATE INDEX IF NOT EXISTS idx_packages_project_id ON packages(project_id)');
-  await db.run('CREATE INDEX IF NOT EXISTS idx_connections_project_id ON connections(project_id)');
-
+   // Create indexes for better query performance
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_packages_project_id ON packages(project_id)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_connections_project_id ON connections(project_id)",
+   );
 }
 
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
-  const tables = ['connections', 'packages', 'projects'];
+   const tables = ["connections", "packages", "projects"];
 
-  console.log('Dropping tables:', tables.join(', '));
+   console.log("Dropping tables:", tables.join(", "));
 
-  for (const table of tables) {
-    try {
-      await db.run(`DROP TABLE IF EXISTS ${table} `);
-      console.log(`Dropped table: ${table}`);
-    } catch (err) {
-      console.warn(` Warning: Could not drop table ${table}:`, err);
-    }
-  }
+   for (const table of tables) {
+      try {
+         await db.run(`DROP TABLE IF EXISTS ${table} `);
+         console.log(`Dropped table: ${table}`);
+      } catch (err) {
+         console.warn(` Warning: Could not drop table ${table}:`, err);
+      }
+   }
 }

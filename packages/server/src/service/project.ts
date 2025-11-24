@@ -122,7 +122,7 @@ export class Project {
          malloyConnections,
          apiConnections,
       );
-      
+
       // // Scan filesystem for packages
       await project.scanForPackages();
 
@@ -139,7 +139,7 @@ export class Project {
          // Readme not found, so we'll just return an empty string
       }
       this.metadata = {
-         ...this.metadata,   
+         ...this.metadata,
          resource: `${API_PREFIX}/projects/${this.projectName}`,
          name: this.projectName,
          readme,
@@ -175,13 +175,18 @@ export class Project {
 
    public async scanForPackages(): Promise<void> {
       try {
-         const entries = await fs.promises.readdir(this.projectPath, { withFileTypes: true });
-         
+         const entries = await fs.promises.readdir(this.projectPath, {
+            withFileTypes: true,
+         });
+
          for (const entry of entries) {
             if (entry.isDirectory()) {
                const packagePath = path.join(this.projectPath, entry.name);
-               const publisherJsonPath = path.join(packagePath, 'publisher.json');
-               
+               const publisherJsonPath = path.join(
+                  packagePath,
+                  "publisher.json",
+               );
+
                // Check if this directory contains a publisher.json file
                try {
                   await fs.promises.access(publisherJsonPath);
@@ -193,7 +198,9 @@ export class Project {
             }
          }
       } catch (error) {
-         logger.error(`Error scanning for packages in ${this.projectPath}`, { error });
+         logger.error(`Error scanning for packages in ${this.projectPath}`, {
+            error,
+         });
       }
    }
 
