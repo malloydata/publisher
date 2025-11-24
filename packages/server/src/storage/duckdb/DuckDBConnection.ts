@@ -30,7 +30,7 @@ export class DuckDBConnection implements DatabaseConnection {
             }
 
             // Verify connection works
-            this.connection.all("SELECT 42 as answer", (testErr, rows) => {
+            this.connection.all("SELECT 42 as answer", (testErr, _rows) => {
                if (testErr) {
                   console.error("Connection test failed:", testErr);
                   reject(
