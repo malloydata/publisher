@@ -22,7 +22,9 @@ export class DuckDBConnection implements DatabaseConnection {
             }
 
             // Connect synchronously
-            this.connection = (this.db as duckdb.Database & { connect(): duckdb.Connection }).connect();
+            this.connection = (
+               this.db as duckdb.Database & { connect(): duckdb.Connection }
+            ).connect();
 
             if (!this.connection) {
                reject(new Error("Failed to create connection object"));

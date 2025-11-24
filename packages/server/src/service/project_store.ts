@@ -265,7 +265,7 @@ export class ProjectStore {
                version?: string;
                description?: string;
                manifestPath?: string;
-               metadata?: Record<string, unknown>; 
+               metadata?: Record<string, unknown>;
             };
 
             await repository.createPackage({
@@ -305,7 +305,10 @@ export class ProjectStore {
                   });
                }
             } else {
-               logger.warn(`Failed to sync package ${pkg.name}:`, error.message);
+               logger.warn(
+                  `Failed to sync package ${pkg.name}:`,
+                  error.message,
+               );
             }
          }
       }
@@ -358,7 +361,10 @@ export class ProjectStore {
                      });
                   }
                } else {
-                  logger.error(`Failed to sync connection ${conn.name}:`, error);
+                  logger.error(
+                     `Failed to sync connection ${conn.name}:`,
+                     error,
+                  );
                   throw error;
                }
             }

@@ -290,9 +290,9 @@ export class DuckDBRepository implements ResourceRepository {
             updatedAt: now,
          };
       } catch (err: unknown) {
-        const error = err as Error;
-        console.error("Failed to create connection:", error.message);
-        throw error;
+         const error = err as Error;
+         console.error("Failed to create connection:", error.message);
+         throw error;
       }
    }
 
@@ -343,39 +343,43 @@ export class DuckDBRepository implements ResourceRepository {
 
    private mapToProject(row: Record<string, unknown>): Project {
       return {
-        id: row.id as string,
-        name: row.name as string,
-        path: row.path as string,
-        description: row.description as string | undefined,
-        metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
-        createdAt: new Date(row.created_at as string),
-        updatedAt: new Date(row.updated_at as string),
+         id: row.id as string,
+         name: row.name as string,
+         path: row.path as string,
+         description: row.description as string | undefined,
+         metadata: row.metadata
+            ? JSON.parse(row.metadata as string)
+            : undefined,
+         createdAt: new Date(row.created_at as string),
+         updatedAt: new Date(row.updated_at as string),
       };
    }
 
    private mapToPackage(row: any): Package {
       return {
-        id: row.id as string,
-        projectId: row.project_id as string,
-        name: row.name as string,
-        version: row.version as string,
-        description: row.description as string | undefined,
-        manifestPath: row.manifest_path as string,
-        metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
-        createdAt: new Date(row.created_at as string),
-        updatedAt: new Date(row.updated_at as string),
+         id: row.id as string,
+         projectId: row.project_id as string,
+         name: row.name as string,
+         version: row.version as string,
+         description: row.description as string | undefined,
+         manifestPath: row.manifest_path as string,
+         metadata: row.metadata
+            ? JSON.parse(row.metadata as string)
+            : undefined,
+         createdAt: new Date(row.created_at as string),
+         updatedAt: new Date(row.updated_at as string),
       };
    }
 
    private mapToConnection(row: Record<string, unknown>): Connection {
       return {
-        id: row.id as string,
-        projectId: row.project_id as string,
-        name: row.name as string,
-        type: row.type as Connection["type"],
-        config: JSON.parse(row.config as string),
-        createdAt: new Date(row.created_at as string),
-        updatedAt: new Date(row.updated_at as string),
+         id: row.id as string,
+         projectId: row.project_id as string,
+         name: row.name as string,
+         type: row.type as Connection["type"],
+         config: JSON.parse(row.config as string),
+         createdAt: new Date(row.created_at as string),
+         updatedAt: new Date(row.updated_at as string),
       };
    }
 }
