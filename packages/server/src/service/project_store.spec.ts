@@ -4,9 +4,75 @@ import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
+import { TEMP_DIR_PATH } from "../constants";
+
+mock.module("../storage/StorageManager", () => {
+   return {
+      StorageManager: class MockStorageManager {
+         async initialize(forceInit?: boolean) {
+            return;
+         }
+
+         getRepository() {
+            return {
+               getProjects: async () => [],
+               createProject: async (data: any) => ({ 
+                  id: 'test-project-id', 
+                  name: data.name,
+                  path: data.path,
+                  description: data.description,
+                  metadata: data.metadata,
+                  createdAt: new Date(),
+                  updatedAt: new Date()
+               }),
+               updateProject: async (id: string, data: any) => ({ 
+                  id, 
+                  ...data,
+                  updatedAt: new Date()
+               }),
+               getPackages: async (projectId: string) => [],
+               createPackage: async (data: any) => ({ 
+                  id: 'test-package-id', 
+                  projectId: data.projectId,
+                  name: data.name,
+                  version: data.version,
+                  description: data.description,
+                  manifestPath: data.manifestPath,
+                  metadata: data.metadata,
+                  createdAt: new Date(),
+                  updatedAt: new Date()
+               }),
+               updatePackage: async (id: string, data: any) => ({ 
+                  id, 
+                  ...data,
+                  updatedAt: new Date()
+               }),
+               deletePackage: async (id: string) => {},
+               getConnections: async (projectId: string) => [],
+               createConnection: async (data: any) => ({ 
+                  id: 'test-connection-id', 
+                  projectId: data.projectId,
+                  name: data.name,
+                  type: data.type,
+                  config: data.config,
+                  createdAt: new Date(),
+                  updatedAt: new Date()
+               }),
+               updateConnection: async (id: string, data: any) => ({ 
+                  id, 
+                  ...data,
+                  updatedAt: new Date()
+               }),
+               deleteConnection: async (id: string) => {},
+            };
+         }
+      },
+      StorageConfig: {} as any
+   };
+});
+
 import { ProjectStore } from "./project_store";
 import { Project } from "./project";
-import { TEMP_DIR_PATH } from "../constants";
 
 type Connection = components["schemas"]["Connection"];
 

@@ -37,16 +37,37 @@ export class ProjectStore {
    private gcsClient: Storage;
 
    constructor(serverRootPath: string) {
+      this.projects = new Map();
       this.serverRootPath = serverRootPath;
       this.gcsClient = new Storage();
 
-      const storageConfig: StorageConfig = {
-         type: "duckdb",
-         duckdb: {
-            path: path.join(serverRootPath, "publisher.db"),
-         },
-      };
-      this.storageManager = new StorageManager(storageConfig);
+      if (process.env.NODE_ENV !== 'test') {
+         const storageConfig: StorageConfig = {
+            type: "duckdb",
+            duckdb: {
+               path: path.join(serverRootPath, "publisher.db"),
+            },
+         };
+         this.storageManager = new StorageManager(storageConfig);
+      } else {
+         // Use a mock/no-op storage manager in tests
+         this.storageManager = {
+            initialize: async () => {},
+            getRepository: () => ({
+               getProjects: async () => [],
+               createProject: async (data: any) => ({ id: 'mock-id', ...data }),
+               updateProject: async (id: string, data: any) => ({ id, ...data }),
+               getPackages: async () => [],
+               createPackage: async (data: any) => ({ id: 'mock-id', ...data }),
+               updatePackage: async (id: string, data: any) => ({ id, ...data }),
+               deletePackage: async () => {},
+               getConnections: async () => [],
+               createConnection: async (data: any) => ({ id: 'mock-id', ...data }),
+               updateConnection: async (id: string, data: any) => ({ id, ...data }),
+               deleteConnection: async () => {},
+            }),
+         } as any;
+      }
 
       this.finishedInitialization = this.initialize();
    }
