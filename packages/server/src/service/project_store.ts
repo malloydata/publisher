@@ -207,9 +207,10 @@ export class ProjectStore {
                         dbProject.id,
                      );
                      packages.forEach((pkg) => {
+                        const status = pkg.status as PackageStatus || PackageStatus.SERVING;
                         projectInstance.setPackageStatus(
                            pkg.name,
-                           PackageStatus.SERVING,
+                           status
                         );
                      });
 
@@ -319,12 +320,17 @@ export class ProjectStore {
                metadata?: Record<string, unknown>;
             };
 
+            const packageStatus = project.getPackageStatus(pkg.name);
+
+            logger.info(`Synced 1 "${packageStatus?.status}" to database`);
+
             await repository.createPackage({
                projectId: dbProject.id,
                name: pkgWithExtras.name,
                version: pkgWithExtras.version ?? "1.0.0",
                description: pkgWithExtras.description ?? undefined,
                manifestPath: pkgWithExtras.manifestPath ?? "",
+               status: packageStatus?.status || 'serving',
                metadata: pkgWithExtras.metadata ?? {},
             });
             logger.info(`Synced package: ${pkg.name}`);
@@ -348,10 +354,17 @@ export class ProjectStore {
                      metadata?: Record<string, unknown>;
                   };
 
+                  logger.info('testing')
+
+                  const packageStatus = project.getPackageStatus(pkg.name);
+
+                  logger.info(`Synced status "${packageStatus}" to database`);
+
                   await repository.updatePackage(existingPackage.id, {
                      version: pkgWithExtras.version ?? "1.0.0",
                      description: pkgWithExtras.description ?? undefined,
                      manifestPath: pkgWithExtras.manifestPath ?? "",
+                     status: packageStatus?.status || 'serving',
                      metadata: pkgWithExtras.metadata ?? {},
                   });
                }

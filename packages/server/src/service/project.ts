@@ -16,6 +16,7 @@ import { Package } from "./package";
 
 export enum PackageStatus {
    LOADING = "loading",
+   LOADED = "loaded",
    SERVING = "serving",
    UNLOADING = "unloading",
 }

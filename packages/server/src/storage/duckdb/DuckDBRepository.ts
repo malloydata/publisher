@@ -162,8 +162,8 @@ export class DuckDBRepository implements ResourceRepository {
       const now = this.now();
 
       await this.db.run(
-         `INSERT INTO packages (id, project_id, name, version, description, manifest_path, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         `INSERT INTO packages (id, project_id, name, version, description, manifest_path, status,  metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
          [
             id,
             pkg.projectId,
@@ -171,6 +171,7 @@ export class DuckDBRepository implements ResourceRepository {
             pkg.version,
             pkg.description || null,
             pkg.manifestPath,
+            pkg.status || 'serving',
             pkg.metadata ? JSON.stringify(pkg.metadata) : null,
             now.toISOString(),
             now.toISOString(),
@@ -180,6 +181,7 @@ export class DuckDBRepository implements ResourceRepository {
       return {
          id,
          ...pkg,
+         status: pkg.status || 'serving',
          createdAt: now,
          updatedAt: now,
       };
@@ -214,6 +216,10 @@ export class DuckDBRepository implements ResourceRepository {
       if (updates.manifestPath !== undefined) {
          setClauses.push(`manifest_path = $${paramIndex++}`);
          params.push(updates.manifestPath);
+      }
+      if (updates.status !== undefined) {  
+         setClauses.push(`status = $${paramIndex++}`);
+         params.push(updates.status);
       }
       if (updates.metadata !== undefined) {
          setClauses.push(`metadata = $${paramIndex++}`);
@@ -363,6 +369,7 @@ export class DuckDBRepository implements ResourceRepository {
          version: row.version as string,
          description: row.description as string | undefined,
          manifestPath: row.manifest_path as string,
+         status: row.status  as string || 'serving',
          metadata: row.metadata
             ? JSON.parse(row.metadata as string)
             : undefined,

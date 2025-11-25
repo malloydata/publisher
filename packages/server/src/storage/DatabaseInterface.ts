@@ -57,6 +57,7 @@ export interface Package {
    version: string;
    description?: string;
    manifestPath: string;
+   status?: string;
    createdAt: Date;
    updatedAt: Date;
    metadata?: Record<string, unknown>;

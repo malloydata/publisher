@@ -41,6 +41,7 @@ export async function initializeSchema(
       version VARCHAR NOT NULL,
       description VARCHAR,
       manifest_path VARCHAR NOT NULL,
+      status VARCHAR DEFAULT 'serving',
       metadata JSON,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
