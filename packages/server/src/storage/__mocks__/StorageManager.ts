@@ -1,20 +1,50 @@
+type MockData = Record<string, unknown>;
+
 export class StorageManager {
-   async initialize() {
+   async initialize(): Promise<void> {
       return;
    }
+
    getRepository() {
       return {
-         getProjects: async () => [],
-         createProject: async (data: any) => ({ id: "test-id", ...data }),
-         updateProject: async (id: string, data: any) => ({ id, ...data }),
-         getPackages: async () => [],
-         createPackage: async (data: any) => ({ id: "test-id", ...data }),
-         updatePackage: async (id: string, data: any) => ({ id, ...data }),
-         deletePackage: async () => {},
-         getConnections: async () => [],
-         createConnection: async (data: any) => ({ id: "test-id", ...data }),
-         updateConnection: async (id: string, data: any) => ({ id, ...data }),
-         deleteConnection: async () => {},
+         getProjects: async (): Promise<unknown[]> => [],
+         createProject: async (data: MockData): Promise<MockData> => ({
+            id: "test-id",
+            ...data,
+         }),
+         updateProject: async (
+            id: string,
+            data: MockData,
+         ): Promise<MockData> => ({
+            id,
+            ...data,
+         }),
+         getPackages: async (): Promise<unknown[]> => [],
+         createPackage: async (data: MockData): Promise<MockData> => ({
+            id: "test-id",
+            ...data,
+         }),
+         updatePackage: async (
+            id: string,
+            data: MockData,
+         ): Promise<MockData> => ({
+            id,
+            ...data,
+         }),
+         deletePackage: async (): Promise<void> => {},
+         getConnections: async (): Promise<unknown[]> => [],
+         createConnection: async (data: MockData): Promise<MockData> => ({
+            id: "test-id",
+            ...data,
+         }),
+         updateConnection: async (
+            id: string,
+            data: MockData,
+         ): Promise<MockData> => ({
+            id,
+            ...data,
+         }),
+         deleteConnection: async (): Promise<void> => {},
       };
    }
 }

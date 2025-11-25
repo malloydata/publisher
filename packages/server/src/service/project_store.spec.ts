@@ -6,17 +6,19 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 
+type MockData = Record<string, unknown>;
+
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
-         async initialize(_forceInit?: boolean) {
+         async initialize(_forceInit?: boolean): Promise<void> {
             return;
          }
 
          getRepository() {
             return {
-               getProjects: async () => [],
-               createProject: async (data: any) => ({
+               getProjects: async (): Promise<unknown[]> => [],
+               createProject: async (data: MockData): Promise<MockData> => ({
                   id: "test-project-id",
                   name: data.name,
                   path: data.path,
@@ -25,13 +27,18 @@ mock.module("../storage/StorageManager", () => {
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
-               updateProject: async (id: string, data: any) => ({
+               updateProject: async (
+                  id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
                   id,
                   ...data,
                   updatedAt: new Date(),
                }),
-               getPackages: async (_projectId: string) => [],
-               createPackage: async (data: any) => ({
+               getPackages: async (
+                  _projectId: string,
+               ): Promise<unknown[]> => [],
+               createPackage: async (data: MockData): Promise<MockData> => ({
                   id: "test-package-id",
                   projectId: data.projectId,
                   name: data.name,
@@ -42,14 +49,19 @@ mock.module("../storage/StorageManager", () => {
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
-               updatePackage: async (_id: string, data: any) => ({
+               updatePackage: async (
+                  _id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
                   id: _id,
                   ...data,
                   updatedAt: new Date(),
                }),
-               deletePackage: async (_id: string) => {},
-               getConnections: async (_projectId: string) => [],
-               createConnection: async (data: any) => ({
+               deletePackage: async (_id: string): Promise<void> => {},
+               getConnections: async (
+                  _projectId: string,
+               ): Promise<unknown[]> => [],
+               createConnection: async (data: MockData): Promise<MockData> => ({
                   id: "test-connection-id",
                   projectId: data.projectId,
                   name: data.name,
@@ -58,16 +70,19 @@ mock.module("../storage/StorageManager", () => {
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
-               updateConnection: async (_id: string, data: any) => ({
+               updateConnection: async (
+                  _id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
                   id: _id,
                   ...data,
                   updatedAt: new Date(),
                }),
-               deleteConnection: async (_id: string) => {},
+               deleteConnection: async (_id: string): Promise<void> => {},
             };
          }
       },
-      StorageConfig: {} as any,
+      StorageConfig: {} as Record<string, unknown>,
    };
 });
 
