@@ -9,30 +9,30 @@ import { TEMP_DIR_PATH } from "../constants";
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
-         async initialize(forceInit?: boolean) {
+         async initialize(_forceInit?: boolean) {
             return;
          }
 
          getRepository() {
             return {
                getProjects: async () => [],
-               createProject: async (data: any) => ({ 
-                  id: 'test-project-id', 
+               createProject: async (data: any) => ({
+                  id: "test-project-id",
                   name: data.name,
                   path: data.path,
                   description: data.description,
                   metadata: data.metadata,
                   createdAt: new Date(),
-                  updatedAt: new Date()
+                  updatedAt: new Date(),
                }),
-               updateProject: async (id: string, data: any) => ({ 
-                  id, 
+               updateProject: async (id: string, data: any) => ({
+                  id,
                   ...data,
-                  updatedAt: new Date()
+                  updatedAt: new Date(),
                }),
-               getPackages: async (projectId: string) => [],
-               createPackage: async (data: any) => ({ 
-                  id: 'test-package-id', 
+               getPackages: async (_projectId: string) => [],
+               createPackage: async (data: any) => ({
+                  id: "test-package-id",
                   projectId: data.projectId,
                   name: data.name,
                   version: data.version,
@@ -40,34 +40,34 @@ mock.module("../storage/StorageManager", () => {
                   manifestPath: data.manifestPath,
                   metadata: data.metadata,
                   createdAt: new Date(),
-                  updatedAt: new Date()
+                  updatedAt: new Date(),
                }),
-               updatePackage: async (id: string, data: any) => ({ 
-                  id, 
+               updatePackage: async (_id: string, data: any) => ({
+                  id: _id,
                   ...data,
-                  updatedAt: new Date()
+                  updatedAt: new Date(),
                }),
-               deletePackage: async (id: string) => {},
-               getConnections: async (projectId: string) => [],
-               createConnection: async (data: any) => ({ 
-                  id: 'test-connection-id', 
+               deletePackage: async (_id: string) => {},
+               getConnections: async (_projectId: string) => [],
+               createConnection: async (data: any) => ({
+                  id: "test-connection-id",
                   projectId: data.projectId,
                   name: data.name,
                   type: data.type,
                   config: data.config,
                   createdAt: new Date(),
-                  updatedAt: new Date()
+                  updatedAt: new Date(),
                }),
-               updateConnection: async (id: string, data: any) => ({ 
-                  id, 
+               updateConnection: async (_id: string, data: any) => ({
+                  id: _id,
                   ...data,
-                  updatedAt: new Date()
+                  updatedAt: new Date(),
                }),
-               deleteConnection: async (id: string) => {},
+               deleteConnection: async (_id: string) => {},
             };
          }
       },
-      StorageConfig: {} as any
+      StorageConfig: {} as any,
    };
 });
 

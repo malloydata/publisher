@@ -41,7 +41,7 @@ export class ProjectStore {
       this.serverRootPath = serverRootPath;
       this.gcsClient = new Storage();
 
-      if (process.env.NODE_ENV !== 'test') {
+      if (process.env.NODE_ENV !== "test") {
          const storageConfig: StorageConfig = {
             type: "duckdb",
             duckdb: {
@@ -55,15 +55,27 @@ export class ProjectStore {
             initialize: async () => {},
             getRepository: () => ({
                getProjects: async () => [],
-               createProject: async (data: any) => ({ id: 'mock-id', ...data }),
-               updateProject: async (id: string, data: any) => ({ id, ...data }),
+               createProject: async (data: any) => ({ id: "mock-id", ...data }),
+               updateProject: async (id: string, data: any) => ({
+                  id,
+                  ...data,
+               }),
                getPackages: async () => [],
-               createPackage: async (data: any) => ({ id: 'mock-id', ...data }),
-               updatePackage: async (id: string, data: any) => ({ id, ...data }),
+               createPackage: async (data: any) => ({ id: "mock-id", ...data }),
+               updatePackage: async (id: string, data: any) => ({
+                  id,
+                  ...data,
+               }),
                deletePackage: async () => {},
                getConnections: async () => [],
-               createConnection: async (data: any) => ({ id: 'mock-id', ...data }),
-               updateConnection: async (id: string, data: any) => ({ id, ...data }),
+               createConnection: async (data: any) => ({
+                  id: "mock-id",
+                  ...data,
+               }),
+               updateConnection: async (id: string, data: any) => ({
+                  id,
+                  ...data,
+               }),
                deleteConnection: async () => {},
             }),
          } as any;
