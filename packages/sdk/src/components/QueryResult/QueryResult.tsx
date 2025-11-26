@@ -12,6 +12,7 @@ interface QueryResultProps {
    sourceName?: string;
    queryName?: string;
    resourceUri?: string;
+   constrainHeight?: boolean;
 }
 
 export function createEmbeddedQueryResult(props: QueryResultProps): string {
@@ -33,8 +34,10 @@ export function createEmbeddedQueryResult(props: QueryResultProps): string {
  * This is a helper function to render a query result that is embedded as a string.
  */
 export function EmbeddedQueryResult({
+   constrainHeight,
    embeddedQueryResult,
 }: {
+   constrainHeight?: boolean;
    embeddedQueryResult: string;
 }): React.ReactElement {
    const { query, sourceName, queryName, resourceUri } = JSON.parse(
@@ -54,6 +57,7 @@ export function EmbeddedQueryResult({
          sourceName={sourceName}
          queryName={queryName}
          resourceUri={resourceUri}
+         constrainHeight={constrainHeight}
       />
    );
 }
@@ -63,7 +67,14 @@ export default function QueryResult({
    sourceName,
    queryName,
    resourceUri,
-}: QueryResultProps) {
+   constrainHeight,
+}: {
+   constrainHeight?: boolean;
+   query: string;
+   sourceName: string;
+   queryName: string;
+   resourceUri: string;
+}) {
    const { modelPath, projectName, packageName, versionId } =
       parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -97,7 +108,10 @@ export default function QueryResult({
          )}
          {isSuccess && (
             <Suspense fallback={<div>Loading...</div>}>
-               <RenderedResult result={data.data.result} />
+               <RenderedResult
+                  result={data.data.result}
+                  constrainHeight={constrainHeight}
+               />
             </Suspense>
          )}
          {isError && (

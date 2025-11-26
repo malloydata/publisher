@@ -1,9 +1,9 @@
 import React, {
+   Suspense,
    useEffect,
+   useLayoutEffect,
    useRef,
    useState,
-   useLayoutEffect,
-   Suspense,
 } from "react";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
@@ -45,6 +45,21 @@ const createRenderer = async (onDrill?: (element: unknown) => void) => {
    return renderer.createViz();
 };
 
+function RenderResultSimple({ result, onDrill }: RenderedResultProps) {
+   const ref = useRef<HTMLDivElement>(null);
+
+   useLayoutEffect(() => {
+      if (!ref.current || !result) return;
+      const element = ref.current;
+
+      createRenderer(onDrill).then((viz) => {
+         viz.setResult(JSON.parse(result));
+         viz.render(element);
+      });
+   }, [result, onDrill]);
+
+   return <div ref={ref} style={{ width: "100%", height: "100%" }} />;
+}
 // Inner component that actually renders the visualization
 function RenderedResultInner({
    result,
@@ -219,7 +234,11 @@ export default function RenderedResult(props: RenderedResultProps) {
             </div>
          }
       >
-         <RenderedResultInner {...props} />
+         {props.onSizeChange ? (
+            <RenderedResultInner {...props} />
+         ) : (
+            <RenderResultSimple {...props} />
+         )}
       </Suspense>
    );
 }
