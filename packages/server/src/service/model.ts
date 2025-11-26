@@ -355,6 +355,7 @@ export class Model {
       const notebookCells: ApiNotebookCell[] = (
          this.runnableNotebookCells as RunnableNotebookCell[]
       ).map((cell) => {
+         console.log("cell.queryInfo", cell.queryInfo);
          return {
             type: cell.type,
             text: cell.text,
@@ -714,8 +715,9 @@ export class Model {
                      const preparedQuery = await runnable.getPreparedQuery();
                      const query = preparedQuery._query as NamedQuery;
                      const queryName = query.as || query.name;
-
+                     console.log("queryName", queryName);
                      // Check if there's an anonymous query in the model info
+                     console.log("currentModelInfo", currentModelInfo);
                      const anonymousQuery =
                         currentModelInfo.anonymous_queries[
                            currentModelInfo.anonymous_queries.length - 1
