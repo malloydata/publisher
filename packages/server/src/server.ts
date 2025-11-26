@@ -34,7 +34,7 @@ function parseArgs() {
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
          i++;
-      } else if (arg === "--init") {
+      } else if (arg === "--initialize_storage") {
          process.env.FORCE_INIT = "true";
       } else if (arg === "--help" || arg === "-h") {
          console.log("Malloy Publisher Server");
@@ -266,7 +266,6 @@ app.get(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
 app.patch(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
    try {
       const project = await projectStore.updateProject(req.body);
-      await projectStore.syncProjectToDatabase(project);
       res.status(200).json(await project.serialize());
    } catch (error) {
       logger.error(error);
@@ -555,8 +554,6 @@ app.post(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
          req.params.projectName,
          req.body,
       );
-      const project = await projectStore.getProject(req.params.projectName);
-      await projectStore.syncProjectToDatabase(project);
       res.status(200).json(_package?.getPackageMetadata());
    } catch (error) {
       logger.error(error);
@@ -602,9 +599,6 @@ app.patch(
             req.body,
          );
 
-         const project = await projectStore.getProject(projectName);
-         await projectStore.syncProjectToDatabase(project);
-
          res.status(200).json(updated);
       } catch (error) {
          logger.error(error);
@@ -622,10 +616,6 @@ app.delete(
          const packageName = req.params.packageName;
 
          await packageController.deletePackage(projectName, packageName);
-
-         const project = await projectStore.getProject(projectName);
-         await projectStore.syncProjectToDatabase(project);
-
          res.status(200).json({ success: true });
       } catch (error) {
          logger.error(error);

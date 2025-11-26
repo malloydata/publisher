@@ -42,7 +42,10 @@ export class PackageController {
       if (body.location) {
          await this.downloadPackage(projectName, body.name, body.location);
       }
-      return project.addPackage(body.name);
+      const result = await project.addPackage(body.name);
+      await this.projectStore.syncProjectToDatabase(project);
+
+      return result;
    }
 
    public async deletePackage(projectName: string, packageName: string) {
@@ -50,7 +53,10 @@ export class PackageController {
          throw new FrozenConfigError();
       }
       const project = await this.projectStore.getProject(projectName, false);
-      return project.deletePackage(packageName);
+      const result = await project.deletePackage(packageName);
+      await this.projectStore.syncProjectToDatabase(project);
+
+      return result;
    }
 
    public async updatePackage(
@@ -65,7 +71,10 @@ export class PackageController {
       if (body.location) {
          await this.downloadPackage(projectName, packageName, body.location);
       }
-      return project.updatePackage(packageName, body);
+      const result = await project.updatePackage(packageName, body);
+      await this.projectStore.syncProjectToDatabase(project);
+
+      return result;
    }
 
    private async downloadPackage(
