@@ -97,7 +97,7 @@ jobs:
         id: version_step
         run: |
           CURRENT_VERSION=$(cat packages/sdk/package.json | grep '"version"' | sed 's/.*"version": "\(.*\)".*/\1/')
-          CURRENT_VERSION="0.0.138-experimental"
+          CURRENT_VERSION="0.0.138-experimental1"
           echo "::notice title=Current Version::Publishing SDK version $CURRENT_VERSION"
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
