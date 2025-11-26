@@ -117,6 +117,24 @@ export default function AddChartDialog({
     setModelQuery(queryResultString);
   };
 
+  // Construct URIs for components based on selection
+  const getPackageResourceUri = () => {
+    if (!selectedPackage) return resourceUri;
+    return encodeResourceUri({
+      projectName: defaultValues.projectName,
+      packageName: selectedPackage,
+    });
+  };
+
+  const getModelResourceUri = () => {
+    if (!selectedPackage || !selectedModel) return resourceUri;
+    return encodeResourceUri({
+      projectName: defaultValues.projectName,
+      packageName: selectedPackage,
+      modelPath: selectedModel,
+    });
+  };
+
   return (
     <Dialog
       open={true}
@@ -206,7 +224,7 @@ export default function AddChartDialog({
               >
                 <Models
                   onClickModelFile={handleModelNavigate}
-                  resourceUri={resourceUri}
+                  resourceUri={getPackageResourceUri()}
                 />
               </Box>
             </Box>
@@ -232,7 +250,7 @@ export default function AddChartDialog({
                 }}
               >
                 <ModelExplorer
-                  resourceUri={resourceUri}
+                  resourceUri={getModelResourceUri()}
                   onChange={handleModelQueryChange}
                 />
               </Box>
