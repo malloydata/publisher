@@ -289,7 +289,8 @@ export class ProjectStore {
       const projectName = project.metadata?.name;
       const projectPath = project.metadata?.location || "";
       const projectDescription =
-         (project.metadata as { description?: string })?.description ?? undefined;
+         (project.metadata as { description?: string })?.description ??
+         undefined;
 
       const projectData = {
          name: projectName!,
@@ -390,7 +391,9 @@ export class ProjectStore {
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       const existingPackages = await repository.getPackages(projectId);
-      const existingPackage = existingPackages.find((p) => p.name === packageName);
+      const existingPackage = existingPackages.find(
+         (p) => p.name === packageName,
+      );
 
       if (existingPackage) {
          await repository.updatePackage(existingPackage.id, {
@@ -500,7 +503,9 @@ export class ProjectStore {
       existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
-      const existingConn = existingConnections.find((c) => c.name === conn.name);
+      const existingConn = existingConnections.find(
+         (c) => c.name === conn.name,
+      );
 
       if (existingConn && conn.name) {
          await repository.updateConnection(existingConn.id, {
