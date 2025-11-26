@@ -285,12 +285,11 @@ export class ProjectStore {
    private async syncProjectMetadata(
       project: Project,
       repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<{ id: number; name: string }> {
+   ): Promise<{ id: string; name: string }> {
       const projectName = project.metadata?.name;
       const projectPath = project.metadata?.location || "";
       const projectDescription =
-         (project.metadata as { description?: string })?.description ??
-         undefined;
+         (project.metadata as { description?: string })?.description ?? undefined;
 
       const projectData = {
          name: projectName!,
@@ -314,7 +313,7 @@ export class ProjectStore {
 
    private async syncPackages(
       project: Project,
-      projectId: number,
+      projectId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       const packages = await project.listPackages();
@@ -338,7 +337,7 @@ export class ProjectStore {
 
    private async syncPackage(
       pkg: components["schemas"]["Package"],
-      projectId: number,
+      projectId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       const pkgWithExtras = pkg as {
@@ -381,7 +380,7 @@ export class ProjectStore {
 
    private async updateExistingPackage(
       packageName: string,
-      projectId: number,
+      projectId: string,
       packageData: {
          version: string;
          description: string | undefined;
@@ -391,9 +390,7 @@ export class ProjectStore {
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       const existingPackages = await repository.getPackages(projectId);
-      const existingPackage = existingPackages.find(
-         (p) => p.name === packageName,
-      );
+      const existingPackage = existingPackages.find((p) => p.name === packageName);
 
       if (existingPackage) {
          await repository.updatePackage(existingPackage.id, {
@@ -408,7 +405,7 @@ export class ProjectStore {
 
    private async syncConnections(
       project: Project,
-      projectId: number,
+      projectId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       try {
@@ -444,8 +441,8 @@ export class ProjectStore {
    }
 
    private async cleanupOrphanedConnections(
-      currentConnections: Array<{ name?: string }>,
-      existingConnections: Array<{ id: number; name: string }>,
+      currentConnections: ReturnType<Project["listApiConnections"]>,
+      existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       for (const existingConn of existingConnections) {
@@ -460,11 +457,16 @@ export class ProjectStore {
    }
 
    private async syncConnection(
-      conn: { name: string; type: string; [key: string]: unknown },
-      projectId: number,
-      existingConnections: Array<{ id: number; name: string }>,
+      conn: ReturnType<Project["listApiConnections"]>[number],
+      projectId: string,
+      existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
+      if (!conn.name) {
+         logger.warn("Skipping connection with undefined name");
+         return;
+      }
+
       const connectionData = {
          projectId,
          name: conn.name,
@@ -494,15 +496,13 @@ export class ProjectStore {
    }
 
    private async updateExistingConnection(
-      conn: { name: string; type: string; [key: string]: unknown },
-      existingConnections: Array<{ id: number; name: string }>,
+      conn: ReturnType<Project["listApiConnections"]>[number],
+      existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
-      const existingConn = existingConnections.find(
-         (c) => c.name === conn.name,
-      );
+      const existingConn = existingConnections.find((c) => c.name === conn.name);
 
-      if (existingConn) {
+      if (existingConn && conn.name) {
          await repository.updateConnection(existingConn.id, {
             type: conn.type as Connection["type"],
             config: conn,
