@@ -24,8 +24,6 @@ type ApiProject = components["schemas"]["Project"];
 import { StorageManager, StorageConfig } from "../storage/StorageManager";
 import { Connection } from "../storage/DatabaseInterface";
 
-type MockData = Record<string, unknown>;
-
 export class ProjectStore {
    public serverRootPath: string;
    private projects: Map<string, Project> = new Map();
@@ -39,64 +37,16 @@ export class ProjectStore {
    private gcsClient: Storage;
 
    constructor(serverRootPath: string) {
-      this.projects = new Map();
       this.serverRootPath = serverRootPath;
       this.gcsClient = new Storage();
 
-      if (process.env.NODE_ENV !== "test") {
-         const storageConfig: StorageConfig = {
-            type: "duckdb",
-            duckdb: {
-               path: path.join(serverRootPath, "publisher.db"),
-            },
-         };
-         this.storageManager = new StorageManager(storageConfig);
-      } else {
-         // Use a mock/no-op storage manager in tests
-         this.storageManager = {
-            initialize: async (): Promise<void> => {},
-            getRepository: () => ({
-               getProjects: async (): Promise<unknown[]> => [],
-               createProject: async (data: MockData): Promise<MockData> => ({
-                  id: "mock-id",
-                  ...data,
-               }),
-               updateProject: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  ...data,
-               }),
-               getPackages: async (): Promise<unknown[]> => [],
-               createPackage: async (data: MockData): Promise<MockData> => ({
-                  id: "mock-id",
-                  ...data,
-               }),
-               updatePackage: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  ...data,
-               }),
-               deletePackage: async (): Promise<void> => {},
-               getConnections: async (): Promise<unknown[]> => [],
-               createConnection: async (data: MockData): Promise<MockData> => ({
-                  id: "mock-id",
-                  ...data,
-               }),
-               updateConnection: async (
-                  id: string,
-                  data: MockData,
-               ): Promise<MockData> => ({
-                  id,
-                  ...data,
-               }),
-               deleteConnection: async (): Promise<void> => {},
-            }),
-         } as unknown as StorageManager;
-      }
+      const storageConfig: StorageConfig = {
+         type: "duckdb",
+         duckdb: {
+            path: path.join(serverRootPath, "publisher.db"),
+         },
+      };
+      this.storageManager = new StorageManager(storageConfig);
 
       this.finishedInitialization = this.initialize();
    }
