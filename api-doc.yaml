@@ -1680,6 +1680,14 @@ components:
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
+        newSources:
+          type: array
+          description: Array of JSON strings containing SourceInfo objects made available in this cell
+          items:
+            type: string
+        queryInfo:
+          type: string
+          description: JSON string containing QueryInfo object for the query in this cell (if the cell contains a query)
 
     NotebookCellResult:
       type: object
