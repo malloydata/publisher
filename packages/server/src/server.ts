@@ -35,7 +35,7 @@ function parseArgs() {
          process.env.MCP_PORT = args[i + 1];
          i++;
       } else if (arg === "--initialize_storage") {
-         process.env.FORCE_INIT = "true";
+         process.env.FORCE_INITIALIZE_STORAGE = "true";
       } else if (arg === "--help" || arg === "-h") {
          console.log("Malloy Publisher Server");
          console.log("");

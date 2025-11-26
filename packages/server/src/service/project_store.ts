@@ -102,7 +102,7 @@ export class ProjectStore {
    }
 
    private async initialize() {
-      const forceInit = process.env.FORCE_INIT === "true";
+      const forceInit = process.env.FORCE_INITIALIZE_STORAGE === "true";
 
       try {
          await this.storageManager.initialize(forceInit);
@@ -517,7 +517,7 @@ export class ProjectStore {
    }
 
    private async cleanupAndCreatePublisherPath() {
-      const forceInit = process.env.FORCE_INIT === "true";
+      const forceInit = process.env.FORCE_INITIALIZE_STORAGE === "true";
 
       if (forceInit) {
          logger.info(`Force init: Cleaning up publisher path ${publisherPath}`);
