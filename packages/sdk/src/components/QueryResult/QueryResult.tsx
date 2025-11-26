@@ -34,7 +34,6 @@ export function createEmbeddedQueryResult(props: QueryResultProps): string {
  * This is a helper function to render a query result that is embedded as a string.
  */
 export function EmbeddedQueryResult({
-   constrainHeight,
    embeddedQueryResult,
 }: {
    constrainHeight?: boolean;
@@ -57,7 +56,6 @@ export function EmbeddedQueryResult({
          sourceName={sourceName}
          queryName={queryName}
          resourceUri={resourceUri}
-         constrainHeight={constrainHeight}
       />
    );
 }
@@ -67,9 +65,7 @@ export default function QueryResult({
    sourceName,
    queryName,
    resourceUri,
-   constrainHeight,
 }: {
-   constrainHeight?: boolean;
    query: string;
    sourceName: string;
    queryName: string;
@@ -108,10 +104,7 @@ export default function QueryResult({
          )}
          {isSuccess && (
             <Suspense fallback={<div>Loading...</div>}>
-               <RenderedResult
-                  result={data.data.result}
-                  constrainHeight={constrainHeight}
-               />
+               <RenderedResult result={data.data.result} />
             </Suspense>
          )}
          {isError && (
