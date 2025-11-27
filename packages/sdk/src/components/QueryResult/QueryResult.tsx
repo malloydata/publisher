@@ -12,7 +12,6 @@ interface QueryResultProps {
    sourceName?: string;
    queryName?: string;
    resourceUri?: string;
-   constrainHeight?: boolean;
 }
 
 export function createEmbeddedQueryResult(props: QueryResultProps): string {
@@ -36,7 +35,6 @@ export function createEmbeddedQueryResult(props: QueryResultProps): string {
 export function EmbeddedQueryResult({
    embeddedQueryResult,
 }: {
-   constrainHeight?: boolean;
    embeddedQueryResult: string;
 }): React.ReactElement {
    const { query, sourceName, queryName, resourceUri } = JSON.parse(
