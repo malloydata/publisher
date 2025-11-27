@@ -82,27 +82,21 @@ export default function Notebook({
                // Execute code cells
                try {
                   // Call the executeNotebookCell API
-                  const response = await fetch(
-                     `/api/v0/projects/${projectName}/packages/${packageName}/notebooks/${notebookPath}/cells/${i}${versionId ? `?versionId=${versionId}` : ""}`,
-                     {
-                        method: "GET",
-                        credentials: "include",
-                     },
-                  );
-
-                  if (!response.ok) {
-                     throw new Error(
-                        `Failed to execute cell ${i}: ${response.statusText}`,
+                  const response =
+                     await apiClients.notebooks.executeNotebookCell(
+                        projectName,
+                        packageName,
+                        notebookPath,
+                        i,
+                        versionId,
                      );
-                  }
 
-                  const executedCell = await response.json();
+                  const executedCell = response.data;
 
                   // Combine raw cell with execution results
                   cells.push({
                      type: rawCell.type,
                      text: rawCell.text,
-                     queryName: executedCell.queryName,
                      result: executedCell.result,
                      newSources: executedCell.newSources,
                   });
@@ -126,7 +120,15 @@ export default function Notebook({
       };
 
       executeCells();
-   }, [isSuccess, notebook, projectName, packageName, notebookPath, versionId]);
+   }, [
+      isSuccess,
+      notebook,
+      projectName,
+      packageName,
+      notebookPath,
+      versionId,
+      apiClients.notebooks,
+   ]);
 
    return (
       <CleanNotebookContainer>

@@ -61,6 +61,7 @@ interface RunnableNotebookCell {
    text: string;
    runnable?: QueryMaterializer;
    newSources?: Malloy.SourceInfo[];
+   queryInfo?: Malloy.QueryInfo;
 }
 
 export class Model {
@@ -354,9 +355,16 @@ export class Model {
       const notebookCells: ApiNotebookCell[] = (
          this.runnableNotebookCells as RunnableNotebookCell[]
       ).map((cell) => {
+         console.log("cell.queryInfo", cell.queryInfo);
          return {
             type: cell.type,
             text: cell.text,
+            newSources: cell.newSources?.map((source) =>
+               JSON.stringify(source),
+            ),
+            queryInfo: cell.queryInfo
+               ? JSON.stringify(cell.queryInfo)
+               : undefined,
          } as ApiNotebookCell;
       });
 
@@ -701,11 +709,41 @@ export class Model {
 
                   const runnable = localMM.loadFinalQuery();
 
+                  // Extract QueryInfo from the runnable
+                  let queryInfo: Malloy.QueryInfo | undefined = undefined;
+                  try {
+                     const preparedQuery = await runnable.getPreparedQuery();
+                     const query = preparedQuery._query as NamedQuery;
+                     const queryName = query.as || query.name;
+                     console.log("queryName", queryName);
+                     // Check if there's an anonymous query in the model info
+                     console.log("currentModelInfo", currentModelInfo);
+                     const anonymousQuery =
+                        currentModelInfo.anonymous_queries[
+                           currentModelInfo.anonymous_queries.length - 1
+                        ];
+
+                     if (anonymousQuery) {
+                        queryInfo = {
+                           name: queryName,
+                           schema: anonymousQuery.schema,
+                           annotations: anonymousQuery.annotations,
+                           definition: anonymousQuery.definition,
+                           code: anonymousQuery.code,
+                           location: anonymousQuery.location,
+                        } as Malloy.QueryInfo;
+                     }
+                  } catch (_error) {
+                     // If we can't extract query info (e.g., no query in cell), that's okay
+                     // This can happen for cells that only define sources
+                  }
+
                   return {
                      type: "code",
                      text: stmt.text,
                      runnable: runnable,
                      newSources,
+                     queryInfo,
                   } as RunnableNotebookCell;
                } else if (stmt.type === MalloySQLStatementType.MARKDOWN) {
                   return {
