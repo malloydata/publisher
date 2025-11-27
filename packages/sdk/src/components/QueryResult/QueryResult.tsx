@@ -63,12 +63,7 @@ export default function QueryResult({
    sourceName,
    queryName,
    resourceUri,
-}: {
-   query: string;
-   sourceName: string;
-   queryName: string;
-   resourceUri: string;
-}) {
+}: QueryResultProps) {
    const { modelPath, projectName, packageName, versionId } =
       parseResourceUri(resourceUri);
    const { apiClients } = useServer();
