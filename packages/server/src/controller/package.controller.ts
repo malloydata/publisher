@@ -43,7 +43,7 @@ export class PackageController {
          await this.downloadPackage(projectName, body.name, body.location);
       }
       const result = await project.addPackage(body.name);
-      await this.projectStore.syncProjectToDatabase(project);
+      await this.projectStore.syncPackageToDatabase(projectName, body.name);
 
       return result;
    }
@@ -54,7 +54,10 @@ export class PackageController {
       }
       const project = await this.projectStore.getProject(projectName, false);
       const result = await project.deletePackage(packageName);
-      await this.projectStore.syncProjectToDatabase(project);
+      await this.projectStore.deletePackageFromDatabase(
+         projectName,
+         packageName,
+      );
 
       return result;
    }
@@ -72,7 +75,7 @@ export class PackageController {
          await this.downloadPackage(projectName, packageName, body.location);
       }
       const result = await project.updatePackage(packageName, body);
-      await this.projectStore.syncProjectToDatabase(project);
+      await this.projectStore.syncPackageToDatabase(projectName, packageName);
 
       return result;
    }

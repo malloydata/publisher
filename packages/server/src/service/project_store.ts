@@ -466,6 +466,66 @@ export class ProjectStore {
       }
    }
 
+   public async syncPackageToDatabase(
+      projectName: string,
+      packageName: string,
+   ): Promise<void> {
+      const project = await this.getProject(projectName, false);
+      const repository = this.storageManager.getRepository();
+
+      // Get the project ID from database
+      const dbProjects = await repository.getProjects();
+      const dbProject = dbProjects.find((p) => p.name === projectName);
+
+      if (!dbProject) {
+         logger.error(`Project "${projectName}" not found in database`);
+         throw new Error(`Project "${projectName}" not found in database`);
+      }
+
+      // Get the package from the project
+      const packages = await project.listPackages();
+      const pkg = packages.find((p) => p.name === packageName);
+
+      if (!pkg) {
+         logger.warn(`Package "${packageName}" not found in project`);
+         return;
+      }
+
+      // Sync the specific package
+      await this.syncPackage(pkg, dbProject.id, repository);
+      logger.info(`Synced package "${packageName}" to database`);
+   }
+
+   /**
+    * Delete a package from the database
+    */
+   public async deletePackageFromDatabase(
+      projectName: string,
+      packageName: string,
+   ): Promise<void> {
+      const repository = this.storageManager.getRepository();
+
+      // Get the project ID from database
+      const dbProjects = await repository.getProjects();
+      const dbProject = dbProjects.find((p) => p.name === projectName);
+
+      if (!dbProject) {
+         logger.error(`Project "${projectName}" not found in database`);
+         return;
+      }
+
+      // Find and delete the package
+      const existingPackages = await repository.getPackages(dbProject.id);
+      const existingPackage = existingPackages.find(
+         (p) => p.name === packageName,
+      );
+
+      if (existingPackage) {
+         await repository.deletePackage(existingPackage.id);
+         logger.info(`Deleted package "${packageName}" from database`);
+      }
+   }
+
    private async cleanupAndCreatePublisherPath() {
       const forceInit = process.env.FORCE_INITIALIZE_STORAGE === "true";
 
