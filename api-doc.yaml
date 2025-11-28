@@ -1163,18 +1163,15 @@ paths:
         "501":
           $ref: "#/components/responses/NotImplemented"
 
-  # TODO: Notebooks should return the notebook file content, not the compiled notebook.  The front end shoould
-  # run the individual notebook cells against the backend.
   /projects/{projectName}/packages/{packageName}/notebooks/{path}:
     get:
       tags:
         - notebooks
       operationId: get-notebook
-      summary: Get compiled Malloy notebook
+      summary: Get Malloy notebook cells
       description: |
-        Retrieves a compiled Malloy notebook with its cells, results, and metadata. The notebook
-        is compiled using the specified version of the Malloy compiler. This endpoint provides
-        access to the notebook's structure, cells, and execution results for use in applications.
+        Retrieves a Malloy notebook with its raw cell contents (markdown and code).
+        Cell execution should be done separately via the execute-notebook-cell endpoint.
       parameters:
         - name: projectName
           in: path
@@ -1202,11 +1199,70 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
       responses:
         "200":
-          description: A Malloy notebook.
+          description: A Malloy notebook with raw cell contents.
           content:
             "application/json":
               schema:
-                $ref: "#/components/schemas/CompiledNotebook"
+                $ref: "#/components/schemas/RawNotebook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+
+  /projects/{projectName}/packages/{packageName}/notebooks/{path}/cells/{cellIndex}:
+    get:
+      tags:
+        - notebooks
+      operationId: execute-notebook-cell
+      summary: Execute a specific notebook cell
+      description: |
+        Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
+        and runs the Malloy code, returning query results and any new sources defined.
+        For markdown cells, this simply returns the cell content.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          description: Path to notebook within the package
+          required: true
+          schema:
+            type: string
+        - name: cellIndex
+          in: path
+          description: Index of the cell to execute (0-based)
+          required: true
+          schema:
+            type: integer
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: Cell execution result
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/NotebookCellResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1515,9 +1571,9 @@ components:
           type: string
           description: Error message if the notebook failed to compile or load
 
-    CompiledNotebook:
+    RawNotebook:
       type: object
-      description: Compiled Malloy notebook with cells, results, and execution data
+      description: Raw Malloy notebook with unexecuted cell contents
       properties:
         resource:
           type: string
@@ -1533,7 +1589,7 @@ components:
           description: Version of the Malloy compiler used to generate the notebook data
         notebookCells:
           type: array
-          description: Array of notebook cells containing code, markdown, and execution results
+          description: Array of notebook cells containing raw markdown and code content
           items:
             $ref: "#/components/schemas/NotebookCell"
 
@@ -1616,6 +1672,18 @@ components:
     NotebookCell:
       type: object
       description: Individual cell within a Malloy notebook
+      properties:
+        type:
+          type: string
+          enum: ["markdown", "code"]
+          description: Type of notebook cell
+        text:
+          type: string
+          description: Text contents of the notebook cell (either markdown or Malloy code)
+
+    NotebookCellResult:
+      type: object
+      description: Result of executing a notebook cell
       properties:
         type:
           type: string

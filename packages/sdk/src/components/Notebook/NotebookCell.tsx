@@ -16,16 +16,16 @@ import {
 } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
-import { NotebookCell as ClientNotebookCell } from "../../client";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard, CleanNotebookCell } from "../styles";
+import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
-   cell: ClientNotebookCell;
+   cell: EnhancedNotebookCell;
    expandCodeCell?: boolean;
    hideCodeCellIcon?: boolean;
    expandEmbedding?: boolean;
