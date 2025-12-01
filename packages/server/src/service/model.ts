@@ -368,6 +368,23 @@ export class Model {
          } as ApiNotebookCell;
       });
 
+      // Collect all annotations from the inherits chain
+      const allAnnotations = [];
+      if (this.modelDef) {
+         // Traverse the inherits chain to collect all annotations
+         let currentAnnotation = this.modelDef.annotation;
+
+         while (currentAnnotation) {
+            if (currentAnnotation.notes) {
+               allAnnotations.push(
+                  ...currentAnnotation.notes.map((note) => note.text),
+               );
+            }
+            // Navigate to the inherited annotation if it exists
+            currentAnnotation = currentAnnotation.inherits;
+         }
+      }
+
       return {
          type: "notebook",
          packageName: this.packageName,
@@ -378,6 +395,7 @@ export class Model {
          ),
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
+         annotations: allAnnotations,
          notebookCells,
       } as ApiRawNotebook;
    }
@@ -715,9 +733,6 @@ export class Model {
                      const preparedQuery = await runnable.getPreparedQuery();
                      const query = preparedQuery._query as NamedQuery;
                      const queryName = query.as || query.name;
-                     console.log("queryName", queryName);
-                     // Check if there's an anonymous query in the model info
-                     console.log("currentModelInfo", currentModelInfo);
                      const anonymousQuery =
                         currentModelInfo.anonymous_queries[
                            currentModelInfo.anonymous_queries.length - 1

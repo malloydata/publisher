@@ -1592,6 +1592,11 @@ components:
           description: Array of notebook cells containing raw markdown and code content
           items:
             $ref: "#/components/schemas/NotebookCell"
+        annotations:
+          type: array
+          description: Array of annotations attached to the notebook
+          items:
+            type: string
 
     CompiledModel:
       type: object
