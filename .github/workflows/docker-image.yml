@@ -2,6 +2,11 @@ name: Publish Docker Image to Docker Hub
 
 on:
   workflow_dispatch:
+    inputs:
+      current_version:
+        description: "Version tag for the Docker image (optional, defaults to version from package.json)"
+        required: false
+        type: string
 
 env:
   REGISTRY_IMAGE: ms2data/malloy-publisher
@@ -96,7 +101,11 @@ jobs:
       - name: Show current version
         id: version_step
         run: |
-          CURRENT_VERSION=$(cat packages/sdk/package.json | grep '"version"' | sed 's/.*"version": "\(.*\)".*/\1/')
+          if [ -n "${{ inputs.current_version }}" ]; then
+            CURRENT_VERSION="${{ inputs.current_version }}"
+          else
+            CURRENT_VERSION=$(cat packages/sdk/package.json | grep '"version"' | sed 's/.*"version": "\(.*\)".*/\1/')
+          fi
           echo "::notice title=Current Version::Publishing SDK version $CURRENT_VERSION"
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
