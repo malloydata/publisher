@@ -20,6 +20,7 @@ jobs:
           bun-version: 1.2.23
       - name: Typecheck
         run: |
+          node -v
           bun install
           bun run generate-api-types
           bun run build:sdk
