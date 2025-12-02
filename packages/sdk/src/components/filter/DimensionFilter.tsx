@@ -602,89 +602,97 @@ export function DimensionFilter({
             <LocalizationProvider dateAdapter={AdapterDayjs}>
                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
                   <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-                     <DatePicker
-                        label="From"
-                        value={
-                           value1 instanceof Date ? dayjs.utc(value1) : null
-                        }
-                        onChange={(newValue: Dayjs | null) => {
-                           // Only call onChange if value is null (cleared) or a valid date
-                           if (newValue === null) {
-                              handleValueChange(null, value2);
-                           } else if (newValue.isValid()) {
-                              handleValueChange(
-                                 newValue.utc().toDate(),
-                                 value2,
-                              );
+                     <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <DatePicker
+                           label="From"
+                           value={
+                              value1 instanceof Date ? dayjs.utc(value1) : null
                            }
-                           // Invalid dates are ignored - don't update state
-                        }}
-                        timezone="UTC"
-                        minDate={value1 instanceof Date ? undefined : minDate}
-                        maxDate={
-                           value2 instanceof Date
-                              ? dayjs.utc(value2)
-                              : value1 instanceof Date
-                                ? undefined
-                                : maxDate
-                        }
-                        referenceDate={minDate}
-                        slotProps={{
-                           textField: {
-                              size: "small",
-                              fullWidth: true,
-                              sx: { minWidth: 150 },
-                              onFocus: () => setShowMinMaxHelper(true),
-                              onBlur: () => setShowMinMaxHelper(false),
-                           },
-                           openPickerButton: {
-                              sx: { backgroundColor: "transparent" },
-                           },
-                        }}
-                     />
+                           onChange={(newValue: Dayjs | null) => {
+                              // Only call onChange if value is null (cleared) or a valid date
+                              if (newValue === null) {
+                                 handleValueChange(null, value2);
+                              } else if (newValue.isValid()) {
+                                 handleValueChange(
+                                    newValue.utc().toDate(),
+                                    value2,
+                                 );
+                              }
+                              // Invalid dates are ignored - don't update state
+                           }}
+                           timezone="UTC"
+                           minDate={
+                              value1 instanceof Date ? undefined : minDate
+                           }
+                           maxDate={
+                              value2 instanceof Date
+                                 ? dayjs.utc(value2)
+                                 : value1 instanceof Date
+                                   ? undefined
+                                   : maxDate
+                           }
+                           referenceDate={minDate}
+                           slotProps={{
+                              textField: {
+                                 size: "small",
+                                 fullWidth: true,
+                                 onFocus: () => setShowMinMaxHelper(true),
+                                 onBlur: () => setShowMinMaxHelper(false),
+                              },
+                              openPickerButton: {
+                                 sx: { backgroundColor: "transparent" },
+                              },
+                           }}
+                        />
+                     </Box>
                      <Box>to</Box>
-                     <DatePicker
-                        label="To"
-                        value={
-                           value2 instanceof Date ? dayjs.utc(value2) : null
-                        }
-                        onChange={(newValue: Dayjs | null) => {
-                           // Only call onChange if value is null (cleared) or a valid date
-                           if (newValue === null) {
-                              handleValueChange(value1, null);
-                           } else if (newValue.isValid()) {
-                              handleValueChange(
-                                 value1,
-                                 newValue.utc().toDate(),
-                              );
+                     <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <DatePicker
+                           label="To"
+                           value={
+                              value2 instanceof Date ? dayjs.utc(value2) : null
                            }
-                           // Invalid dates are ignored - don't update state
-                        }}
-                        timezone="UTC"
-                        minDate={
-                           value1 instanceof Date
-                              ? dayjs.utc(value1)
-                              : value2 instanceof Date
-                                ? undefined
-                                : minDate
-                        }
-                        maxDate={value2 instanceof Date ? undefined : maxDate}
-                        referenceDate={
-                           value1 instanceof Date ? dayjs.utc(value1) : minDate
-                        }
-                        slotProps={{
-                           textField: {
-                              size: "small",
-                              fullWidth: true,
-                              sx: { minWidth: 150 },
-                              onFocus: () => setShowMinMaxHelper(true),
-                              onBlur: () => setShowMinMaxHelper(false),
-                           },
-                           openPickerButton: {
-                              sx: { backgroundColor: "transparent" },
-                           },
-                        }}
-                     />
+                           onChange={(newValue: Dayjs | null) => {
+                              // Only call onChange if value is null (cleared) or a valid date
+                              if (newValue === null) {
+                                 handleValueChange(value1, null);
+                              } else if (newValue.isValid()) {
+                                 handleValueChange(
+                                    value1,
+                                    newValue.utc().toDate(),
+                                 );
+                              }
+                              // Invalid dates are ignored - don't update state
+                           }}
+                           timezone="UTC"
+                           minDate={
+                              value1 instanceof Date
+                                 ? dayjs.utc(value1)
+                                 : value2 instanceof Date
+                                   ? undefined
+                                   : minDate
+                           }
+                           maxDate={
+                              value2 instanceof Date ? undefined : maxDate
+                           }
+                           referenceDate={
+                              value1 instanceof Date
+                                 ? dayjs.utc(value1)
+                                 : minDate
+                           }
+                           slotProps={{
+                              textField: {
+                                 size: "small",
+                                 fullWidth: true,
+                                 onFocus: () => setShowMinMaxHelper(true),
+                                 onBlur: () => setShowMinMaxHelper(false),
+                              },
+                              openPickerButton: {
+                                 sx: { backgroundColor: "transparent" },
+                              },
+                           }}
+                        />
+                     </Box>
                   </Box>
                   {showMinMaxHelper && minDate && maxDate && (
                      <Typography
