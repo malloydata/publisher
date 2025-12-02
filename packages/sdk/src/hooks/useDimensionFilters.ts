@@ -15,13 +15,23 @@ export type MatchType =
    | "Concept Search";
 
 /**
+ * Primitive types that can be used as filter values
+ */
+export type FilterValuePrimitive = string | number | boolean | Date;
+
+/**
+ * Type for filter values - can be a single value or an array for multi-select
+ */
+export type FilterValue = FilterValuePrimitive | FilterValuePrimitive[];
+
+/**
  * A selected filter value with its match type
  */
 export interface FilterSelection {
    dimensionName: string;
    matchType: MatchType;
-   value: any;
-   value2?: any; // For "Between" match type
+   value: FilterValue;
+   value2?: FilterValuePrimitive; // For "Between" match type
 }
 
 /**
@@ -71,7 +81,10 @@ function escapeMalloyString(value: string): string {
 /**
  * Formats a value for use in Malloy query
  */
-function formatMalloyValue(value: any, isDate: boolean = false): string {
+function formatMalloyValue(
+   value: FilterValuePrimitive | null | undefined,
+   isDate: boolean = false,
+): string {
    if (value === null || value === undefined) {
       return "null";
    }

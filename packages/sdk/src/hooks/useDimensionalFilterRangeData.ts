@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useServer } from "../components/ServerProvider";
-import { FilterSelection } from "./useDimensionFilters";
+import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
 import { useQueryWithApiError } from "./useQueryWithApiError";
 
 /**
@@ -36,7 +36,7 @@ export interface DimensionSpec {
  * Value information for a dimension
  */
 export interface DimensionValue {
-   value: any;
+   value: FilterValuePrimitive;
    count?: number;
 }
 
@@ -93,7 +93,10 @@ function escapeMalloyString(value: string): string {
 /**
  * Formats a value for use in Malloy query
  */
-function formatMalloyValue(value: any, isDate: boolean = false): string {
+function formatMalloyValue(
+   value: FilterValuePrimitive | null | undefined,
+   isDate: boolean = false,
+): string {
    if (value === null || value === undefined) {
       return "null";
    }
@@ -261,12 +264,60 @@ function buildDimensionalIndexQuery(
 }
 
 /**
+ * Cell types from Malloy query results
+ */
+interface MalloyCell {
+   kind: string;
+   string_value?: string;
+   number_value?: number;
+   boolean_value?: boolean;
+}
+
+/**
+ * Record cell from Malloy query results
+ */
+interface MalloyRecordCell {
+   kind: "record_cell";
+   record_value: MalloyCell[];
+}
+
+/**
+ * Schema field from Malloy query results
+ */
+interface MalloySchemaField {
+   name: string;
+}
+
+/**
+ * Malloy index query result entry
+ */
+interface MalloyIndexEntry {
+   fieldName?: string;
+   fieldPath?: string;
+   fieldType?: string;
+   fieldValue?: string;
+   weight?: number;
+}
+
+/**
+ * Parsed Malloy query result structure
+ */
+interface MalloyQueryResult {
+   schema: {
+      fields: MalloySchemaField[];
+   };
+   data?: {
+      array_value?: MalloyRecordCell[];
+   };
+}
+
+/**
  * Parses the Malloy index query result and converts it to a DimensionValues map
  * The index operator returns: fieldName, fieldPath, fieldType, fieldValue, weight
  * Reference: https://docs.malloydata.dev/documentation/patterns/dim_index
  */
 function parseIndexQueryResult(
-   result: any,
+   result: string,
    dimensionSpecs: DimensionSpec[],
 ): { values: DimensionValues; noRowsMatchedFilter: boolean } {
    const dimensionValues = new Map<string, DimensionValue[]>();
@@ -277,27 +328,29 @@ function parseIndexQueryResult(
    }
 
    // Parse the result JSON if it's a string
-   const parsedResult = JSON.parse(result);
+   const parsedResult = JSON.parse(result) as MalloyQueryResult;
 
    // Parse schema to understand field positions
    const schema = parsedResult.schema.fields;
    const fieldMap = new Map<string, number>();
 
-   schema.forEach((field: any, index: number) => {
+   schema.forEach((field: MalloySchemaField, index: number) => {
       fieldMap.set(field.name, index);
    });
 
    // Helper function to extract value from a cell based on its kind
-   const extractCellValue = (cell: any): any => {
+   const extractCellValue = (
+      cell: MalloyCell | undefined,
+   ): string | number | boolean | null => {
       if (!cell) return null;
 
       switch (cell.kind) {
          case "string_cell":
-            return cell.string_value;
+            return cell.string_value ?? null;
          case "number_cell":
-            return cell.number_value;
+            return cell.number_value ?? null;
          case "boolean_cell":
-            return cell.boolean_value;
+            return cell.boolean_value ?? null;
          default:
             console.log("Unknown cell kind: " + cell.kind);
             return null;
@@ -306,24 +359,49 @@ function parseIndexQueryResult(
 
    // Convert array_value records to objects using schema
    const rawData = parsedResult.data?.array_value || [];
-   const indexData = rawData.map((record: any) => {
-      const obj: any = {};
+   const indexData: MalloyIndexEntry[] = rawData.map(
+      (record: MalloyRecordCell) => {
+         const obj: MalloyIndexEntry = {};
 
-      if (record.kind === "record_cell" && record.record_value) {
-         record.record_value.forEach((cell: any, index: number) => {
-            const fieldName = schema[index]?.name;
-            if (fieldName) {
-               obj[fieldName] = extractCellValue(cell);
-            }
-         });
-      }
+         if (record.kind === "record_cell" && record.record_value) {
+            record.record_value.forEach((cell: MalloyCell, index: number) => {
+               const fieldName = schema[index]?.name;
+               if (fieldName) {
+                  const value = extractCellValue(cell);
+                  if (fieldName === "fieldName" && typeof value === "string") {
+                     obj.fieldName = value;
+                  } else if (
+                     fieldName === "fieldPath" &&
+                     typeof value === "string"
+                  ) {
+                     obj.fieldPath = value;
+                  } else if (
+                     fieldName === "fieldType" &&
+                     typeof value === "string"
+                  ) {
+                     obj.fieldType = value;
+                  } else if (
+                     fieldName === "fieldValue" &&
+                     typeof value === "string"
+                  ) {
+                     obj.fieldValue = value;
+                  } else if (
+                     fieldName === "weight" &&
+                     typeof value === "number"
+                  ) {
+                     obj.weight = value;
+                  }
+               }
+            });
+         }
 
-      return obj;
-   });
+         return obj;
+      },
+   );
 
    const noRowsMatchedFilter =
       indexData.length === 0 ||
-      indexData.every((entry: any) => !entry.fieldName);
+      indexData.every((entry: MalloyIndexEntry) => !entry.fieldName);
 
    // Group index results by fieldName/dimensionName
    for (const spec of dimensionSpecs) {
@@ -334,7 +412,7 @@ function parseIndexQueryResult(
 
       // Find all index entries for this dimension
       // Try multiple matching strategies since field naming can vary
-      const dimensionEntries = indexData.filter((entry: any) => {
+      const dimensionEntries = indexData.filter((entry: MalloyIndexEntry) => {
          const fieldName = entry.fieldName || "";
          const fieldPath = entry.fieldPath || "";
 
@@ -374,12 +452,15 @@ function parseIndexQueryResult(
          // For Star filter, we want all distinct values with their weights
          // String fields return individual fieldValue entries
          const values = dimensionEntries
-            .filter((entry: any) => entry.fieldType === "string")
-            .map((entry: any) => ({
-               value: entry.fieldValue,
+            .filter((entry: MalloyIndexEntry) => entry.fieldType === "string")
+            .map((entry: MalloyIndexEntry) => ({
+               value: entry.fieldValue ?? "",
                count: entry.weight,
             }))
-            .sort((a: any, b: any) => b.count - a.count); // Sort by count descending
+            .sort(
+               (a: DimensionValue, b: DimensionValue) =>
+                  (b.count ?? 0) - (a.count ?? 0),
+            ); // Sort by count descending
 
          dimensionValues.set(spec.dimensionName, values);
       } else if (spec.filterType === "MinMax") {
@@ -391,11 +472,11 @@ function parseIndexQueryResult(
          );
          console.log(
             "All MinMax dimension entries fieldTypes:",
-            dimensionEntries.map((e: any) => e.fieldType),
+            dimensionEntries.map((e: MalloyIndexEntry) => e.fieldType),
          );
 
          const numericEntry = dimensionEntries.find(
-            (entry: any) => entry.fieldType === "number",
+            (entry: MalloyIndexEntry) => entry.fieldType === "number",
          );
 
          console.log("numericEntry: " + JSON.stringify(numericEntry, null, 2));
@@ -429,7 +510,7 @@ function parseIndexQueryResult(
 
          // Look for date, timestamp, or string type entries (dates can come back in various formats)
          const dateEntry = dimensionEntries.find(
-            (entry: any) =>
+            (entry: MalloyIndexEntry) =>
                entry.fieldType === "date" ||
                entry.fieldType === "timestamp" ||
                entry.fieldType === "string",
@@ -438,7 +519,7 @@ function parseIndexQueryResult(
          console.log("dateEntry: " + JSON.stringify(dateEntry, null, 2));
          console.log(
             "All date dimension entries fieldTypes:",
-            dimensionEntries.map((e: any) => e.fieldType),
+            dimensionEntries.map((e: MalloyIndexEntry) => e.fieldType),
          );
 
          if (dateEntry?.fieldValue) {

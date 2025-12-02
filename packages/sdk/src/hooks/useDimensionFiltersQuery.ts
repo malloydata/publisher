@@ -3,7 +3,7 @@ import {
    encodeResourceUri,
 } from "@malloy-publisher/sdk";
 import { useCallback, useMemo, useState } from "react";
-import { FilterSelection } from "./useDimensionFilters";
+import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
 
 /**
  * Parameters for the useDimensionFiltersQuery hook
@@ -51,7 +51,10 @@ function escapeMalloyString(value: string): string {
 /**
  * Formats a value for use in Malloy query
  */
-function formatMalloyValue(value: any, isDate: boolean = false): string {
+function formatMalloyValue(
+   value: FilterValuePrimitive | null | undefined,
+   isDate: boolean = false,
+): string {
    if (value === null || value === undefined) {
       return "null";
    }

@@ -17,7 +17,12 @@ import {
    DimensionSpec,
    DimensionValue,
 } from "../../hooks/useDimensionalFilterRangeData";
-import { FilterSelection, MatchType } from "../../hooks/useDimensionFilters";
+import {
+   FilterSelection,
+   FilterValue,
+   FilterValuePrimitive,
+   MatchType,
+} from "../../hooks/useDimensionFilters";
 
 dayjs.extend(utc);
 
@@ -118,8 +123,12 @@ export function DimensionFilter({
    };
 
    const [matchType, setMatchType] = useState<MatchType>(getDefaultMatchType());
-   const [value1, setValue1] = useState<any>(selection?.value ?? "");
-   const [value2, setValue2] = useState<any>(selection?.value2 ?? "");
+   const [value1, setValue1] = useState<FilterValue | "">(
+      selection?.value ?? "",
+   );
+   const [value2, setValue2] = useState<FilterValuePrimitive | "">(
+      selection?.value2 ?? "",
+   );
 
    // Retrieval state
    const [retrievalOptions, setRetrievalOptions] = useState<DimensionValue[]>(
@@ -181,7 +190,7 @@ export function DimensionFilter({
       }, 300);
 
       return () => clearTimeout(timeoutId);
-   }, [retrievalInputValue, spec.filterType, spec.dimensionName, retrievalFn]);
+   }, [retrievalInputValue, spec, retrievalFn]);
 
    // Sync internal state with selection prop changes (e.g., when filter is cleared externally)
    useEffect(() => {
@@ -259,10 +268,13 @@ export function DimensionFilter({
    };
 
    // Handle value change
-   const handleValueChange = (newValue1: any, newValue2?: any) => {
-      setValue1(newValue1);
+   const handleValueChange = (
+      newValue1: FilterValue | "" | null,
+      newValue2?: FilterValuePrimitive | "" | null,
+   ) => {
+      setValue1(newValue1 ?? "");
       if (newValue2 !== undefined) {
-         setValue2(newValue2);
+         setValue2(newValue2 ?? "");
       }
 
       // check for empty array (multi-select cleared)
@@ -333,7 +345,7 @@ export function DimensionFilter({
                value={
                   Array.isArray(value1)
                      ? value1.map(
-                          (v: any) =>
+                          (v: string) =>
                              values.find((opt) => opt.value === v) || v,
                        )
                      : value1
@@ -411,7 +423,7 @@ export function DimensionFilter({
                }}
                value={
                   Array.isArray(value1)
-                     ? value1.map((v: any) => {
+                     ? value1.map((v: string) => {
                           const found = retrievalOptions.find(
                              (opt) => opt.value === v,
                           );
