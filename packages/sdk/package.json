@@ -20,16 +20,20 @@
       ".": {
          "types": "./dist/index.d.ts",
          "import": "./dist/index.es.js",
-         "require": "./dist/index.cjs.js"
+         "require": "./dist/index.cjs.js",
+         "default": "./dist/index.es.js"
       },
       "./client": {
          "types": "./dist/client-entry.d.ts",
          "import": "./dist/client/index.es.js",
-         "require": "./dist/client/index.cjs.js"
+         "require": "./dist/client/index.cjs.js",
+         "default": "./dist/client/index.es.js"
       },
       "./client/*": {
          "types": "./dist/client/*.d.ts",
-         "import": "./dist/client/*.js"
+         "import": "./dist/client/*.js",
+         "require": "./dist/client/*.js",
+         "default": "./dist/client/*.js"
       },
       "./malloy-explorer.css": {
          "default": "./dist/malloy-explorer.css"
