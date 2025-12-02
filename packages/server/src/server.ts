@@ -827,7 +827,7 @@ app.use(
    },
 );
 
-const mainServer = http.createServer(app);
+const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 
 mainServer.timeout = 600000;
 mainServer.keepAliveTimeout = 600000;
