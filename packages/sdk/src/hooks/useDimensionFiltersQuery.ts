@@ -1,8 +1,6 @@
-import {
-   createEmbeddedQueryResult,
-   encodeResourceUri,
-} from "@malloy-publisher/sdk";
 import { useCallback, useMemo, useState } from "react";
+import { createEmbeddedQueryResult } from "../components/QueryResult";
+import { encodeResourceUri } from "../utils/formatting";
 import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
 
 /**
