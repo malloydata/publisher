@@ -133,27 +133,35 @@ function generateFilterCondition(selection: FilterSelection): string {
             );
             return `(${conditions.join(" or ")})`;
          }
+         // Empty array or single value
+         if (Array.isArray(value)) return "";
          return `${fieldName} = ${formatMalloyValue(value, isDate)}`;
 
       case "Contains":
          if (typeof value === "string") {
             return `${fieldName} ~ f'%${escapeMalloyString(value)}%'`;
          }
+         if (Array.isArray(value)) return "";
          return `${fieldName} = ${formatMalloyValue(value)}`;
 
       case "After":
+         if (Array.isArray(value)) return "";
          return `${fieldName} > ${formatMalloyValue(value, isDate)}`;
 
       case "Before":
+         if (Array.isArray(value)) return "";
          return `${fieldName} < ${formatMalloyValue(value, isDate)}`;
 
       case "Greater Than":
+         if (Array.isArray(value)) return "";
          return `${fieldName} > ${formatMalloyValue(value)}`;
 
       case "Less Than":
+         if (Array.isArray(value)) return "";
          return `${fieldName} < ${formatMalloyValue(value)}`;
 
       case "Between":
+         if (Array.isArray(value)) return "";
          if (value2 !== undefined) {
             return `${fieldName} >= ${formatMalloyValue(value, isDate)} and ${fieldName} <= ${formatMalloyValue(value2, isDate)}`;
          }

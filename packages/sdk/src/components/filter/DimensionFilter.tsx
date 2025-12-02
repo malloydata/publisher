@@ -340,7 +340,14 @@ export function DimensionFilter({
                   if (typeof option === "string") {
                      return option;
                   }
-                  return String(option.value);
+                  if (
+                     typeof option === "object" &&
+                     option !== null &&
+                     "value" in option
+                  ) {
+                     return String((option as DimensionValue).value);
+                  }
+                  return String(option);
                }}
                value={
                   Array.isArray(value1)
@@ -359,7 +366,7 @@ export function DimensionFilter({
                         return (item as DimensionValue).value;
                      }
                      return item;
-                  });
+                  }) as FilterValuePrimitive[];
                   handleValueChange(newValues);
                }}
                noOptionsText="No matches found"
@@ -419,7 +426,14 @@ export function DimensionFilter({
                   if (typeof option === "string") {
                      return option;
                   }
-                  return String(option.value);
+                  if (
+                     typeof option === "object" &&
+                     option !== null &&
+                     "value" in option
+                  ) {
+                     return String((option as DimensionValue).value);
+                  }
+                  return String(option);
                }}
                value={
                   Array.isArray(value1)
@@ -443,7 +457,7 @@ export function DimensionFilter({
                         return (item as DimensionValue).value;
                      }
                      return item;
-                  });
+                  }) as FilterValuePrimitive[];
                   handleValueChange(newValues);
                }}
                noOptionsText={

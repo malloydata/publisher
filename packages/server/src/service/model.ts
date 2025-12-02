@@ -1,9 +1,12 @@
 import {
+   Annotation,
    API,
    Connection,
    FixedConnectionMap,
+   isSourceDef,
    MalloyError,
    ModelDef,
+   modelDefToModelInfo,
    ModelMaterializer,
    NamedModelObject,
    NamedQuery,
@@ -11,8 +14,6 @@ import {
    Runtime,
    StructDef,
    TurtleDef,
-   isSourceDef,
-   modelDefToModelInfo,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -369,10 +370,12 @@ export class Model {
       });
 
       // Collect all annotations from the inherits chain
-      const allAnnotations = [];
+      const allAnnotations: string[] = [];
       if (this.modelDef) {
          // Traverse the inherits chain to collect all annotations
-         let currentAnnotation = this.modelDef.annotation;
+         // Type as Annotation to handle the inherits chain properly
+         let currentAnnotation: Annotation | undefined =
+            this.modelDef.annotation;
 
          while (currentAnnotation) {
             if (currentAnnotation.notes) {
