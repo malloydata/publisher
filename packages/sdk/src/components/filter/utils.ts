@@ -341,56 +341,14 @@ export function extractSourceFromQuery(query: string): string | null {
 }
 
 /**
- * Injects a where clause into a Malloy query, handling multiple patterns:
- * 1. "run: source -> { ... }" - inject where in block
- * 2. "run: source -> view + { ... }" - inject where in extend block
- * 3. "run: source -> view" - add "+ { where: ... }"
- *
- * If a where clause already exists, appends with "and".
+ * Injects a where clause into a Malloy query by appending "+ {where: ...}"
+ * Uses Malloy's refinement syntax which works with any query pattern.
  */
 export function injectWhereClause(query: string, filterClause: string): string {
-   // First, check if there's already a where clause in the query
-   const existingWhereMatch = query.match(
-      /(\s*where\s*:\s*)([^}\n]+(?:\n(?!\s*(?:group_by|aggregate|nest|select|order_by|limit|index|calculate|project|top|sample)\s*:)[^}\n]*)*)/i,
-   );
-
-   if (existingWhereMatch) {
-      // Append to existing where clause with "and"
-      const whereKeyword = existingWhereMatch[1];
-      const existingCondition = existingWhereMatch[2].trim();
-      const newCondition = `${whereKeyword}(${existingCondition}) and (${filterClause})`;
-      return query.replace(existingWhereMatch[0], newCondition);
-   }
-
-   // No existing where clause - need to inject one
-
-   // Pattern 1: "-> {" - direct query block
-   if (/\s*->\s*\{/.test(query)) {
-      return query.replace(
-         /(\s*->\s*\{)/,
-         `$1\n        where: ${filterClause}\n`,
-      );
-   }
-
-   // Pattern 2: "-> view_name + {" - extend block exists
-   if (/\s*->\s*\w+\s*\+\s*\{/.test(query)) {
-      return query.replace(
-         /(\s*->\s*\w+\s*\+\s*\{)/,
-         `$1\n        where: ${filterClause}\n`,
-      );
-   }
-
-   // Pattern 3: "-> view_name" without extend - add "+ { where: ... }"
-   // Match the last "->" followed by an identifier (view name) at end of query or before newline
-   const viewPattern = /(->\s*)(\w+)(\s*)$/m;
-   if (viewPattern.test(query)) {
-      return query.replace(
-         viewPattern,
-         `$1$2 + { where: ${filterClause} }\n$3`,
-      );
-   }
-
-   // Fallback: couldn't parse the query pattern, return unchanged
-   console.warn("Could not inject where clause into query:", query);
-   return query;
+   // Simply append the where clause as a refinement
+   // This works for all patterns:
+   // - run: source -> { ... } + {where: ...}
+   // - run: source -> view_name + {where: ...}
+   // - run: source -> view_name + { ... } + {where: ...}
+   return `${query.trimEnd()} + {where: ${filterClause}}`;
 }
