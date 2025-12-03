@@ -44,80 +44,92 @@ import { ServerProvider, Home } from "@malloy-publisher/sdk";
 import "@malloy-publisher/sdk/styles.css";
 
 function App() {
-  return (
-    <ServerProvider baseURL="http://localhost:4000/api/v0">
-      <Home onClickProject={(path) => console.log("Navigate to:", path)} />
-    </ServerProvider>
-  );
+   return (
+      <ServerProvider baseURL="http://localhost:4000/api/v0">
+         <Home onClickProject={(path) => console.log("Navigate to:", path)} />
+      </ServerProvider>
+   );
 }
 ```
 
 ### With React Router
 
 ```tsx
-import { BrowserRouter, Routes, Route, useNavigate, useParams } from "react-router-dom";
 import {
-  ServerProvider,
-  Home,
-  Project,
-  Package,
-  Model,
-  Notebook,
-  encodeResourceUri,
-  useRouterClickHandler,
+   BrowserRouter,
+   Routes,
+   Route,
+   useNavigate,
+   useParams,
+} from "react-router-dom";
+import {
+   ServerProvider,
+   Home,
+   Project,
+   Package,
+   Model,
+   Notebook,
+   encodeResourceUri,
+   useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import "@malloy-publisher/sdk/styles.css";
 
 function App() {
-  return (
-    <ServerProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/:projectName" element={<ProjectPage />} />
-          <Route path="/:projectName/:packageName" element={<PackagePage />} />
-          <Route path="/:projectName/:packageName/*" element={<ModelPage />} />
-        </Routes>
-      </BrowserRouter>
-    </ServerProvider>
-  );
+   return (
+      <ServerProvider>
+         <BrowserRouter>
+            <Routes>
+               <Route path="/" element={<HomePage />} />
+               <Route path="/:projectName" element={<ProjectPage />} />
+               <Route
+                  path="/:projectName/:packageName"
+                  element={<PackagePage />}
+               />
+               <Route
+                  path="/:projectName/:packageName/*"
+                  element={<ModelPage />}
+               />
+            </Routes>
+         </BrowserRouter>
+      </ServerProvider>
+   );
 }
 
 function HomePage() {
-  const navigate = useRouterClickHandler();
-  return <Home onClickProject={navigate} />;
+   const navigate = useRouterClickHandler();
+   return <Home onClickProject={navigate} />;
 }
 
 function ProjectPage() {
-  const navigate = useRouterClickHandler();
-  const { projectName } = useParams();
-  const resourceUri = encodeResourceUri({ projectName });
-  return <Project onSelectPackage={navigate} resourceUri={resourceUri} />;
+   const navigate = useRouterClickHandler();
+   const { projectName } = useParams();
+   const resourceUri = encodeResourceUri({ projectName });
+   return <Project onSelectPackage={navigate} resourceUri={resourceUri} />;
 }
 
 function PackagePage() {
-  const navigate = useRouterClickHandler();
-  const { projectName, packageName } = useParams();
-  const resourceUri = encodeResourceUri({ projectName, packageName });
-  return <Package onClickPackageFile={navigate} resourceUri={resourceUri} />;
+   const navigate = useRouterClickHandler();
+   const { projectName, packageName } = useParams();
+   const resourceUri = encodeResourceUri({ projectName, packageName });
+   return <Package onClickPackageFile={navigate} resourceUri={resourceUri} />;
 }
 
 function ModelPage() {
-  const params = useParams();
-  const modelPath = params["*"];
-  const resourceUri = encodeResourceUri({
-    projectName: params.projectName,
-    packageName: params.packageName,
-    modelPath,
-  });
+   const params = useParams();
+   const modelPath = params["*"];
+   const resourceUri = encodeResourceUri({
+      projectName: params.projectName,
+      packageName: params.packageName,
+      modelPath,
+   });
 
-  if (modelPath?.endsWith(".malloy")) {
-    return <Model resourceUri={resourceUri} />;
-  }
-  if (modelPath?.endsWith(".malloynb")) {
-    return <Notebook resourceUri={resourceUri} />;
-  }
-  return <div>Unknown file type</div>;
+   if (modelPath?.endsWith(".malloy")) {
+      return <Model resourceUri={resourceUri} />;
+   }
+   if (modelPath?.endsWith(".malloynb")) {
+      return <Notebook resourceUri={resourceUri} />;
+   }
+   return <div>Unknown file type</div>;
 }
 ```
 
@@ -134,6 +146,7 @@ publisher://projects/{projectName}/packages/{packageName}/models/{modelPath}?ver
 ```
 
 Examples:
+
 - Project: `publisher://projects/my-project`
 - Package: `publisher://projects/my-project/packages/analytics`
 - Model: `publisher://projects/my-project/packages/analytics/models/orders.malloy`
@@ -174,52 +187,48 @@ const navigate = useRouterClickHandler();
 
 ## ServerProvider
 
-The `ServerProvider` is the required context provider that wraps your application. It initializes API clients and manages authentication.
+The `ServerProvider` is the required context provider that wraps your application. It initializes API clients and passes auth headers (if required by the backend server).
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `baseURL` | `string` | Auto-detected | Base URL of the Publisher API (e.g., `http://localhost:4000/api/v0`) |
-| `getAccessToken` | `() => Promise<string>` | `undefined` | Async function returning auth token |
-| `mutable` | `boolean` | `true` | Enable/disable project/package management UI |
+| Prop             | Type                    | Default       | Description                                                          |
+| ---------------- | ----------------------- | ------------- | -------------------------------------------------------------------- |
+| `baseURL`        | `string`                | Auto-detected | Base URL of the Publisher API (e.g., `http://localhost:4000/api/v0`) |
+| `getAccessToken` | `() => Promise<string>` | `undefined`   | Async function returning auth token                                  |
+| `mutable`        | `boolean`               | `true`        | Enable/disable project/package management UI                         |
 
 ### Basic Usage
 
 ```tsx
-<ServerProvider>
-  {/* Your app */}
-</ServerProvider>
+<ServerProvider>{/* Your app */}</ServerProvider>
 ```
 
 ### With Authentication
 
 ```tsx
 async function getAccessToken() {
-  const response = await fetch("/auth/token");
-  const { token } = await response.json();
-  return `Bearer ${token}`;
+   const response = await fetch("/auth/token");
+   const { token } = await response.json();
+   return `Bearer ${token}`;
 }
 
 <ServerProvider getAccessToken={getAccessToken}>
-  {/* Your app */}
-</ServerProvider>
+   {/* Your app */}
+</ServerProvider>;
 ```
 
 ### Read-Only Mode
 
 ```tsx
 // Disable add/edit/delete UI for production deployments
-<ServerProvider mutable={false}>
-  {/* Your app */}
-</ServerProvider>
+<ServerProvider mutable={false}>{/* Your app */}</ServerProvider>
 ```
 
 ### Custom Server URL
 
 ```tsx
 <ServerProvider baseURL="https://publisher.example.com/api/v0">
-  {/* Your app */}
+   {/* Your app */}
 </ServerProvider>
 ```
 
@@ -235,17 +244,20 @@ Displays a landing page with feature cards and a list of all available projects.
 import { Home } from "@malloy-publisher/sdk";
 
 interface HomeProps {
-  onClickProject?: (path: string, event?: React.MouseEvent) => void;
+   onClickProject?: (path: string, event?: React.MouseEvent) => void;
 }
 
 // Usage
-<Home onClickProject={(path, event) => {
-  // path is like "/my-project/"
-  navigate(path);
-}} />
+<Home
+   onClickProject={(path, event) => {
+      // path is like "/my-project/"
+      navigate(path);
+   }}
+/>;
 ```
 
 **Features:**
+
 - Hero section with Publisher branding
 - Feature cards (Ad Hoc Analysis, Notebook Dashboards, AI Agents)
 - Project listing with descriptions
@@ -261,20 +273,21 @@ Shows all packages within a project.
 import { Project, encodeResourceUri } from "@malloy-publisher/sdk";
 
 interface ProjectProps {
-  onSelectPackage: (path: string, event?: React.MouseEvent) => void;
-  resourceUri: string;
+   onSelectPackage: (path: string, event?: React.MouseEvent) => void;
+   resourceUri: string;
 }
 
 // Usage
 const resourceUri = encodeResourceUri({ projectName: "my-project" });
 
 <Project
-  onSelectPackage={(path) => navigate(path)}
-  resourceUri={resourceUri}
-/>
+   onSelectPackage={(path) => navigate(path)}
+   resourceUri={resourceUri}
+/>;
 ```
 
 **Features:**
+
 - Package listing with version info
 - Add/Edit/Delete package dialogs (when `mutable=true`)
 - Project README display
@@ -289,23 +302,24 @@ Displays package details including models, notebooks, databases, and connections
 import { Package, encodeResourceUri } from "@malloy-publisher/sdk";
 
 interface PackageProps {
-  onClickPackageFile?: (path: string, event?: React.MouseEvent) => void;
-  resourceUri: string;
+   onClickPackageFile?: (path: string, event?: React.MouseEvent) => void;
+   resourceUri: string;
 }
 
 // Usage
 const resourceUri = encodeResourceUri({
-  projectName: "my-project",
-  packageName: "analytics",
+   projectName: "my-project",
+   packageName: "analytics",
 });
 
 <Package
-  onClickPackageFile={(path) => navigate(path)}
-  resourceUri={resourceUri}
-/>
+   onClickPackageFile={(path) => navigate(path)}
+   resourceUri={resourceUri}
+/>;
 ```
 
 **Features:**
+
 - Models list (`.malloy` files)
 - Notebooks list (`.malloynb` files)
 - Embedded databases (`.parquet` files)
@@ -322,37 +336,38 @@ The visual query builder and model explorer. This is the primary component for a
 import { Model, encodeResourceUri } from "@malloy-publisher/sdk";
 
 interface ModelProps {
-  resourceUri: string;
-  onChange?: (query: QueryExplorerResult) => void;
-  runOnDemand?: boolean;    // Default: false
-  maxResultSize?: number;   // Default: 0 (no limit)
+   resourceUri: string;
+   onChange?: (query: QueryExplorerResult) => void;
+   runOnDemand?: boolean; // Default: false
+   maxResultSize?: number; // Default: 0 (no limit)
 }
 
 interface QueryExplorerResult {
-  query: string | undefined;
-  malloyQuery: Malloy.Query | string | undefined;
-  malloyResult: Malloy.Result | undefined;
+   query: string | undefined;
+   malloyQuery: Malloy.Query | string | undefined;
+   malloyResult: Malloy.Result | undefined;
 }
 
 // Usage
 const resourceUri = encodeResourceUri({
-  projectName: "my-project",
-  packageName: "analytics",
-  modelPath: "models/orders.malloy",
+   projectName: "my-project",
+   packageName: "analytics",
+   modelPath: "models/orders.malloy",
 });
 
 <Model
-  resourceUri={resourceUri}
-  runOnDemand={true}
-  maxResultSize={512 * 1024}
-  onChange={(result) => {
-    console.log("Query:", result.query);
-    console.log("Result:", result.malloyResult);
-  }}
-/>
+   resourceUri={resourceUri}
+   runOnDemand={true}
+   maxResultSize={512 * 1024}
+   onChange={(result) => {
+      console.log("Query:", result.query);
+      console.log("Result:", result.malloyResult);
+   }}
+/>;
 ```
 
 **Features:**
+
 - Source selector (dropdown for models with multiple sources)
 - Visual query builder (Malloy Explorer integration)
 - Named queries display
@@ -366,31 +381,35 @@ const resourceUri = encodeResourceUri({
 A lower-level component for embedding the query builder without the full Model chrome.
 
 ```tsx
-import { ModelExplorer, useModelData, encodeResourceUri } from "@malloy-publisher/sdk";
+import {
+   ModelExplorer,
+   useModelData,
+   encodeResourceUri,
+} from "@malloy-publisher/sdk";
 
 interface ModelExplorerProps {
-  data?: CompiledModel;                    // Pre-loaded model data
-  onChange?: (query: QueryExplorerResult) => void;
-  existingQuery?: QueryExplorerResult;     // Initialize with existing query
-  initialSelectedSourceIndex?: number;     // Default: 0
-  onSourceChange?: (index: number) => void;
-  resourceUri: string;
+   data?: CompiledModel; // Pre-loaded model data
+   onChange?: (query: QueryExplorerResult) => void;
+   existingQuery?: QueryExplorerResult; // Initialize with existing query
+   initialSelectedSourceIndex?: number; // Default: 0
+   onSourceChange?: (index: number) => void;
+   resourceUri: string;
 }
 
 // Usage with automatic data loading
 <ModelExplorer
-  resourceUri={resourceUri}
-  onChange={(result) => console.log(result)}
-/>
+   resourceUri={resourceUri}
+   onChange={(result) => console.log(result)}
+/>;
 
 // Usage with pre-loaded data
 const { data } = useModelData(resourceUri);
 
 <ModelExplorer
-  data={data}
-  resourceUri={resourceUri}
-  onChange={(result) => console.log(result)}
-/>
+   data={data}
+   resourceUri={resourceUri}
+   onChange={(result) => console.log(result)}
+/>;
 ```
 
 ---
@@ -403,24 +422,22 @@ Read-only notebook viewer that executes cells and displays results.
 import { Notebook, encodeResourceUri } from "@malloy-publisher/sdk";
 
 interface NotebookProps {
-  resourceUri: string;
-  maxResultSize?: number;  // Default: 0 (no limit)
+   resourceUri: string;
+   maxResultSize?: number; // Default: 0 (no limit)
 }
 
 // Usage
 const resourceUri = encodeResourceUri({
-  projectName: "my-project",
-  packageName: "analytics",
-  modelPath: "notebooks/sales-dashboard.malloynb",
+   projectName: "my-project",
+   packageName: "analytics",
+   modelPath: "notebooks/sales-dashboard.malloynb",
 });
 
-<Notebook
-  resourceUri={resourceUri}
-  maxResultSize={1024 * 1024}
-/>
+<Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />;
 ```
 
 **Features:**
+
 - Sequential cell execution
 - Markdown rendering
 - Code cell execution with results
@@ -434,33 +451,34 @@ Interactive workbook editor for creating and saving custom analyses.
 
 ```tsx
 import {
-  Workbook,
-  WorkbookStorageProvider,
-  BrowserWorkbookStorage,
-  encodeResourceUri,
+   Workbook,
+   WorkbookStorageProvider,
+   BrowserWorkbookStorage,
+   encodeResourceUri,
 } from "@malloy-publisher/sdk";
 
 interface WorkbookProps {
-  workbookPath?: WorkbookLocator;  // { path: string, workspace: string }
-  resourceUri: string;
+   workbookPath?: WorkbookLocator; // { path: string, workspace: string }
+   resourceUri: string;
 }
 
 // Usage
 const workbookStorage = new BrowserWorkbookStorage();
 const resourceUri = encodeResourceUri({
-  projectName: "my-project",
-  packageName: "analytics",
+   projectName: "my-project",
+   packageName: "analytics",
 });
 
 <WorkbookStorageProvider workbookStorage={workbookStorage}>
-  <Workbook
-    workbookPath={{ path: "my-analysis", workspace: "Local" }}
-    resourceUri={resourceUri}
-  />
-</WorkbookStorageProvider>
+   <Workbook
+      workbookPath={{ path: "my-analysis", workspace: "Local" }}
+      resourceUri={resourceUri}
+   />
+</WorkbookStorageProvider>;
 ```
 
 **Features:**
+
 - Add/remove Markdown and Malloy cells
 - Model picker for source selection
 - Auto-save to storage backend
@@ -517,19 +535,19 @@ Low-level component for rendering Malloy result JSON as a visualization.
 import RenderedResult from "@malloy-publisher/sdk";
 
 interface RenderedResultProps {
-  result: string;                          // JSON result string
-  height?: number;                         // Fixed height in pixels
-  onSizeChange?: (height: number) => void; // Callback when size changes
-  onDrill?: (element: unknown) => void;    // Drill-down callback
+   result: string; // JSON result string
+   height?: number; // Fixed height in pixels
+   onSizeChange?: (height: number) => void; // Callback when size changes
+   onDrill?: (element: unknown) => void; // Drill-down callback
 }
 
 // Usage (result is the JSON string from query execution)
 <RenderedResult
-  result={queryResultJson}
-  onDrill={(element) => {
-    console.log("Drilled into:", element);
-  }}
-/>
+   result={queryResultJson}
+   onDrill={(element) => {
+      console.log("Drilled into:", element);
+   }}
+/>;
 ```
 
 ---
@@ -539,21 +557,24 @@ interface RenderedResultProps {
 Helper for embedding query results as serialized JSON (useful for storage/transfer).
 
 ```tsx
-import { EmbeddedQueryResult, createEmbeddedQueryResult } from "@malloy-publisher/sdk";
+import {
+   EmbeddedQueryResult,
+   createEmbeddedQueryResult,
+} from "@malloy-publisher/sdk";
 
 // Create embedded query config
 const embedded = createEmbeddedQueryResult({
-  queryName: "by_region",
-  sourceName: "orders",
-  resourceUri: encodeResourceUri({
-    projectName: "my-project",
-    packageName: "analytics",
-    modelPath: "models/orders.malloy",
-  }),
+   queryName: "by_region",
+   sourceName: "orders",
+   resourceUri: encodeResourceUri({
+      projectName: "my-project",
+      packageName: "analytics",
+      modelPath: "models/orders.malloy",
+   }),
 });
 
 // Later, render it
-<EmbeddedQueryResult embeddedQueryResult={embedded} />
+<EmbeddedQueryResult embeddedQueryResult={embedded} />;
 ```
 
 ---
@@ -691,21 +712,21 @@ Access the server context (API clients, configuration).
 import { useServer } from "@malloy-publisher/sdk";
 
 function MyComponent() {
-  const {
-    server,        // Base URL string
-    apiClients,    // API client instances
-    mutable,       // Whether mutations are allowed
-    getAccessToken // Auth token function
-  } = useServer();
+   const {
+      server, // Base URL string
+      apiClients, // API client instances
+      mutable, // Whether mutations are allowed
+      getAccessToken, // Auth token function
+   } = useServer();
 
-  // Use API clients directly
-  const projects = await apiClients.projects.listProjects();
-  const model = await apiClients.models.getModel(
-    projectName,
-    packageName,
-    modelPath,
-    versionId
-  );
+   // Use API clients directly
+   const projects = await apiClients.projects.listProjects();
+   const model = await apiClients.models.getModel(
+      projectName,
+      packageName,
+      modelPath,
+      versionId,
+   );
 }
 ```
 
@@ -713,13 +734,13 @@ function MyComponent() {
 
 ```typescript
 interface ApiClients {
-  models: ModelsApi;          // Get/execute models
-  projects: ProjectsApi;      // CRUD projects
-  packages: PackagesApi;      // CRUD packages
-  notebooks: NotebooksApi;    // Get/execute notebooks
-  connections: ConnectionsApi; // CRUD connections
-  databases: DatabasesApi;    // Access embedded databases
-  watchMode: WatchModeApi;    // File watching for dev
+   models: ModelsApi; // Get/execute models
+   projects: ProjectsApi; // CRUD projects
+   packages: PackagesApi; // CRUD packages
+   notebooks: NotebooksApi; // Get/execute notebooks
+   connections: ConnectionsApi; // CRUD connections
+   databases: DatabasesApi; // Access embedded databases
+   watchMode: WatchModeApi; // File watching for dev
 }
 ```
 
@@ -733,21 +754,22 @@ React Query wrapper with standardized error handling.
 import { useQueryWithApiError } from "@malloy-publisher/sdk";
 
 function MyComponent() {
-  const { data, isLoading, isError, error } = useQueryWithApiError({
-    queryKey: ["my-data", someParam],
-    queryFn: async () => {
-      const response = await apiClients.projects.listProjects();
-      return response.data;
-    },
-  });
+   const { data, isLoading, isError, error } = useQueryWithApiError({
+      queryKey: ["my-data", someParam],
+      queryFn: async () => {
+         const response = await apiClients.projects.listProjects();
+         return response.data;
+      },
+   });
 
-  if (isLoading) return <Loading />;
-  if (isError) return <ApiErrorDisplay error={error} context="Loading data" />;
-  return <div>{JSON.stringify(data)}</div>;
+   if (isLoading) return <Loading />;
+   if (isError) return <ApiErrorDisplay error={error} context="Loading data" />;
+   return <div>{JSON.stringify(data)}</div>;
 }
 ```
 
 **Features:**
+
 - Automatic server-based cache key namespacing
 - Standardized axios error transformation
 - No automatic retries (explicit control)
@@ -762,21 +784,21 @@ Mutation wrapper with standardized error handling.
 import { useMutationWithApiError } from "@malloy-publisher/sdk";
 
 function MyComponent() {
-  const mutation = useMutationWithApiError({
-    mutationFn: async (newProject) => {
-      const response = await apiClients.projects.createProject(newProject);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries(["projects"]);
-    },
-  });
+   const mutation = useMutationWithApiError({
+      mutationFn: async (newProject) => {
+         const response = await apiClients.projects.createProject(newProject);
+         return response.data;
+      },
+      onSuccess: () => {
+         queryClient.invalidateQueries(["projects"]);
+      },
+   });
 
-  return (
-    <button onClick={() => mutation.mutate({ name: "new-project" })}>
-      Create Project
-    </button>
-  );
+   return (
+      <button onClick={() => mutation.mutate({ name: "new-project" })}>
+         Create Project
+      </button>
+   );
 }
 ```
 
@@ -790,19 +812,19 @@ Fetch compiled model data for a resource URI.
 import { useModelData } from "@malloy-publisher/sdk";
 
 function MyComponent({ resourceUri }) {
-  const {
-    data,       // CompiledModel
-    isLoading,
-    isError,
-    error,
-  } = useModelData(resourceUri);
+   const {
+      data, // CompiledModel
+      isLoading,
+      isError,
+      error,
+   } = useModelData(resourceUri);
 
-  if (isLoading) return <Loading text="Loading model..." />;
-  if (isError) return <ApiErrorDisplay error={error} />;
+   if (isLoading) return <Loading text="Loading model..." />;
+   if (isError) return <ApiErrorDisplay error={error} />;
 
-  // Access model data
-  console.log("Sources:", data.sourceInfos);
-  console.log("Queries:", data.queries);
+   // Access model data
+   console.log("Sources:", data.sourceInfos);
+   console.log("Queries:", data.queries);
 }
 ```
 
@@ -816,26 +838,26 @@ Execute a query and get raw data (array of rows) instead of visualization.
 import { useRawQueryData } from "@malloy-publisher/sdk";
 
 function MyComponent({ resourceUri }) {
-  const {
-    data,       // Array of row objects
-    isLoading,
-    isSuccess,
-    isError,
-    error,
-  } = useRawQueryData({
-    resourceUri,
-    modelPath: "models/orders.malloy",
-    queryName: "by_region",
-    sourceName: "orders",
-    enabled: true,
-  });
+   const {
+      data, // Array of row objects
+      isLoading,
+      isSuccess,
+      isError,
+      error,
+   } = useRawQueryData({
+      resourceUri,
+      modelPath: "models/orders.malloy",
+      queryName: "by_region",
+      sourceName: "orders",
+      enabled: true,
+   });
 
-  if (isSuccess) {
-    // data is an array of row objects
-    data.forEach(row => {
-      console.log(row.region, row.total_sales);
-    });
-  }
+   if (isSuccess) {
+      // data is an array of row objects
+      data.forEach((row) => {
+         console.log(row.region, row.total_sales);
+      });
+   }
 }
 ```
 
@@ -849,17 +871,18 @@ Smart navigation hook that supports modifier keys (Cmd/Ctrl+click for new tab).
 import { useRouterClickHandler } from "@malloy-publisher/sdk";
 
 function MyComponent() {
-  const navigate = useRouterClickHandler();
+   const navigate = useRouterClickHandler();
 
-  return (
-    <button onClick={(e) => navigate("/projects/analytics", e)}>
-      Go to Analytics
-    </button>
-  );
+   return (
+      <button onClick={(e) => navigate("/projects/analytics", e)}>
+         Go to Analytics
+      </button>
+   );
 }
 ```
 
 **Behavior:**
+
 - Normal click: In-app navigation
 - Cmd/Ctrl+click: Open in new tab
 - Middle-click: Open in new tab
@@ -878,23 +901,23 @@ import { encodeResourceUri } from "@malloy-publisher/sdk";
 
 // Project only
 const projectUri = encodeResourceUri({
-  projectName: "my-project",
+   projectName: "my-project",
 });
 // Result: "publisher://projects/my-project"
 
 // Package
 const packageUri = encodeResourceUri({
-  projectName: "my-project",
-  packageName: "analytics",
+   projectName: "my-project",
+   packageName: "analytics",
 });
 // Result: "publisher://projects/my-project/packages/analytics"
 
 // Model with version
 const modelUri = encodeResourceUri({
-  projectName: "my-project",
-  packageName: "analytics",
-  modelPath: "models/orders.malloy",
-  versionId: "abc123",
+   projectName: "my-project",
+   packageName: "analytics",
+   modelPath: "models/orders.malloy",
+   versionId: "abc123",
 });
 // Result: "publisher://projects/my-project/packages/analytics/models/models/orders.malloy?versionId=abc123"
 ```
@@ -908,7 +931,8 @@ Parse a resource URI back to components.
 ```tsx
 import { parseResourceUri } from "@malloy-publisher/sdk";
 
-const uri = "publisher://projects/my-project/packages/analytics/models/orders.malloy?versionId=abc123";
+const uri =
+   "publisher://projects/my-project/packages/analytics/models/orders.malloy?versionId=abc123";
 const parsed = parseResourceUri(uri);
 
 // Result:
@@ -926,11 +950,11 @@ const parsed = parseResourceUri(uri);
 
 ```typescript
 type ParsedResource = {
-  projectName: string;
-  packageName?: string;
-  connectionName?: string;
-  versionId?: string;
-  modelPath?: string;
+   projectName: string;
+   packageName?: string;
+   connectionName?: string;
+   versionId?: string;
+   modelPath?: string;
 };
 ```
 
@@ -944,23 +968,23 @@ Workbooks are interactive analysis documents that can be saved and loaded. The S
 
 ```typescript
 interface Workspace {
-  name: string;
-  writeable: boolean;
-  description: string;
+   name: string;
+   writeable: boolean;
+   description: string;
 }
 
 interface WorkbookLocator {
-  path: string;
-  workspace: string;
+   path: string;
+   workspace: string;
 }
 
 interface WorkbookStorage {
-  listWorkspaces(writeableOnly: boolean): Promise<Workspace[]>;
-  listWorkbooks(workspace: Workspace): Promise<WorkbookLocator[]>;
-  getWorkbook(path: WorkbookLocator): Promise<string>;
-  deleteWorkbook(path: WorkbookLocator): Promise<void>;
-  saveWorkbook(path: WorkbookLocator, workbook: string): Promise<void>;
-  moveWorkbook(from: WorkbookLocator, to: WorkbookLocator): Promise<void>;
+   listWorkspaces(writeableOnly: boolean): Promise<Workspace[]>;
+   listWorkbooks(workspace: Workspace): Promise<WorkbookLocator[]>;
+   getWorkbook(path: WorkbookLocator): Promise<string>;
+   deleteWorkbook(path: WorkbookLocator): Promise<void>;
+   saveWorkbook(path: WorkbookLocator, workbook: string): Promise<void>;
+   moveWorkbook(from: WorkbookLocator, to: WorkbookLocator): Promise<void>;
 }
 ```
 
@@ -971,13 +995,16 @@ interface WorkbookStorage {
 Built-in implementation using browser localStorage.
 
 ```tsx
-import { BrowserWorkbookStorage, WorkbookStorageProvider } from "@malloy-publisher/sdk";
+import {
+   BrowserWorkbookStorage,
+   WorkbookStorageProvider,
+} from "@malloy-publisher/sdk";
 
 const storage = new BrowserWorkbookStorage();
 
 <WorkbookStorageProvider workbookStorage={storage}>
-  <App />
-</WorkbookStorageProvider>
+   <App />
+</WorkbookStorageProvider>;
 ```
 
 ---
@@ -986,56 +1013,64 @@ const storage = new BrowserWorkbookStorage();
 
 ```tsx
 class S3WorkbookStorage implements WorkbookStorage {
-  private s3Client: S3Client;
-  private bucket: string;
+   private s3Client: S3Client;
+   private bucket: string;
 
-  constructor(s3Client: S3Client, bucket: string) {
-    this.s3Client = s3Client;
-    this.bucket = bucket;
-  }
+   constructor(s3Client: S3Client, bucket: string) {
+      this.s3Client = s3Client;
+      this.bucket = bucket;
+   }
 
-  async listWorkspaces(writeableOnly: boolean): Promise<Workspace[]> {
-    return [{
-      name: this.bucket,
-      writeable: true,
-      description: "S3 bucket storage"
-    }];
-  }
+   async listWorkspaces(writeableOnly: boolean): Promise<Workspace[]> {
+      return [
+         {
+            name: this.bucket,
+            writeable: true,
+            description: "S3 bucket storage",
+         },
+      ];
+   }
 
-  async listWorkbooks(workspace: Workspace): Promise<WorkbookLocator[]> {
-    const objects = await this.s3Client.listObjects(this.bucket, "workbooks/");
-    return objects.map(obj => ({
-      path: obj.key,
-      workspace: workspace.name
-    }));
-  }
+   async listWorkbooks(workspace: Workspace): Promise<WorkbookLocator[]> {
+      const objects = await this.s3Client.listObjects(
+         this.bucket,
+         "workbooks/",
+      );
+      return objects.map((obj) => ({
+         path: obj.key,
+         workspace: workspace.name,
+      }));
+   }
 
-  async getWorkbook(path: WorkbookLocator): Promise<string> {
-    const data = await this.s3Client.getObject(this.bucket, path.path);
-    return data.toString();
-  }
+   async getWorkbook(path: WorkbookLocator): Promise<string> {
+      const data = await this.s3Client.getObject(this.bucket, path.path);
+      return data.toString();
+   }
 
-  async saveWorkbook(path: WorkbookLocator, workbook: string): Promise<void> {
-    await this.s3Client.putObject(this.bucket, path.path, workbook);
-  }
+   async saveWorkbook(path: WorkbookLocator, workbook: string): Promise<void> {
+      await this.s3Client.putObject(this.bucket, path.path, workbook);
+   }
 
-  async deleteWorkbook(path: WorkbookLocator): Promise<void> {
-    await this.s3Client.deleteObject(this.bucket, path.path);
-  }
+   async deleteWorkbook(path: WorkbookLocator): Promise<void> {
+      await this.s3Client.deleteObject(this.bucket, path.path);
+   }
 
-  async moveWorkbook(from: WorkbookLocator, to: WorkbookLocator): Promise<void> {
-    const content = await this.getWorkbook(from);
-    await this.saveWorkbook(to, content);
-    await this.deleteWorkbook(from);
-  }
+   async moveWorkbook(
+      from: WorkbookLocator,
+      to: WorkbookLocator,
+   ): Promise<void> {
+      const content = await this.getWorkbook(from);
+      await this.saveWorkbook(to, content);
+      await this.deleteWorkbook(from);
+   }
 }
 
 // Usage
 const storage = new S3WorkbookStorage(s3Client, "my-workbooks-bucket");
 
 <WorkbookStorageProvider workbookStorage={storage}>
-  <App />
-</WorkbookStorageProvider>
+   <App />
+</WorkbookStorageProvider>;
 ```
 
 ---
@@ -1045,22 +1080,25 @@ const storage = new S3WorkbookStorage(s3Client, "my-workbooks-bucket");
 Context provider for workbook storage.
 
 ```tsx
-import { WorkbookStorageProvider, useWorkbookStorage } from "@malloy-publisher/sdk";
+import {
+   WorkbookStorageProvider,
+   useWorkbookStorage,
+} from "@malloy-publisher/sdk";
 
 // Provider setup
 <WorkbookStorageProvider workbookStorage={myStorage}>
-  <App />
-</WorkbookStorageProvider>
+   <App />
+</WorkbookStorageProvider>;
 
 // Access in components
 function MyComponent() {
-  const { workbookStorage } = useWorkbookStorage();
+   const { workbookStorage } = useWorkbookStorage();
 
-  const workbooks = await workbookStorage.listWorkbooks({
-    name: "Local",
-    writeable: true,
-    description: ""
-  });
+   const workbooks = await workbookStorage.listWorkbooks({
+      name: "Local",
+      writeable: true,
+      description: "",
+   });
 }
 ```
 
@@ -1094,28 +1132,28 @@ import { createTheme, ThemeProvider, CssBaseline } from "@mui/material";
 import { ServerProvider } from "@malloy-publisher/sdk";
 
 const theme = createTheme({
-  palette: {
-    primary: {
-      main: "#14b3cb",  // Malloy teal
-    },
-    secondary: {
-      main: "#fbbb04",  // Malloy yellow
-    },
-  },
-  typography: {
-    fontFamily: '"Inter", "Roboto", sans-serif',
-  },
+   palette: {
+      primary: {
+         main: "#14b3cb", // Malloy teal
+      },
+      secondary: {
+         main: "#fbbb04", // Malloy yellow
+      },
+   },
+   typography: {
+      fontFamily: '"Inter", "Roboto", sans-serif',
+   },
 });
 
 function App() {
-  return (
-    <ServerProvider>
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        {/* Your app */}
-      </ThemeProvider>
-    </ServerProvider>
-  );
+   return (
+      <ServerProvider>
+         <ThemeProvider theme={theme}>
+            <CssBaseline />
+            {/* Your app */}
+         </ThemeProvider>
+      </ServerProvider>
+   );
 }
 ```
 
@@ -1127,14 +1165,14 @@ The SDK exports several pre-styled components for consistent UI:
 
 ```tsx
 import {
-  StyledCard,
-  StyledCardContent,
-  StyledCardMedia,
-  PackageCard,
-  PackageCardContent,
-  PackageSectionTitle,
-  CleanNotebookContainer,
-  CleanNotebookSection,
+   StyledCard,
+   StyledCardContent,
+   StyledCardMedia,
+   PackageCard,
+   PackageCardContent,
+   PackageSectionTitle,
+   CleanNotebookContainer,
+   CleanNotebookSection,
 } from "@malloy-publisher/sdk";
 ```
 
@@ -1146,80 +1184,80 @@ import {
 
 ```tsx
 import {
-  ServerProvider,
-  QueryResult,
-  useModelData,
-  encodeResourceUri,
-  ApiErrorDisplay,
-  Loading,
+   ServerProvider,
+   QueryResult,
+   useModelData,
+   encodeResourceUri,
+   ApiErrorDisplay,
+   Loading,
 } from "@malloy-publisher/sdk";
 import "@malloy-publisher/sdk/styles.css";
 import { Grid, Typography, Paper } from "@mui/material";
 
 function Dashboard() {
-  const resourceUri = encodeResourceUri({
-    projectName: "my-project",
-    packageName: "analytics",
-    modelPath: "models/sales.malloy",
-  });
+   const resourceUri = encodeResourceUri({
+      projectName: "my-project",
+      packageName: "analytics",
+      modelPath: "models/sales.malloy",
+   });
 
-  const { data, isLoading, isError, error } = useModelData(resourceUri);
+   const { data, isLoading, isError, error } = useModelData(resourceUri);
 
-  if (isLoading) return <Loading text="Loading dashboard..." />;
-  if (isError) return <ApiErrorDisplay error={error} context="Dashboard" />;
+   if (isLoading) return <Loading text="Loading dashboard..." />;
+   if (isError) return <ApiErrorDisplay error={error} context="Dashboard" />;
 
-  return (
-    <Grid container spacing={3}>
-      <Grid item xs={12}>
-        <Typography variant="h4">Sales Dashboard</Typography>
-      </Grid>
+   return (
+      <Grid container spacing={3}>
+         <Grid item xs={12}>
+            <Typography variant="h4">Sales Dashboard</Typography>
+         </Grid>
 
-      <Grid item xs={12} md={6}>
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6">Sales by Region</Typography>
-          <QueryResult
-            sourceName="orders"
-            queryName="by_region"
-            resourceUri={resourceUri}
-          />
-        </Paper>
-      </Grid>
+         <Grid item xs={12} md={6}>
+            <Paper sx={{ p: 2 }}>
+               <Typography variant="h6">Sales by Region</Typography>
+               <QueryResult
+                  sourceName="orders"
+                  queryName="by_region"
+                  resourceUri={resourceUri}
+               />
+            </Paper>
+         </Grid>
 
-      <Grid item xs={12} md={6}>
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6">Monthly Trends</Typography>
-          <QueryResult
-            sourceName="orders"
-            queryName="monthly_trends"
-            resourceUri={resourceUri}
-          />
-        </Paper>
-      </Grid>
+         <Grid item xs={12} md={6}>
+            <Paper sx={{ p: 2 }}>
+               <Typography variant="h6">Monthly Trends</Typography>
+               <QueryResult
+                  sourceName="orders"
+                  queryName="monthly_trends"
+                  resourceUri={resourceUri}
+               />
+            </Paper>
+         </Grid>
 
-      <Grid item xs={12}>
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6">Custom Query</Typography>
-          <QueryResult
-            query="run: orders -> {
+         <Grid item xs={12}>
+            <Paper sx={{ p: 2 }}>
+               <Typography variant="h6">Custom Query</Typography>
+               <QueryResult
+                  query="run: orders -> {
               group_by: product_category
               aggregate:
                 total_revenue is sum(revenue)
                 avg_order_value is avg(order_value)
             }"
-            resourceUri={resourceUri}
-          />
-        </Paper>
+                  resourceUri={resourceUri}
+               />
+            </Paper>
+         </Grid>
       </Grid>
-    </Grid>
-  );
+   );
 }
 
 function App() {
-  return (
-    <ServerProvider baseURL="http://localhost:4000/api/v0">
-      <Dashboard />
-    </ServerProvider>
-  );
+   return (
+      <ServerProvider baseURL="http://localhost:4000/api/v0">
+         <Dashboard />
+      </ServerProvider>
+   );
 }
 ```
 
@@ -1229,47 +1267,48 @@ function App() {
 
 ```tsx
 import {
-  ServerProvider,
-  useRawQueryData,
-  encodeResourceUri,
-  Loading,
-  ApiErrorDisplay,
+   ServerProvider,
+   useRawQueryData,
+   encodeResourceUri,
+   Loading,
+   ApiErrorDisplay,
 } from "@malloy-publisher/sdk";
 import { DataGrid } from "@mui/x-data-grid";
 
 function DataTable() {
-  const resourceUri = encodeResourceUri({
-    projectName: "my-project",
-    packageName: "analytics",
-    modelPath: "models/customers.malloy",
-  });
+   const resourceUri = encodeResourceUri({
+      projectName: "my-project",
+      packageName: "analytics",
+      modelPath: "models/customers.malloy",
+   });
 
-  const { data, isLoading, isError, error } = useRawQueryData({
-    resourceUri,
-    modelPath: "models/customers.malloy",
-    sourceName: "customers",
-    queryName: "all_customers",
-  });
+   const { data, isLoading, isError, error } = useRawQueryData({
+      resourceUri,
+      modelPath: "models/customers.malloy",
+      sourceName: "customers",
+      queryName: "all_customers",
+   });
 
-  if (isLoading) return <Loading text="Loading data..." />;
-  if (isError) return <ApiErrorDisplay error={error} />;
+   if (isLoading) return <Loading text="Loading data..." />;
+   if (isError) return <ApiErrorDisplay error={error} />;
 
-  const columns = data.length > 0
-    ? Object.keys(data[0]).map(key => ({
-        field: key,
-        headerName: key,
-        width: 150,
-      }))
-    : [];
+   const columns =
+      data.length > 0
+         ? Object.keys(data[0]).map((key) => ({
+              field: key,
+              headerName: key,
+              width: 150,
+           }))
+         : [];
 
-  return (
-    <DataGrid
-      rows={data.map((row, i) => ({ id: i, ...row }))}
-      columns={columns}
-      pageSize={10}
-      autoHeight
-    />
-  );
+   return (
+      <DataGrid
+         rows={data.map((row, i) => ({ id: i, ...row }))}
+         columns={columns}
+         pageSize={10}
+         autoHeight
+      />
+   );
 }
 ```
 
@@ -1279,44 +1318,44 @@ function DataTable() {
 
 ```tsx
 import {
-  ServerProvider,
-  ModelExplorer,
-  encodeResourceUri,
+   ServerProvider,
+   ModelExplorer,
+   encodeResourceUri,
 } from "@malloy-publisher/sdk";
 import "@malloy-publisher/sdk/styles.css";
 import "@malloy-publisher/sdk/malloy-explorer.css";
 import { useState } from "react";
 
 function Explorer() {
-  const [selectedQuery, setSelectedQuery] = useState(null);
+   const [selectedQuery, setSelectedQuery] = useState(null);
 
-  const resourceUri = encodeResourceUri({
-    projectName: "my-project",
-    packageName: "analytics",
-    modelPath: "models/orders.malloy",
-  });
+   const resourceUri = encodeResourceUri({
+      projectName: "my-project",
+      packageName: "analytics",
+      modelPath: "models/orders.malloy",
+   });
 
-  return (
-    <div style={{ display: "flex", gap: "20px" }}>
-      <div style={{ flex: 1 }}>
-        <h2>Build Your Query</h2>
-        <ModelExplorer
-          resourceUri={resourceUri}
-          onChange={(result) => {
-            setSelectedQuery(result);
-            console.log("Generated Query:", result.query);
-          }}
-        />
+   return (
+      <div style={{ display: "flex", gap: "20px" }}>
+         <div style={{ flex: 1 }}>
+            <h2>Build Your Query</h2>
+            <ModelExplorer
+               resourceUri={resourceUri}
+               onChange={(result) => {
+                  setSelectedQuery(result);
+                  console.log("Generated Query:", result.query);
+               }}
+            />
+         </div>
+
+         {selectedQuery && (
+            <div style={{ flex: 1 }}>
+               <h2>Query Preview</h2>
+               <pre>{selectedQuery.query}</pre>
+            </div>
+         )}
       </div>
-
-      {selectedQuery && (
-        <div style={{ flex: 1 }}>
-          <h2>Query Preview</h2>
-          <pre>{selectedQuery.query}</pre>
-        </div>
-      )}
-    </div>
-  );
+   );
 }
 ```
 
@@ -1331,29 +1370,30 @@ For minimal bundle size when you only need API access:
 import { ServerProvider, useServer } from "@malloy-publisher/sdk/client";
 
 function MyApp() {
-  return (
-    <ServerProvider baseURL="http://localhost:4000/api/v0">
-      <ProjectList />
-    </ServerProvider>
-  );
+   return (
+      <ServerProvider baseURL="http://localhost:4000/api/v0">
+         <ProjectList />
+      </ServerProvider>
+   );
 }
 
 function ProjectList() {
-  const { apiClients } = useServer();
-  const [projects, setProjects] = useState([]);
+   const { apiClients } = useServer();
+   const [projects, setProjects] = useState([]);
 
-  useEffect(() => {
-    apiClients.projects.listProjects()
-      .then(response => setProjects(response.data));
-  }, []);
+   useEffect(() => {
+      apiClients.projects
+         .listProjects()
+         .then((response) => setProjects(response.data));
+   }, []);
 
-  return (
-    <ul>
-      {projects.map(p => (
-        <li key={p.name}>{p.name}</li>
-      ))}
-    </ul>
-  );
+   return (
+      <ul>
+         {projects.map((p) => (
+            <li key={p.name}>{p.name}</li>
+         ))}
+      </ul>
+   );
 }
 ```
 
@@ -1363,67 +1403,67 @@ function ProjectList() {
 
 ### Exported Components
 
-| Component | Description |
-|-----------|-------------|
-| `ServerProvider` | Required context provider for API access |
-| `Home` | Project listing landing page |
-| `Project` | Package listing for a project |
-| `Package` | Package detail (models, notebooks, connections) |
-| `Model` | Full model explorer with visual query builder |
-| `ModelExplorer` | Lower-level query builder component |
-| `ModelExplorerDialog` | Model explorer in a modal dialog |
-| `Notebook` | Read-only notebook viewer |
-| `Workbook` | Interactive workbook editor |
-| `WorkbookList` | List workbooks from storage |
-| `WorkbookManager` | Workbook state management class |
-| `WorkbookStorageProvider` | Context for workbook storage |
-| `QueryResult` | Execute and display query |
-| `RenderedResult` | Render Malloy result JSON |
-| `EmbeddedQueryResult` | Render serialized query config |
-| `Loading` | Loading spinner with text |
-| `ApiErrorDisplay` | Error display component |
-| `AnalyzePackageButton` | Create/manage workbooks |
-| `SourcesExplorer` | Source schema browser |
-| `ConnectionExplorer` | Connection management UI |
+| Component                 | Description                                     |
+| ------------------------- | ----------------------------------------------- |
+| `ServerProvider`          | Required context provider for API access        |
+| `Home`                    | Project listing landing page                    |
+| `Project`                 | Package listing for a project                   |
+| `Package`                 | Package detail (models, notebooks, connections) |
+| `Model`                   | Full model explorer with visual query builder   |
+| `ModelExplorer`           | Lower-level query builder component             |
+| `ModelExplorerDialog`     | Model explorer in a modal dialog                |
+| `Notebook`                | Read-only notebook viewer                       |
+| `Workbook`                | Interactive workbook editor                     |
+| `WorkbookList`            | List workbooks from storage                     |
+| `WorkbookManager`         | Workbook state management class                 |
+| `WorkbookStorageProvider` | Context for workbook storage                    |
+| `QueryResult`             | Execute and display query                       |
+| `RenderedResult`          | Render Malloy result JSON                       |
+| `EmbeddedQueryResult`     | Render serialized query config                  |
+| `Loading`                 | Loading spinner with text                       |
+| `ApiErrorDisplay`         | Error display component                         |
+| `AnalyzePackageButton`    | Create/manage workbooks                         |
+| `SourcesExplorer`         | Source schema browser                           |
+| `ConnectionExplorer`      | Connection management UI                        |
 
 ### Exported Hooks
 
-| Hook | Description |
-|------|-------------|
-| `useServer` | Access ServerProvider context |
-| `useQueryWithApiError` | React Query with error handling |
-| `useMutationWithApiError` | Mutations with error handling |
-| `useModelData` | Fetch compiled model |
-| `useRawQueryData` | Execute query, get raw data |
-| `useRouterClickHandler` | Smart navigation with modifier keys |
-| `useWorkbookStorage` | Access workbook storage context |
-| `useDimensionFiltersFromSpec` | Programmatic dimensional filtering |
+| Hook                            | Description                         |
+| ------------------------------- | ----------------------------------- |
+| `useServer`                     | Access ServerProvider context       |
+| `useQueryWithApiError`          | React Query with error handling     |
+| `useMutationWithApiError`       | Mutations with error handling       |
+| `useModelData`                  | Fetch compiled model                |
+| `useRawQueryData`               | Execute query, get raw data         |
+| `useRouterClickHandler`         | Smart navigation with modifier keys |
+| `useWorkbookStorage`            | Access workbook storage context     |
+| `useDimensionFiltersFromSpec`   | Programmatic dimensional filtering  |
 
 ### Exported Utilities
 
-| Utility | Description |
-|---------|-------------|
-| `encodeResourceUri` | Create resource URI from components |
-| `parseResourceUri` | Parse resource URI to components |
-| `createEmbeddedQueryResult` | Serialize query config |
-| `BrowserWorkbookStorage` | localStorage-based workbook storage |
-| `globalQueryClient` | Shared React Query client |
+| Utility                     | Description                         |
+| --------------------------- | ----------------------------------- |
+| `encodeResourceUri`         | Create resource URI from components |
+| `parseResourceUri`          | Parse resource URI to components    |
+| `createEmbeddedQueryResult` | Serialize query config              |
+| `BrowserWorkbookStorage`    | localStorage-based workbook storage |
+| `globalQueryClient`         | Shared React Query client           |
 
 ### Exported Types
 
-| Type | Description |
-|------|-------------|
-| `ParsedResource` | Parsed resource URI components |
-| `ServerContextValue` | Server context interface |
-| `ServerProviderProps` | ServerProvider props |
-| `QueryExplorerResult` | Query builder result |
-| `SourceAndPath` | Source info with model path |
-| `WorkbookStorage` | Workbook storage interface |
-| `WorkbookLocator` | Workbook path + workspace |
-| `Workspace` | Workspace metadata |
-| `ApiError` | Standardized API error |
-| `ModelExplorerProps` | ModelExplorer props |
-| `DimensionFiltersConfig` | Dimensional filter configuration |
+| Type                     | Description                          |
+| ------------------------ | ------------------------------------ |
+| `ParsedResource`         | Parsed resource URI components       |
+| `ServerContextValue`     | Server context interface             |
+| `ServerProviderProps`    | ServerProvider props                 |
+| `QueryExplorerResult`    | Query builder result                 |
+| `SourceAndPath`          | Source info with model path          |
+| `WorkbookStorage`        | Workbook storage interface           |
+| `WorkbookLocator`        | Workbook path + workspace            |
+| `Workspace`              | Workspace metadata                   |
+| `ApiError`               | Standardized API error               |
+| `ModelExplorerProps`     | ModelExplorer props                  |
+| `DimensionFiltersConfig` | Dimensional filter configuration     |
 
 ---
 
