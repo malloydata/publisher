@@ -26,3 +26,5 @@ try {
 } catch {
    publisherPath = path.join(os.tmpdir(), "publisher");
 }
+
+export const PUBLISHER_DATA_DIR = "publisher_data";

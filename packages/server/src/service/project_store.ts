@@ -12,7 +12,12 @@ import {
    ProcessedProject,
    ProcessedPublisherConfig,
 } from "../config";
-import { API_PREFIX, PUBLISHER_CONFIG_NAME, publisherPath } from "../constants";
+import {
+   API_PREFIX,
+   PUBLISHER_CONFIG_NAME,
+   publisherPath,
+   PUBLISHER_DATA_DIR,
+} from "../constants";
 import {
    FrozenConfigError,
    PackageNotFoundError,
@@ -84,7 +89,7 @@ export class ProjectStore {
                   );
 
                   // Sync to database
-                  await this.syncProjectToDatabase(projectInstance);
+                  await this.addProjectToDatabase(projectInstance);
 
                   return projectInstance.listPackages();
                }),
@@ -193,7 +198,7 @@ export class ProjectStore {
       }
    }
 
-   private async cleanupOrphanedPackages(
+   private async cleanupPackages(
       projectId: string,
       actualPackages: string[],
    ): Promise<void> {
@@ -207,7 +212,7 @@ export class ProjectStore {
       }
    }
 
-   public async syncProjectToDatabase(project: Project): Promise<void> {
+   public async addProjectToDatabase(project: Project): Promise<void> {
       if (!project) {
          logger.error("Cannot sync: project is null or undefined");
          return;
@@ -221,18 +226,18 @@ export class ProjectStore {
       const repository = this.storageManager.getRepository();
 
       // Sync project metadata
-      const dbProject = await this.syncProjectMetadata(project, repository);
+      const dbProject = await this.addProjectMetadata(project, repository);
 
       // Sync packages
-      await this.syncPackages(project, dbProject.id, repository);
+      await this.addPackages(project, dbProject.id, repository);
 
       // Sync connections
-      await this.syncConnections(project, dbProject.id, repository);
+      await this.addConnections(project, dbProject.id, repository);
 
       logger.info(`Synced project "${projectName}" to database`);
    }
 
-   private async syncProjectMetadata(
+   private async addProjectMetadata(
       project: Project,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<{ id: string; name: string }> {
@@ -262,7 +267,7 @@ export class ProjectStore {
       }
    }
 
-   private async syncPackages(
+   private async addPackages(
       project: Project,
       projectId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
@@ -273,7 +278,7 @@ export class ProjectStore {
          .filter((name): name is string => name !== undefined);
 
       // Clean up orphaned packages
-      await this.cleanupOrphanedPackages(projectId, packageNames);
+      await this.cleanupPackages(projectId, packageNames);
 
       // Sync each package
       for (const pkg of packages) {
@@ -282,16 +287,16 @@ export class ProjectStore {
             continue;
          }
 
-         await this.syncPackage(pkg, projectId, repository);
+         await this.addPackage(pkg, projectId, repository);
       }
    }
 
-   private async syncPackage(
+   private async addPackage(
       pkg: components["schemas"]["Package"],
       projectId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
-      const pkgWithExtras = pkg as {
+      const pkgs = pkg as {
          name: string;
          description?: string;
          manifestPath?: string;
@@ -300,10 +305,10 @@ export class ProjectStore {
 
       const packageData = {
          projectId,
-         name: pkgWithExtras.name,
-         description: pkgWithExtras.description ?? undefined,
-         manifestPath: pkgWithExtras.manifestPath ?? "",
-         metadata: pkgWithExtras.metadata ?? {},
+         name: pkgs.name,
+         description: pkgs.description ?? undefined,
+         manifestPath: pkgs.manifestPath ?? "",
+         metadata: pkgs.metadata ?? {},
       };
 
       try {
@@ -315,8 +320,8 @@ export class ProjectStore {
             error.message?.includes("UNIQUE") ||
             error.message?.includes("Constraint")
          ) {
-            await this.updateExistingPackage(
-               pkgWithExtras.name,
+            await this.updatePackage(
+               pkgs.name,
                projectId,
                packageData,
                repository,
@@ -327,7 +332,7 @@ export class ProjectStore {
       }
    }
 
-   private async updateExistingPackage(
+   private async updatePackage(
       packageName: string,
       projectId: string,
       packageData: {
@@ -352,7 +357,7 @@ export class ProjectStore {
       }
    }
 
-   private async syncConnections(
+   private async addConnections(
       project: Project,
       projectId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
@@ -361,8 +366,8 @@ export class ProjectStore {
          const connections = project.listApiConnections();
          const existingConnections = await repository.getConnections(projectId);
 
-         // Clean up orphaned connections
-         await this.cleanupOrphanedConnections(
+         // Clean up connections
+         await this.cleanupConnections(
             connections,
             existingConnections,
             repository,
@@ -375,7 +380,7 @@ export class ProjectStore {
                continue;
             }
 
-            await this.syncConnection(
+            await this.addConnection(
                conn,
                projectId,
                existingConnections,
@@ -389,7 +394,7 @@ export class ProjectStore {
       }
    }
 
-   private async cleanupOrphanedConnections(
+   private async cleanupConnections(
       currentConnections: ReturnType<Project["listApiConnections"]>,
       existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
@@ -405,7 +410,7 @@ export class ProjectStore {
       }
    }
 
-   private async syncConnection(
+   private async addConnection(
       conn: ReturnType<Project["listApiConnections"]>[number],
       projectId: string,
       existingConnections: Connection[],
@@ -416,6 +421,10 @@ export class ProjectStore {
          return;
       }
 
+      const existingConn = existingConnections.find(
+         (c) => c.name === conn.name,
+      );
+
       const connectionData = {
          projectId,
          name: conn.name,
@@ -424,45 +433,26 @@ export class ProjectStore {
       };
 
       try {
-         await repository.createConnection(connectionData);
-         logger.info(`Synced connection: ${conn.name}`);
+         if (existingConn) {
+            // Update existing connection
+            await repository.updateConnection(existingConn.id, {
+               type: connectionData.type,
+               config: connectionData.config,
+            });
+            logger.info(`Updated existing connection: ${conn.name}`);
+         } else {
+            // Create new connection
+            await repository.createConnection(connectionData);
+            logger.info(`Created connection: ${conn.name}`);
+         }
       } catch (err: unknown) {
          const error = err as Error;
-         if (
-            error.message?.includes("UNIQUE") ||
-            error.message?.includes("Constraint")
-         ) {
-            await this.updateExistingConnection(
-               conn,
-               existingConnections,
-               repository,
-            );
-         } else {
-            logger.error(`Failed to sync connection ${conn.name}:`, error);
-            throw error;
-         }
+         logger.error(`Failed to sync connection ${conn.name}:`, error);
+         throw error;
       }
    }
 
-   private async updateExistingConnection(
-      conn: ReturnType<Project["listApiConnections"]>[number],
-      existingConnections: Connection[],
-      repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      const existingConn = existingConnections.find(
-         (c) => c.name === conn.name,
-      );
-
-      if (existingConn && conn.name) {
-         await repository.updateConnection(existingConn.id, {
-            type: conn.type as Connection["type"],
-            config: conn,
-         });
-         logger.info(`Updated existing connection: ${conn.name}`);
-      }
-   }
-
-   public async syncPackageToDatabase(
+   public async addPackageToDatabase(
       projectName: string,
       packageName: string,
    ): Promise<void> {
@@ -488,7 +478,7 @@ export class ProjectStore {
       }
 
       // Sync the specific package
-      await this.syncPackage(pkg, dbProject.id, repository);
+      await this.addPackage(pkg, dbProject.id, repository);
       logger.info(`Synced package "${packageName}" to database`);
    }
 
@@ -526,18 +516,25 @@ export class ProjectStore {
       const forceInit = process.env.INITIALIZE_STORAGE === "true";
 
       if (forceInit) {
-         logger.info(`Force init: Cleaning up publisher path ${publisherPath}`);
+         const uploadDocsPath = path.join(
+            this.serverRootPath,
+            PUBLISHER_DATA_DIR,
+         );
+         logger.info(
+            `Force init: Cleaning up upload documents path ${uploadDocsPath}`,
+         );
          try {
-            await fs.promises.rm(publisherPath, {
+            await fs.promises.rm(uploadDocsPath, {
                recursive: true,
                force: true,
             });
          } catch (error) {
             if ((error as NodeJS.ErrnoException).code === "EACCES") {
                logger.warn(
-                  `Permission denied, skipping cleanup of publisher path ${publisherPath}`,
+                  `Permission denied, skipping cleanup of upload documents path ${uploadDocsPath}`,
                );
-            } else {
+            } else if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+               // Ignore if directory doesn't exist
                throw error;
             }
          }
@@ -545,7 +542,8 @@ export class ProjectStore {
          logger.info(`Using existing publisher path ${publisherPath}`);
       }
 
-      await fs.promises.mkdir(publisherPath, { recursive: true });
+      const uploadDocsPath = path.join(this.serverRootPath, PUBLISHER_DATA_DIR);
+      await fs.promises.mkdir(uploadDocsPath, { recursive: true });
    }
 
    public async listProjects(skipInitializationCheck: boolean = false) {
@@ -653,7 +651,7 @@ export class ProjectStore {
       if (existingProject) {
          const updatedProject = await existingProject.update(project);
          this.projects.set(projectName, updatedProject);
-         await this.syncProjectToDatabase(updatedProject);
+         await this.addProjectToDatabase(updatedProject);
          return updatedProject;
       }
       const projectManifest = await ProjectStore.reloadProjectManifest(
@@ -670,7 +668,6 @@ export class ProjectStore {
          const packagesToProcess =
             project?.packages || projectConfig?.packages || [];
          absoluteProjectPath = await this.loadProjectIntoDisk(
-            projectName,
             projectName,
             packagesToProcess,
          );
@@ -702,7 +699,7 @@ export class ProjectStore {
          },
       );
 
-      await this.syncProjectToDatabase(newProject);
+      await this.addProjectToDatabase(newProject);
 
       return newProject;
    }
@@ -739,7 +736,7 @@ export class ProjectStore {
       }
       const updatedProject = await existingProject.update(project);
       this.projects.set(projectName, updatedProject);
-      await this.syncProjectToDatabase(updatedProject);
+      await this.addProjectToDatabase(updatedProject);
       return updatedProject;
    }
 
@@ -805,7 +802,7 @@ export class ProjectStore {
       if (!projectName) {
          throw new Error("Project name is required");
       }
-      const absoluteProjectPath = `${publisherPath}/${projectName}`;
+      const absoluteProjectPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${projectName}`;
       await fs.promises.mkdir(absoluteProjectPath, { recursive: true });
       if (project.readme) {
          await fs.promises.writeFile(
@@ -842,10 +839,11 @@ export class ProjectStore {
 
    private async loadProjectIntoDisk(
       projectName: string,
-      projectPath: string,
       packages: ApiProject["packages"],
    ) {
-      const absoluteTargetPath = `${publisherPath}/${projectPath}`;
+      const absoluteTargetPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${projectName}`;
+
+      await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
       if (!packages || packages.length === 0) {
          throw new PackageNotFoundError(

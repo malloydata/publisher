@@ -1,7 +1,8 @@
 import { components } from "../api";
-import { publisherPath } from "../constants";
+import { PUBLISHER_DATA_DIR } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
 import { ProjectStore } from "../service/project_store";
+import * as path from "path";
 
 type ApiPackage = components["schemas"]["Package"];
 
@@ -43,7 +44,7 @@ export class PackageController {
          await this.downloadPackage(projectName, body.name, body.location);
       }
       const result = await project.addPackage(body.name);
-      await this.projectStore.syncPackageToDatabase(projectName, body.name);
+      await this.projectStore.addPackageToDatabase(projectName, body.name);
 
       return result;
    }
@@ -75,7 +76,7 @@ export class PackageController {
          await this.downloadPackage(projectName, packageName, body.location);
       }
       const result = await project.updatePackage(packageName, body);
-      await this.projectStore.syncPackageToDatabase(projectName, packageName);
+      await this.projectStore.addPackageToDatabase(projectName, packageName);
 
       return result;
    }
@@ -85,7 +86,12 @@ export class PackageController {
       packageName: string,
       packageLocation: string,
    ) {
-      const absoluteTargetPath = `${publisherPath}/${projectName}/${packageName}`;
+      const absoluteTargetPath = path.join(
+         this.projectStore.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         projectName,
+         packageName,
+      );
       const isCompressedFile = packageLocation.endsWith(".zip");
       if (
          packageLocation.startsWith("https://") ||

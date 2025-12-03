@@ -4,4 +4,5 @@ k6-tests/packages
 src/api.ts
 publisher.db
 publisher.db.wal
+publisher_data
 
