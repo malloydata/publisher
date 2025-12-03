@@ -1592,6 +1592,11 @@ components:
           description: Array of notebook cells containing raw markdown and code content
           items:
             $ref: "#/components/schemas/NotebookCell"
+        annotations:
+          type: array
+          description: Array of file-level (##) annotations attached to the notebook
+          items:
+            type: string
 
     CompiledModel:
       type: object
@@ -1680,6 +1685,14 @@ components:
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
+        newSources:
+          type: array
+          description: Array of JSON strings containing SourceInfo objects made available in this cell
+          items:
+            type: string
+        queryInfo:
+          type: string
+          description: JSON string containing QueryInfo object for the query in this cell (if the cell contains a query)
 
     NotebookCellResult:
       type: object
