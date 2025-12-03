@@ -1594,7 +1594,7 @@ components:
             $ref: "#/components/schemas/NotebookCell"
         annotations:
           type: array
-          description: Array of annotations attached to the notebook
+          description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
 
