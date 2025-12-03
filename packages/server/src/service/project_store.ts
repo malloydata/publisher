@@ -52,7 +52,7 @@ export class ProjectStore {
    }
 
    private async initialize() {
-      const forceInit = process.env.FORCE_INITIALIZE_STORAGE === "true";
+      const forceInit = process.env.INITIALIZE_STORAGE === "true";
 
       try {
          await this.storageManager.initialize(forceInit);
@@ -293,7 +293,6 @@ export class ProjectStore {
    ): Promise<void> {
       const pkgWithExtras = pkg as {
          name: string;
-         version?: string;
          description?: string;
          manifestPath?: string;
          metadata?: Record<string, unknown>;
@@ -302,7 +301,6 @@ export class ProjectStore {
       const packageData = {
          projectId,
          name: pkgWithExtras.name,
-         version: pkgWithExtras.version ?? "1.0.0",
          description: pkgWithExtras.description ?? undefined,
          manifestPath: pkgWithExtras.manifestPath ?? "",
          metadata: pkgWithExtras.metadata ?? {},
@@ -333,7 +331,6 @@ export class ProjectStore {
       packageName: string,
       projectId: string,
       packageData: {
-         version: string;
          description: string | undefined;
          manifestPath: string;
          metadata: Record<string, unknown>;
@@ -347,7 +344,6 @@ export class ProjectStore {
 
       if (existingPackage) {
          await repository.updatePackage(existingPackage.id, {
-            version: packageData.version,
             description: packageData.description,
             manifestPath: packageData.manifestPath,
             metadata: packageData.metadata,
@@ -527,7 +523,7 @@ export class ProjectStore {
    }
 
    private async cleanupAndCreatePublisherPath() {
-      const forceInit = process.env.FORCE_INITIALIZE_STORAGE === "true";
+      const forceInit = process.env.INITIALIZE_STORAGE === "true";
 
       if (forceInit) {
          logger.info(`Force init: Cleaning up publisher path ${publisherPath}`);

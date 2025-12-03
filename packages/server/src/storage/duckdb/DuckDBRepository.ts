@@ -162,13 +162,12 @@ export class DuckDBRepository implements ResourceRepository {
       const now = this.now();
 
       await this.db.run(
-         `INSERT INTO packages (id, project_id, name, version, description, manifest_path, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         `INSERT INTO packages (id, project_id, name, description, manifest_path, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
          [
             id,
             pkg.projectId,
             pkg.name,
-            pkg.version,
             pkg.description || null,
             pkg.manifestPath,
             pkg.metadata ? JSON.stringify(pkg.metadata) : null,
@@ -202,10 +201,6 @@ export class DuckDBRepository implements ResourceRepository {
       if (updates.name !== undefined) {
          setClauses.push(`name = $${paramIndex++}`);
          params.push(updates.name);
-      }
-      if (updates.version !== undefined) {
-         setClauses.push(`version = $${paramIndex++}`);
-         params.push(updates.version);
       }
       if (updates.description !== undefined) {
          setClauses.push(`description = $${paramIndex++}`);
@@ -360,7 +355,6 @@ export class DuckDBRepository implements ResourceRepository {
          id: row.id as string,
          projectId: row.project_id as string,
          name: row.name as string,
-         version: row.version as string,
          description: row.description as string | undefined,
          manifestPath: row.manifest_path as string,
          metadata: row.metadata

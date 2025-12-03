@@ -54,7 +54,6 @@ export interface Package {
    id: string;
    projectId: string;
    name: string;
-   version: string;
    description?: string;
    manifestPath: string;
    createdAt: Date;

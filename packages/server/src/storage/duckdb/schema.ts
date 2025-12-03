@@ -38,14 +38,13 @@ export async function initializeSchema(
       id VARCHAR PRIMARY KEY,
       project_id VARCHAR NOT NULL,
       name VARCHAR NOT NULL,
-      version VARCHAR NOT NULL,
       description VARCHAR,
       manifest_path VARCHAR NOT NULL,
       metadata JSON,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id),
-      UNIQUE (project_id, name, version)
+      UNIQUE (project_id, name)
     )
   `);
 
