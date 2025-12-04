@@ -10,6 +10,8 @@ import {
    getTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
+import { ConnectionService } from "../service/connection_service";
+
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
 type ApiSqlSource = components["schemas"]["SqlSource"];
@@ -20,9 +22,10 @@ type ApiTemporaryTable = components["schemas"]["TemporaryTable"];
 type ApiSchema = components["schemas"]["Schema"];
 export class ConnectionController {
    private projectStore: ProjectStore;
-
+   private connectionService: ConnectionService;
    constructor(projectStore: ProjectStore) {
       this.projectStore = projectStore;
+      this.connectionService = new ConnectionService(projectStore);
    }
 
    /**
@@ -249,5 +252,116 @@ export class ConnectionController {
             errorMessage: `Connection test failed: ${(error as Error).message}`,
          };
       }
+   }
+
+   public async createConnection(
+      projectName: string,
+      connectionConfig: ApiConnection,
+   ): Promise<{ message: string }> {
+      if (!connectionConfig || typeof connectionConfig !== "object") {
+         throw new BadRequestError("Connection configuration is required");
+      }
+
+      if (!connectionConfig.name) {
+         throw new BadRequestError("Connection name is required");
+      }
+
+      if (!connectionConfig.type) {
+         throw new BadRequestError("Connection type is required");
+      }
+
+      // Get the project
+      const project = await this.projectStore.getProject(projectName, false);
+
+      // Check if connection already exists
+      const existingConnections = project.listApiConnections();
+      const connectionExists = existingConnections.some(
+         (conn) => conn.name === connectionConfig.name,
+      );
+
+      if (connectionExists) {
+         throw new ConnectionError(
+            `Connection "${connectionConfig.name}" already exists in project "${projectName}". Use updateConnection to modify it.`,
+         );
+      }
+
+      logger.info(
+         `Creating connection "${connectionConfig.name}" in project "${projectName}"`,
+      );
+
+      await this.connectionService.addConnectionToProject(
+         projectName,
+         connectionConfig,
+      );
+
+      return {
+         message: `Connection "${connectionConfig.name}" created successfully`,
+      };
+   }
+
+   public async updateConnection(
+      projectName: string,
+      connectionName: string,
+      connectionUpdate: Partial<ApiConnection>,
+   ): Promise<{ message: string }> {
+      if (!connectionUpdate || typeof connectionUpdate !== "object") {
+         throw new BadRequestError("Connection update data is required");
+      }
+
+      // Get the project
+      const project = await this.projectStore.getProject(projectName, false);
+
+      // Check if connection exists
+      try {
+         project.getApiConnection(connectionName);
+      } catch (error) {
+         throw new ConnectionError(
+            `Connection "${connectionName}" not found in project "${projectName}"`,
+         );
+      }
+
+      logger.info(
+         `Updating connection "${connectionName}" in project "${projectName}"`,
+      );
+
+      await this.connectionService.updateConnectionInProject(
+         projectName,
+         connectionName,
+         connectionUpdate,
+      );
+
+      return {
+         message: `Connection "${connectionName}" updated successfully`,
+      };
+   }
+
+   public async deleteConnection(
+      projectName: string,
+      connectionName: string,
+   ): Promise<{ message: string }> {
+      // Get the project (this will throw if not found)
+      const project = await this.projectStore.getProject(projectName, false);
+
+      // Check if connection exists
+      try {
+         project.getApiConnection(connectionName);
+      } catch (error) {
+         throw new ConnectionError(
+            `Connection "${connectionName}" not found in project "${projectName}"`,
+         );
+      }
+
+      logger.info(
+         `Deleting connection "${connectionName}" from project "${projectName}"`,
+      );
+
+      await this.connectionService.deleteConnectionFromProject(
+         projectName,
+         connectionName,
+      );
+
+      return {
+         message: `Connection "${connectionName}" deleted successfully`,
+      };
    }
 }

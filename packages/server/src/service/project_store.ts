@@ -34,7 +34,7 @@ export class ProjectStore {
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
-   private storageManager: StorageManager;
+   public storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
    });
@@ -409,7 +409,7 @@ export class ProjectStore {
       }
    }
 
-   private async addConnection(
+   public async addConnection(
       conn: ReturnType<Project["listApiConnections"]>[number],
       projectId: string,
       existingConnections: Connection[],
@@ -648,10 +648,9 @@ export class ProjectStore {
       // Check if project already exists and update it instead of creating a new one
       const existingProject = this.projects.get(projectName);
       if (existingProject) {
-         const updatedProject = await existingProject.update(project);
-         this.projects.set(projectName, updatedProject);
-         await this.addProjectToDatabase(updatedProject);
-         return updatedProject;
+         throw new Error(
+            `Project "${projectName}" already exists. Use updateProject to modify it.`,
+         );
       }
       const projectManifest = await ProjectStore.reloadProjectManifest(
          this.serverRootPath,

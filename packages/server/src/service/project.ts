@@ -418,6 +418,14 @@ export class Project {
       this.packageStatuses.delete(packageName);
    }
 
+   public updateConnections(
+      malloyConnections: Map<string, BaseConnection>,
+      apiConnections: ApiConnection[],
+   ): void {
+      this.malloyConnections = malloyConnections;
+      this.apiConnections = apiConnections;
+   }
+
    public async serialize(): Promise<ApiProject> {
       return {
          ...this.metadata,
