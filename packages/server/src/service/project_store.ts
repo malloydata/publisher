@@ -687,16 +687,11 @@ export class ProjectStore {
 
       this.projects.set(projectName, newProject);
 
-      (project?.packages || []).forEach(
-         (_package) => {
-            if (_package.name) {
-               newProject.setPackageStatus(
-                  _package.name,
-                  PackageStatus.SERVING,
-               );
-            }
-         },
-      );
+      (project?.packages || []).forEach((_package) => {
+         if (_package.name) {
+            newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
+         }
+      });
 
       await this.addProjectToDatabase(newProject);
 
