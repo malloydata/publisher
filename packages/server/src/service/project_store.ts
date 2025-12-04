@@ -15,7 +15,6 @@ import {
 import {
    API_PREFIX,
    PUBLISHER_CONFIG_NAME,
-   publisherPath,
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
@@ -539,7 +538,7 @@ export class ProjectStore {
             }
          }
       } else {
-         logger.info(`Using existing publisher path ${publisherPath}`);
+         logger.info(`Using existing publisher path`);
       }
 
       const uploadDocsPath = path.join(this.serverRootPath, PUBLISHER_DATA_DIR);
@@ -688,7 +687,7 @@ export class ProjectStore {
 
       this.projects.set(projectName, newProject);
 
-      (project?.packages || projectConfig?.packages || []).forEach(
+      (project?.packages || []).forEach(
          (_package) => {
             if (_package.name) {
                newProject.setPackageStatus(
