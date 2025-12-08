@@ -160,7 +160,7 @@ export default function ResultContainer({
                ref={contentRef}
                sx={{
                   flex: 1,
-                  overflow: "scroll",
+                  overflow: "hidden",
                   p: 0,
                   // Adjust bottom padding when toggle is shown to prevent content overlap
                   pb: shouldShowToggle ? "40px" : 1,
