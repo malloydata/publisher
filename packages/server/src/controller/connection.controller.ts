@@ -314,7 +314,7 @@ export class ConnectionController {
       // Check if connection exists
       try {
          project.getApiConnection(connectionName);
-      } catch (error) {
+      } catch (_error) {
          throw new ConnectionError(
             `Connection "${connectionName}" not found in project "${projectName}"`,
          );
@@ -345,7 +345,7 @@ export class ConnectionController {
       // Check if connection exists
       try {
          project.getApiConnection(connectionName);
-      } catch (error) {
+      } catch (_error) {
          throw new ConnectionError(
             `Connection "${connectionName}" not found in project "${projectName}"`,
          );
