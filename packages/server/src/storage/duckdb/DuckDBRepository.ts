@@ -127,11 +127,9 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async deleteProject(id: string): Promise<void> {
-      // First delete all related records
-      await this.db.run("DELETE FROM connections WHERE project_id = ?", [id]);
+      await this.deleteConnectionsByProjectId(id);
 
-      // Delete packages
-      await this.db.run("DELETE FROM packages WHERE project_id = ?", [id]);
+      await this.deletePackagesByProjectId(id);
 
       // Finally delete the project
       await this.db.run("DELETE FROM projects WHERE id = ?", [id]);
@@ -229,6 +227,10 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deletePackage(id: string): Promise<void> {
       await this.db.run("DELETE FROM packages WHERE id = ?", [id]);
+   }
+
+   async deletePackagesByProjectId(id: string): Promise<void> {
+      await this.db.run("DELETE FROM packages WHERE project_id = ?", [id]);
    }
 
    // ==================== CONNECTIONS ====================
@@ -332,6 +334,10 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deleteConnection(id: string): Promise<void> {
       await this.db.run("DELETE FROM connections WHERE id = ?", [id]);
+   }
+
+   async deleteConnectionsByProjectId(id: string): Promise<void> {
+      await this.db.run("DELETE FROM connections WHERE project_id = ?", [id]);
    }
 
    // ==================== MAPPERS ====================

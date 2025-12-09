@@ -12,7 +12,7 @@ export async function initializeSchema(
 
    if (force) {
       console.log(
-         "Forcing database schema initialization (dropping existing tables)...",
+         "Reinitializing database schema dropping and recreating all tables",
       );
       await dropAllTables(db);
    } else {
