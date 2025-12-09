@@ -296,24 +296,24 @@ function SourceExplorerComponentInner({
                      }}
                   />
                </ResizableCollapsiblePanel>
-               {mutation.isError && mutation.error ? (
+               {/* {mutation.isError && mutation.error ? (
                   <Box sx={{ p: 2 }}>
                      <ApiErrorDisplay
                         error={mutation.error}
                         context={`Query execution error`}
                      />
                   </Box>
-               ) : (
-                  <ResultPanel
-                     source={sourceAndPath.sourceInfo}
-                     draftQuery={query?.malloyQuery}
-                     setDraftQuery={(malloyQuery) =>
-                        setQuery({ ...query, malloyQuery: malloyQuery })
-                     }
-                     submittedQuery={submittedQuery}
-                     options={{ showRawQuery: true }}
-                  />
-               )}
+               ) : ( */}
+               <ResultPanel
+                  source={sourceAndPath.sourceInfo}
+                  draftQuery={query?.malloyQuery}
+                  setDraftQuery={(malloyQuery) =>
+                     setQuery({ ...query, malloyQuery: malloyQuery })
+                  }
+                  submittedQuery={submittedQuery}
+                  options={{ showRawQuery: true }}
+               />
+               {/* )} */}
             </div>
          </MalloyExplorerProvider>
       </StyledExplorerContent>
