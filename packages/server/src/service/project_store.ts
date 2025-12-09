@@ -622,11 +622,26 @@ export class ProjectStore {
                `Project "${projectName}" could not be resolved to a path.`,
             );
          }
-         project = await this.addProject({
-            name: projectName,
-            resource: `${API_PREFIX}/projects/${projectName}`,
-            connections: projectConfig?.connections || [],
-         });
+         const existingProject = this.projects.get(projectName);
+      
+         if (existingProject && reload) {
+            const updatedProject = await existingProject.update({
+               name: projectName,
+               resource: `${API_PREFIX}/projects/${projectName}`,
+               connections: projectConfig?.connections || [],
+            });
+            this.projects.set(projectName, updatedProject);
+            await this.addProjectToDatabase(updatedProject);
+            project = updatedProject;
+         } else if (!existingProject) {
+            project = await this.addProject({
+               name: projectName,
+               resource: `${API_PREFIX}/projects/${projectName}`,
+               connections: projectConfig?.connections || [],
+            });
+         } else {
+            project = existingProject;
+         }
       }
       return project;
    }
