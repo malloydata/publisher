@@ -28,7 +28,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.140",
+      "version": "0.0.141",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -52,7 +52,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.140",
+      "version": "0.0.141",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -101,7 +101,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.140",
+      "version": "0.0.141",
       "bin": {
         "malloy-publisher": "dist/server.js",
       },
