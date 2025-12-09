@@ -623,7 +623,7 @@ export class ProjectStore {
             );
          }
          const existingProject = this.projects.get(projectName);
-      
+
          if (existingProject && reload) {
             const updatedProject = await existingProject.update({
                name: projectName,
