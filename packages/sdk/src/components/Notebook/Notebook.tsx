@@ -179,7 +179,7 @@ export default function Notebook({
                   /^\s*(run|query)\s*:/m.test(cellText);
 
                try {
-                  if (hasQuery && modelPath) {
+                  if (hasQuery && modelPath && filtersToApply.length > 0) {
                      // Query cell - use models API with optional filters
                      let queryToExecute = cellText;
 
@@ -241,7 +241,7 @@ export default function Notebook({
                         result: response.data.result,
                      });
                   } else {
-                     // Non-query code cell - use notebook cell execution API
+                     // Non-query code cell (or no filters applied) - use notebook cell execution API
                      const response =
                         await apiClients.notebooks.executeNotebookCell(
                            projectName,
