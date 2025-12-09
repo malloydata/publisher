@@ -138,13 +138,13 @@ export function DimensionFilter({
    const [retrievalInputValue, setRetrievalInputValue] = useState("");
    const [retrievalSearched, setRetrievalSearched] = useState(false);
    const [retrievalFocused, setRetrievalFocused] = useState(false);
-   const pendingRequestRef = useRef<string | null>(null);
-   const isRequestInFlightRef = useRef(false);
+   const retrievalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   const latestRequestIdRef = useRef(0);
 
    // MinMax focus state for showing helper text
    const [showMinMaxHelper, setShowMinMaxHelper] = useState(false);
 
-   // Effect to trigger retrieval
+   // Effect to trigger retrieval with debounce
    useEffect(() => {
       if (spec.filterType !== "Retrieval" || !retrievalFn) return;
 
@@ -155,41 +155,46 @@ export function DimensionFilter({
          return;
       }
 
-      const performRetrieval = async (searchQuery: string) => {
-         if (isRequestInFlightRef.current) {
-            pendingRequestRef.current = searchQuery;
-            return;
-         }
+      // Cancel any existing timer
+      if (retrievalTimerRef.current) {
+         clearTimeout(retrievalTimerRef.current);
+      }
 
-         isRequestInFlightRef.current = true;
+      // Set a new 300ms timer
+      retrievalTimerRef.current = setTimeout(async () => {
+         // Increment and capture request ID to track this request
+         latestRequestIdRef.current += 1;
+         const thisRequestId = latestRequestIdRef.current;
+
          setRetrievalLoading(true);
 
          try {
-            const results = await retrievalFn(searchQuery, spec);
-            setRetrievalOptions(results);
+            const results = await retrievalFn(query, spec);
+            // Only update state if this is still the latest request
+            if (thisRequestId === latestRequestIdRef.current) {
+               setRetrievalOptions(results);
+            }
          } catch (e) {
-            console.error("Retrieval failed", e);
-            setRetrievalOptions([]);
+            // Only update state if this is still the latest request
+            if (thisRequestId === latestRequestIdRef.current) {
+               console.error("Retrieval failed", e);
+               setRetrievalOptions([]);
+            }
          } finally {
-            isRequestInFlightRef.current = false;
-            setRetrievalLoading(false);
-            setRetrievalSearched(true);
-
-            // Check pending
-            if (pendingRequestRef.current) {
-               const nextQuery = pendingRequestRef.current;
-               pendingRequestRef.current = null;
-               setTimeout(() => performRetrieval(nextQuery), 0);
+            // Only update loading/searched state if this is still the latest request
+            if (thisRequestId === latestRequestIdRef.current) {
+               setRetrievalLoading(false);
+               setRetrievalSearched(true);
             }
          }
-      };
-
-      // Debounce
-      const timeoutId = setTimeout(() => {
-         performRetrieval(query);
       }, 300);
 
-      return () => clearTimeout(timeoutId);
+      // Cleanup: cancel timer on unmount or when dependencies change
+      return () => {
+         if (retrievalTimerRef.current) {
+            clearTimeout(retrievalTimerRef.current);
+         }
+      };
    }, [retrievalInputValue, spec, retrievalFn]);
 
    // Sync internal state with selection prop changes (e.g., when filter is cleared externally)
