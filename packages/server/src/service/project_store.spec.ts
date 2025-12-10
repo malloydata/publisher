@@ -5,13 +5,15 @@ import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
+import { ProjectStore } from "./project_store";
+import { Project } from "./project";
 
 type MockData = Record<string, unknown>;
 
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
-         async initialize(_forceInit?: boolean): Promise<void> {
+         async initialize(_reInit?: boolean): Promise<void> {
             return;
          }
 
@@ -85,9 +87,6 @@ mock.module("../storage/StorageManager", () => {
       StorageConfig: {} as Record<string, unknown>,
    };
 });
-
-import { ProjectStore } from "./project_store";
-import { Project } from "./project";
 
 type Connection = components["schemas"]["Connection"];
 

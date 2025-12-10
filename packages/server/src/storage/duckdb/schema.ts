@@ -2,15 +2,15 @@ import { DuckDBConnection } from "./DuckDBConnection";
 
 export async function initializeSchema(
    db: DuckDBConnection,
-   force: boolean = false,
+   reInit: boolean = false,
 ): Promise<void> {
    const initialized = await db.isInitialized();
 
-   if (initialized && !force) {
+   if (initialized && !reInit) {
       return;
    }
 
-   if (force) {
+   if (reInit) {
       console.log(
          "Reinitializing database schema dropping and recreating all tables",
       );
