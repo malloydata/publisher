@@ -12,67 +12,67 @@ export async function initializeSchema(
 
    if (reInit) {
       console.log(
-         "Reinitializing database schema dropping and recreating all tables",
+         "Reinitializing database schema dropping and recreating all tables"
       );
       await dropAllTables(db);
+      await createTables(db);
    } else {
-      console.log("Database not initialized. Run: bun run start:dev:init");
-      throw new Error("Database not initialized. Run: bun run start:dev:init");
-      //return;
+      console.log(
+         "Database not initialized. Run: bun run start:dev:init"
+      );
+      // throw new Error(
+      //    "Database not initialized. Run: bun run start:dev:init"
+      // );
    }
 
-   // Projects table
-   await db.run(`
-    CREATE TABLE IF NOT EXISTS projects (
-      id VARCHAR PRIMARY KEY,
-      name VARCHAR NOT NULL UNIQUE,
-      path VARCHAR NOT NULL,
-      description VARCHAR,
-      metadata JSON,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL
-    )
-  `);
-
-   // Packages table
-   await db.run(`
-    CREATE TABLE IF NOT EXISTS packages (
-      id VARCHAR PRIMARY KEY,
-      project_id VARCHAR NOT NULL,
-      name VARCHAR NOT NULL,
-      description VARCHAR,
-      manifest_path VARCHAR NOT NULL,
-      metadata JSON,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id),
-      UNIQUE (project_id, name)
-    )
-  `);
-
-   // Connections table
-   await db.run(`
-    CREATE TABLE IF NOT EXISTS connections (
-      id VARCHAR PRIMARY KEY,
-      project_id VARCHAR NOT NULL,
-      name VARCHAR NOT NULL,
-      type VARCHAR NOT NULL,
-      config JSON NOT NULL,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id),
-      UNIQUE (project_id, name)
-    )
-  `);
-
-   // Create indexes for better query performance
-   await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_packages_project_id ON packages(project_id)",
-   );
-   await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_connections_project_id ON connections(project_id)",
-   );
 }
+
+async function createTables(db: DuckDBConnection): Promise<void> {
+   await db.run(`
+      CREATE TABLE projects (
+         id VARCHAR PRIMARY KEY,
+         name VARCHAR NOT NULL UNIQUE,
+         path VARCHAR NOT NULL,
+         description VARCHAR,
+         metadata JSON,
+         created_at TIMESTAMP NOT NULL,
+         updated_at TIMESTAMP NOT NULL
+      )
+   `);
+
+   await db.run(`
+      CREATE TABLE packages (
+         id VARCHAR PRIMARY KEY,
+         project_id VARCHAR NOT NULL,
+         name VARCHAR NOT NULL,
+         description VARCHAR,
+         manifest_path VARCHAR NOT NULL,
+         metadata JSON,
+         created_at TIMESTAMP NOT NULL,
+         updated_at TIMESTAMP NOT NULL,
+         FOREIGN KEY (project_id) REFERENCES projects(id),
+         UNIQUE (project_id, name)
+      )
+   `);
+
+   await db.run(`
+      CREATE TABLE connections (
+         id VARCHAR PRIMARY KEY,
+         project_id VARCHAR NOT NULL,
+         name VARCHAR NOT NULL,
+         type VARCHAR NOT NULL,
+         config JSON NOT NULL,
+         created_at TIMESTAMP NOT NULL,
+         updated_at TIMESTAMP NOT NULL,
+         FOREIGN KEY (project_id) REFERENCES projects(id),
+         UNIQUE (project_id, name)
+      )
+   `);
+
+   await db.run("CREATE INDEX idx_packages_project_id ON packages(project_id)");
+   await db.run("CREATE INDEX idx_connections_project_id ON connections(project_id)");
+}
+
 
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = ["connections", "packages", "projects"];
