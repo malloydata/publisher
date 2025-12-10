@@ -5,6 +5,7 @@ import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
    Box,
+   CircularProgress,
    Dialog,
    DialogContent,
    DialogTitle,
@@ -33,6 +34,7 @@ interface NotebookCellProps {
    resourceUri: string;
    index: number;
    maxResultSize?: number;
+   isExecuting?: boolean;
 }
 
 export function NotebookCell({
@@ -42,6 +44,7 @@ export function NotebookCell({
    resourceUri,
    index,
    maxResultSize,
+   isExecuting,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -236,19 +239,12 @@ export function NotebookCell({
                               {highlightedMalloyCode && (
                                  <span
                                     dangerouslySetInnerHTML={{
-                                       __html:
-                                          cell.text.length > 50 &&
-                                          highlightedMalloyCode
-                                             ? `${highlightedMalloyCode.substring(0, 50)}...`
-                                             : highlightedMalloyCode,
+                                       __html: highlightedMalloyCode,
                                     }}
                                     style={{
                                        fontFamily: "monospace",
                                        fontSize: "14px",
                                        flex: 1,
-                                       whiteSpace: "nowrap",
-                                       overflow: "hidden",
-                                       textOverflow: "ellipsis",
                                        marginRight: "8px",
                                     }}
                                  />
@@ -406,6 +402,23 @@ export function NotebookCell({
                result={cell.result || ""}
                title="Results"
             />
+
+            {/* Loading state for executing code cells (not import cells) */}
+            {isExecuting &&
+               !cell.result &&
+               !hasValidImport &&
+               !(cell.newSources && cell.newSources.length > 0) && (
+                  <CleanMetricCard
+                     sx={{
+                        display: "flex",
+                        justifyContent: "center",
+                        alignItems: "center",
+                        minHeight: 200,
+                     }}
+                  >
+                     <CircularProgress size={32} />
+                  </CleanMetricCard>
+               )}
 
             {cell.result && (
                <CleanMetricCard

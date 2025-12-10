@@ -153,23 +153,27 @@ export default function Notebook({
       async (filtersToApply: FilterSelection[] = []) => {
          if (!isSuccess || !notebook?.notebookCells) return;
 
+         // Initialize or reset cells
+         setEnhancedCells((prev) => {
+            if (prev.length === 0) {
+               return notebook.notebookCells.map((cell) => ({ ...cell }));
+            }
+            return prev.map((cell) => ({
+               ...cell,
+               result: undefined,
+            }));
+         });
+
          setIsExecuting(true);
          setExecutionError(null);
-         const cells: EnhancedNotebookCell[] = [];
 
          try {
             // Execute cells sequentially
             for (let i = 0; i < notebook.notebookCells.length; i++) {
                const rawCell = notebook.notebookCells[i];
 
-               // Markdown cells don't need execution - use raw content directly
-               if (rawCell.type === "markdown") {
-                  cells.push({
-                     type: rawCell.type,
-                     text: rawCell.text,
-                  });
-                  continue;
-               }
+               // Markdown cells don't need execution
+               if (rawCell.type === "markdown") continue;
 
                // Execute code cells
                const cellText = rawCell.text || "";
@@ -179,6 +183,9 @@ export default function Notebook({
                   /^\s*(run|query)\s*:/m.test(cellText);
 
                try {
+                  let result: string | undefined;
+                  let newSources: string[] | undefined;
+
                   if (hasQuery && modelPath && filtersToApply.length > 0) {
                      // Query cell - use models API with optional filters
                      let queryToExecute = cellText;
@@ -234,12 +241,7 @@ export default function Notebook({
                            versionId,
                         },
                      );
-
-                     cells.push({
-                        type: rawCell.type,
-                        text: rawCell.text,
-                        result: response.data.result,
-                     });
+                     result = response.data.result;
                   } else {
                      // Non-query code cell (or no filters applied) - use notebook cell execution API
                      const response =
@@ -252,24 +254,29 @@ export default function Notebook({
                         );
 
                      const executedCell = response.data;
-                     cells.push({
-                        type: rawCell.type,
-                        text: rawCell.text,
-                        result: executedCell.result,
-                        newSources: executedCell.newSources,
-                     });
+                     result = executedCell.result;
+                     newSources = executedCell.newSources || rawCell.newSources;
                   }
-               } catch (cellError) {
-                  // If a cell fails, add it without execution results
-                  console.error(`Error executing cell ${i}:`, cellError);
-                  cells.push({
-                     type: rawCell.type,
-                     text: rawCell.text,
+
+                  // Update state incrementally
+                  setEnhancedCells((prev) => {
+                     const next = [...prev];
+                     // Ensure we have a cell to update (in case state was reset externally, though unlikely)
+                     if (!next[i]) {
+                        next[i] = { ...rawCell };
+                     }
+                     next[i] = {
+                        ...next[i],
+                        result,
+                        newSources,
+                     };
+                     return next;
                   });
+               } catch (cellError) {
+                  console.error(`Error executing cell ${i}:`, cellError);
+                  // Don't update result on error, leave as is (undefined)
                }
             }
-
-            setEnhancedCells(cells);
          } catch (error) {
             console.error("Error executing notebook cells:", error);
             setExecutionError(error as Error);
@@ -412,26 +419,23 @@ export default function Notebook({
                )}
 
                {/* Loading State */}
-               {(!isSuccess || isExecuting) && !isError && (
-                  <Loading
-                     text={
-                        isExecuting
-                           ? "Executing Notebook..."
-                           : "Fetching Notebook..."
-                     }
-                  />
+               {!isSuccess && !isError && (
+                  <Loading text={"Fetching Notebook..."} />
                )}
 
                {/* Notebook Cells */}
                {isSuccess &&
-                  !isExecuting &&
-                  enhancedCells.map((cell, index) => (
+                  (enhancedCells.length > 0
+                     ? enhancedCells
+                     : notebook?.notebookCells || []
+                  ).map((cell, index) => (
                      <NotebookCell
-                        cell={cell}
+                        cell={cell as EnhancedNotebookCell}
                         key={index}
                         index={index}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
+                        isExecuting={isExecuting}
                      />
                   ))}
 
