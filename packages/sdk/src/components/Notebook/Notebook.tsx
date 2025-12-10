@@ -255,7 +255,7 @@ export default function Notebook({
 
                      const executedCell = response.data;
                      result = executedCell.result;
-                     newSources = executedCell.newSources || rawCell.newSources;
+                     newSources = rawCell.newSources || executedCell.newSources;
                   }
 
                   // Update state incrementally

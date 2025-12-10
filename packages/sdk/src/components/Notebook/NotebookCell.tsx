@@ -217,38 +217,37 @@ export function NotebookCell({
                      marginBottom: "16px",
                   }}
                >
-                  {cell.newSources &&
-                     cell.newSources.length > 0 &&
-                     hasValidImport && (
-                        <CleanMetricCard
+                  {cell.newSources && cell.newSources.length > 0 && (
+                     <CleanMetricCard
+                        sx={{
+                           position: "relative",
+                           padding: "0",
+                        }}
+                     >
+                        <Box
                            sx={{
-                              position: "relative",
-                              padding: "0",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              paddingLeft: "24px",
+                              paddingRight: "8px",
                            }}
                         >
-                           <Box
-                              sx={{
-                                 display: "flex",
-                                 alignItems: "center",
-                                 justifyContent: "space-between",
-                                 paddingLeft: "24px",
-                                 paddingRight: "8px",
-                              }}
-                           >
-                              {/* This shouldn't be needed but there's a compiler bug */}
-                              {highlightedMalloyCode && (
-                                 <span
-                                    dangerouslySetInnerHTML={{
-                                       __html: highlightedMalloyCode,
-                                    }}
-                                    style={{
-                                       fontFamily: "monospace",
-                                       fontSize: "14px",
-                                       flex: 1,
-                                       marginRight: "8px",
-                                    }}
-                                 />
-                              )}
+                           {/* This shouldn't be needed but there's a compiler bug */}
+                           {highlightedMalloyCode && (
+                              <span
+                                 dangerouslySetInnerHTML={{
+                                    __html: highlightedMalloyCode,
+                                 }}
+                                 style={{
+                                    fontFamily: "monospace",
+                                    fontSize: "14px",
+                                    flex: 1,
+                                    marginRight: "8px",
+                                 }}
+                              />
+                           )}
+                           {hasValidImport && (
                               <IconButton
                                  sx={{
                                     backgroundColor: "rgba(255, 255, 255, 0.9)",
@@ -266,9 +265,10 @@ export function NotebookCell({
                                     sx={{ fontSize: "18px", color: "#666666" }}
                                  />
                               </IconButton>
-                           </Box>
-                        </CleanMetricCard>
-                     )}
+                           )}
+                        </Box>
+                     </CleanMetricCard>
+                  )}
                </Stack>
             )}
 
