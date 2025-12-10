@@ -19,7 +19,7 @@ mock.module("../storage/StorageManager", () => {
 
          getRepository() {
             return {
-               getProjects: async (): Promise<unknown[]> => [],
+               listProjects: async (): Promise<unknown[]> => [],
                createProject: async (data: MockData): Promise<MockData> => ({
                   id: "test-project-id",
                   name: data.name,
@@ -37,7 +37,7 @@ mock.module("../storage/StorageManager", () => {
                   ...data,
                   updatedAt: new Date(),
                }),
-               getPackages: async (
+               listPackages: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
                createPackage: async (data: MockData): Promise<MockData> => ({
@@ -60,7 +60,7 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
                deletePackage: async (_id: string): Promise<void> => {},
-               getConnections: async (
+               listConnections: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
                createConnection: async (data: MockData): Promise<MockData> => ({
