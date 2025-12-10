@@ -17,7 +17,7 @@ export async function initializeSchema(
       await dropAllTables(db);
    } else {
       console.log("Database not initialized. Run: bun run start:dev:init");
-      return;
+      //return;
    }
 
    // Projects table
