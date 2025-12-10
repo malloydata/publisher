@@ -359,6 +359,8 @@ function parseIndexQueryResult(
             return cell.number_value ?? null;
          case "boolean_cell":
             return cell.boolean_value ?? null;
+         case "null_cell":
+            return null;
          default:
             console.log("Unknown cell kind: " + cell.kind);
             return null;
