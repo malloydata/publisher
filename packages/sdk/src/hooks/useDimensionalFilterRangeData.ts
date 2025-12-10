@@ -137,7 +137,7 @@ function generateFilterCondition(selection: FilterSelection): string {
 
    switch (matchType) {
       case "Equals":
-      case "Concept Search":
+      case "Semantic Search":
          if (Array.isArray(value) && value.length > 0) {
             // Handle multi-select: (field = val1 or field = val2)
             const conditions = value.map(
