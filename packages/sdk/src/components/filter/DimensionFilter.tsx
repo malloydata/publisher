@@ -187,7 +187,7 @@ export function DimensionFilter({
                setRetrievalSearched(true);
             }
          }
-      }, 300);
+      }, 500);
 
       // Cleanup: cancel timer on unmount or when dependencies change
       return () => {
