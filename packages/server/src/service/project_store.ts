@@ -34,7 +34,7 @@ export class ProjectStore {
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
-   private storageManager: StorageManager;
+   public storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
    });
@@ -185,6 +185,9 @@ export class ProjectStore {
          }
 
          this.isInitialized = true;
+         logger.info(
+            `Project store successfully initialized in ${performance.now() - initialTime}ms`,
+         );
       } catch (error) {
          logger.error("Error initializing project store", { error });
          process.exit(1);
@@ -301,60 +304,6 @@ export class ProjectStore {
                packageData,
                repository,
             );
-         }
-      } catch (err: unknown) {
-         const error = err as Error;
-         const projectName = project.metadata?.name;
-         logger.error(`Error syncing connections for "${projectName}":`, error);
-      }
-   }
-
-   private async cleanupConnections(
-      currentConnections: ReturnType<Project["listApiConnections"]>,
-      existingConnections: Connection[],
-      repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      for (const existingConn of existingConnections) {
-         const stillExists = currentConnections.some(
-            (c) => c.name === existingConn.name,
-         );
-         if (!stillExists) {
-            await repository.deleteConnection(existingConn.id);
-            logger.info(`Deleted orphaned connection: ${existingConn.name}`);
-         }
-      }
-   }
-
-   public async addConnection(
-      conn: ReturnType<Project["listApiConnections"]>[number],
-      projectId: string,
-      existingConnections: Connection[],
-      repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      if (!conn.name) {
-         logger.warn("Skipping connection with undefined name");
-         return;
-      }
-
-      const existingConn = existingConnections.find(
-         (c) => c.name === conn.name,
-      );
-
-      const connectionData = {
-         projectId,
-         name: conn.name,
-         type: conn.type as Connection["type"],
-         config: conn,
-      };
-
-      try {
-         if (existingConn) {
-            // Update existing connection
-            await repository.updateConnection(existingConn.id, {
-               type: connectionData.type,
-               config: connectionData.config,
-            });
-            logger.info(`Updated existing connection: ${conn.name}`);
          } else {
             logger.warn(`Failed to sync package ${pkg.name}:`, error.message);
          }
@@ -413,7 +362,7 @@ export class ProjectStore {
       }
    }
 
-   private async addConnection(
+   public async addConnection(
       conn: ReturnType<Project["listApiConnections"]>[number],
       projectId: string,
       existingConnections: Connection[],
@@ -624,26 +573,11 @@ export class ProjectStore {
                `Project "${projectName}" could not be resolved to a path.`,
             );
          }
-         const existingProject = this.projects.get(projectName);
-
-         if (existingProject && reload) {
-            const updatedProject = await existingProject.update({
-               name: projectName,
-               resource: `${API_PREFIX}/projects/${projectName}`,
-               connections: projectConfig?.connections || [],
-            });
-            this.projects.set(projectName, updatedProject);
-            await this.addProjectToDatabase(updatedProject);
-            project = updatedProject;
-         } else if (!existingProject) {
-            project = await this.addProject({
-               name: projectName,
-               resource: `${API_PREFIX}/projects/${projectName}`,
-               connections: projectConfig?.connections || [],
-            });
-         } else {
-            project = existingProject;
-         }
+         project = await this.addProject({
+            name: projectName,
+            resource: `${API_PREFIX}/projects/${projectName}`,
+            connections: projectConfig?.connections || [],
+         });
       }
       return project;
    }
