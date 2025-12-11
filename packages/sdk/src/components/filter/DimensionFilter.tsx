@@ -325,6 +325,7 @@ export function DimensionFilter({
                   value={matchType}
                   label="Match Type"
                   onChange={handleMatchTypeChange}
+                  disabled={availableMatchTypes.length === 1}
                >
                   {availableMatchTypes.map((type) => (
                      <MenuItem key={type} value={type}>
