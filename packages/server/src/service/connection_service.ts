@@ -53,14 +53,13 @@ export class ConnectionService {
       project.updateConnections(malloyConnections, apiConnections);
 
       const repository = this.projectStore.storageManager.getRepository();
-      const dbProjects = await repository.getProjects();
-      const dbProject = dbProjects.find((p) => p.name === projectName);
+      const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
          throw new Error(`Project "${projectName}" not found in database`);
       }
 
-      const existingDbConnections = await repository.getConnections(
+      const existingDbConnections = await repository.listConnections(
          dbProject.id,
       );
 
@@ -122,14 +121,13 @@ export class ConnectionService {
       project.updateConnections(malloyConnections, apiConnections);
 
       const repository = this.projectStore.storageManager.getRepository();
-      const dbProjects = await repository.getProjects();
-      const dbProject = dbProjects.find((p) => p.name === projectName);
+      const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
          throw new Error(`Project "${projectName}" not found in database`);
       }
 
-      const existingDbConnections = await repository.getConnections(
+      const existingDbConnections = await repository.listConnections(
          dbProject.id,
       );
 
@@ -185,18 +183,15 @@ export class ConnectionService {
       project.updateConnections(malloyConnections, apiConnections);
 
       const repository = this.projectStore.storageManager.getRepository();
-      const dbProjects = await repository.getProjects();
-      const dbProject = dbProjects.find((p) => p.name === projectName);
+      const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
          throw new Error(`Project "${projectName}" not found in database`);
       }
 
-      const existingDbConnections = await repository.getConnections(
+      const existingDbConn = await repository.getConnectionByName(
          dbProject.id,
-      );
-      const existingDbConn = existingDbConnections.find(
-         (c) => c.name === connectionName,
+         connectionName,
       );
 
       if (!existingDbConn) {
