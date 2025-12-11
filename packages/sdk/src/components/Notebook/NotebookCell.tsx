@@ -5,6 +5,7 @@ import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
    Box,
+   CircularProgress,
    Dialog,
    DialogContent,
    DialogTitle,
@@ -33,6 +34,7 @@ interface NotebookCellProps {
    resourceUri: string;
    index: number;
    maxResultSize?: number;
+   isExecuting?: boolean;
 }
 
 export function NotebookCell({
@@ -42,6 +44,7 @@ export function NotebookCell({
    resourceUri,
    index,
    maxResultSize,
+   isExecuting,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -214,45 +217,37 @@ export function NotebookCell({
                      marginBottom: "16px",
                   }}
                >
-                  {cell.newSources &&
-                     cell.newSources.length > 0 &&
-                     hasValidImport && (
-                        <CleanMetricCard
+                  {cell.newSources && cell.newSources.length > 0 && (
+                     <CleanMetricCard
+                        sx={{
+                           position: "relative",
+                           padding: "0",
+                        }}
+                     >
+                        <Box
                            sx={{
-                              position: "relative",
-                              padding: "0",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              paddingLeft: "24px",
+                              paddingRight: "8px",
                            }}
                         >
-                           <Box
-                              sx={{
-                                 display: "flex",
-                                 alignItems: "center",
-                                 justifyContent: "space-between",
-                                 paddingLeft: "24px",
-                                 paddingRight: "8px",
-                              }}
-                           >
-                              {/* This shouldn't be needed but there's a compiler bug */}
-                              {highlightedMalloyCode && (
-                                 <span
-                                    dangerouslySetInnerHTML={{
-                                       __html:
-                                          cell.text.length > 50 &&
-                                          highlightedMalloyCode
-                                             ? `${highlightedMalloyCode.substring(0, 50)}...`
-                                             : highlightedMalloyCode,
-                                    }}
-                                    style={{
-                                       fontFamily: "monospace",
-                                       fontSize: "14px",
-                                       flex: 1,
-                                       whiteSpace: "nowrap",
-                                       overflow: "hidden",
-                                       textOverflow: "ellipsis",
-                                       marginRight: "8px",
-                                    }}
-                                 />
-                              )}
+                           {/* This shouldn't be needed but there's a compiler bug */}
+                           {highlightedMalloyCode && (
+                              <span
+                                 dangerouslySetInnerHTML={{
+                                    __html: highlightedMalloyCode,
+                                 }}
+                                 style={{
+                                    fontFamily: "monospace",
+                                    fontSize: "14px",
+                                    flex: 1,
+                                    marginRight: "8px",
+                                 }}
+                              />
+                           )}
+                           {hasValidImport && (
                               <IconButton
                                  sx={{
                                     backgroundColor: "rgba(255, 255, 255, 0.9)",
@@ -270,9 +265,10 @@ export function NotebookCell({
                                     sx={{ fontSize: "18px", color: "#666666" }}
                                  />
                               </IconButton>
-                           </Box>
-                        </CleanMetricCard>
-                     )}
+                           )}
+                        </Box>
+                     </CleanMetricCard>
+                  )}
                </Stack>
             )}
 
@@ -406,6 +402,23 @@ export function NotebookCell({
                result={cell.result || ""}
                title="Results"
             />
+
+            {/* Loading state for executing code cells (not import cells) */}
+            {isExecuting &&
+               !cell.result &&
+               !hasValidImport &&
+               !(cell.newSources && cell.newSources.length > 0) && (
+                  <CleanMetricCard
+                     sx={{
+                        display: "flex",
+                        justifyContent: "center",
+                        alignItems: "center",
+                        minHeight: 200,
+                     }}
+                  >
+                     <CircularProgress size={32} />
+                  </CleanMetricCard>
+               )}
 
             {cell.result && (
                <CleanMetricCard
