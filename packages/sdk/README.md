@@ -590,7 +590,7 @@ The SDK supports interactive dimensional filtering for notebooks and embedded da
 | `Star` | Multi-select dropdown | String fields with discrete values |
 | `MinMax` | Range slider | Numeric fields |
 | `DateMinMax` | Date range picker | Date/timestamp fields |
-| `Retrieval` | Semantic search input | Free-text concept search |
+| `Retrieval` | Semantic search input | Free-text semantic search |
 | `Boolean` | Toggle switch | Boolean fields |
 
 ### Source Declaration Syntax
@@ -646,7 +646,7 @@ import {flights, carriers} from 'flights.malloy'
 
 The filter type for each dimension is determined by the `#(filter)` annotation on that dimension in the source file. If no source annotation exists, the dimension is ignored.
 
-**Note**: Concept search is not supported by the Publisher.
+**Note**: Semantic search is not supported by the Publisher.
 When using the Notebook component, you supply an async function which implements the search for that column+query.
 If no search function is supplied, the filter is ignored.
 
@@ -698,7 +698,7 @@ Filters support different match types depending on the filter type:
 | `Greater Than` / `Less Than` | Comparison | MinMax |
 | `Between` | Range (inclusive) | MinMax, DateMinMax |
 | `After` / `Before` | Date comparison | DateMinMax |
-| `Concept Search` | Semantic similarity | Retrieval |
+| `Semantic Search` | Semantic similarity | Retrieval |
 
 ---
 

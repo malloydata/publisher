@@ -278,7 +278,7 @@ export function generateFilterClause(
 
          switch (matchType) {
             case "Equals":
-            case "Concept Search":
+            case "Semantic Search":
                if (Array.isArray(value) && value.length > 0) {
                   const conditions = value.map(
                      (v) => `${fieldName} = ${formatValue(v, isDate)}`,
