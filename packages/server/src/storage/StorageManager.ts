@@ -35,10 +35,10 @@ export class StorageManager {
       this.config = config;
    }
 
-   async initialize(forceReinit: boolean = false): Promise<void> {
-      if (forceReinit) {
+   async initialize(reinit: boolean = false): Promise<void> {
+      if (reinit) {
          console.log(
-            "FORCE INITIALIZATION MODE: Database will be dropped and recreated",
+            "RE-INITIALIZATION MODE: Database will be dropped and recreated",
          );
       } else {
          console.log("NORMAL MODE: Loading from existing database");
@@ -46,7 +46,7 @@ export class StorageManager {
 
       switch (this.config.type) {
          case "duckdb":
-            await this.initializeDuckDB(forceReinit);
+            await this.initializeDuckDB(reinit);
             break;
          case "postgres":
             throw new Error("PostgreSQL storage not yet implemented");
@@ -57,14 +57,14 @@ export class StorageManager {
       }
    }
 
-   private async initializeDuckDB(forceReinit: boolean): Promise<void> {
+   private async initializeDuckDB(reinit: boolean): Promise<void> {
       const dbPath = this.config.duckdb?.path;
 
       const connection = new DuckDBConnection(dbPath);
 
       await connection.initialize();
 
-      await initializeSchema(connection, forceReinit);
+      await initializeSchema(connection, reinit);
 
       this.connection = connection;
       this.repository = new DuckDBRepository(connection);

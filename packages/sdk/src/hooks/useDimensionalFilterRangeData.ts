@@ -137,7 +137,7 @@ function generateFilterCondition(selection: FilterSelection): string {
 
    switch (matchType) {
       case "Equals":
-      case "Concept Search":
+      case "Semantic Search":
          if (Array.isArray(value) && value.length > 0) {
             // Handle multi-select: (field = val1 or field = val2)
             const conditions = value.map(
@@ -359,6 +359,8 @@ function parseIndexQueryResult(
             return cell.number_value ?? null;
          case "boolean_cell":
             return cell.boolean_value ?? null;
+         case "null_cell":
+            return null;
          default:
             console.log("Unknown cell kind: " + cell.kind);
             return null;

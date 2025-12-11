@@ -64,7 +64,7 @@ function getAvailableMatchTypes(
       case "DateMinMax":
          return ["Equals", "Before", "After", "Between"];
       case "Retrieval":
-         return ["Concept Search"];
+         return ["Semantic Search"];
       case "Boolean":
          return ["Equals"];
       case "NONE":
@@ -421,87 +421,95 @@ export function DimensionFilter({
             </FormControl>
          )}
 
-         {spec.filterType === "Retrieval" && matchType === "Concept Search" && (
-            <Autocomplete
-               multiple
-               size="small"
-               options={retrievalOptions}
-               loading={retrievalLoading}
-               getOptionLabel={(option) => {
-                  if (typeof option === "string") {
-                     return option;
-                  }
-                  if (
-                     typeof option === "object" &&
-                     option !== null &&
-                     "value" in option
-                  ) {
-                     return String((option as DimensionValue).value);
-                  }
-                  return String(option);
-               }}
-               value={
-                  Array.isArray(value1)
-                     ? value1.map((v: string) => {
-                          const found = retrievalOptions.find(
-                             (opt) => opt.value === v,
-                          );
-                          return found || { value: v };
-                       })
-                     : value1
-                       ? [{ value: value1 }]
-                       : []
-               }
-               onInputChange={(_, newInputValue) => {
-                  setRetrievalInputValue(newInputValue);
-               }}
-               onChange={(_, newValue) => {
-                  const newValues = newValue.map((item) => {
-                     if (typeof item === "string") return item;
-                     if (item && typeof item === "object" && "value" in item) {
-                        return (item as DimensionValue).value;
+         {spec.filterType === "Retrieval" &&
+            matchType === "Semantic Search" && (
+               <Autocomplete
+                  multiple
+                  size="small"
+                  options={retrievalOptions}
+                  loading={retrievalLoading}
+                  getOptionLabel={(option) => {
+                     if (typeof option === "string") {
+                        return option;
                      }
-                     return item;
-                  }) as FilterValuePrimitive[];
-                  handleValueChange(newValues);
-               }}
-               noOptionsText={
-                  retrievalInputValue.trim().length <= 2
-                     ? "Type at least 3 characters to search"
-                     : "No matches found"
-               }
-               renderInput={(params) => (
-                  <TextField
-                     {...params}
-                     label="Search Values"
-                     placeholder="Type to search..."
-                     onFocus={() => setRetrievalFocused(true)}
-                     onBlur={() => setRetrievalFocused(false)}
-                     helperText={
-                        retrievalFocused &&
-                        !retrievalLoading &&
-                        retrievalSearched &&
-                        retrievalOptions.length === 0
-                           ? "No matches found"
-                           : undefined
+                     if (
+                        typeof option === "object" &&
+                        option !== null &&
+                        "value" in option
+                     ) {
+                        return String((option as DimensionValue).value);
                      }
-                     InputProps={{
-                        ...params.InputProps,
-                        endAdornment: (
-                           <>
-                              {retrievalLoading ? (
-                                 <CircularProgress color="inherit" size={20} />
-                              ) : null}
-                              {params.InputProps.endAdornment}
-                           </>
-                        ),
-                     }}
-                  />
-               )}
-               freeSolo
-               filterOptions={(x) => x}
-            />
-         )}
+                     return String(option);
+                  }}
+                  value={
+                     Array.isArray(value1)
+                        ? value1.map((v: string) => {
+                             const found = retrievalOptions.find(
+                                (opt) => opt.value === v,
+                             );
+                             return found || { value: v };
+                          })
+                        : value1
+                          ? [{ value: value1 }]
+                          : []
+                  }
+                  onInputChange={(_, newInputValue) => {
+                     setRetrievalInputValue(newInputValue);
+                  }}
+                  onChange={(_, newValue) => {
+                     const newValues = newValue.map((item) => {
+                        if (typeof item === "string") return item;
+                        if (
+                           item &&
+                           typeof item === "object" &&
+                           "value" in item
+                        ) {
+                           return (item as DimensionValue).value;
+                        }
+                        return item;
+                     }) as FilterValuePrimitive[];
+                     handleValueChange(newValues);
+                  }}
+                  noOptionsText={
+                     retrievalInputValue.trim().length <= 2
+                        ? "Type at least 3 characters to search"
+                        : "No matches found"
+                  }
+                  renderInput={(params) => (
+                     <TextField
+                        {...params}
+                        label="Search Values"
+                        placeholder="Type to search..."
+                        onFocus={() => setRetrievalFocused(true)}
+                        onBlur={() => setRetrievalFocused(false)}
+                        helperText={
+                           retrievalFocused &&
+                           !retrievalLoading &&
+                           retrievalSearched &&
+                           retrievalOptions.length === 0
+                              ? "No matches found"
+                              : undefined
+                        }
+                        InputProps={{
+                           ...params.InputProps,
+                           endAdornment: (
+                              <>
+                                 {retrievalLoading ? (
+                                    <CircularProgress
+                                       color="inherit"
+                                       size={20}
+                                    />
+                                 ) : null}
+                                 {params.InputProps.endAdornment}
+                              </>
+                           ),
+                        }}
+                     />
+                  )}
+                  freeSolo
+                  filterOptions={(x) => x}
+               />
+            )}
 
          {spec.filterType === "MinMax" && !needsTwoValues && (
             <TextField

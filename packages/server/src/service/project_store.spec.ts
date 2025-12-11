@@ -5,19 +5,21 @@ import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
+import { ProjectStore } from "./project_store";
+import { Project } from "./project";
 
 type MockData = Record<string, unknown>;
 
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
-         async initialize(_forceInit?: boolean): Promise<void> {
+         async initialize(_reInit?: boolean): Promise<void> {
             return;
          }
 
          getRepository() {
             return {
-               getProjects: async (): Promise<unknown[]> => [],
+               listProjects: async (): Promise<unknown[]> => [],
                createProject: async (data: MockData): Promise<MockData> => ({
                   id: "test-project-id",
                   name: data.name,
@@ -35,7 +37,7 @@ mock.module("../storage/StorageManager", () => {
                   ...data,
                   updatedAt: new Date(),
                }),
-               getPackages: async (
+               listPackages: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
                createPackage: async (data: MockData): Promise<MockData> => ({
@@ -58,7 +60,7 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
                deletePackage: async (_id: string): Promise<void> => {},
-               getConnections: async (
+               listConnections: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
                createConnection: async (data: MockData): Promise<MockData> => ({
@@ -85,9 +87,6 @@ mock.module("../storage/StorageManager", () => {
       StorageConfig: {} as Record<string, unknown>,
    };
 });
-
-import { ProjectStore } from "./project_store";
-import { Project } from "./project";
 
 type Connection = components["schemas"]["Connection"];
 

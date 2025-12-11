@@ -10,8 +10,9 @@ export interface DatabaseConnection {
 
 export interface ResourceRepository {
    // Projects
-   getProjects(): Promise<Project[]>;
-   getProject(id: string): Promise<Project | null>;
+   listProjects(): Promise<Project[]>;
+   getProjectById(id: string): Promise<Project | null>;
+   getProjectByName(name: string): Promise<Project | null>;
    createProject(
       project: Omit<Project, "id" | "createdAt" | "updatedAt">,
    ): Promise<Project>;
@@ -19,8 +20,9 @@ export interface ResourceRepository {
    deleteProject(id: string): Promise<void>;
 
    // Packages
-   getPackages(projectId: string): Promise<Package[]>;
-   getPackage(id: string): Promise<Package | null>;
+   listPackages(projectId: string): Promise<Package[]>;
+   getPackageById(id: string): Promise<Package | null>;
+   getPackageByName(projectId: string, name: string): Promise<Package | null>;
    createPackage(
       pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
    ): Promise<Package>;
@@ -28,8 +30,12 @@ export interface ResourceRepository {
    deletePackage(id: string): Promise<void>;
 
    // Connections
-   getConnections(projectId: string): Promise<Connection[]>;
-   getConnection(id: string): Promise<Connection | null>;
+   listConnections(projectId: string): Promise<Connection[]>;
+   getConnectionById(id: string): Promise<Connection | null>;
+   getConnectionByName(
+      projectId: string,
+      id: string,
+   ): Promise<Connection | null>;
    createConnection(
       connection: Omit<Connection, "id" | "createdAt" | "updatedAt">,
    ): Promise<Connection>;
