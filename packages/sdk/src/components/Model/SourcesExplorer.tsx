@@ -9,7 +9,7 @@ import {
 import React, { useEffect, useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+// import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";
 
 type ExplorerComponents = typeof import("@malloydata/malloy-explorer");
