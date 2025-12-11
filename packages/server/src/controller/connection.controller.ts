@@ -270,21 +270,6 @@ export class ConnectionController {
          throw new BadRequestError("Connection type is required");
       }
 
-      // Get the project
-      const project = await this.projectStore.getProject(projectName, false);
-
-      // Check if connection already exists
-      const existingConnections = project.listApiConnections();
-      const connectionExists = existingConnections.some(
-         (conn) => conn.name === connectionConfig.name,
-      );
-
-      if (connectionExists) {
-         throw new ConnectionError(
-            `Connection "${connectionConfig.name}" already exists in project "${projectName}". Use updateConnection to modify it.`,
-         );
-      }
-
       logger.info(
          `Creating connection "${connectionConfig.name}" in project "${projectName}"`,
       );
@@ -308,18 +293,6 @@ export class ConnectionController {
          throw new BadRequestError("Connection update data is required");
       }
 
-      // Get the project
-      const project = await this.projectStore.getProject(projectName, false);
-
-      // Check if connection exists
-      try {
-         project.getApiConnection(connectionName);
-      } catch (_error) {
-         throw new ConnectionError(
-            `Connection "${connectionName}" not found in project "${projectName}"`,
-         );
-      }
-
       logger.info(
          `Updating connection "${connectionName}" in project "${projectName}"`,
       );
@@ -339,18 +312,6 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
    ): Promise<{ message: string }> {
-      // Get the project (this will throw if not found)
-      const project = await this.projectStore.getProject(projectName, false);
-
-      // Check if connection exists
-      try {
-         project.getApiConnection(connectionName);
-      } catch (_error) {
-         throw new ConnectionError(
-            `Connection "${connectionName}" not found in project "${projectName}"`,
-         );
-      }
-
       logger.info(
          `Deleting connection "${connectionName}" from project "${projectName}"`,
       );

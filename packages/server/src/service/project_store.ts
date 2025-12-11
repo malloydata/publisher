@@ -338,8 +338,6 @@ export class ProjectStore {
    ): Promise<void> {
       try {
          const connections = project.listApiConnections();
-         const existingConnections =
-            await repository.listConnections(projectId);
 
          // Add/update connections
          for (const conn of connections) {
@@ -348,12 +346,7 @@ export class ProjectStore {
                continue;
             }
 
-            await this.addConnection(
-               conn,
-               projectId,
-               existingConnections,
-               repository,
-            );
+            await this.addConnection(conn, projectId, repository);
          }
       } catch (err: unknown) {
          const error = err as Error;
@@ -365,7 +358,6 @@ export class ProjectStore {
    public async addConnection(
       conn: ReturnType<Project["listApiConnections"]>[number],
       projectId: string,
-      existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       if (!conn.name) {
@@ -373,8 +365,9 @@ export class ProjectStore {
          return;
       }
 
-      const existingConn = existingConnections.find(
-         (c) => c.name === conn.name,
+      const existingConn = await repository.getConnectionByName(
+         projectId,
+         conn.name,
       );
 
       const connectionData = {
