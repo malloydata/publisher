@@ -108,20 +108,68 @@ The image below illustrates the composition of the Publisher's components and th
 - **Purpose:** Publisher App is more than a demo — it's a **professional-grade, open-source data exploration tool**. At the same time, it serves as a **reference design** for building your own data applications on top of Malloy and Publisher. With Publisher and its SDK, developers can rapidly build trusted, composable, AI-ready data experiences.
 
 ## Malloy, Malloy Render, SDK, and Publisher
+
 How do the pieces fit together?
 
-**Malloy** - The compiler and execution environment. Malloy compiles Malloy files, executes queries, and returns results. Malloy has no frontend or serving. It's a set of JS APIs.
+### Malloy
 
-**Publisher** - An open source serving and frontend for Malloy. Publisher has two pieces:
-* Web API (XHR) that lists content, hosts DB connections, and allows you to execute malloy.
-* Web interface for browsing malloy content (via Projects & Packages) and displaying query/notebook results.
+The core compiler and query execution engine. Malloy compiles `.malloy` files into SQL, executes queries against databases, and returns structured `Result` objects. Malloy is a pure JavaScript/TypeScript library with no UI or serving capabilities—it's the foundation everything else builds on.
 
-**Publisher SDK** - A React library for displaying Publisher data and Malloyresults. The SDK knows how to talk to the Publisher backend, execute queries/notebooks, and display the results.
-The Publisher web interface uses the Publisher SDK, but the SDK is a standlone react library available via NPM.
+**Repository:** [github.com/malloydata/malloy](https://github.com/malloydata/malloy)
 
-**Malloy Render** - A React/Webcomponent library for displaying Malloy Results. When Malloy executes a query, it produces a "Result" JSON object. The Malloy Renderer converts the Result into JS/HTML for display on a web page. The Result object is composed of the result data and UI directives instructing the Renderer on what the output should look like (`bar_graph`, `line_graph`). The SDK uses the Malloy Renderer to render results.
+### Malloy Render
 
-# Build and Run Instructions
+A visualization library that transforms Malloy `Result` objects into interactive tables, charts, and dashboards.
+
+When Malloy executes a query, the result includes both **data** and **rendering hints**—tags like `# bar_chart` or `# line_chart` that indicate how the data should be displayed. Malloy Render interprets these tags and produces the appropriate visualization: a data table, bar chart, line chart, dashboard, or other format.
+
+**Built with:** SolidJS (for reactive UI) and Vega/Vega-Lite (for charts). Available as both a JavaScript API (`MalloyRenderer`) and a `<malloy-render>` web component.
+
+**Repository:** [github.com/malloydata/malloy/packages/malloy-render](https://github.com/malloydata/malloy/tree/main/packages/malloy-render)
+
+### Publisher
+
+An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the network and provides a professional UI for data exploration.
+
+**Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration.
+
+**App:** Web interface for browsing Malloy content (organized into Projects & Packages), exploring models with a no-code query builder, and viewing query/notebook results.
+
+**Repository:** [github.com/malloydata/publisher](https://github.com/malloydata/publisher)
+
+### Publisher SDK
+
+A React component library for building custom data applications powered by Publisher. The SDK handles:
+
+- **API communication** — Talks to the Publisher Server via REST
+- **Query execution** — Submits queries and retrieves results
+- **Result visualization** — Integrates Malloy Render to display results
+- **UI components** — Pre-built pages for browsing projects, packages, models, and notebooks
+
+The Publisher App is built entirely with the SDK, but the SDK is a standalone NPM package for building your own applications.
+
+**Repository:** [github.com/malloydata/publisher/packages/sdk](https://github.com/malloydata/publisher/tree/main/packages/sdk)
+
+### How Publisher SDK Uses Malloy Render
+
+The SDK is built with React, but Malloy Render is built with SolidJS—two frameworks with incompatible reactivity models that can't be bundled together. The SDK solves this by:
+
+1. **Dynamic imports** — Malloy Render is loaded at runtime, not bundled with the React app
+2. **DOM handoff** — The SDK creates a container element; Malloy Render takes over and renders visualizations directly into it
+3. **JSON serialization** — Query results pass between React and SolidJS as JSON strings
+
+When you use the SDK's `RenderedResult` or `QueryResult` components, this integration happens automatically. The component fetches query results from Publisher Server, parses the JSON, and hands it to Malloy Render for display.
+
+### Data Flow
+
+1. User triggers a query in a React app using the SDK
+2. SDK calls Publisher Server's REST API
+3. Publisher Server uses Malloy to compile the query to SQL and execute it against the database
+4. Malloy returns a `Result` object containing data, field metadata, and rendering tags
+5. Server serializes the Result as JSON and returns it to the SDK
+6. SDK passes the Result to Malloy Render
+7. Malloy Render examines the rendering tags and produces the appropriate visualization (table, chart, dashboard)
+8. The visualization appears in the React app's DOM
 
 ### No Code
 
