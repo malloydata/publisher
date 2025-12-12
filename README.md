@@ -107,6 +107,20 @@ The image below illustrates the composition of the Publisher's components and th
 - **Explorer:** A no-code query builder that allows analysts to explore and extend Malloy models without writing SQL. Explorer enables non-technical users to ask meaningful, model-driven questions — completing the loop from governed model → self-serve data analysis. [Explorer Documentation →](READMEs/explorer.md)
 - **Purpose:** Publisher App is more than a demo — it's a **professional-grade, open-source data exploration tool**. At the same time, it serves as a **reference design** for building your own data applications on top of Malloy and Publisher. With Publisher and its SDK, developers can rapidly build trusted, composable, AI-ready data experiences.
 
+## Malloy, Malloy Render, SDK, and Publisher
+How do the pieces fit together?
+
+**Malloy** - The compiler and execution environment. Malloy compiles Malloy files, executes queries, and returns results. Malloy has no frontend or serving. It's a set of JS APIs.
+
+**Publisher** - An open source serving and frontend for Malloy. Publisher has two pieces:
+* Web API (XHR) that lists content, hosts DB connections, and allows you to execute malloy.
+* Web interface for browsing malloy content (via Projects & Packages) and displaying query/notebook results.
+
+**Publisher SDK** - A React library for displaying Publisher data and Malloyresults. The SDK knows how to talk to the Publisher backend, execute queries/notebooks, and display the results.
+The Publisher web interface uses the Publisher SDK, but the SDK is a standlone react library available via NPM.
+
+**Malloy Render** - A React/Webcomponent library for displaying Malloy Results. When Malloy executes a query, it produces a "Result" JSON object. The Malloy Renderer converts the Result into JS/HTML for display on a web page. The Result object is composed of the result data and UI directives instructing the Renderer on what the output should look like (`bar_graph`, `line_graph`). The SDK uses the Malloy Renderer to render results.
+
 # Build and Run Instructions
 
 ### No Code
