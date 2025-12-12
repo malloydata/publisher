@@ -31,6 +31,7 @@ import {
    PackageCardContent,
    PackageSectionTitle,
 } from "../styles";
+import { useIsMutable } from "../../hooks/useFrozenStatus";
 
 type ConnectionProps = {
    connection: ApiConnection;
@@ -39,6 +40,7 @@ type ConnectionProps = {
    onDelete: (connection: ApiConnection) => Promise<unknown> | void;
    isMutating: boolean;
    mutable: boolean;
+   mutableConfig: boolean;
 };
 
 // TODO(jjs) - Move this UI to the ConnectionExplorer component
@@ -49,6 +51,7 @@ function Connection({
    onDelete,
    isMutating,
    mutable,
+   mutableConfig,
 }: ConnectionProps) {
    return (
       <TableRow
@@ -86,7 +89,7 @@ function Connection({
          <TableCell sx={{ minWidth: "120px" }}>
             <Typography variant="body2">{connection.type}</Typography>
          </TableCell>
-         {mutable && (
+         {mutable && mutableConfig && (
             <TableCell sx={{ minWidth: "120px" }}>
                <EditConnectionDialog
                   connection={connection}
@@ -111,6 +114,7 @@ type ConnectionsProps = {
 
 export default function Connections({ resourceUri }: ConnectionsProps) {
    const { apiClients, mutable } = useServer();
+   const { mutableConfig } = useIsMutable();
    const queryClient = useQueryClient();
    const { projectName: projectName } = parseResourceUri(resourceUri);
    const [notificationMessage, setNotificationMessage] = useState("");
@@ -252,7 +256,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                     Type
                                  </Typography>
                               </TableCell>
-                              {mutable && (
+                              {mutable && mutableConfig && (
                                  <TableCell sx={{ minWidth: "120px" }}>
                                     <Typography
                                        variant="body2"
@@ -289,6 +293,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                     deleteConnection.isPending
                                  }
                                  mutable={mutable}
+                                 mutableConfig={mutableConfig}
                               />
                            ))}
                         </TableBody>
@@ -304,7 +309,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                      />
                   )}
                </Box>
-               {mutable && (
+               {mutable && mutableConfig && (
                   <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
                      <AddConnectionDialog
                         onSubmit={(payload) =>

@@ -30,6 +30,7 @@ import { useServer } from "../ServerProvider";
 import AddProjectDialog from "./AddProjectDialog";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import EditProjectDialog from "./EditProjectDialog";
+import { useIsMutable } from "../../hooks/useFrozenStatus";
 
 interface HomeProps {
    onClickProject?: (to: string, event?: React.MouseEvent) => void;
@@ -37,6 +38,7 @@ interface HomeProps {
 
 export default function Home({ onClickProject }: HomeProps) {
    const { apiClients, mutable } = useServer();
+   const { mutableConfig } = useIsMutable();
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["projects"],
@@ -269,7 +271,7 @@ export default function Home({ onClickProject }: HomeProps) {
                         Choose a project to explore its semantic models and
                         start analyzing your data
                      </Typography>
-                     {mutable && <AddProjectDialog />}
+                     {mutable && mutableConfig && <AddProjectDialog />}
                   </Box>
                   <Grid container spacing={3} justifyContent="center">
                      {data.data.map((project) => (
@@ -310,7 +312,7 @@ export default function Home({ onClickProject }: HomeProps) {
                      start exploring semantic models and building data
                      experiences.
                   </Typography>
-                  {mutable ? (
+                  {mutable && mutableConfig ? (
                      <AddProjectDialog />
                   ) : (
                      <Button
@@ -378,6 +380,7 @@ function ProjectCard({
    const closeMenu = () => {
       setMenuAnchorEl(null);
    };
+   const { mutableConfig } = useIsMutable();
    return (
       <div>
          <Card
@@ -392,7 +395,7 @@ function ProjectCard({
                },
             }}
          >
-            {mutable && (
+            {mutable && mutableConfig && (
                <>
                   <IconButton
                      aria-controls={isMenuOpen ? "project-menu" : undefined}

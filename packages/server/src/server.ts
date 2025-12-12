@@ -16,6 +16,7 @@ import { internalErrorToHttpError, NotImplementedError } from "./errors";
 import { logger, loggerMiddleware } from "./logger";
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
+import { isPublisherConfigFrozen } from "./config";
 
 // Parse command line arguments
 function parseArgs() {
@@ -218,6 +219,20 @@ app.get(`${API_PREFIX}/status`, async (_req, res) => {
       res.status(200).json(status);
    } catch (error) {
       logger.error("Error getting status", { error });
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
+
+app.get(`${API_PREFIX}/frozen-status`, async (_req, res) => {
+   try {
+      const isFrozen = isPublisherConfigFrozen(SERVER_ROOT);
+      res.status(200).json({
+         mutable: !isFrozen,
+         frozenConfig: isFrozen,
+      });
+   } catch (error) {
+      logger.error("Error getting frozen status", { error });
       const { json, status } = internalErrorToHttpError(error as Error);
       res.status(status).json(json);
    }
