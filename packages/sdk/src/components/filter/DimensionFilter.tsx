@@ -187,7 +187,7 @@ export function DimensionFilter({
                setRetrievalSearched(true);
             }
          }
-      }, 300);
+      }, 500);
 
       // Cleanup: cancel timer on unmount or when dependencies change
       return () => {
@@ -325,6 +325,7 @@ export function DimensionFilter({
                   value={matchType}
                   label="Match Type"
                   onChange={handleMatchTypeChange}
+                  disabled={availableMatchTypes.length === 1}
                >
                   {availableMatchTypes.map((type) => (
                      <MenuItem key={type} value={type}>
