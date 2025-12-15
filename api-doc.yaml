@@ -1520,6 +1520,21 @@ components:
           type: boolean
           description: Whether the server is fully initialized and ready to serve requests
 
+    FrozenStatus:
+      type: object
+      required:
+        - mutable
+        - frozenConfig
+      properties:
+        mutable:
+          type: boolean
+          description: Whether the server allows modifications
+          example: true
+        frozenConfig:
+          type: boolean
+          description: Whether the server configuration is frozen
+          example: false
+
     Project:
       type: object
       description: Represents a Malloy project containing packages, connections, and other resources
