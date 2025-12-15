@@ -13,8 +13,9 @@ export class ConnectionService {
       this.projectStore = projectStore;
    }
 
-   public async addConnectionToProject(
+   public async addConnection(
       projectName: string,
+      connectionName: string,
       connection: ApiConnection,
    ): Promise<void> {
       await this.projectStore.finishedInitialization;
@@ -24,7 +25,7 @@ export class ConnectionService {
       }
 
       logger.info(
-         `Adding connection "${connection.name}" to project "${projectName}"`,
+         `Adding connection "${connectionName}" to project "${projectName}"`,
       );
 
       // Get database project and repository
@@ -38,12 +39,12 @@ export class ConnectionService {
       // Check if connection already exists in database
       const existingDbConn = await repository.getConnectionByName(
          dbProject.id,
-         connection.name!,
+         connectionName!,
       );
 
       if (existingDbConn) {
          throw new Error(
-            `Connection "${connection.name}" already exists in project "${projectName}".`,
+            `Connection "${connectionName}" already exists in project "${projectName}".`,
          );
       }
 
@@ -70,10 +71,10 @@ export class ConnectionService {
       );
    }
 
-   public async updateConnectionInProject(
+   public async updateConnection(
       projectName: string,
       connectionName: string,
-      connectionUpdate: Partial<ApiConnection>,
+      connection: Partial<ApiConnection>,
    ): Promise<void> {
       await this.projectStore.finishedInitialization;
 
@@ -113,7 +114,7 @@ export class ConnectionService {
 
       const updatedConnection = {
          ...existingConnections[connectionIndex],
-         ...connectionUpdate,
+         ...connection,
          name: connectionName,
       };
 
@@ -139,7 +140,7 @@ export class ConnectionService {
       );
    }
 
-   public async deleteConnectionFromProject(
+   public async deleteConnection(
       projectName: string,
       connectionName: string,
    ): Promise<void> {

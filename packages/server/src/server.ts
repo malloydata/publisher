@@ -316,11 +316,12 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections`,
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
    async (req, res) => {
       try {
-         const result = await connectionController.createConnection(
+         const result = await connectionController.addConnection(
             req.params.projectName,
+            req.params.connectionName,
             req.body,
          );
          res.status(201).json(result);

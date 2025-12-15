@@ -123,9 +123,6 @@ export class Project {
          apiConnections,
       );
 
-      // // Scan filesystem for packages
-      await project.scanForPackages();
-
       return project;
    }
 
@@ -171,37 +168,6 @@ export class Project {
          );
       }
       return connection;
-   }
-
-   public async scanForPackages(): Promise<void> {
-      try {
-         const entries = await fs.promises.readdir(this.projectPath, {
-            withFileTypes: true,
-         });
-
-         for (const entry of entries) {
-            if (entry.isDirectory()) {
-               const packagePath = path.join(this.projectPath, entry.name);
-               const publisherJsonPath = path.join(
-                  packagePath,
-                  "publisher.json",
-               );
-
-               // Check if this directory contains a publisher.json file
-               try {
-                  await fs.promises.access(publisherJsonPath);
-                  // This is a valid package - add it to packageStatuses
-                  this.setPackageStatus(entry.name, PackageStatus.SERVING);
-               } catch {
-                  // Not a package directory, skip it
-               }
-            }
-         }
-      } catch (error) {
-         logger.error(`Error scanning for packages in ${this.projectPath}`, {
-            error,
-         });
-      }
    }
 
    public async listPackages(): Promise<ApiPackage[]> {

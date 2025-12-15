@@ -254,15 +254,16 @@ export class ConnectionController {
       }
    }
 
-   public async createConnection(
+   public async addConnection(
       projectName: string,
+      connectionName: string,
       connectionConfig: ApiConnection,
    ): Promise<{ message: string }> {
       if (!connectionConfig || typeof connectionConfig !== "object") {
          throw new BadRequestError("Connection configuration is required");
       }
 
-      if (!connectionConfig.name) {
+      if (!connectionConfig) {
          throw new BadRequestError("Connection name is required");
       }
 
@@ -271,25 +272,26 @@ export class ConnectionController {
       }
 
       logger.info(
-         `Creating connection "${connectionConfig.name}" in project "${projectName}"`,
+         `Creating connection "${connectionName}" in project "${projectName}"`,
       );
 
-      await this.connectionService.addConnectionToProject(
+      await this.connectionService.addConnection(
          projectName,
+         connectionName,
          connectionConfig,
       );
 
       return {
-         message: `Connection "${connectionConfig.name}" created successfully`,
+         message: `Connection "${connectionName}" created successfully`,
       };
    }
 
    public async updateConnection(
       projectName: string,
       connectionName: string,
-      connectionUpdate: Partial<ApiConnection>,
+      connection: Partial<ApiConnection>,
    ): Promise<{ message: string }> {
-      if (!connectionUpdate || typeof connectionUpdate !== "object") {
+      if (!connection || typeof connection !== "object") {
          throw new BadRequestError("Connection update data is required");
       }
 
@@ -297,10 +299,10 @@ export class ConnectionController {
          `Updating connection "${connectionName}" in project "${projectName}"`,
       );
 
-      await this.connectionService.updateConnectionInProject(
+      await this.connectionService.updateConnection(
          projectName,
          connectionName,
-         connectionUpdate,
+         connection,
       );
 
       return {
@@ -316,7 +318,7 @@ export class ConnectionController {
          `Deleting connection "${connectionName}" from project "${projectName}"`,
       );
 
-      await this.connectionService.deleteConnectionFromProject(
+      await this.connectionService.deleteConnection(
          projectName,
          connectionName,
       );
