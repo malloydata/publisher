@@ -292,7 +292,7 @@ export class ConnectionController {
       connection: Partial<ApiConnection>,
    ): Promise<{ message: string }> {
       if (!connection || typeof connection !== "object") {
-         throw new BadRequestError("Connection update data is required");
+         throw new BadRequestError("Connection payload is required");
       }
 
       logger.info(

@@ -338,7 +338,6 @@ export class ProjectStore {
    ): Promise<void> {
       try {
          const connections = project.listApiConnections();
-
          // Add/update connections
          for (const conn of connections) {
             if (!conn.name) {
@@ -346,7 +345,17 @@ export class ProjectStore {
                continue;
             }
 
-            await this.addConnection(conn, projectId, repository);
+            // Check if connection exists
+            const existingConn = await repository.getConnectionByName(
+               projectId,
+               conn.name,
+            );
+
+            if (existingConn) {
+               await this.updateConnection(conn, projectId, repository);
+            } else {
+               await this.addConnection(conn, projectId, repository);
+            }
          }
       } catch (err: unknown) {
          const error = err as Error;
@@ -365,11 +374,6 @@ export class ProjectStore {
          return;
       }
 
-      const existingConn = await repository.getConnectionByName(
-         projectId,
-         conn.name,
-      );
-
       const connectionData = {
          projectId,
          name: conn.name,
@@ -378,21 +382,46 @@ export class ProjectStore {
       };
 
       try {
-         if (existingConn) {
-            // Update existing connection
-            await repository.updateConnection(existingConn.id, {
-               type: connectionData.type,
-               config: connectionData.config,
-            });
-            logger.info(`Updated existing connection: ${conn.name}`);
-         } else {
-            // Create new connection
-            await repository.createConnection(connectionData);
-            logger.info(`Created connection: ${conn.name}`);
-         }
+         await repository.createConnection(connectionData);
+         logger.info(`Created connection: ${conn.name}`);
       } catch (err: unknown) {
          const error = err as Error;
-         logger.error(`Failed to sync connection ${conn.name}:`, error);
+         logger.error(`Failed to create connection ${conn.name}:`, error);
+         throw error;
+      }
+   }
+
+   public async updateConnection(
+      conn: ReturnType<Project["listApiConnections"]>[number],
+      projectId: string,
+      repository: ReturnType<typeof this.storageManager.getRepository>,
+   ): Promise<void> {
+      if (!conn.name) {
+         throw new Error("Connection name is required for update");
+      }
+
+      const existingConn = await repository.getConnectionByName(
+         projectId,
+         conn.name,
+      );
+
+      if (!existingConn) {
+         logger.error(`Connection "${conn.name}" not found in project`);
+      }
+
+      const connectionData = {
+         type: conn.type as Connection["type"],
+         config: conn,
+      };
+
+      try {
+         if (existingConn) {
+            await repository.updateConnection(existingConn.id, connectionData);
+         }
+         logger.info(`Updated connection: ${conn.name}`);
+      } catch (err: unknown) {
+         const error = err as Error;
+         logger.error(`Failed to update connection ${conn.name}:`, error);
          throw error;
       }
    }

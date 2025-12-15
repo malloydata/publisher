@@ -13,6 +13,33 @@ export class ConnectionService {
       this.projectStore = projectStore;
    }
 
+   private async validateConnection(
+      projectName: string,
+      connectionName: string,
+   ) {
+      await this.projectStore.finishedInitialization;
+
+      const repository = this.projectStore.storageManager.getRepository();
+      const dbProject = await repository.getProjectByName(projectName);
+
+      if (!dbProject) {
+         throw new Error(`Project "${projectName}" not found in database`);
+      }
+
+      const dbConnection = await repository.getConnectionByName(
+         dbProject.id,
+         connectionName,
+      );
+
+      if (!dbConnection) {
+         throw new ConnectionNotFoundError(
+            `Connection "${connectionName}" not found in project "${projectName}"`,
+         );
+      }
+
+      return { dbProject, dbConnection, repository };
+   }
+
    public async addConnection(
       projectName: string,
       connectionName: string,
@@ -86,24 +113,10 @@ export class ConnectionService {
          `Updating connection "${connectionName}" in project "${projectName}"`,
       );
 
-      // Get database project and verify connection exists
-      const repository = this.projectStore.storageManager.getRepository();
-      const dbProject = await repository.getProjectByName(projectName);
-
-      if (!dbProject) {
-         throw new Error(`Project "${projectName}" not found in database`);
-      }
-
-      const existingDbConn = await repository.getConnectionByName(
-         dbProject.id,
+      const { dbProject, repository } = await this.validateConnection(
+         projectName,
          connectionName,
       );
-
-      if (!existingDbConn) {
-         throw new ConnectionNotFoundError(
-            `Connection "${connectionName}" not found in project "${projectName}"`,
-         );
-      }
 
       // Update in-memory connections
       const project = await this.projectStore.getProject(projectName, false);
@@ -129,7 +142,7 @@ export class ConnectionService {
 
       project.updateConnections(malloyConnections, apiConnections);
 
-      await this.projectStore.addConnection(
+      await this.projectStore.updateConnection(
          updatedConnection,
          dbProject.id,
          repository,
@@ -154,24 +167,10 @@ export class ConnectionService {
          `Deleting connection "${connectionName}" from project "${projectName}"`,
       );
 
-      // Get database project and verify connection exists
-      const repository = this.projectStore.storageManager.getRepository();
-      const dbProject = await repository.getProjectByName(projectName);
-
-      if (!dbProject) {
-         throw new Error(`Project "${projectName}" not found in database`);
-      }
-
-      const existingDbConn = await repository.getConnectionByName(
-         dbProject.id,
+      const { dbConnection, repository } = await this.validateConnection(
+         projectName,
          connectionName,
       );
-
-      if (!existingDbConn) {
-         throw new ConnectionNotFoundError(
-            `Connection "${connectionName}" not found in database`,
-         );
-      }
 
       // Update in-memory connections
       const project = await this.projectStore.getProject(projectName, false);
@@ -190,7 +189,7 @@ export class ConnectionService {
       project.updateConnections(malloyConnections, apiConnections);
 
       // Delete from database
-      await repository.deleteConnection(existingDbConn.id);
+      await repository.deleteConnection(dbConnection.id);
 
       logger.info(
          `Successfully deleted connection "${connectionName}" from project "${projectName}"`,
