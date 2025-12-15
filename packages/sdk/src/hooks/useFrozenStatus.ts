@@ -19,7 +19,7 @@ export const useFrozenStatus = () => {
          }
          return response.json();
       },
-      staleTime: 1000 * 60 * 5, 
+      staleTime: 1000 * 60 * 5,
       refetchOnWindowFocus: false,
    });
 };
