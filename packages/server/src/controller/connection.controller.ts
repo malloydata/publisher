@@ -64,7 +64,7 @@ export class ConnectionController {
       if (!projectName || !connectionName) {
          throw new BadRequestError("Connection payload is required");
       }
-      const { dbConnection } = await this.connectionService.getConnection(  
+      const { dbConnection } = await this.connectionService.getConnection(
          projectName,
          connectionName,
       );

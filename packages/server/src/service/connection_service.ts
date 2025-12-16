@@ -13,10 +13,7 @@ export class ConnectionService {
       this.projectStore = projectStore;
    }
 
-   public async getConnection(
-      projectName: string,
-      connectionName: string,
-   ) {
+   public async getConnection(projectName: string, connectionName: string) {
       await this.projectStore.finishedInitialization;
 
       const repository = this.projectStore.storageManager.getRepository();
