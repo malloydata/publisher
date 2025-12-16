@@ -512,6 +512,7 @@ export class ProjectStore {
          timestamp: Date.now(),
          projects: [] as Array<components["schemas"]["Project"]>,
          initialized: this.isInitialized,
+         frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
       };
 
       const projects = await this.listProjects(true);

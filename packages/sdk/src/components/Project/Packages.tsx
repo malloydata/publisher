@@ -17,7 +17,6 @@ import { useServer } from "../ServerProvider";
 import { PackageCard, PackageCardContent } from "../styles";
 import DeletePackageDialog from "./DeletePackageDialog";
 import EditPackageDialog from "./EditPackageDialog";
-import { useIsMutable } from "../../hooks/useFrozenStatus";
 
 interface PackagesProps {
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
@@ -40,11 +39,10 @@ const PackageMenu = ({
    const closeMenu = () => {
       setMenuAnchorEl(null);
    };
-   const { mutableConfig } = useIsMutable();
 
    return (
       <>
-         {mutable && mutableConfig && (
+         {mutable && (
             <>
                <IconButton
                   onClick={(event) => {

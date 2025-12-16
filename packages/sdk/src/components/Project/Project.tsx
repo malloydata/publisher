@@ -6,7 +6,6 @@ import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
 import Packages from "./Packages";
 import { useEffect } from "react";
-import { useIsMutable } from "../../hooks/useFrozenStatus";
 
 interface ProjectProps {
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
@@ -19,7 +18,6 @@ export default function Project({
 }: ProjectProps) {
    const { mutable } = useServer();
    const { projectName } = parseResourceUri(resourceUri);
-   const { mutableConfig } = useIsMutable();
 
    useEffect(() => {
       window.scrollTo({ top: 0, behavior: "auto" });
@@ -35,9 +33,7 @@ export default function Project({
                mb={2}
             >
                <Typography variant="h6">{projectName} packages</Typography>
-               {mutable && mutableConfig && (
-                  <AddPackageDialog resourceUri={resourceUri} />
-               )}
+               {mutable && <AddPackageDialog resourceUri={resourceUri} />}
             </Box>
             <Grid container spacing={3} columns={12}>
                <Grid size={{ xs: 12, md: 12 }}>
