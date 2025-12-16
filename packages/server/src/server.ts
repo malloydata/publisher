@@ -16,7 +16,6 @@ import { internalErrorToHttpError, NotImplementedError } from "./errors";
 import { logger, loggerMiddleware } from "./logger";
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
-import { isPublisherConfigFrozen } from "./config";
 
 // Parse command line arguments
 function parseArgs() {
