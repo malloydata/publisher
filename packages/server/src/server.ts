@@ -224,20 +224,6 @@ app.get(`${API_PREFIX}/status`, async (_req, res) => {
    }
 });
 
-app.get(`${API_PREFIX}/frozen-status`, async (_req, res) => {
-   try {
-      const isFrozen = isPublisherConfigFrozen(SERVER_ROOT);
-      res.status(200).json({
-         mutable: !isFrozen,
-         frozenConfig: isFrozen,
-      });
-   } catch (error) {
-      logger.error("Error getting frozen status", { error });
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
 app.get(`${API_PREFIX}/watch-mode/status`, watchModeController.getWatchStatus);
 app.post(`${API_PREFIX}/watch-mode/start`, watchModeController.startWatching);
 app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
