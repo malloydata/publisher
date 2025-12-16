@@ -71,33 +71,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ServerStatus"
 
-  /frozen-status:
-    get:
-      tags:
-        - publisher
-      operationId: get-frozen-status
-      summary: Get server mutability status
-      description: |
-        Returns whether the server configuration is frozen (read-only) or mutable.
-        When `frozenConfig` is true, all mutation operations (create, update, delete)
-        on projects, packages, and connections are disabled.
-        
-        Use this endpoint to determine whether to show edit/add/delete UI controls
-        in client applications.
-      responses:
-        "200":
-          description: Returns the server's frozen/mutable status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/FrozenStatus"
-        "500":
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
   /projects:
     get:
       tags:
@@ -1519,21 +1492,6 @@ components:
         initialized:
           type: boolean
           description: Whether the server is fully initialized and ready to serve requests
-
-    FrozenStatus:
-      type: object
-      required:
-        - mutable
-        - frozenConfig
-      properties:
-        mutable:
-          type: boolean
-          description: Whether the server allows modifications
-          example: true
-        frozenConfig:
-          type: boolean
-          description: Whether the server configuration is frozen
-          example: false
 
     Project:
       type: object
