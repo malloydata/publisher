@@ -61,8 +61,14 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
    ): Promise<ApiConnection> {
-      const project = await this.projectStore.getProject(projectName, false);
-      return project.getApiConnection(connectionName);
+      if (!projectName || !connectionName) {
+         throw new BadRequestError("Connection payload is required");
+      }
+      const { dbConnection } = await this.connectionService.getConnection(  
+         projectName,
+         connectionName,
+      );
+      return dbConnection;
    }
 
    public async listConnections(projectName: string): Promise<ApiConnection[]> {

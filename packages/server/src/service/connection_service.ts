@@ -13,7 +13,7 @@ export class ConnectionService {
       this.projectStore = projectStore;
    }
 
-   private async validateConnection(
+   public async getConnection(
       projectName: string,
       connectionName: string,
    ) {
@@ -113,7 +113,7 @@ export class ConnectionService {
          `Updating connection "${connectionName}" in project "${projectName}"`,
       );
 
-      const { dbProject, repository } = await this.validateConnection(
+      const { dbProject, repository } = await this.getConnection(
          projectName,
          connectionName,
       );
@@ -167,7 +167,7 @@ export class ConnectionService {
          `Deleting connection "${connectionName}" from project "${projectName}"`,
       );
 
-      const { dbConnection, repository } = await this.validateConnection(
+      const { dbConnection, repository } = await this.getConnection(
          projectName,
          connectionName,
       );
