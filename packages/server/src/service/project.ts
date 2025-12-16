@@ -392,6 +392,28 @@ export class Project {
       this.apiConnections = apiConnections;
    }
 
+   public deleteConnection(connectionName: string): void {
+      const deleted = this.malloyConnections.delete(connectionName);
+
+      const index = this.apiConnections.findIndex(
+         (conn) => conn.name === connectionName,
+      );
+
+      if (index !== -1) {
+         this.apiConnections.splice(index, 1);
+      }
+
+      if (deleted || index !== -1) {
+         logger.info(
+            `Removed connection ${connectionName} from project ${this.projectName}`,
+         );
+      } else {
+         logger.warn(
+            `Connection ${connectionName} not found in project ${this.projectName}`,
+         );
+      }
+   }
+
    public async serialize(): Promise<ApiProject> {
       return {
          ...this.metadata,
