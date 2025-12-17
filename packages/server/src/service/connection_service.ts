@@ -115,19 +115,26 @@ export class ConnectionService {
          connectionName,
       );
 
+      // Update in-memory connections
+      const project = await this.projectStore.getProject(projectName, false);
+      const existingConnections = project.listApiConnections();
+
       const updatedConnection = {
          ...dbConnection,
          ...connection,
          name: connectionName,
       };
 
+      const updatedConnections = existingConnections.map((conn) =>
+         conn.name === connectionName ? updatedConnection : conn,
+      );
+
       const { malloyConnections, apiConnections } =
          await createProjectConnections(
-            [updatedConnection],
-            (dbProject.metadata as any) || "",
+            updatedConnections,
+            project.metadata.location || "",
          );
 
-      const project = await this.projectStore.getProject(projectName, false);
       project.updateConnections(malloyConnections, apiConnections);
 
       await this.projectStore.updateConnection(
