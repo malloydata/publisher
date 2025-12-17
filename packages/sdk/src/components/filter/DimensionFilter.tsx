@@ -320,12 +320,20 @@ export function DimensionFilter({
             "& .MuiInputBase-root": { fontSize: "0.75rem" },
             "& .MuiInputBase-input": { padding: "6px 10px" },
             "& .MuiSelect-select": { padding: "6px 10px !important" },
-            "& .MuiAutocomplete-input": { padding: "3px 6px !important" },
+            "& .MuiAutocomplete-input": { padding: "0 !important" },
             "& .MuiAutocomplete-root .MuiInputBase-root": {
-               padding: "3px 6px",
+               padding: "5px 10px",
+               minHeight: "29.5px",
+               maxHeight: "29.5px",
+               boxSizing: "border-box",
+               overflow: "hidden",
             },
-            "& .MuiChip-root": { height: "20px" },
+            "& .MuiChip-root": { height: "16px", margin: "0 2px 0 0" },
             "& .MuiChip-label": { fontSize: "0.7rem", padding: "0 6px" },
+            "& .MuiChip-deleteIcon": {
+               fontSize: "14px",
+               margin: "0 2px 0 -4px",
+            },
             "& .MuiInputLabel-root": {
                fontSize: "0.75rem",
                transform: "translate(10px, 6px) scale(1)",
@@ -420,6 +428,7 @@ export function DimensionFilter({
                renderInput={(params) => (
                   <TextField
                      {...params}
+                     size="small"
                      label="Values"
                      placeholder="Select values..."
                   />
@@ -542,6 +551,7 @@ export function DimensionFilter({
                   renderInput={(params) => (
                      <TextField
                         {...params}
+                        size="small"
                         label="Search Values"
                         placeholder="Type to search..."
                         onFocus={() => setRetrievalFocused(true)}
