@@ -26,6 +26,8 @@ export interface DimensionSpec {
    source: string;
    /** Model path */
    model: string;
+   /** Label to display in the UI (derived from # label="..." annotation) */
+   label?: string;
    /** Minimum similarity score for Retrieval filter type (default: 0.1) */
    minSimilarityScore?: number;
    /** Optional list of static values to use for the dropdown instead of querying */

@@ -344,8 +344,8 @@ export function DimensionFilter({
             "& .MuiSvgIcon-root": { fontSize: "1.25rem" },
          }}
       >
-         {/* Dimension Name */}
-         <Box sx={{ fontWeight: 600 }}>{spec.dimensionName}</Box>
+         {/* Dimension Label/Name */}
+         <Box sx={{ fontWeight: 600 }}>{spec.label ?? spec.dimensionName}</Box>
 
          {/* Match Type Selector */}
          {spec.filterType !== "Boolean" && (
