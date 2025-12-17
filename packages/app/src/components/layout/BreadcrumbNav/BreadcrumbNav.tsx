@@ -1,6 +1,7 @@
 import { useRouterClickHandler } from "@malloy-publisher/sdk";
 import { ChevronRight } from "@mui/icons-material";
-import { Box, Chip } from "@mui/material";
+import Box from "@mui/material/Box";
+import Chip from "@mui/material/Chip";
 import Breadcrumbs from "@mui/material/Breadcrumbs";
 import { useParams } from "react-router-dom";
 

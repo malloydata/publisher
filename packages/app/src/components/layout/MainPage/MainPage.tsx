@@ -1,7 +1,7 @@
 import { Box } from "@mui/material";
 import Container from "@mui/material/Container";
 import { Outlet } from "react-router-dom";
-import Header, { HeaderProps } from "./Header";
+import Header, { HeaderProps } from "../Header/Header";
 
 interface PublisherConfigProps {
    headerProps?: HeaderProps;
