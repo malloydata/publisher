@@ -311,11 +311,41 @@ export function DimensionFilter({
    };
 
    return (
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <Box
+         sx={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 1.5,
+            fontSize: "0.75rem", // 25% smaller than default
+            "& .MuiInputBase-root": { fontSize: "0.75rem" },
+            "& .MuiInputBase-input": { padding: "6px 10px" },
+            "& .MuiSelect-select": { padding: "6px 10px !important" },
+            "& .MuiAutocomplete-input": { padding: "3px 6px !important" },
+            "& .MuiAutocomplete-root .MuiInputBase-root": {
+               padding: "3px 6px",
+            },
+            "& .MuiChip-root": { height: "20px" },
+            "& .MuiChip-label": { fontSize: "0.7rem", padding: "0 6px" },
+            "& .MuiInputLabel-root": {
+               fontSize: "0.75rem",
+               transform: "translate(10px, 6px) scale(1)",
+            },
+            "& .MuiInputLabel-shrink": {
+               fontSize: "0.85rem",
+               transform: "translate(14px, -9px) scale(0.75)",
+            },
+            "& .MuiOutlinedInput-notchedOutline legend": {
+               fontSize: "0.65rem",
+            },
+            "& .MuiFormHelperText-root": {
+               fontSize: "0.65rem",
+               marginTop: "2px",
+            },
+            "& .MuiSvgIcon-root": { fontSize: "1.25rem" },
+         }}
+      >
          {/* Dimension Name */}
-         <Box sx={{ fontWeight: 600, fontSize: "0.875rem" }}>
-            {spec.dimensionName}
-         </Box>
+         <Box sx={{ fontWeight: 600 }}>{spec.dimensionName}</Box>
 
          {/* Match Type Selector */}
          {spec.filterType !== "Boolean" && (
@@ -326,6 +356,17 @@ export function DimensionFilter({
                   label="Match Type"
                   onChange={handleMatchTypeChange}
                   disabled={availableMatchTypes.length === 1}
+                  MenuProps={{
+                     PaperProps: {
+                        sx: {
+                           "& .MuiMenuItem-root": {
+                              fontSize: "0.75rem",
+                              minHeight: "auto",
+                              padding: "4px 10px",
+                           },
+                        },
+                     },
+                  }}
                >
                   {availableMatchTypes.map((type) => (
                      <MenuItem key={type} value={type}>
@@ -384,6 +425,17 @@ export function DimensionFilter({
                   />
                )}
                freeSolo={!spec.values || spec.values.length === 0}
+               slotProps={{
+                  paper: {
+                     sx: {
+                        "& .MuiAutocomplete-option": {
+                           fontSize: "0.75rem",
+                           minHeight: "auto",
+                           padding: "4px 10px",
+                        },
+                     },
+                  },
+               }}
             />
          )}
 
@@ -411,6 +463,17 @@ export function DimensionFilter({
                      if (val === "true") handleValueChange(true);
                      else if (val === "false") handleValueChange(false);
                      else handleClear();
+                  }}
+                  MenuProps={{
+                     PaperProps: {
+                        sx: {
+                           "& .MuiMenuItem-root": {
+                              fontSize: "0.75rem",
+                              minHeight: "auto",
+                              padding: "4px 10px",
+                           },
+                        },
+                     },
                   }}
                >
                   <MenuItem value="">
@@ -509,6 +572,17 @@ export function DimensionFilter({
                   )}
                   freeSolo
                   filterOptions={(x) => x}
+                  slotProps={{
+                     paper: {
+                        sx: {
+                           "& .MuiAutocomplete-option": {
+                              fontSize: "0.75rem",
+                              minHeight: "auto",
+                              padding: "4px 10px",
+                           },
+                        },
+                     },
+                  }}
                />
             )}
 

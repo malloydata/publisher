@@ -1,10 +1,4 @@
-import React, {
-   Suspense,
-   useEffect,
-   useLayoutEffect,
-   useRef,
-   useState,
-} from "react";
+import React, { Suspense, useLayoutEffect, useRef } from "react";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
 
@@ -45,31 +39,14 @@ const createRenderer = async (onDrill?: (element: unknown) => void) => {
    return renderer.createViz();
 };
 
-function RenderResultSimple({ result, onDrill }: RenderedResultProps) {
-   const ref = useRef<HTMLDivElement>(null);
-
-   useLayoutEffect(() => {
-      if (!ref.current || !result) return;
-      const element = ref.current;
-
-      createRenderer(onDrill).then((viz) => {
-         viz.setResult(JSON.parse(result));
-         viz.render(element);
-      });
-   }, [result, onDrill]);
-
-   return <div ref={ref} style={{ width: "100%", height: "100%" }} />;
-}
 // Inner component that actually renders the visualization
 function RenderedResultInner({
    result,
    height,
-   isFillElement,
-   onSizeChange,
    onDrill,
+   onSizeChange,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
-   const [isRendered, setIsRendered] = useState(false);
 
    // Render the visualization once the component mounts
    useLayoutEffect(() => {
@@ -83,37 +60,44 @@ function RenderedResultInner({
          element.removeChild(element.firstChild);
       }
 
+      // Set up observer to measure size after render completes
+      let observer: MutationObserver | null = null;
+      let measureTimeout: NodeJS.Timeout | null = null;
+
+      const measureRenderedSize = () => {
+         if (!isMounted || !element.firstElementChild) return;
+
+         // It's the grandchild that is the actual visualization.
+         const child = element.firstElementChild as HTMLElement;
+         const grandchild = child.firstElementChild as HTMLElement;
+         if (!grandchild) return;
+         const renderedHeight =
+            grandchild.scrollHeight || grandchild.offsetHeight || 0;
+
+         if (renderedHeight > 0 && onSizeChange) {
+            onSizeChange(renderedHeight);
+         }
+      };
+
       createRenderer(onDrill)
          .then((viz) => {
             if (!isMounted) return;
 
-            // Set up a mutation observer to detect when content is added
-            const observer = new MutationObserver((mutations) => {
-               for (const mutation of mutations) {
-                  if (
-                     mutation.type === "childList" &&
-                     mutation.addedNodes.length > 0
-                  ) {
-                     const hasContent = Array.from(mutation.addedNodes).some(
-                        (node) => node.nodeType === Node.ELEMENT_NODE,
-                     );
-                     if (hasContent) {
-                        observer.disconnect();
-                        setTimeout(() => {
-                           if (isMounted) {
-                              setIsRendered(true);
-                           }
-                        }, 50);
-                        break;
-                     }
-                  }
-               }
+            // Set up mutation observer to detect when rendering is complete
+            observer = new MutationObserver(() => {
+               // Debounce - wait for mutations to settle
+               if (measureTimeout) clearTimeout(measureTimeout);
+               measureTimeout = setTimeout(() => {
+                  measureRenderedSize();
+                  // Disconnect after measuring to prevent infinite loops
+                  observer?.disconnect();
+               }, 100);
             });
 
             observer.observe(element, {
                childList: true,
                subtree: true,
-               characterData: true,
+               attributes: true,
             });
 
             try {
@@ -121,71 +105,21 @@ function RenderedResultInner({
                viz.render(element);
             } catch (error) {
                console.error("Error rendering visualization:", error);
-               observer.disconnect();
-               if (isMounted) {
-                  setIsRendered(true);
-               }
+               observer?.disconnect();
             }
          })
          .catch((error) => {
             console.error("Failed to create renderer:", error);
-            if (isMounted) {
-               setIsRendered(true);
-            }
          });
 
       return () => {
          isMounted = false;
-      };
-   }, [result, onDrill]);
-
-   // Set up size measurement using scrollHeight instead of ResizeObserver
-   useEffect(() => {
-      if (!ref.current || !isRendered) return;
-      const element = ref.current;
-
-      // Function to measure and report size
-      const measureSize = () => {
-         if (element) {
-            const measuredHeight = element.offsetHeight;
-            if (measuredHeight > 0) {
-               if (onSizeChange) {
-                  onSizeChange(measuredHeight);
-               }
-            } else if (isFillElement && element.firstChild) {
-               // HACK- we If there's a child and it's height is 0, then we're in a fill element
-               // We use the callback `isFillElement` to notify the parent that we're in a fill element
-               // the parent should then set height for this element, otherwise it will have size 0.
-               const child = element.firstChild as HTMLElement;
-               const childHeight = child.offsetHeight;
-               if (childHeight == 0) {
-                  isFillElement(true);
-               } else {
-                  isFillElement(false);
-               }
-            }
-         }
-      };
-
-      // Initial measurement after a brief delay to let content render
-      const timeoutId = setTimeout(measureSize, 100);
-
-      let observer: MutationObserver | null = null;
-      // Also measure when the malloy result changes
-      observer = new MutationObserver(measureSize);
-      observer.observe(element, {
-         childList: true,
-         subtree: true,
-         attributes: true,
-      });
-
-      // Cleanup
-      return () => {
-         clearTimeout(timeoutId);
          observer?.disconnect();
+         if (measureTimeout) clearTimeout(measureTimeout);
       };
-   }, [onSizeChange, result, isFillElement, isRendered]);
+   }, [result, onDrill, onSizeChange]);
 
+   // Always use fixed height - no measurement, no resizing
    return (
       <div
          ref={ref}
@@ -234,11 +168,7 @@ export default function RenderedResult(props: RenderedResultProps) {
             </div>
          }
       >
-         {props.onSizeChange ? (
-            <RenderedResultInner {...props} />
-         ) : (
-            <RenderResultSimple {...props} />
-         )}
+         <RenderedResultInner {...props} />
       </Suspense>
    );
 }
