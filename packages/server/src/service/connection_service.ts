@@ -110,33 +110,24 @@ export class ConnectionService {
          `Updating connection "${connectionName}" in project "${projectName}"`,
       );
 
-      const { dbProject, repository } = await this.getConnection(
+      const { dbProject, dbConnection, repository } = await this.getConnection(
          projectName,
          connectionName,
       );
 
-      // Update in-memory connections
-      const project = await this.projectStore.getProject(projectName, false);
-      const existingConnections = project.listApiConnections();
-      const connectionIndex = existingConnections.findIndex(
-         (conn) => conn.name === connectionName,
-      );
-
       const updatedConnection = {
-         ...existingConnections[connectionIndex],
+         ...dbConnection,
          ...connection,
          name: connectionName,
       };
 
-      const updatedConnections = [...existingConnections];
-      updatedConnections[connectionIndex] = updatedConnection;
-
       const { malloyConnections, apiConnections } =
          await createProjectConnections(
-            updatedConnections,
-            project.metadata.location || "",
+            [updatedConnection],
+            (dbProject.metadata as any) || "",
          );
 
+      const project = await this.projectStore.getProject(projectName, false);
       project.updateConnections(malloyConnections, apiConnections);
 
       await this.projectStore.updateConnection(
