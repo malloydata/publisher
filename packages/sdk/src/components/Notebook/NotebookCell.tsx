@@ -67,6 +67,14 @@ export function NotebookCell({
    const IMPORT_MODEL_PATH_REGEX =
       /import\s*(?:\{[^}]*\}\s*from\s*)?['"`]([^'"`]+)['"`]/;
 
+   // Filter out lines starting with ## from Malloy code
+   const filterMalloyCode = (code: string): string => {
+      return code
+         .split("\n")
+         .filter((line) => !line.trimStart().startsWith("##"))
+         .join("\n");
+   };
+
    const hasValidImport =
       !!cell.text &&
       (IMPORT_NAMES_REGEX.test(cell.text) ||
@@ -124,7 +132,7 @@ export function NotebookCell({
 
    useEffect(() => {
       if (cell.type === "code")
-         highlight(cell.text, "malloy").then((code) => {
+         highlight(filterMalloyCode(cell.text), "malloy").then((code) => {
             setHighlightedMalloyCode(code);
          });
    }, [cell]);
@@ -214,7 +222,7 @@ export function NotebookCell({
                   sx={{
                      flexDirection: "column",
                      gap: "8px",
-                     marginBottom: "16px",
+                     marginBottom: "2px",
                   }}
                >
                   {cell.newSources && cell.newSources.length > 0 && (
@@ -433,8 +441,8 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        minHeight={300}
-                        maxHeight={1000}
+                        minHeight={200}
+                        maxHeight={700}
                         maxResultSize={maxResultSize}
                      />
                   </Box>
