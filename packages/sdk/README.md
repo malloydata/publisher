@@ -634,6 +634,29 @@ source: recalls is duckdb.table('data/recalls.csv') extend {
 }
 ```
 
+### Custom Labels
+
+By default, filters display the dimension field name in the UI. You can customize the display label using the `# label="..."` annotation:
+
+```malloy
+source: recalls is duckdb.table('data/recalls.csv') extend {
+  dimension:
+    #(filter) {"type": "Star"}
+    # label="Vehicle Manufacturer"
+    Manufacturer is Manufacturer_old
+
+    #(filter) {"type": "Retrieval"}
+    # label="Recall Subject"
+    Subject is Subject_old
+
+    #(filter) {"type": "MinMax"}
+    # label="Number of Affected Vehicles"
+    potentially_affected is affected_count
+}
+```
+
+The `# label="..."` annotation can be placed before or after the `#(filter)` annotation. When present, the label value will be displayed in the filter UI instead of the raw field name.
+
 ### Notebook Annotation Syntax
 
 Enable filters in a notebook by adding a `##(filters)` annotation in a Malloy code cell. This annotation specifies which dimensions should appear as filters using `source.dimension` format:
@@ -665,9 +688,9 @@ const config: DimensionFiltersConfig = {
   package: "faa",
   indexLimit: 1000,
   dimensionSpecs: [
-    { dimensionName: "origin_code", filterType: "Star", source: "flights", model: "flights.malloy" },
-    { dimensionName: "distance", filterType: "MinMax", source: "flights", model: "flights.malloy" },
-    { dimensionName: "dep_time", filterType: "DateMinMax", source: "flights", model: "flights.malloy" },
+    { dimensionName: "origin_code", filterType: "Star", source: "flights", model: "flights.malloy", label: "Origin Airport" },
+    { dimensionName: "distance", filterType: "MinMax", source: "flights", model: "flights.malloy", label: "Distance (miles)" },
+    { dimensionName: "dep_time", filterType: "DateMinMax", source: "flights", model: "flights.malloy", label: "Departure Time" },
   ],
 };
 

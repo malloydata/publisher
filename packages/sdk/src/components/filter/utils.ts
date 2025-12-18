@@ -110,6 +110,19 @@ export function parseDimensionFilterAnnotation(
 }
 
 /**
+ * Parse # label="..." annotation from a dimension annotation string
+ * Returns the label value or null if not found
+ */
+export function parseLabelAnnotation(annotation: string): string | null {
+   // Match # label="..." pattern (with optional spaces around the equals sign)
+   const match = annotation.match(/^#\s*label\s*=\s*"([^"]+)"/);
+   if (match) {
+      return match[1];
+   }
+   return null;
+}
+
+/**
  * Parse all source infos from notebook cells and create a map of source_name -> SourceInfo
  * Also returns the model path from the first import statement found
  */
@@ -206,20 +219,27 @@ export function extractDimensionSpecs(
          continue;
       }
 
-      // Check for #(filter) annotation
+      // Check for #(filter) annotation and # label="..." annotation
       let filterType: FilterType = "Star"; // Default
+      let label: string | undefined = undefined;
 
       // Check annotations on the field (dimension/measure fields have annotations)
       if ("annotations" in field && field.annotations) {
          for (const annotation of field.annotations) {
             // Annotation type has a 'value' property
             if (annotation.value) {
+               // Check for filter type annotation
                const filterAnn = parseDimensionFilterAnnotation(
                   annotation.value,
                );
                if (filterAnn) {
                   filterType = filterAnn.type;
-                  break;
+               }
+
+               // Check for label annotation
+               const labelValue = parseLabelAnnotation(annotation.value);
+               if (labelValue) {
+                  label = labelValue;
                }
             }
          }
@@ -230,6 +250,7 @@ export function extractDimensionSpecs(
          model: modelPath,
          dimensionName: dimension,
          filterType,
+         label,
       });
    }
 
