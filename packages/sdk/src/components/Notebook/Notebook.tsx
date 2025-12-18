@@ -363,7 +363,7 @@ export default function Notebook({
                      elevation={0}
                      sx={{
                         p: 3,
-                        backgroundColor: "#f8f9fa",
+                        backgroundColor: "#ffffff",
                         border: "1px solid #e0e0e0",
                         borderRadius: 2,
                      }}
