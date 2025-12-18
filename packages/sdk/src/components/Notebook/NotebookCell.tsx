@@ -441,7 +441,6 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        minHeight={200}
                         maxHeight={700}
                         maxResultSize={maxResultSize}
                      />
