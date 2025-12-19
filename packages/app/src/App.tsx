@@ -1,3 +1,4 @@
+/* eslint-disable react/prop-types */
 import {
    WorkbookStorage,
    WorkbookStorageProvider,
@@ -15,7 +16,7 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { Loading } from "./components/common/Loading/Loading";
 import { HeaderProps } from "./components/layout/Header";
 import theme from "./theme";
-import { RouteError } from "./components/common/RouteError";
+import { RouteError } from "./components/common/RouteError/RouteError";
 
 const HomePage = lazy(() => import("./components/pages/HomePage/HomePage"));
 const MainPage = lazy(() => import("./components/layout/MainPage/MainPage"));
@@ -30,16 +31,21 @@ const WorkbookPage = lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
 
-const RootLayout: React.FC<{
+interface RootLayoutProps {
    workbookStorage: WorkbookStorage;
    headerProps?: HeaderProps;
-}> = ({ workbookStorage, headerProps }) => {
+}
+
+const RootLayout: React.FC<RootLayoutProps> = ({
+   workbookStorage,
+   headerProps,
+}) => {
    return (
       <ServerProvider>
          <WorkbookStorageProvider workbookStorage={workbookStorage}>
             <ThemeProvider theme={theme}>
                <CssBaseline />
-               <Suspense fallback={<Loading />}>
+               <Suspense fallback={<Loading text="Loading..." />}>
                   <MainPage headerProps={headerProps} />
                </Suspense>
             </ThemeProvider>
@@ -70,48 +76,24 @@ export const createMalloyRouter = (
          children: [
             {
                index: true,
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <HomePage />
-                  </Suspense>
-               ),
+               element: <HomePage />,
             },
             {
                path: ":projectName",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <ProjectPage />
-                  </Suspense>
-               ),
+               element: <ProjectPage />,
             },
             {
                path: ":projectName/:packageName",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <PackagePage />
-                  </Suspense>
-               ),
+               element: <PackagePage />,
             },
             {
                path: ":projectName/:packageName/*",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <ModelPage />
-                  </Suspense>
-               ),
-               errorElement: (
-                  <Suspense fallback={<Loading />}>
-                     <RouteError />
-                  </Suspense>
-               ),
+               element: <ModelPage />,
+               errorElement: <RouteError />,
             },
             {
                path: ":projectName/:packageName/workbook/:workspace/:workbookPath",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <WorkbookPage />
-                  </Suspense>
-               ),
+               element: <WorkbookPage />,
             },
          ],
       },
