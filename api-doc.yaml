@@ -1774,6 +1774,9 @@ components:
           description: Type of database connection
           enum:
             [postgres, bigquery, snowflake, trino, mysql, duckdb, motherduck]
+        isConnectionFromConfig:
+          type: boolean
+          description: Check if the connection is from publisher.config.json
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:

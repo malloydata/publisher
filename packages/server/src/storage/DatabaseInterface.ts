@@ -73,6 +73,7 @@ export interface Connection {
    name: string;
    type: "bigquery" | "postgres" | "duckdb" | "mysql" | "snowflake" | "trino";
    config: Record<string, unknown>;
+   isConnectionFromConfig: boolean;
    createdAt: Date;
    updatedAt: Date;
 }

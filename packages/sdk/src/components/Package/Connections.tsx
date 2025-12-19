@@ -276,7 +276,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                     updateConnection.mutateAsync(payload)
                                  }
                                  onDelete={(payload) => {
-                                    if (!conn.resource) {
+                                    if (!conn.isConnectionFromConfig) {
                                        deleteConnection.mutateAsync(payload);
                                     } else {
                                        setNotificationMessage(

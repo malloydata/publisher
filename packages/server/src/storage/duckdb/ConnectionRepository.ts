@@ -55,14 +55,15 @@ export class ConnectionRepository {
          const configJson = JSON.stringify(connection.config);
 
          await this.db.run(
-            `INSERT INTO connections (id, project_id, name, type, config, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO connections (id, project_id, name, type, config, is_config, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                id,
                connection.projectId,
                connection.name,
                connection.type,
                configJson,
+               connection.isConnectionFromConfig ?? false,
                now.toISOString(),
                now.toISOString(),
             ],
@@ -71,6 +72,7 @@ export class ConnectionRepository {
          return {
             id,
             ...connection,
+            isConnectionFromConfig: connection.isConnectionFromConfig ?? false,
             createdAt: now,
             updatedAt: now,
          };
@@ -93,27 +95,30 @@ export class ConnectionRepository {
       const now = this.now();
       const setClauses: string[] = [];
       const params: unknown[] = [];
-      let paramIndex = 1;
 
       if (updates.name !== undefined) {
-         setClauses.push(`name = $${paramIndex++}`);
+         setClauses.push(`name = ?`);
          params.push(updates.name);
       }
       if (updates.type !== undefined) {
-         setClauses.push(`type = $${paramIndex++}`);
+         setClauses.push(`type = ?`);
          params.push(updates.type);
       }
       if (updates.config !== undefined) {
-         setClauses.push(`config = $${paramIndex++}`);
+         setClauses.push(`config = ?`);
          params.push(JSON.stringify(updates.config));
       }
+      if (updates.isConnectionFromConfig !== undefined) {
+         setClauses.push(`is_config = ?`);
+         params.push(updates.isConnectionFromConfig);
+      }
 
-      setClauses.push(`updated_at = $${paramIndex++}`);
+      setClauses.push(`updated_at = ?`);
       params.push(now.toISOString());
       params.push(id);
 
       await this.db.run(
-         `UPDATE connections SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`,
+         `UPDATE connections SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 
@@ -135,6 +140,7 @@ export class ConnectionRepository {
          name: row.name as string,
          type: row.type as Connection["type"],
          config: JSON.parse(row.config as string),
+         isConnectionFromConfig: Boolean(row.is_config),
          createdAt: new Date(row.created_at as string),
          updatedAt: new Date(row.updated_at as string),
       };

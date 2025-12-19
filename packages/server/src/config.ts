@@ -89,6 +89,7 @@ export const convertConnectionsToApiConnections = (
          | "trino"
          | "mysql",
       resource: `${API_PREFIX}/connections/${conn.name}`,
+      isConnectionFromConfig: true,
    }));
 };
 

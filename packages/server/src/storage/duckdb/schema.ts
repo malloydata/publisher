@@ -56,6 +56,7 @@ export async function initializeSchema(
       name VARCHAR NOT NULL,
       type VARCHAR NOT NULL,
       config JSON NOT NULL,
+      is_config BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id),
