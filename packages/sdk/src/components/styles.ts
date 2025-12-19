@@ -23,7 +23,7 @@ export const StyledCardMedia = styled(CardMedia)({
 // New clean notebook styles
 export const CleanNotebookContainer = styled("div")({
    backgroundColor: "#ffffff",
-   padding: "0 32px 32px 32px",
+   padding: "0 8px 0px 8px",
    borderRadius: "12px",
    boxShadow: "none",
    border: "none",
@@ -55,7 +55,8 @@ export const CleanNotebookCell = styled("div")({
 
 export const CleanMetricCard = styled("div")({
    backgroundColor: "#ffffff",
-   padding: "24px",
+   paddingTop: "12px",
+   paddingBottom: "2px",
    borderRadius: "8px",
    border: "1px solid #f0f0f0",
    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",

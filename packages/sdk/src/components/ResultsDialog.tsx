@@ -1,6 +1,5 @@
-import React from "react";
-import { Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import { Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import ResultContainer from "./RenderedResult/ResultContainer";
 
 interface ResultsDialogProps {
@@ -51,9 +50,8 @@ export default function ResultsDialog({
          >
             <ResultContainer
                result={result}
-               minHeight={800}
                maxHeight={800}
-               hideToggle={true}
+               maxResultSize={1000000}
             />
          </DialogContent>
       </Dialog>

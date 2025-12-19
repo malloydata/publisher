@@ -67,6 +67,14 @@ export function NotebookCell({
    const IMPORT_MODEL_PATH_REGEX =
       /import\s*(?:\{[^}]*\}\s*from\s*)?['"`]([^'"`]+)['"`]/;
 
+   // Filter out lines starting with ## from Malloy code
+   const filterMalloyCode = (code: string): string => {
+      return code
+         .split("\n")
+         .filter((line) => !line.trimStart().startsWith("##"))
+         .join("\n");
+   };
+
    const hasValidImport =
       !!cell.text &&
       (IMPORT_NAMES_REGEX.test(cell.text) ||
@@ -124,7 +132,7 @@ export function NotebookCell({
 
    useEffect(() => {
       if (cell.type === "code")
-         highlight(cell.text, "malloy").then((code) => {
+         highlight(filterMalloyCode(cell.text), "malloy").then((code) => {
             setHighlightedMalloyCode(code);
          });
    }, [cell]);
@@ -214,7 +222,7 @@ export function NotebookCell({
                   sx={{
                      flexDirection: "column",
                      gap: "8px",
-                     marginBottom: "16px",
+                     marginBottom: "2px",
                   }}
                >
                   {cell.newSources && cell.newSources.length > 0 && (
@@ -433,26 +441,10 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        minHeight={300}
-                        maxHeight={1000}
+                        maxHeight={700}
                         maxResultSize={maxResultSize}
                      />
                   </Box>
-
-                  {/* Fade effect at bottom to indicate more content */}
-                  <Box
-                     sx={{
-                        position: "absolute",
-                        bottom: 0,
-                        left: 0,
-                        right: 0,
-                        height: "40px",
-                        background:
-                           "linear-gradient(transparent, rgba(255, 255, 255, 0.9))",
-                        pointerEvents: "none",
-                        zIndex: 1,
-                     }}
-                  />
 
                   {/* Top right corner controls */}
                   <Stack
