@@ -42,11 +42,12 @@ const createRenderer = async (onDrill?: (element: unknown) => void) => {
 // Inner component that actually renders the visualization
 function RenderedResultInner({
    result,
-   height,
+   height: inputHeight,
    onDrill,
    onSizeChange,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
+   const hasMeasuredRef = useRef(false);
 
    // Render the visualization once the component mounts
    useLayoutEffect(() => {
@@ -60,22 +61,41 @@ function RenderedResultInner({
          element.removeChild(element.firstChild);
       }
 
+      // Reset measurement flag when result changes
+      hasMeasuredRef.current = false;
+
       // Set up observer to measure size after render completes
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
 
       const measureRenderedSize = () => {
-         if (!isMounted || !element.firstElementChild) return;
-
+         // Skip if already measured or unmounted
+         if (hasMeasuredRef.current || !isMounted || !element.firstElementChild)
+            return;
          // It's the grandchild that is the actual visualization.
          const child = element.firstElementChild as HTMLElement;
          const grandchild = child.firstElementChild as HTMLElement;
          if (!grandchild) return;
-         const renderedHeight =
+         const greatgrandchild = grandchild.firstElementChild as HTMLElement;
+         let renderedHeight =
             grandchild.scrollHeight || grandchild.offsetHeight || 0;
 
-         if (renderedHeight > 0 && onSizeChange) {
-            onSizeChange(renderedHeight);
+         // HACK - malloy dashboards height are determined by the greatgrandchild.
+         if (
+            greatgrandchild &&
+            grandchild.classList.contains("malloy-dashboard")
+         ) {
+            renderedHeight =
+               greatgrandchild.scrollHeight ||
+               greatgrandchild.offsetHeight ||
+               0;
+         }
+
+         if (renderedHeight > 0) {
+            hasMeasuredRef.current = true;
+            if (onSizeChange) {
+               onSizeChange(renderedHeight);
+            }
          }
       };
 
@@ -119,13 +139,13 @@ function RenderedResultInner({
       };
    }, [result, onDrill, onSizeChange]);
 
-   // Always use fixed height - no measurement, no resizing
+   // Malloy renderer requires explicit pixel height to render visualizations
    return (
       <div
          ref={ref}
          style={{
             width: "100%",
-            height: height ? `${height}px` : "100%",
+            height: inputHeight ? `${inputHeight}px` : "400px",
          }}
       />
    );
