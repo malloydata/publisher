@@ -7,9 +7,7 @@ const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 
 interface ResultContainerProps {
    result: string | undefined;
-   minHeight: number;
    maxHeight: number;
-   hideToggle?: boolean;
    // if Results are larger than this size, show a warning and a button to proceed
    // this is to prevent performance issues with large results.
    // the default is 0, which means no warning will be shown.
@@ -22,9 +20,7 @@ interface ResultContainerProps {
 // Non-fill elements that are smaller than minHeight will be shrunk down to their natural height.
 export default function ResultContainer({
    result,
-   minHeight,
    maxHeight,
-   hideToggle: _hideToggle = false,
    maxResultSize = 0,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
@@ -41,7 +37,7 @@ export default function ResultContainer({
       return (
          <Box
             sx={{
-               minHeight: `${minHeight}px`,
+               // minHeight: `${minHeight}px`,
                display: "flex",
                flexDirection: "column",
                alignItems: "center",
@@ -79,7 +75,7 @@ export default function ResultContainer({
          ref={containerRef}
          sx={{
             position: "relative",
-            height: `${renderedHeight}px`,
+            height: "auto",
             border: "0px",
             borderRadius: 0,
             overflow: "hidden",

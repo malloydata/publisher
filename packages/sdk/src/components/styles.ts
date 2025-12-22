@@ -23,7 +23,7 @@ export const StyledCardMedia = styled(CardMedia)({
 // New clean notebook styles
 export const CleanNotebookContainer = styled("div")({
    backgroundColor: "#ffffff",
-   padding: "0 32px 32px 32px",
+   padding: "0 8px 0px 8px",
    borderRadius: "12px",
    boxShadow: "none",
    border: "none",

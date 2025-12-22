@@ -175,9 +175,7 @@ export function ModelCell({
                queryData?.data?.result && (
                   <ResultContainer
                      result={queryData.data.result}
-                     minHeight={300}
                      maxHeight={600}
-                     hideToggle={false}
                      maxResultSize={maxResultSize}
                   />
                )}
