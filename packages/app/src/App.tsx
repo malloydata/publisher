@@ -1,4 +1,3 @@
-/* eslint-disable react/prop-types */
 import {
    WorkbookStorage,
    WorkbookStorageProvider,
@@ -16,7 +15,7 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { Loading } from "./components/common/Loading/Loading";
 import { HeaderProps } from "./components/layout/Header";
 import theme from "./theme";
-import { RouteError } from "./components/common/RouteError";
+import { RouteError } from "./components/common/RouteError/RouteError";
 
 const HomePage = lazy(() => import("./components/pages/HomePage/HomePage"));
 const MainPage = lazy(() => import("./components/layout/MainPage/MainPage"));
@@ -31,24 +30,6 @@ const WorkbookPage = lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
 
-const RootLayout: React.FC<{
-   workbookStorage: WorkbookStorage;
-   headerProps?: HeaderProps;
-}> = ({ workbookStorage, headerProps }) => {
-   return (
-      <ServerProvider>
-         <WorkbookStorageProvider workbookStorage={workbookStorage}>
-            <ThemeProvider theme={theme}>
-               <CssBaseline />
-               <Suspense fallback={<Loading />}>
-                  <MainPage headerProps={headerProps} />
-               </Suspense>
-            </ThemeProvider>
-         </WorkbookStorageProvider>
-      </ServerProvider>
-   );
-};
-
 export const createMalloyRouter = (
    basePath: string = "/",
    workbookStorage: WorkbookStorage,
@@ -58,10 +39,16 @@ export const createMalloyRouter = (
       {
          path: basePath,
          element: (
-            <RootLayout
-               workbookStorage={workbookStorage}
-               headerProps={headerProps}
-            />
+            <ServerProvider>
+               <WorkbookStorageProvider workbookStorage={workbookStorage}>
+                  <ThemeProvider theme={theme}>
+                     <CssBaseline />
+                     <Suspense fallback={<Loading />}>
+                        <MainPage headerProps={headerProps} />
+                     </Suspense>
+                  </ThemeProvider>
+               </WorkbookStorageProvider>
+            </ServerProvider>
          ),
          errorElement: (
             <Suspense fallback={<Loading />}>
@@ -125,11 +112,11 @@ export interface MalloyPublisherAppProps {
    workbookStorage: WorkbookStorage;
 }
 
-export const MalloyPublisherApp: React.FC<MalloyPublisherAppProps> = ({
+export const MalloyPublisherApp = ({
    basePath = "/",
    workbookStorage,
    headerProps,
-}) => {
+}: MalloyPublisherAppProps) => {
    const router = useMemo(
       () => createMalloyRouter(basePath, workbookStorage, headerProps),
       [basePath, workbookStorage, headerProps],
