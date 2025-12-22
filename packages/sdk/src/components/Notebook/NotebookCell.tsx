@@ -441,26 +441,10 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        minHeight={200}
                         maxHeight={700}
                         maxResultSize={maxResultSize}
                      />
                   </Box>
-
-                  {/* Fade effect at bottom to indicate more content */}
-                  <Box
-                     sx={{
-                        position: "absolute",
-                        bottom: 0,
-                        left: 0,
-                        right: 0,
-                        height: "40px",
-                        background:
-                           "linear-gradient(transparent, rgba(255, 255, 255, 0.9))",
-                        pointerEvents: "none",
-                        zIndex: 1,
-                     }}
-                  />
 
                   {/* Top right corner controls */}
                   <Stack
