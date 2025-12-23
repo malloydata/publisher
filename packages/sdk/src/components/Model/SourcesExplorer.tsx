@@ -9,7 +9,7 @@ import {
 import React, { useEffect, useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+// import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useServer } from "../ServerProvider";
 
 type ExplorerComponents = typeof import("@malloydata/malloy-explorer");
@@ -296,24 +296,15 @@ function SourceExplorerComponentInner({
                      }}
                   />
                </ResizableCollapsiblePanel>
-               {mutation.isError && mutation.error ? (
-                  <Box sx={{ p: 2 }}>
-                     <ApiErrorDisplay
-                        error={mutation.error}
-                        context={`Query execution error`}
-                     />
-                  </Box>
-               ) : (
-                  <ResultPanel
-                     source={sourceAndPath.sourceInfo}
-                     draftQuery={query?.malloyQuery}
-                     setDraftQuery={(malloyQuery) =>
-                        setQuery({ ...query, malloyQuery: malloyQuery })
-                     }
-                     submittedQuery={submittedQuery}
-                     options={{ showRawQuery: true }}
-                  />
-               )}
+               <ResultPanel
+                  source={sourceAndPath.sourceInfo}
+                  draftQuery={query?.malloyQuery}
+                  setDraftQuery={(malloyQuery) =>
+                     setQuery({ ...query, malloyQuery: malloyQuery })
+                  }
+                  submittedQuery={submittedQuery}
+                  options={{ showRawQuery: true }}
+               />
             </div>
          </MalloyExplorerProvider>
       </StyledExplorerContent>
