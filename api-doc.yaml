@@ -1492,6 +1492,9 @@ components:
         initialized:
           type: boolean
           description: Whether the server is fully initialized and ready to serve requests
+        frozenConfig:
+          type: boolean
+          description: Whether the server configuration is frozen (read-only mode). When true, all mutation operations are disabled.
 
     Project:
       type: object
