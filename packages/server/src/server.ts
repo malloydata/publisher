@@ -315,6 +315,59 @@ app.get(
    },
 );
 
+app.post(
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
+   async (req, res) => {
+      try {
+         const result = await connectionController.addConnection(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body,
+         );
+         res.status(201).json(result);
+      } catch (error) {
+         logger.error("Error creating connection", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.patch(
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
+   async (req, res) => {
+      try {
+         const result = await connectionController.updateConnection(
+            req.params.projectName,
+            req.params.connectionName,
+            req.body,
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         logger.error("Error updating connection", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.delete(
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
+   async (req, res) => {
+      try {
+         const result = await connectionController.deleteConnection(
+            req.params.projectName,
+            req.params.connectionName,
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         logger.error("Error deleting connection", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.post(`${API_PREFIX}/connections/test`, async (req, res) => {
    try {
       const connectionStatus =

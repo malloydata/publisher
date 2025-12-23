@@ -10,6 +10,8 @@ import {
    getTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
+import { ConnectionService } from "../service/connection_service";
+
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
 type ApiSqlSource = components["schemas"]["SqlSource"];
@@ -20,9 +22,10 @@ type ApiTemporaryTable = components["schemas"]["TemporaryTable"];
 type ApiSchema = components["schemas"]["Schema"];
 export class ConnectionController {
    private projectStore: ProjectStore;
-
+   private connectionService: ConnectionService;
    constructor(projectStore: ProjectStore) {
       this.projectStore = projectStore;
+      this.connectionService = new ConnectionService(projectStore);
    }
 
    /**
@@ -58,8 +61,14 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
    ): Promise<ApiConnection> {
-      const project = await this.projectStore.getProject(projectName, false);
-      return project.getApiConnection(connectionName);
+      if (!projectName || !connectionName) {
+         throw new BadRequestError("Connection payload is required");
+      }
+      const { dbConnection } = await this.connectionService.getConnection(
+         projectName,
+         connectionName,
+      );
+      return dbConnection;
    }
 
    public async listConnections(projectName: string): Promise<ApiConnection[]> {
@@ -249,5 +258,79 @@ export class ConnectionController {
             errorMessage: `Connection test failed: ${(error as Error).message}`,
          };
       }
+   }
+
+   public async addConnection(
+      projectName: string,
+      connectionName: string,
+      connectionConfig: ApiConnection,
+   ): Promise<{ message: string }> {
+      if (!connectionConfig || typeof connectionConfig !== "object") {
+         throw new BadRequestError("Connection configuration is required");
+      }
+
+      if (!connectionConfig) {
+         throw new BadRequestError("Connection name is required");
+      }
+
+      if (!connectionConfig.type) {
+         throw new BadRequestError("Connection type is required");
+      }
+
+      logger.info(
+         `Creating connection "${connectionName}" in project "${projectName}"`,
+      );
+
+      await this.connectionService.addConnection(
+         projectName,
+         connectionName,
+         connectionConfig,
+      );
+
+      return {
+         message: `Connection "${connectionName}" created successfully`,
+      };
+   }
+
+   public async updateConnection(
+      projectName: string,
+      connectionName: string,
+      connection: Partial<ApiConnection>,
+   ): Promise<{ message: string }> {
+      if (!connection || typeof connection !== "object") {
+         throw new BadRequestError("Connection payload is required");
+      }
+
+      logger.info(
+         `Updating connection "${connectionName}" in project "${projectName}"`,
+      );
+
+      await this.connectionService.updateConnection(
+         projectName,
+         connectionName,
+         connection,
+      );
+
+      return {
+         message: `Connection "${connectionName}" updated successfully`,
+      };
+   }
+
+   public async deleteConnection(
+      projectName: string,
+      connectionName: string,
+   ): Promise<{ message: string }> {
+      logger.info(
+         `Deleting connection "${connectionName}" from project "${projectName}"`,
+      );
+
+      await this.connectionService.deleteConnection(
+         projectName,
+         connectionName,
+      );
+
+      return {
+         message: `Connection "${connectionName}" deleted successfully`,
+      };
    }
 }
