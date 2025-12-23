@@ -2,7 +2,7 @@
   "frozenConfig": false,
   "projects": [
     {
-      "name": "malloy-samples",
+      "name": "${PROJECT_NAME:-malloy-samples}",
       "packages": [
         {
           "name": "ecommerce",
