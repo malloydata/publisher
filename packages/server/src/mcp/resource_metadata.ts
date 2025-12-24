@@ -14,27 +14,27 @@ export const RESOURCE_METADATA: Record<
    model: {
       description:
          "A blueprint organizing your data tables, their connections, and reusable calculations (like 'revenue'). Models contain Sources, Views, and saved Queries.",
-      usage: "This is your main map. Use its `definition` to see the available Sources, Views, and Queries inside (identified by their names or URIs). You can then fetch details for those specific items using `GetResource`. Use the `malloy/executeQuery` tool with queries defined here to get results, typically as structured data tables (JSON). The results might also include styling information suggesting visualizations.",
+      usage: "This is your main map. Use its `definition` to see the available Sources, Views, and Queries inside (identified by their names or URIs). You can then fetch details for those specific items using `GetResource`. Use the `malloy_executeQuery` tool with queries defined here to get results, typically as structured data tables (JSON). The results might also include styling information suggesting visualizations.",
    },
    source: {
       description:
          "Represents a table or dataset (like 'orders'), including its columns and any attached calculations (dimensions/measures) or Views.",
-      usage: "Examine the `definition` to understand the structure of this data and see available Views. Use `GetResource` on a View's URI to inspect it, or use the `malloy/executeQuery` tool (referencing the source and potentially a view) to get data results (JSON).",
+      usage: "Examine the `definition` to understand the structure of this data and see available Views. Use `GetResource` on a View's URI to inspect it, or use the `malloy_executeQuery` tool (referencing the source and potentially a view) to get data results (JSON).",
    },
    view: {
       description:
          "A saved recipe within a Source for a specific analysis (like 'Top 10 Products').",
-      usage: "Run this predefined analysis using the `malloy/executeQuery` tool (referencing the parent source/model and this view's name) to get results, typically structured data tables (JSON), sometimes with visualization hints.",
+      usage: "Run this predefined analysis using the `malloy_executeQuery` tool (referencing the parent source/model and this view's name) to get results, typically structured data tables (JSON), sometimes with visualization hints.",
    },
    query: {
       description:
          "Similar to a View, a saved recipe for an analysis, usually stored directly in a Model.",
-      usage: "Run this standard report using the `malloy/executeQuery` tool (referencing the parent model and this query's name) to get results, typically structured data tables (JSON), sometimes with visualization hints.",
+      usage: "Run this standard report using the `malloy_executeQuery` tool (referencing the parent model and this query's name) to get results, typically structured data tables (JSON), sometimes with visualization hints.",
    },
    notebook: {
       description:
          "An interactive document combining notes (Markdown text), Malloy code, and potentially saved queries or results.",
-      usage: "Read the `definition` to explore the analysis steps, notes (Markdown), and code. Identify queries within the notebook cells that you can run using the `malloy/executeQuery` tool to get results (JSON data, visualization hints).",
+      usage: "Read the `definition` to explore the analysis steps, notes (Markdown), and code. Identify queries within the notebook cells that you can run using the `malloy_executeQuery` tool to get results (JSON data, visualization hints).",
    },
    package: {
       description: "A folder grouping related Models and Notebooks.",
