@@ -37,13 +37,13 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
       env = null;
    });
 
-   describe("malloy/executeQuery Tool", () => {
+   describe("malloy_executeQuery Tool", () => {
       // Constants for test parameters
 
       it("should execute a valid ad-hoc query successfully", async () => {
          if (!env) throw new Error("Test environment not initialized");
          const result = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: {
                projectName: "malloy-samples",
                packageName: PACKAGE_NAME,
@@ -99,7 +99,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Expect RESOLUTION with success
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: params,
          });
 
@@ -137,7 +137,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Application Error (Malloy Compilation): Expect RESOLUTION with isError: true
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: params,
          });
 
@@ -174,7 +174,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Expect RESOLUTION because the error is thrown *inside* the handler
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: params,
          });
 
@@ -201,7 +201,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Expect RESOLUTION because the error is thrown *inside* the handler
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: params,
          });
 
@@ -228,7 +228,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Protocol Error (Caught by Zod/MCP): Expect REJECTION
          await expect(
             mcpClient.callTool({
-               name: "malloy/executeQuery",
+               name: "malloy_executeQuery",
                arguments: params,
             }),
          ).rejects.toMatchObject({
@@ -252,7 +252,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Cast to any
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: params,
          });
 
@@ -296,7 +296,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Cast to any
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: params,
          });
 
@@ -347,7 +347,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          let toolPromise;
          try {
             toolPromise = cancelClient.callTool({
-               name: "malloy/executeQuery",
+               name: "malloy_executeQuery",
                arguments: {
                   projectName: PROJECT_NAME,
                   packageName: PACKAGE_NAME,
@@ -390,7 +390,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          // Expect RESOLUTION with error because it's invalid usage processed by the handler
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy/executeQuery",
+            name: "malloy_executeQuery",
             arguments: params,
          });
 

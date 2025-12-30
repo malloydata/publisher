@@ -29,17 +29,17 @@ const executeQueryShape = {
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
 
 /**
- * Registers the malloy/executeQuery tool with the MCP server.
+ * Registers the malloy_executeQuery tool with the MCP server.
  */
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
    projectStore: ProjectStore,
 ): void {
    mcpServer.tool(
-      "malloy/executeQuery",
+      "malloy_executeQuery",
       "Executes a Malloy query (either ad-hoc or a named query/view defined in a model) against the specified model and returns the results as JSON.",
       executeQueryShape,
-      /** Handles requests for the malloy/executeQuery tool */
+      /** Handles requests for the malloy_executeQuery tool */
       async (params) => {
          // Destructure projectName as well
          const {
