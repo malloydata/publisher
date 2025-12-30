@@ -1,7 +1,8 @@
 import { components } from "../api";
-import { publisherPath } from "../constants";
+import { PUBLISHER_DATA_DIR } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
 import { ProjectStore } from "../service/project_store";
+import * as path from "path";
 
 type ApiPackage = components["schemas"]["Package"];
 
@@ -42,7 +43,10 @@ export class PackageController {
       if (body.location) {
          await this.downloadPackage(projectName, body.name, body.location);
       }
-      return project.addPackage(body.name);
+      const result = await project.addPackage(body.name);
+      await this.projectStore.addPackageToDatabase(projectName, body.name);
+
+      return result;
    }
 
    public async deletePackage(projectName: string, packageName: string) {
@@ -50,7 +54,13 @@ export class PackageController {
          throw new FrozenConfigError();
       }
       const project = await this.projectStore.getProject(projectName, false);
-      return project.deletePackage(packageName);
+      const result = await project.deletePackage(packageName);
+      await this.projectStore.deletePackageFromDatabase(
+         projectName,
+         packageName,
+      );
+
+      return result;
    }
 
    public async updatePackage(
@@ -65,7 +75,10 @@ export class PackageController {
       if (body.location) {
          await this.downloadPackage(projectName, packageName, body.location);
       }
-      return project.updatePackage(packageName, body);
+      const result = await project.updatePackage(packageName, body);
+      await this.projectStore.addPackageToDatabase(projectName, packageName);
+
+      return result;
    }
 
    private async downloadPackage(
@@ -73,7 +86,12 @@ export class PackageController {
       packageName: string,
       packageLocation: string,
    ) {
-      const absoluteTargetPath = `${publisherPath}/${projectName}/${packageName}`;
+      const absoluteTargetPath = path.join(
+         this.projectStore.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         projectName,
+         packageName,
+      );
       const isCompressedFile = packageLocation.endsWith(".zip");
       if (
          packageLocation.startsWith("https://") ||

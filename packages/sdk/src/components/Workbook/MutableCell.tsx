@@ -24,10 +24,10 @@ import {
    QueryExplorerResult,
    SourceAndPath,
 } from "../Model/SourcesExplorer";
-import { WorkbookCellValue } from "./WorkbookManager";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import { StyledCard } from "../styles";
 import { EditableMalloyCell } from "./EditableMalloyCell";
+import { WorkbookCellValue } from "./WorkbookManager";
 
 interface NotebookCellProps {
    cell: WorkbookCellValue;
@@ -423,11 +423,7 @@ export function MutableCell({
                   ))}
                {!editingMalloy && cell.result && (
                   <StyledCard variant="outlined" sx={{ borderRadius: 0 }}>
-                     <ResultContainer
-                        result={cell.result}
-                        minHeight={300}
-                        maxHeight={800}
-                     />
+                     <ResultContainer result={cell.result} maxHeight={800} />
                   </StyledCard>
                )}
                {!editingMalloy && !cell.result && (

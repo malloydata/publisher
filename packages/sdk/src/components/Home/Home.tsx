@@ -310,17 +310,21 @@ export default function Home({ onClickProject }: HomeProps) {
                      start exploring semantic models and building data
                      experiences.
                   </Typography>
-                  <Button
-                     variant="contained"
-                     size="large"
-                     color="primary"
-                     startIcon={<AutoAwesomeRoundedIcon />}
-                     href="https://github.com/malloydata/publisher/blob/main/README.md#server-configuration"
-                     target="_blank"
-                     rel="noopener noreferrer"
-                  >
-                     Learn How to Create Models
-                  </Button>
+                  {mutable ? (
+                     <AddProjectDialog />
+                  ) : (
+                     <Button
+                        variant="contained"
+                        size="large"
+                        color="primary"
+                        startIcon={<AutoAwesomeRoundedIcon />}
+                        href="https://github.com/malloydata/publisher/blob/main/README.md#server-configuration"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                     >
+                        Learn How to Create Models
+                     </Button>
+                  )}
                </Box>
             )}
 

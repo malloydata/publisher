@@ -5,6 +5,7 @@ import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
    Box,
+   CircularProgress,
    Dialog,
    DialogContent,
    DialogTitle,
@@ -33,6 +34,7 @@ interface NotebookCellProps {
    resourceUri: string;
    index: number;
    maxResultSize?: number;
+   isExecuting?: boolean;
 }
 
 export function NotebookCell({
@@ -42,6 +44,7 @@ export function NotebookCell({
    resourceUri,
    index,
    maxResultSize,
+   isExecuting,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -63,6 +66,14 @@ export function NotebookCell({
    // Regex to extract model path from import statements
    const IMPORT_MODEL_PATH_REGEX =
       /import\s*(?:\{[^}]*\}\s*from\s*)?['"`]([^'"`]+)['"`]/;
+
+   // Filter out lines starting with ## from Malloy code
+   const filterMalloyCode = (code: string): string => {
+      return code
+         .split("\n")
+         .filter((line) => !line.trimStart().startsWith("##"))
+         .join("\n");
+   };
 
    const hasValidImport =
       !!cell.text &&
@@ -121,7 +132,7 @@ export function NotebookCell({
 
    useEffect(() => {
       if (cell.type === "code")
-         highlight(cell.text, "malloy").then((code) => {
+         highlight(filterMalloyCode(cell.text), "malloy").then((code) => {
             setHighlightedMalloyCode(code);
          });
    }, [cell]);
@@ -211,48 +222,40 @@ export function NotebookCell({
                   sx={{
                      flexDirection: "column",
                      gap: "8px",
-                     marginBottom: "16px",
+                     marginBottom: "2px",
                   }}
                >
-                  {cell.newSources &&
-                     cell.newSources.length > 0 &&
-                     hasValidImport && (
-                        <CleanMetricCard
+                  {cell.newSources && cell.newSources.length > 0 && (
+                     <CleanMetricCard
+                        sx={{
+                           position: "relative",
+                           padding: "0",
+                        }}
+                     >
+                        <Box
                            sx={{
-                              position: "relative",
-                              padding: "0",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              paddingLeft: "24px",
+                              paddingRight: "8px",
                            }}
                         >
-                           <Box
-                              sx={{
-                                 display: "flex",
-                                 alignItems: "center",
-                                 justifyContent: "space-between",
-                                 paddingLeft: "24px",
-                                 paddingRight: "8px",
-                              }}
-                           >
-                              {/* This shouldn't be needed but there's a compiler bug */}
-                              {highlightedMalloyCode && (
-                                 <span
-                                    dangerouslySetInnerHTML={{
-                                       __html:
-                                          cell.text.length > 50 &&
-                                          highlightedMalloyCode
-                                             ? `${highlightedMalloyCode.substring(0, 50)}...`
-                                             : highlightedMalloyCode,
-                                    }}
-                                    style={{
-                                       fontFamily: "monospace",
-                                       fontSize: "14px",
-                                       flex: 1,
-                                       whiteSpace: "nowrap",
-                                       overflow: "hidden",
-                                       textOverflow: "ellipsis",
-                                       marginRight: "8px",
-                                    }}
-                                 />
-                              )}
+                           {/* This shouldn't be needed but there's a compiler bug */}
+                           {highlightedMalloyCode && (
+                              <span
+                                 dangerouslySetInnerHTML={{
+                                    __html: highlightedMalloyCode,
+                                 }}
+                                 style={{
+                                    fontFamily: "monospace",
+                                    fontSize: "14px",
+                                    flex: 1,
+                                    marginRight: "8px",
+                                 }}
+                              />
+                           )}
+                           {hasValidImport && (
                               <IconButton
                                  sx={{
                                     backgroundColor: "rgba(255, 255, 255, 0.9)",
@@ -270,9 +273,10 @@ export function NotebookCell({
                                     sx={{ fontSize: "18px", color: "#666666" }}
                                  />
                               </IconButton>
-                           </Box>
-                        </CleanMetricCard>
-                     )}
+                           )}
+                        </Box>
+                     </CleanMetricCard>
+                  )}
                </Stack>
             )}
 
@@ -407,6 +411,23 @@ export function NotebookCell({
                title="Results"
             />
 
+            {/* Loading state for executing code cells (not import cells) */}
+            {isExecuting &&
+               !cell.result &&
+               !hasValidImport &&
+               !(cell.newSources && cell.newSources.length > 0) && (
+                  <CleanMetricCard
+                     sx={{
+                        display: "flex",
+                        justifyContent: "center",
+                        alignItems: "center",
+                        minHeight: 200,
+                     }}
+                  >
+                     <CircularProgress size={32} />
+                  </CleanMetricCard>
+               )}
+
             {cell.result && (
                <CleanMetricCard
                   sx={{
@@ -420,26 +441,10 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        minHeight={300}
-                        maxHeight={1000}
+                        maxHeight={700}
                         maxResultSize={maxResultSize}
                      />
                   </Box>
-
-                  {/* Fade effect at bottom to indicate more content */}
-                  <Box
-                     sx={{
-                        position: "absolute",
-                        bottom: 0,
-                        left: 0,
-                        right: 0,
-                        height: "40px",
-                        background:
-                           "linear-gradient(transparent, rgba(255, 255, 255, 0.9))",
-                        pointerEvents: "none",
-                        zIndex: 1,
-                     }}
-                  />
 
                   {/* Top right corner controls */}
                   <Stack

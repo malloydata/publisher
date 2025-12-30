@@ -1,5 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createHighlighter } from "shiki";
+import { createHighlighterCore } from "shiki/core";
+import { createOnigurumaEngine } from "shiki/engine/oniguruma";
+
+// Fine-grained imports - only the languages and theme we actually need
+import langJson from "@shikijs/langs/json";
+import langSql from "@shikijs/langs/sql";
+import langTypescript from "@shikijs/langs/typescript";
+import themeGithubLight from "@shikijs/themes/github-light";
 
 const malloyTMGrammar = {
    scopeName: "source.malloy",
@@ -618,12 +625,13 @@ const malloySQLTMGrammar = {
 };
 
 const THEME = "github-light";
-const HIGHLIGHTER = createHighlighter({
-   themes: [THEME],
+const HIGHLIGHTER = createHighlighterCore({
+   engine: createOnigurumaEngine(import("shiki/wasm")),
+   themes: [themeGithubLight],
    langs: [
-      "sql",
-      "json",
-      "typescript",
+      langSql,
+      langJson,
+      langTypescript,
       {
          name: "malloy",
          scopeName: "source.malloy",

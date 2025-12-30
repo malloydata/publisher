@@ -1,6 +1,13 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import axios from "axios";
-import React, { createContext, ReactNode, useContext, useMemo } from "react";
+import React, {
+   createContext,
+   ReactNode,
+   useContext,
+   useMemo,
+   useEffect,
+   useState,
+} from "react";
 import {
    ConnectionsApi,
    DatabasesApi,
@@ -8,6 +15,7 @@ import {
    NotebooksApi,
    PackagesApi,
    ProjectsApi,
+   PublisherApi,
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
@@ -18,6 +26,7 @@ export interface ServerContextValue {
    getAccessToken?: () => Promise<string>;
    apiClients: ApiClients;
    mutable: boolean;
+   isLoadingStatus: boolean;
 }
 
 const ServerContext = createContext<ServerContextValue | undefined>(undefined);
@@ -39,7 +48,6 @@ export interface ServerProviderProps {
     * When false, users can only view and explore existing projects and packages.
     * @default true
     */
-   mutable?: boolean;
 }
 
 const getApiClients = (
@@ -65,6 +73,7 @@ const getApiClients = (
 
    return {
       models: new ModelsApi(config, basePath, axiosInstance),
+      publisher: new PublisherApi(config, basePath, axiosInstance),
       projects: new ProjectsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
@@ -80,20 +89,54 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
    children,
    getAccessToken,
    baseURL,
-   mutable = true,
 }) => {
    const apiClients = useMemo(
       () => getApiClients(baseURL, getAccessToken),
       [baseURL, getAccessToken],
    );
 
+   const server =
+      baseURL || `${window.location.protocol}//${window.location.host}/api/v0`;
+
+   const [mutable, setMutable] = useState(true);
+   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
+
+   // Fetch status on mount
+   useEffect(() => {
+      let isMounted = true;
+
+      const fetchStatus = async () => {
+         try {
+            const response = await apiClients.publisher.getStatus();
+
+            if (isMounted) {
+               const data = response.data as { frozenConfig?: boolean };
+               const frozenConfig = data?.frozenConfig;
+               setMutable(!frozenConfig);
+               setIsLoadingStatus(false);
+            }
+         } catch (error) {
+            console.error("Failed to fetch publisher status:", error);
+            if (isMounted) {
+               setMutable(true); // Default to mutable on error
+               setIsLoadingStatus(false);
+            }
+         }
+      };
+
+      fetchStatus();
+
+      return () => {
+         isMounted = false;
+      };
+   }, [apiClients]);
+
    const value: ServerContextValue = {
-      server:
-         baseURL ||
-         `${window.location.protocol}//${window.location.host}/api/v0`,
+      server,
       getAccessToken,
       apiClients,
       mutable,
+      isLoadingStatus,
    };
 
    return (

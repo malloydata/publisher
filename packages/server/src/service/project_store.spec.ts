@@ -4,9 +4,89 @@ import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
+import { TEMP_DIR_PATH } from "../constants";
 import { ProjectStore } from "./project_store";
 import { Project } from "./project";
-import { TEMP_DIR_PATH } from "../constants";
+
+type MockData = Record<string, unknown>;
+
+mock.module("../storage/StorageManager", () => {
+   return {
+      StorageManager: class MockStorageManager {
+         async initialize(_reInit?: boolean): Promise<void> {
+            return;
+         }
+
+         getRepository() {
+            return {
+               listProjects: async (): Promise<unknown[]> => [],
+               createProject: async (data: MockData): Promise<MockData> => ({
+                  id: "test-project-id",
+                  name: data.name,
+                  path: data.path,
+                  description: data.description,
+                  metadata: data.metadata,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+               updateProject: async (
+                  id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
+                  id,
+                  ...data,
+                  updatedAt: new Date(),
+               }),
+               listPackages: async (
+                  _projectId: string,
+               ): Promise<unknown[]> => [],
+               createPackage: async (data: MockData): Promise<MockData> => ({
+                  id: "test-package-id",
+                  projectId: data.projectId,
+                  name: data.name,
+                  version: data.version,
+                  description: data.description,
+                  manifestPath: data.manifestPath,
+                  metadata: data.metadata,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+               updatePackage: async (
+                  _id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
+                  id: _id,
+                  ...data,
+                  updatedAt: new Date(),
+               }),
+               deletePackage: async (_id: string): Promise<void> => {},
+               listConnections: async (
+                  _projectId: string,
+               ): Promise<unknown[]> => [],
+               createConnection: async (data: MockData): Promise<MockData> => ({
+                  id: "test-connection-id",
+                  projectId: data.projectId,
+                  name: data.name,
+                  type: data.type,
+                  config: data.config,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+               updateConnection: async (
+                  _id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
+                  id: _id,
+                  ...data,
+                  updatedAt: new Date(),
+               }),
+               deleteConnection: async (_id: string): Promise<void> => {},
+            };
+         }
+      },
+      StorageConfig: {} as Record<string, unknown>,
+   };
+});
 
 type Connection = components["schemas"]["Connection"];
 
