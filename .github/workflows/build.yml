@@ -38,20 +38,27 @@ jobs:
       - name: Lint
         run: bun run lint
   build:
-    name: Build
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
         with:
           submodules: "true" # Fetch submodules
       - name: Spin-up services
         run: docker compose --profile ci up -d
+        shell: bash
       - name: Install dependencies
         run: docker exec -t publisher-ci bun install
+        shell: bash
       - name: Build code
         run: docker exec -t publisher-ci bun run build
+        shell: bash
       - name: Run tests
         run: docker exec -t publisher-ci sh -c "cd packages/server && bun test"
+        shell: bash
   npx_test:
     name: npx test
     runs-on: ubuntu-latest
