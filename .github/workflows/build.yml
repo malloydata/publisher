@@ -120,6 +120,11 @@ jobs:
           cache-to: type=gha,mode=max
           outputs: type=docker,dest=/tmp/publisher-ci-image.tar
 
+      - name: Save image as tar archive
+        run: |
+          # Save the image using regular docker save (not buildx)
+          docker save publisher-ci:test -o /tmp/publisher-ci-image.tar
+
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
@@ -129,7 +134,6 @@ jobs:
 
   cross_platform_test:
     name: Cross Platform Tests (${{ matrix.os }})
-    needs: build_ci_image
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
@@ -140,52 +144,33 @@ jobs:
         with:
           submodules: "true"
 
-      - name: Setup Docker
+      # Native Windows build to test actual Windows paths (D:\something, C:\Users\...)
+      - name: Setup Bun
         if: matrix.os == 'windows-latest'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Load CI Docker image
-        if: matrix.os == 'windows-latest'
-        uses: actions/download-artifact@v4
+        uses: oven-sh/setup-bun@v2
         with:
-          name: publisher-ci-image
-          path: /tmp
+          bun-version: 1.2.23
 
-      - name: Load Docker image on Windows
+      - name: Install dependencies
         if: matrix.os == 'windows-latest'
-        run: |
-          docker load -i /tmp/publisher-ci-image.tar
+        run: bun install
         shell: bash
 
-      - name: Start Docker container on Windows
+      - name: Generate API types
         if: matrix.os == 'windows-latest'
-        run: |
-          # On Windows, Docker Desktop uses /c/ instead of C:\
-          # Mount the workspace so file paths can be tested
-          docker run -d --name publisher-ci-test \
-            -v "${{ github.workspace }}:/usr/src/app" \
-            -w /usr/src/app \
-            publisher-ci:test
+        run: bun run generate-api-types
         shell: bash
 
-      - name: Install dependencies in container (Windows)
+      - name: Build
         if: matrix.os == 'windows-latest'
-        run: docker exec publisher-ci-test bun install
+        run: bun run build
         shell: bash
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
 
-      - name: Build code in container (Windows)
+      - name: Run tests (tests Windows paths like D:\a\repo\...)
         if: matrix.os == 'windows-latest'
-        run: docker exec publisher-ci-test bun run build
-        shell: bash
-
-      - name: Run tests in container (Windows)
-        if: matrix.os == 'windows-latest'
-        run: docker exec publisher-ci-test sh -c "cd packages/server && bun test"
-        shell: bash
-
-      - name: Cleanup container (Windows)
-        if: matrix.os == 'windows-latest'
-        run: docker rm -f publisher-ci-test || true
+        run: bun run test
         shell: bash
 
       # macOS continues with native build (no Docker needed)
