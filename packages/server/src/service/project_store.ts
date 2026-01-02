@@ -1,6 +1,7 @@
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import AdmZip from "adm-zip";
+import { Mutex } from "async-mutex";
 import * as fs from "fs";
 import * as path from "path";
 import simpleGit from "simple-git";
@@ -23,14 +24,15 @@ import {
    ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { Connection } from "../storage/DatabaseInterface";
+import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
-import { StorageManager, StorageConfig } from "../storage/StorageManager";
-import { Connection } from "../storage/DatabaseInterface";
 
 export class ProjectStore {
    public serverRootPath: string;
    private projects: Map<string, Project> = new Map();
+   private projectMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
@@ -559,8 +561,32 @@ export class ProjectStore {
       reload: boolean = false,
    ): Promise<Project> {
       await this.finishedInitialization;
-      let project = this.projects.get(projectName);
-      if (project === undefined || reload) {
+
+      // Check if project is already loaded first
+      const existingProject = this.projects.get(projectName);
+      if (existingProject !== undefined && !reload) {
+         return existingProject;
+      }
+
+      // Acquire mutex to prevent concurrent loading of the same project
+      let projectMutex = this.projectMutexes.get(projectName);
+      if (projectMutex?.isLocked()) {
+         await projectMutex.waitForUnlock();
+         const projectAfterWait = this.projects.get(projectName);
+         if (projectAfterWait) {
+            return projectAfterWait;
+         }
+      }
+      projectMutex = new Mutex();
+      this.projectMutexes.set(projectName, projectMutex);
+
+      return projectMutex.runExclusive(async () => {
+         // Double-check after acquiring mutex
+         const projectAfterMutex = this.projects.get(projectName);
+         if (projectAfterMutex !== undefined && !reload) {
+            return projectAfterMutex;
+         }
+
          const projectManifest = await ProjectStore.reloadProjectManifest(
             this.serverRootPath,
          );
@@ -568,19 +594,20 @@ export class ProjectStore {
             (p) => p.name === projectName,
          );
          const projectPath =
-            project?.metadata.location || projectConfig?.packages[0]?.location;
+            existingProject?.metadata.location ||
+            projectConfig?.packages[0]?.location;
          if (!projectPath) {
             throw new ProjectNotFoundError(
                `Project "${projectName}" could not be resolved to a path.`,
             );
          }
-         project = await this.addProject({
+         const project = await this.addProject({
             name: projectName,
             resource: `${API_PREFIX}/projects/${projectName}`,
             connections: projectConfig?.connections || [],
          });
-      }
-      return project;
+         return project;
+      });
    }
 
    public async addProject(
@@ -748,7 +775,11 @@ export class ProjectStore {
       if (!projectName) {
          throw new Error("Project name is required");
       }
-      const absoluteProjectPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${projectName}`;
+      const absoluteProjectPath = path.join(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         projectName,
+      );
       await fs.promises.mkdir(absoluteProjectPath, { recursive: true });
       if (project.readme) {
          await fs.promises.writeFile(
@@ -787,7 +818,11 @@ export class ProjectStore {
       projectName: string,
       packages: ApiProject["packages"],
    ) {
-      const absoluteTargetPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${projectName}`;
+      const absoluteTargetPath = path.join(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         projectName,
+      );
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
@@ -836,11 +871,10 @@ export class ProjectStore {
       // Processing by each unique location
       for (const [groupedLocation, packagesForLocation] of locationGroups) {
          // Create a temporary directory for the shared download
-         const tempDownloadPath = `${absoluteTargetPath}/.temp_${Buffer.from(
-            groupedLocation,
-         )
+         const tempDirName = `.temp_${Buffer.from(groupedLocation)
             .toString("base64")
             .replace(/[^a-zA-Z0-9]/g, "")}`;
+         const tempDownloadPath = path.join(absoluteTargetPath, tempDirName);
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
          try {
@@ -854,7 +888,10 @@ export class ProjectStore {
             // Extract each package from the downloaded content
             for (const _package of packagesForLocation) {
                const packageDir = _package.name;
-               const absolutePackagePath = `${absoluteTargetPath}/${packageDir}`;
+               const absolutePackagePath = path.join(
+                  absoluteTargetPath,
+                  packageDir,
+               );
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
