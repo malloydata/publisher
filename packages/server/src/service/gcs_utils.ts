@@ -1,7 +1,7 @@
 import {
-    ListBucketsCommand,
-    ListObjectsV2Command,
-    S3Client,
+   ListBucketsCommand,
+   ListObjectsV2Command,
+   S3Client,
 } from "@aws-sdk/client-s3";
 import { logger } from "../logger";
 

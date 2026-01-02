@@ -371,8 +371,7 @@ export async function getSchemasForConnection(
             `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
          );
       }
-   }
-   else {
+   } else {
       throw new Error(`Unsupported connection type: ${connection.type}`);
    }
 }
@@ -753,19 +752,15 @@ export async function listTablesForSchema(
 
          try {
             // Recursively list all files including those in subdirectories
-            const objects = await listAllGCSFiles(
-               gcsCredentials,
-               bucketName,
-            );
+            const objects = await listAllGCSFiles(gcsCredentials, bucketName);
             // Return only data files (CSV, Parquet, JSON, etc.)
             return objects
                .filter((obj) => isDataFile(obj.key))
                .map((obj) => obj.key);
          } catch (error) {
-            logger.error(
-               `Error listing GCS objects in bucket ${bucketName}`,
-               { error },
-            );
+            logger.error(`Error listing GCS objects in bucket ${bucketName}`, {
+               error,
+            });
             throw new Error(
                `Failed to list files in GCS bucket ${bucketName}: ${(error as Error).message}`,
             );

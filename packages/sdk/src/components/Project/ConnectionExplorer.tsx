@@ -294,11 +294,16 @@ function TablesInSchema({
                         columns: Array<{ name: string; type: string }>;
                      }) => {
                         let tableName = "";
-                        if (table.resource.includes("gs://") || table.resource.includes("s3://")) {
-                           tableName = table.resource.split("/").pop() || table.resource;
+                        if (
+                           table.resource.includes("gs://") ||
+                           table.resource.includes("s3://")
+                        ) {
+                           tableName =
+                              table.resource.split("/").pop() || table.resource;
                         } else {
                            // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
-                           tableName = table.resource.split(".").pop() || table.resource;
+                           tableName =
+                              table.resource.split(".").pop() || table.resource;
                         }
                         return (
                            <ListItemButton
