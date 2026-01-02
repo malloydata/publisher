@@ -328,74 +328,165 @@ export class Package {
    private static async readDatabases(
       packagePath: string,
    ): Promise<ApiDatabase[]> {
+      logger.info("Starting to read databases", { packagePath });
+      const databasePaths = await Package.getDatabasePaths(packagePath);
+      logger.info("Found database paths", {
+         packagePath,
+         databasePaths,
+         count: databasePaths.length,
+      });
       return await Promise.all(
-         (await Package.getDatabasePaths(packagePath)).map(
-            async (databasePath) => {
+         databasePaths.map(async (databasePath) => {
+            logger.info("Processing database", { packagePath, databasePath });
+            const startTime = Date.now();
+            try {
                const databaseInfo = await Package.getDatabaseInfo(
                   packagePath,
                   databasePath,
                );
-
+               const duration = Date.now() - startTime;
+               logger.info("Database info retrieved", {
+                  packagePath,
+                  databasePath,
+                  duration,
+                  rowCount: databaseInfo.rowCount,
+                  columnCount: databaseInfo.columns?.length ?? 0,
+               });
                return {
                   path: databasePath,
                   info: databaseInfo,
                   type: "embedded",
                };
-            },
-         ),
+            } catch (error) {
+               const duration = Date.now() - startTime;
+               logger.error("Failed to get database info", {
+                  packagePath,
+                  databasePath,
+                  duration,
+                  error: error instanceof Error ? error.message : String(error),
+               });
+               throw error;
+            }
+         }),
       );
    }
 
    private static async getDatabasePaths(
       packagePath: string,
    ): Promise<string[]> {
+      logger.info("Getting database paths", { packagePath });
       let files = undefined;
-      files = await recursive(packagePath);
-      return files
+      try {
+         files = await recursive(packagePath);
+         logger.info("Recursive file search completed", {
+            packagePath,
+            fileCount: files.length,
+         });
+      } catch (error) {
+         logger.error("Failed to recursively search for files", {
+            packagePath,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         throw error;
+      }
+      const databasePaths = files
          .map((fullPath: string) => {
-            return path.relative(packagePath, fullPath).replace(/\\/g, "/");
+            const relativePath = path.relative(packagePath, fullPath);
+            const normalizedPath = relativePath.replace(/\\/g, "/");
+            return normalizedPath;
          })
          .filter(
             (modelPath: string) =>
                modelPath.endsWith(".parquet") || modelPath.endsWith(".csv"),
          );
+      logger.info("Filtered database paths", {
+         packagePath,
+         databasePaths,
+         count: databasePaths.length,
+      });
+      return databasePaths;
    }
 
    private static async getDatabaseInfo(
       packagePath: string,
       databasePath: string,
    ): Promise<ApiTableDescription> {
+      logger.info("Getting database info", { packagePath, databasePath });
+
       // Ensure databasePath is treated as a relative path
       // getDatabasePaths returns normalized paths with forward slashes,
       // but path.join needs to work correctly, so we normalize after joining
       // Use path.resolve to ensure we have an absolute path
       const fullPath = path.resolve(packagePath, databasePath);
+      logger.info("Resolved full path", {
+         packagePath,
+         databasePath,
+         fullPath,
+         platform: process.platform,
+      });
 
       // Create a DuckDB source then:
       // 1. Load the model and get the table schema from model
       // 2. Run a query to get the row count from the table
+      logger.info("Creating DuckDB runtime", { fullPath });
       const runtime = new ConnectionRuntime({
          urlReader: new EmptyURLReader(),
          connections: [new DuckDBConnection("duckdb")],
       });
+
       // Normalize Windows paths to use forward slashes for DuckDB
       // DuckDB accepts forward slashes on all platforms, including Windows
       // Also escape single quotes in the path for SQL string safety
       const normalizedPath = fullPath.replace(/\\/g, "/").replace(/'/g, "''");
-      const model = runtime.loadModel(
-         `source: temp is duckdb.table('${normalizedPath}')`,
-      );
-      const modelDef = await model.getModel();
-      const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;
-      const schema = fields.map((field): ApiColumn => {
-         return { type: field.type, name: field.name };
+      logger.info("Normalized path for DuckDB", {
+         originalPath: fullPath,
+         normalizedPath,
       });
-      const runner = model.loadQuery(
-         "run: temp->{aggregate: row_count is count()}",
-      );
-      const result = await runner.run();
-      const rowCount = result.data.value[0].row_count?.valueOf() as number;
-      return { name: databasePath, rowCount, columns: schema };
+
+      const modelString = `source: temp is duckdb.table('${normalizedPath}')`;
+      logger.info("Loading Malloy model", { modelString });
+
+      try {
+         const model = runtime.loadModel(modelString);
+         logger.info("Malloy model loaded successfully", { normalizedPath });
+
+         logger.info("Getting model definition", { normalizedPath });
+         const modelDef = await model.getModel();
+         const fields = (modelDef._modelDef.contents["temp"] as SourceDef)
+            .fields;
+         logger.info("Extracted schema fields", {
+            normalizedPath,
+            fieldCount: fields.length,
+            fields: fields.map((f) => ({ name: f.name, type: f.type })),
+         });
+
+         const schema = fields.map((field): ApiColumn => {
+            return { type: field.type, name: field.name };
+         });
+
+         logger.info("Running row count query", { normalizedPath });
+         const runner = model.loadQuery(
+            "run: temp->{aggregate: row_count is count()}",
+         );
+         const result = await runner.run();
+         const rowCount = result.data.value[0].row_count?.valueOf() as number;
+         logger.info("Row count query completed", {
+            normalizedPath,
+            rowCount,
+         });
+
+         return { name: databasePath, rowCount, columns: schema };
+      } catch (error) {
+         logger.error("Failed to get database info", {
+            packagePath,
+            databasePath,
+            fullPath,
+            normalizedPath,
+            error: error instanceof Error ? error.message : String(error),
+            errorStack: error instanceof Error ? error.stack : undefined,
+         });
+         throw error;
+      }
    }
 
    public setName(name: string) {
