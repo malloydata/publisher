@@ -509,10 +509,29 @@ export class Model {
          );
       }
 
+      // Normalize Windows paths for file:// URLs
+      // file:// URLs require forward slashes and triple slash for absolute paths on Windows
+      const normalizedModelPath = fullModelPath.replace(/\\/g, "/");
+      const normalizedDirPath = path.dirname(fullModelPath).replace(/\\/g, "/");
+
+      // On Windows, absolute paths need triple slash: file:///D:/path
+      // On Unix, absolute paths need double slash: file:///path
+      // The URL constructor will handle the triple slash automatically for absolute paths
       const importBaseURL = new URL(
-         "file://" + path.dirname(fullModelPath) + "/",
+         `file://${normalizedDirPath}/`,
       );
-      const modelURL = new URL("file://" + fullModelPath);
+      const modelURL = new URL(`file://${normalizedModelPath}`);
+
+      logger.info("Created file URLs for model", {
+         packagePath,
+         modelPath,
+         fullModelPath,
+         normalizedModelPath,
+         normalizedDirPath,
+         modelURL: modelURL.toString(),
+         importBaseURL: importBaseURL.toString(),
+         platform: process.platform,
+      });
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
       const runtime = new Runtime({
