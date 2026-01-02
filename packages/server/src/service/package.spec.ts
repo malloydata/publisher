@@ -32,7 +32,27 @@ describe("service/package", () => {
 
    afterEach(async () => {
       sinon.restore();
-      await fs.rm(testPackageDirectory, { recursive: true });
+      // On Windows, DuckDB connections may hold file locks briefly after closing
+      // Add a small delay to allow file handles to be released before cleanup
+      if (process.platform === "win32") {
+         await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      // Retry deletion on Windows in case of EBUSY errors
+      let retries = 3;
+      while (retries > 0) {
+         try {
+            await fs.rm(testPackageDirectory, { recursive: true, force: true });
+            break;
+         } catch (error: unknown) {
+            const err = error as { code?: string };
+            if (err.code === "EBUSY" && retries > 1) {
+               retries--;
+               await new Promise((resolve) => setTimeout(resolve, 200));
+            } else {
+               throw error;
+            }
+         }
+      }
    });
 
    it("should create a package instance", async () => {
