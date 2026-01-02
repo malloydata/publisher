@@ -429,9 +429,10 @@ export class Package {
       // 1. Load the model and get the table schema from model
       // 2. Run a query to get the row count from the table
       logger.info("Creating DuckDB runtime", { fullPath });
+      const duckdbConnection = new DuckDBConnection("duckdb");
       const runtime = new ConnectionRuntime({
          urlReader: new EmptyURLReader(),
-         connections: [new DuckDBConnection("duckdb")],
+         connections: [duckdbConnection],
       });
 
       // Normalize Windows paths to use forward slashes for DuckDB
@@ -486,6 +487,29 @@ export class Package {
             errorStack: error instanceof Error ? error.stack : undefined,
          });
          throw error;
+      } finally {
+         // Close DuckDB connection to release file handles on Windows
+         // This prevents EBUSY errors when cleaning up test directories
+         try {
+            logger.info("Closing DuckDB connection", { normalizedPath });
+            if (
+               duckdbConnection &&
+               typeof duckdbConnection.close === "function"
+            ) {
+               await duckdbConnection.close();
+               logger.info("DuckDB connection closed successfully", {
+                  normalizedPath,
+               });
+            }
+         } catch (closeError) {
+            logger.warn("Failed to close DuckDB connection", {
+               normalizedPath,
+               error:
+                  closeError instanceof Error
+                     ? closeError.message
+                     : String(closeError),
+            });
+         }
       }
    }
 
