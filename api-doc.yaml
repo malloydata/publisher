@@ -1867,9 +1867,6 @@ components:
       required:
         - keyId
         - secret
-      example:
-        keyId: GOOG1EXAMPLEKEYID
-        secret: examplesecretkey
 
     BigqueryConnection:
       type: object
