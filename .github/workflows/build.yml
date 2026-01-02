@@ -118,12 +118,8 @@ jobs:
           tags: publisher-ci:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Output directly to tar file - buildx saves the image to tar without loading into daemon
           outputs: type=docker,dest=/tmp/publisher-ci-image.tar
-
-      - name: Save image as tar archive
-        run: |
-          # Save the image using regular docker save (not buildx)
-          docker save publisher-ci:test -o /tmp/publisher-ci-image.tar
 
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
