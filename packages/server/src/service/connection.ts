@@ -377,6 +377,43 @@ async function attachPostgres(
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
 
+async function attachGCS(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.gcsConnection) {
+      throw new Error(
+         `GCS connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const config = attachedDb.gcsConnection;
+
+   if (!config.keyId || !config.secret) {
+      throw new Error(
+         `GCS keyId and secret are required for: ${attachedDb.name}`,
+      );
+   }
+
+   await installAndLoadExtension(connection, "httpfs");
+
+   const secretName = sanitizeSecretName(`gcs_${attachedDb.name}`);
+   const escapedKeyId = escapeSQL(config.keyId);
+   const escapedSecret = escapeSQL(config.secret);
+
+   const createSecretCommand = `
+      CREATE OR REPLACE SECRET ${secretName} (
+         TYPE gcs,
+         KEY_ID '${escapedKeyId}',
+         SECRET '${escapedSecret}'
+      );
+   `;
+
+   await connection.runSQL(createSecretCommand);
+   logger.info(`Created GCS secret: ${secretName}`);
+   logger.info(`GCS connection configured for: ${attachedDb.name}`);
+}
+
 // Main attachment function
 async function attachDatabasesToDuckDB(
    duckdbConnection: DuckDBConnection,
@@ -386,6 +423,7 @@ async function attachDatabasesToDuckDB(
       bigquery: attachBigQuery,
       snowflake: attachSnowflake,
       postgres: attachPostgres,
+      gcs: attachGCS,
    };
 
    for (const attachedDb of attachedDatabases) {
@@ -633,9 +671,10 @@ export async function createProjectConnections(
 
             // Create DuckDB connection with project basePath as working directory
             // This ensures relative paths in the project are resolved correctly
+            // Use unique memory database path to prevent sharing across connections
             const duckdbConnection = new DuckDBConnection(
                connection.name,
-               ":memory:",
+               path.join(projectPath, `${connection.name}.duckdb`),
                projectPath,
             );
 
@@ -747,9 +786,10 @@ export async function createPackageDuckDBConnections(
 
       // Create DuckDB connection with project basePath as working directory
       // This ensures relative paths in the project are resolved correctly
+      // Use unique memory database path to prevent sharing across connections
       const duckdbConnection = new DuckDBConnection(
          connection.name,
-         ":memory:",
+         path.join(packagePath, `${connection.name}.duckdb`),
          packagePath,
       );
 

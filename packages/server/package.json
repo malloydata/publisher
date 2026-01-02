@@ -24,6 +24,7 @@
     "generate-api-types": "bunx openapi-typescript ../../api-doc.yaml --output src/api.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.958.0",
     "@google-cloud/storage": "^7.16.0",
     "@malloydata/db-bigquery": "^0.0.318",
     "@malloydata/db-duckdb": "^0.0.318",
