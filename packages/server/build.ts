@@ -11,6 +11,7 @@ await build({
    format: "cjs",
    external: [
       "@malloydata/db-duckdb",
+      "duckdb",
       "@malloydata/malloy",
       "@malloydata/malloy-sql",
       "@malloydata/render",
