@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { execSync } from 'child_process';
-import os from 'os';
 import fs from 'fs';
-import path from 'path';
 import https from 'https';
+import os from 'os';
+import path from 'path';
 
 // Configuration
 const ADBC_VERSION = 'apache-arrow-adbc-20';
@@ -224,13 +224,24 @@ async function installADBCDriver() {
     const finalPath = path.join(installDir, platformInfo.driverFile);
 
     if (platformInfo.os === 'windows') {
-      // On Windows, use PowerShell to extract
-      // Note: .whl files are actually zip files
-      const wheelPathEscaped = wheelPath.replace(/'/g, "''");
-      const extractCmd = `powershell -Command "Expand-Archive -Path '${wheelPathEscaped}' -DestinationPath '${installDir}' -Force"`;
-      execSync(extractCmd, { stdio: 'inherit', shell: true });
+      // On Windows, PowerShell Expand-Archive doesn't recognize .whl files
+      // Rename to .zip temporarily for extraction
+      const zipPath = wheelPath.replace(/\.whl$/, '.zip');
+      fs.copyFileSync(wheelPath, zipPath);
+
+      try {
+        const zipPathEscaped = zipPath.replace(/'/g, "''");
+        const installDirEscaped = installDir.replace(/'/g, "''");
+        const extractCmd = `powershell -Command "Expand-Archive -Path '${zipPathEscaped}' -DestinationPath '${installDirEscaped}' -Force"`;
+        execSync(extractCmd, { stdio: 'inherit', shell: true });
+      } finally {
+        // Clean up temporary zip file
+        if (fs.existsSync(zipPath)) {
+          fs.unlinkSync(zipPath);
+        }
+      }
     } else {
-      // On Unix systems, use unzip
+      // On Unix systems, use unzip (which handles .whl files directly)
       execSync(`unzip -o "${wheelPath}" "adbc_driver_snowflake/*" -d "${installDir}"`, {
         stdio: 'inherit',
         shell: true,
