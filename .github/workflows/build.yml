@@ -98,8 +98,38 @@ jobs:
             exit 1
           fi
 
+  build_ci_image:
+    name: Build CI Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build CI Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/Dockerfile.ci
+          push: false
+          tags: publisher-ci:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/publisher-ci-image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: publisher-ci-image
+          path: /tmp/publisher-ci-image.tar
+          retention-days: 1
+
   cross_platform_test:
     name: Cross Platform Tests (${{ matrix.os }})
+    needs: build_ci_image
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
@@ -110,19 +140,73 @@ jobs:
         with:
           submodules: "true"
 
+      - name: Setup Docker
+        if: matrix.os == 'windows-latest'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Load CI Docker image
+        if: matrix.os == 'windows-latest'
+        uses: actions/download-artifact@v4
+        with:
+          name: publisher-ci-image
+          path: /tmp
+
+      - name: Load Docker image on Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          docker load -i /tmp/publisher-ci-image.tar
+        shell: bash
+
+      - name: Start Docker container on Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          # On Windows, Docker Desktop uses /c/ instead of C:\
+          # Mount the workspace so file paths can be tested
+          docker run -d --name publisher-ci-test \
+            -v "${{ github.workspace }}:/usr/src/app" \
+            -w /usr/src/app \
+            publisher-ci:test
+        shell: bash
+
+      - name: Install dependencies in container (Windows)
+        if: matrix.os == 'windows-latest'
+        run: docker exec publisher-ci-test bun install
+        shell: bash
+
+      - name: Build code in container (Windows)
+        if: matrix.os == 'windows-latest'
+        run: docker exec publisher-ci-test bun run build
+        shell: bash
+
+      - name: Run tests in container (Windows)
+        if: matrix.os == 'windows-latest'
+        run: docker exec publisher-ci-test sh -c "cd packages/server && bun test"
+        shell: bash
+
+      - name: Cleanup container (Windows)
+        if: matrix.os == 'windows-latest'
+        run: docker rm -f publisher-ci-test || true
+        shell: bash
+
+      # macOS continues with native build (no Docker needed)
       - name: Setup Bun
+        if: matrix.os == 'macos-latest'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.23
 
       - name: Install dependencies
+        if: matrix.os == 'macos-latest'
         run: bun install
 
       - name: Generate API types
+        if: matrix.os == 'macos-latest'
         run: bun run generate-api-types
 
       - name: Build
+        if: matrix.os == 'macos-latest'
         run: bun run build
 
       - name: Run tests
+        if: matrix.os == 'macos-latest'
         run: bun run test
