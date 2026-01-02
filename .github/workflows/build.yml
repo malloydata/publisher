@@ -97,3 +97,33 @@ jobs:
             echo "✗ API test failed: Expected 1 project, got different response"
             exit 1
           fi
+
+  cross_platform_test:
+    name: Cross Platform Tests (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate API types
+        run: npm run generate-api-types
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
