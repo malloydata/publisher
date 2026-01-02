@@ -365,7 +365,11 @@ export class Package {
       packagePath: string,
       databasePath: string,
    ): Promise<ApiTableDescription> {
-      const fullPath = path.join(packagePath, databasePath);
+      // Ensure databasePath is treated as a relative path
+      // getDatabasePaths returns normalized paths with forward slashes,
+      // but path.join needs to work correctly, so we normalize after joining
+      // Use path.resolve to ensure we have an absolute path
+      const fullPath = path.resolve(packagePath, databasePath);
 
       // Create a DuckDB source then:
       // 1. Load the model and get the table schema from model
@@ -376,7 +380,8 @@ export class Package {
       });
       // Normalize Windows paths to use forward slashes for DuckDB
       // DuckDB accepts forward slashes on all platforms, including Windows
-      const normalizedPath = fullPath.replace(/\\/g, "/");
+      // Also escape single quotes in the path for SQL string safety
+      const normalizedPath = fullPath.replace(/\\/g, "/").replace(/'/g, "''");
       const model = runtime.loadModel(
          `source: temp is duckdb.table('${normalizedPath}')`,
       );
