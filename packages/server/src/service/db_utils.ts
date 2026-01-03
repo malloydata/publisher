@@ -4,13 +4,14 @@ import { components } from "../api";
 import { ConnectionError } from "../errors";
 import { logger } from "../logger";
 import {
-   buildGCSUri,
-   GCSCredentials,
-   getFileType,
+   CloudStorageCredentials,
+   gcsConnectionToCredentials,
+   getCloudTablesWithColumns,
    isDataFile,
-   listAllGCSFiles,
-   listGCSBuckets,
-} from "./gcs_utils";
+   listAllCloudFiles,
+   listCloudBuckets,
+   s3ConnectionToCredentials,
+} from "./gcs_s3_utils";
 import { ApiConnection } from "./model";
 
 type ApiSchema = components["schemas"]["Schema"];
@@ -74,6 +75,29 @@ function standardizeRunSQLResult(result: unknown): unknown[] {
    return Array.isArray(result)
       ? result
       : (result as { rows?: unknown[] }).rows || [];
+}
+
+function getCloudCredentialsFromAttachedDatabases(
+   attachedDatabases: components["schemas"]["AttachedDatabase"][],
+   storageType: "gcs" | "s3",
+): CloudStorageCredentials | null {
+   for (const attachedDb of attachedDatabases) {
+      if (
+         attachedDb.type === "gcs" &&
+         storageType === "gcs" &&
+         attachedDb.gcsConnection
+      ) {
+         return gcsConnectionToCredentials(attachedDb.gcsConnection);
+      }
+      if (
+         attachedDb.type === "s3" &&
+         storageType === "s3" &&
+         attachedDb.s3Connection
+      ) {
+         return s3ConnectionToCredentials(attachedDb.s3Connection);
+      }
+   }
+   return null;
 }
 
 export async function getSchemasForConnection(
@@ -297,32 +321,35 @@ export async function getSchemasForConnection(
             };
          });
 
-         // Add GCS buckets as schemas for each GCS attached database
          const attachedDatabases =
             connection.duckdbConnection.attachedDatabases || [];
+
          for (const attachedDb of attachedDatabases) {
-            if (attachedDb.type === "gcs" && attachedDb.gcsConnection) {
-               const gcsCredentials: GCSCredentials = {
-                  keyId: attachedDb.gcsConnection.keyId || "",
-                  secret: attachedDb.gcsConnection.secret || "",
-               };
+            if (
+               (attachedDb.type === "gcs" || attachedDb.type === "s3") &&
+               (attachedDb.gcsConnection || attachedDb.s3Connection)
+            ) {
+               const credentials =
+                  attachedDb.type === "gcs"
+                     ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
+                     : s3ConnectionToCredentials(attachedDb.s3Connection!);
 
                try {
-                  const buckets = await listGCSBuckets(gcsCredentials);
+                  const buckets = await listCloudBuckets(credentials);
                   for (const bucket of buckets) {
                      schemas.push({
-                        name: `gcs.${bucket.name}`,
+                        name: `${attachedDb.type}.${bucket.name}`,
                         isHidden: false,
                         isDefault: false,
                      });
                   }
                   logger.info(
-                     `Listed ${buckets.length} GCS buckets for attached database ${attachedDb.name}`,
+                     `Listed ${buckets.length} ${attachedDb.type.toUpperCase()} buckets for attached database ${attachedDb.name}`,
                   );
-               } catch (gcsError) {
+               } catch (cloudError) {
                   logger.warn(
-                     `Failed to list GCS buckets for ${attachedDb.name}`,
-                     { error: gcsError },
+                     `Failed to list ${attachedDb.type.toUpperCase()} buckets for ${attachedDb.name}`,
+                     { error: cloudError },
                   );
                }
             }
@@ -390,14 +417,34 @@ export async function getTablesForSchema(
 
    const catalogName = schemaName.split(".")[0];
 
-   // Handle GCS files - use DuckDB to read schema
-   if (catalogName === "gcs" && connection.type === "duckdb") {
-      console.log("Getting GCS tables for schema", schemaName);
+   if (
+      (catalogName === "gcs" || catalogName === "s3") &&
+      connection.type === "duckdb"
+   ) {
+      console.log(
+         `Getting ${catalogName.toUpperCase()} tables for schema`,
+         schemaName,
+      );
       console.log("tableNames", tableNames);
       const bucketName = schemaName.split(".")[1];
       console.log("bucketName", bucketName);
-      return await getGCSTablesWithColumns(
+
+      const attachedDatabases =
+         connection.duckdbConnection?.attachedDatabases || [];
+      const credentials = getCloudCredentialsFromAttachedDatabases(
+         attachedDatabases,
+         catalogName as "gcs" | "s3",
+      );
+
+      if (!credentials) {
+         throw new Error(
+            `${catalogName.toUpperCase()} credentials not found in attached databases`,
+         );
+      }
+
+      return await getCloudTablesWithColumns(
          malloyConnection,
+         credentials,
          bucketName,
          tableNames,
       );
@@ -451,76 +498,6 @@ export async function getTablesForSchema(
    const tableResults = await Promise.all(tableSourcePromises);
 
    return tableResults;
-}
-
-async function getGCSTablesWithColumns(
-   malloyConnection: Connection,
-   bucketName: string,
-   fileKeys: string[],
-): Promise<ApiTable[]> {
-   const tables: ApiTable[] = [];
-
-   for (const fileKey of fileKeys) {
-      const gcsUri = buildGCSUri(bucketName, fileKey);
-      const fileType = getFileType(fileKey);
-
-      try {
-         let describeQuery: string;
-
-         switch (fileType) {
-            case "csv":
-               describeQuery = `DESCRIBE SELECT * FROM read_csv('${gcsUri}', auto_detect=true) LIMIT 1`;
-               break;
-            case "parquet":
-               describeQuery = `DESCRIBE SELECT * FROM read_parquet('${gcsUri}') LIMIT 1`;
-               break;
-            case "json":
-               describeQuery = `DESCRIBE SELECT * FROM read_json('${gcsUri}', auto_detect=true) LIMIT 1`;
-               break;
-            case "jsonl":
-               describeQuery = `DESCRIBE SELECT * FROM read_json('${gcsUri}', format='newline_delimited', auto_detect=true) LIMIT 1`;
-               break;
-            default:
-               logger.warn(`Unsupported file type for ${fileKey}`);
-               tables.push({
-                  resource: gcsUri,
-                  columns: [],
-               });
-               continue;
-         }
-
-         const result = await malloyConnection.runSQL(describeQuery);
-         console.log("result", result);
-         const rows = standardizeRunSQLResult(result);
-         console.log("rows", rows);
-         const columns = rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return {
-               name: (typedRow.column_name || typedRow.name) as string,
-               type: (typedRow.column_type || typedRow.type) as string,
-            };
-         });
-
-         tables.push({
-            resource: gcsUri,
-            columns,
-         });
-
-         logger.info(`Got schema for GCS file: ${gcsUri}`, {
-            columnCount: columns.length,
-         });
-      } catch (error) {
-         logger.warn(`Failed to get schema for GCS file: ${gcsUri}`, {
-            error,
-         });
-         tables.push({
-            resource: gcsUri,
-            columns: [],
-         });
-      }
-   }
-
-   return tables;
 }
 
 export async function getConnectionTableSource(
@@ -728,41 +705,36 @@ export async function listTablesForSchema(
       const catalogName = schemaName.split(".")[0];
       const actualSchemaName = schemaName.split(".")[1];
 
-      // Handle GCS bucket schemas
-      if (catalogName === "gcs") {
+      if (catalogName === "gcs" || catalogName === "s3") {
          const bucketName = actualSchemaName;
          const attachedDatabases =
             connection.duckdbConnection.attachedDatabases || [];
 
-         // Find GCS credentials from attached databases
-         let gcsCredentials: GCSCredentials | null = null;
-         for (const attachedDb of attachedDatabases) {
-            if (attachedDb.type === "gcs" && attachedDb.gcsConnection) {
-               gcsCredentials = {
-                  keyId: attachedDb.gcsConnection.keyId || "",
-                  secret: attachedDb.gcsConnection.secret || "",
-               };
-               break;
-            }
-         }
+         const credentials = getCloudCredentialsFromAttachedDatabases(
+            attachedDatabases,
+            catalogName as "gcs" | "s3",
+         );
 
-         if (!gcsCredentials) {
-            throw new Error("GCS credentials not found in attached databases");
+         if (!credentials) {
+            throw new Error(
+               `${catalogName.toUpperCase()} credentials not found in attached databases`,
+            );
          }
 
          try {
-            // Recursively list all files including those in subdirectories
-            const objects = await listAllGCSFiles(gcsCredentials, bucketName);
-            // Return only data files (CSV, Parquet, JSON, etc.)
+            const objects = await listAllCloudFiles(credentials, bucketName);
             return objects
                .filter((obj) => isDataFile(obj.key))
                .map((obj) => obj.key);
          } catch (error) {
-            logger.error(`Error listing GCS objects in bucket ${bucketName}`, {
-               error,
-            });
+            logger.error(
+               `Error listing ${catalogName.toUpperCase()} objects in bucket ${bucketName}`,
+               {
+                  error,
+               },
+            );
             throw new Error(
-               `Failed to list files in GCS bucket ${bucketName}: ${(error as Error).message}`,
+               `Failed to list files in ${catalogName.toUpperCase()} bucket ${bucketName}: ${(error as Error).message}`,
             );
          }
       }
