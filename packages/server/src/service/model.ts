@@ -517,9 +517,7 @@ export class Model {
       // On Windows, absolute paths need triple slash: file:///D:/path
       // On Unix, absolute paths need double slash: file:///path
       // The URL constructor will handle the triple slash automatically for absolute paths
-      const importBaseURL = new URL(
-         `file://${normalizedDirPath}/`,
-      );
+      const importBaseURL = new URL(`file://${normalizedDirPath}/`);
       const modelURL = new URL(`file://${normalizedModelPath}`);
 
       logger.info("Created file URLs for model", {

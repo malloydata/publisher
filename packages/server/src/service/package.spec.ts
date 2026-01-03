@@ -35,23 +35,32 @@ describe("service/package", () => {
       // On Windows, DuckDB connections may hold file locks briefly after closing
       // Add a small delay to allow file handles to be released before cleanup
       if (process.platform === "win32") {
-         await new Promise((resolve) => setTimeout(resolve, 100));
+         await new Promise((resolve) => setTimeout(resolve, 150));
       }
       // Retry deletion on Windows in case of EBUSY errors
-      let retries = 3;
+      let retries = 5;
+      let lastError: unknown;
       while (retries > 0) {
          try {
             await fs.rm(testPackageDirectory, { recursive: true, force: true });
-            break;
+            return; // Success, exit the retry loop
          } catch (error: unknown) {
+            lastError = error;
             const err = error as { code?: string };
             if (err.code === "EBUSY" && retries > 1) {
                retries--;
-               await new Promise((resolve) => setTimeout(resolve, 200));
+               // Exponential backoff: 100ms, 200ms, 400ms, 800ms
+               const delay = 100 * Math.pow(2, 5 - retries - 1);
+               await new Promise((resolve) => setTimeout(resolve, delay));
             } else {
+               // Not EBUSY or last retry, throw the error
                throw error;
             }
          }
+      }
+      // If we exhausted retries, throw the last error
+      if (lastError) {
+         throw lastError;
       }
    });
 

@@ -500,6 +500,11 @@ export class Package {
                logger.info("DuckDB connection closed successfully", {
                   normalizedPath,
                });
+               // On Windows, file handles may not be released immediately after closing
+               // Add a small delay to allow the OS to release file locks
+               if (process.platform === "win32") {
+                  await new Promise((resolve) => setTimeout(resolve, 50));
+               }
             }
          } catch (closeError) {
             logger.warn("Failed to close DuckDB connection", {
