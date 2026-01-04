@@ -172,7 +172,14 @@ type TableSchemaViewerProps = {
 function TableSchemaViewer({ table }: TableSchemaViewerProps) {
    return (
       <>
-         <Typography variant="overline" fontWeight="bold">
+         <Typography
+            variant="overline"
+            fontWeight="bold"
+            sx={{
+               display: "block",
+               wordBreak: "break-all",
+            }}
+         >
             Schema: {table.resource}
          </Typography>
          <Divider />
@@ -286,9 +293,18 @@ function TablesInSchema({
                         resource: string;
                         columns: Array<{ name: string; type: string }>;
                      }) => {
-                        // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
-                        const tableName =
-                           table.resource.split(".").pop() || table.resource;
+                        let tableName = "";
+                        if (
+                           table.resource.includes("gs://") ||
+                           table.resource.includes("s3://")
+                        ) {
+                           tableName =
+                              table.resource.split("/").pop() || table.resource;
+                        } else {
+                           // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
+                           tableName =
+                              table.resource.split(".").pop() || table.resource;
+                        }
                         return (
                            <ListItemButton
                               key={table.resource}

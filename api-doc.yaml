@@ -1996,6 +1996,20 @@ components:
           type: string
           description: MySQL password for authentication
 
+    GCSConnection:
+      type: object
+      description: Google Cloud Storage connection configuration for DuckDB
+      properties:
+        keyId:
+          type: string
+          description: GCS HMAC access key ID
+        secret:
+          type: string
+          description: GCS HMAC secret key
+      required:
+        - keyId
+        - secret
+
     BigqueryConnection:
       type: object
       description: Google BigQuery database connection configuration
@@ -2111,7 +2125,7 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum: [bigquery, snowflake, postgres]
+          enum: [bigquery, snowflake, postgres, gcs]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         bigqueryConnection:
@@ -2120,6 +2134,8 @@ components:
           $ref: "#/components/schemas/SnowflakeConnection"
         postgresConnection:
           $ref: "#/components/schemas/PostgresConnection"
+        gcsConnection:
+          $ref: "#/components/schemas/GCSConnection"
 
     # TODO: What is this?  Can we remove it?
     SqlSource:
