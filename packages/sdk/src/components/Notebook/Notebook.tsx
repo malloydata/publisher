@@ -3,7 +3,10 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { Box, Paper, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RawNotebook } from "../../client";
-import { useDimensionalFilterRangeData } from "../../hooks/useDimensionalFilterRangeData";
+import {
+   getDimensionKey,
+   useDimensionalFilterRangeData,
+} from "../../hooks/useDimensionalFilterRangeData";
 import {
    FilterSelection,
    useDimensionFilters,
@@ -121,11 +124,13 @@ export default function Notebook({
       [filterStates, getActiveFilters],
    );
 
-   // Create a map of dimension name -> source name for quick lookup
+   // Create a map of dimension key -> source name for quick lookup
+   // Using composite keys (source:dimensionName) to avoid collisions
    const dimensionToSourceMap = useMemo(() => {
       const map = new Map<string, string>();
       for (const spec of dimensionSpecs) {
-         map.set(spec.dimensionName, spec.source);
+         const key = getDimensionKey(spec);
+         map.set(key, spec.source);
       }
       return map;
    }, [dimensionSpecs]);
@@ -212,16 +217,12 @@ export default function Notebook({
                               new Set<string>();
 
                            // Filter to only include those matching this query's source or joined sources
+                           // FilterSelection now includes source, so we can check directly
                            const filtersForSource = querySourceName
                               ? filtersToApply.filter((filter) => {
-                                   const filterSourceName =
-                                      dimensionToSourceMap.get(
-                                         filter.dimensionName,
-                                      );
-                                   if (!filterSourceName) return false;
                                    return (
-                                      filterSourceName === querySourceName ||
-                                      joinedSources.has(filterSourceName)
+                                      filter.source === querySourceName ||
+                                      joinedSources.has(filter.source)
                                    );
                                 })
                               : [];
@@ -374,10 +375,10 @@ export default function Notebook({
       }
    }, [activeFilters, isExecuting, executeCells]);
 
-   // Handle filter change
+   // Handle filter change using composite key
    const handleFilterChange = useCallback(
-      (dimensionName: string) => (selection: FilterSelection | null) => {
-         updateFilter(dimensionName, selection);
+      (key: string) => (selection: FilterSelection | null) => {
+         updateFilter(key, selection);
       },
       [updateFilter],
    );
@@ -427,11 +428,9 @@ export default function Notebook({
                         }}
                      >
                         {dimensionSpecs.map((spec) => {
-                           const values =
-                              filterValuesData.get(spec.dimensionName) || [];
-                           const filterState = filterStates.get(
-                              spec.dimensionName,
-                           );
+                           const key = getDimensionKey(spec);
+                           const values = filterValuesData.get(key) || [];
+                           const filterState = filterStates.get(key);
                            // Skip Retrieval filters if no retrievalFn provided
                            if (
                               spec.filterType === "Retrieval" &&
@@ -441,14 +440,12 @@ export default function Notebook({
                            }
 
                            return (
-                              <Box key={spec.dimensionName}>
+                              <Box key={key}>
                                  <DimensionFilter
                                     spec={spec}
                                     values={values}
                                     selection={filterState?.selection}
-                                    onChange={handleFilterChange(
-                                       spec.dimensionName,
-                                    )}
+                                    onChange={handleFilterChange(key)}
                                     retrievalFn={retrievalFn}
                                  />
                               </Box>
