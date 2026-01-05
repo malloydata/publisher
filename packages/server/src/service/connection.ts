@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from "uuid";
 import { components } from "../api";
 import { TEMP_DIR_PATH } from "../constants";
 import { logAxiosError, logger } from "../logger";
+import { CloudStorageCredentials } from "./gcs_s3_utils";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -377,41 +378,119 @@ async function attachPostgres(
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
 
-async function attachGCS(
+async function attachCloudStorage(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
 ): Promise<void> {
-   if (!attachedDb.gcsConnection) {
-      throw new Error(
-         `GCS connection configuration missing for: ${attachedDb.name}`,
-      );
+   const isGCS = attachedDb.type === "gcs";
+   const isS3 = attachedDb.type === "s3";
+
+   if (!isGCS && !isS3) {
+      throw new Error(`Invalid cloud storage type: ${attachedDb.type}`);
    }
 
-   const config = attachedDb.gcsConnection;
+   const storageType = attachedDb.type?.toUpperCase() || "";
+   let credentials: CloudStorageCredentials;
 
-   if (!config.keyId || !config.secret) {
-      throw new Error(
-         `GCS keyId and secret are required for: ${attachedDb.name}`,
-      );
+   if (isGCS) {
+      if (!attachedDb.gcsConnection) {
+         throw new Error(
+            `GCS connection configuration missing for: ${attachedDb.name}`,
+         );
+      }
+      if (!attachedDb.gcsConnection.keyId || !attachedDb.gcsConnection.secret) {
+         throw new Error(
+            `GCS keyId and secret are required for: ${attachedDb.name}`,
+         );
+      }
+      credentials = {
+         type: "gcs",
+         accessKeyId: attachedDb.gcsConnection.keyId,
+         secretAccessKey: attachedDb.gcsConnection.secret,
+      };
+   } else {
+      if (!attachedDb.s3Connection) {
+         throw new Error(
+            `S3 connection configuration missing for: ${attachedDb.name}`,
+         );
+      }
+      if (
+         !attachedDb.s3Connection.accessKeyId ||
+         !attachedDb.s3Connection.secretAccessKey
+      ) {
+         throw new Error(
+            `S3 accessKeyId and secretAccessKey are required for: ${attachedDb.name}`,
+         );
+      }
+      credentials = {
+         type: "s3",
+         accessKeyId: attachedDb.s3Connection.accessKeyId,
+         secretAccessKey: attachedDb.s3Connection.secretAccessKey,
+         region: attachedDb.s3Connection.region,
+         endpoint: attachedDb.s3Connection.endpoint,
+         sessionToken: attachedDb.s3Connection.sessionToken,
+      };
    }
 
    await installAndLoadExtension(connection, "httpfs");
 
-   const secretName = sanitizeSecretName(`gcs_${attachedDb.name}`);
-   const escapedKeyId = escapeSQL(config.keyId);
-   const escapedSecret = escapeSQL(config.secret);
+   const secretName = sanitizeSecretName(
+      `${attachedDb.type}_${attachedDb.name}`,
+   );
+   const escapedKeyId = escapeSQL(credentials.accessKeyId);
+   const escapedSecret = escapeSQL(credentials.secretAccessKey);
 
-   const createSecretCommand = `
-      CREATE OR REPLACE SECRET ${secretName} (
-         TYPE gcs,
-         KEY_ID '${escapedKeyId}',
-         SECRET '${escapedSecret}'
-      );
-   `;
+   let createSecretCommand: string;
+
+   if (isGCS) {
+      createSecretCommand = `
+         CREATE OR REPLACE SECRET ${secretName} (
+            TYPE gcs,
+            KEY_ID '${escapedKeyId}',
+            SECRET '${escapedSecret}'
+         );
+      `;
+   } else {
+      const region = credentials.region || "us-east-1";
+
+      if (credentials.endpoint) {
+         const escapedEndpoint = escapeSQL(credentials.endpoint);
+         createSecretCommand = `
+            CREATE OR REPLACE SECRET ${secretName} (
+               TYPE s3,
+               KEY_ID '${escapedKeyId}',
+               SECRET '${escapedSecret}',
+               REGION '${region}',
+               ENDPOINT '${escapedEndpoint}',
+               URL_STYLE 'path'
+            );
+         `;
+      } else if (credentials.sessionToken) {
+         const escapedToken = escapeSQL(credentials.sessionToken);
+         createSecretCommand = `
+            CREATE OR REPLACE SECRET ${secretName} (
+               TYPE s3,
+               KEY_ID '${escapedKeyId}',
+               SECRET '${escapedSecret}',
+               REGION '${region}',
+               SESSION_TOKEN '${escapedToken}'
+            );
+         `;
+      } else {
+         createSecretCommand = `
+            CREATE OR REPLACE SECRET ${secretName} (
+               TYPE s3,
+               KEY_ID '${escapedKeyId}',
+               SECRET '${escapedSecret}',
+               REGION '${region}'
+            );
+         `;
+      }
+   }
 
    await connection.runSQL(createSecretCommand);
-   logger.info(`Created GCS secret: ${secretName}`);
-   logger.info(`GCS connection configured for: ${attachedDb.name}`);
+   logger.info(`Created ${storageType} secret: ${secretName}`);
+   logger.info(`${storageType} connection configured for: ${attachedDb.name}`);
 }
 
 // Main attachment function
@@ -423,7 +502,8 @@ async function attachDatabasesToDuckDB(
       bigquery: attachBigQuery,
       snowflake: attachSnowflake,
       postgres: attachPostgres,
-      gcs: attachGCS,
+      gcs: attachCloudStorage,
+      s3: attachCloudStorage,
    };
 
    for (const attachedDb of attachedDatabases) {
