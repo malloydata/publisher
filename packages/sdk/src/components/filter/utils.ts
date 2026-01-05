@@ -270,7 +270,13 @@ export function generateFilterClause(
 
    const conditions = activeFilters
       .map((selection) => {
-         const { dimensionName, source: filterSourceName, matchType, value, value2 } = selection;
+         const {
+            dimensionName,
+            source: filterSourceName,
+            matchType,
+            value,
+            value2,
+         } = selection;
          // Only use source.dimension format if the filter's source is different from the query's source
          // (i.e., it's a joined source, not the main source)
          const needsSourcePrefix =
