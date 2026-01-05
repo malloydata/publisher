@@ -28,6 +28,9 @@ import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 import { NotebookCell } from "./NotebookCell";
 import { EnhancedNotebookCell } from "./types";
 
+// Maximum number of concurrent cell executions to avoid overwhelming the server
+const MAX_CONCURRENT = 4;
+
 interface NotebookProps {
    resourceUri: string;
    maxResultSize?: number;
@@ -149,6 +152,7 @@ export default function Notebook({
 
    // Unified cell execution function
    // Executes all notebook cells, optionally applying filters to query cells
+   // Runs up to 4 requests in parallel for better performance
    const executeCells = useCallback(
       async (filtersToApply: FilterSelection[] = []) => {
          if (!isSuccess || !notebook?.notebookCells) return;
@@ -168,7 +172,9 @@ export default function Notebook({
          setExecutionError(null);
 
          try {
-            // Execute cells sequentially
+            // Build execution tasks for code cells
+            const executionTasks: Array<() => Promise<void>> = [];
+
             for (let i = 0; i < notebook.notebookCells.length; i++) {
                const rawCell = notebook.notebookCells[i];
 
@@ -182,101 +188,130 @@ export default function Notebook({
                   cellText.includes("->") ||
                   /^\s*(run|query)\s*:/m.test(cellText);
 
-               try {
-                  let result: string | undefined;
-                  let newSources: string[] | undefined;
+               // Capture cell index for closure
+               const cellIndex = i;
 
-                  if (hasQuery && modelPath && filtersToApply.length > 0) {
-                     // Query cell - use models API with optional filters
-                     let queryToExecute = cellText;
+               const executeCell = async () => {
+                  try {
+                     let result: string | undefined;
+                     let newSources: string[] | undefined;
 
-                     // Apply filters if any match this query's source
-                     if (filtersToApply.length > 0) {
-                        const querySourceName =
-                           extractSourceFromQuery(cellText);
+                     if (hasQuery && modelPath && filtersToApply.length > 0) {
+                        // Query cell - use models API with optional filters
+                        let queryToExecute = cellText;
 
-                        // Get the set of joined sources for this query's source
-                        const joinedSources =
-                           (querySourceName &&
-                              sourceJoinsMap.get(querySourceName)) ||
-                           new Set<string>();
+                        // Apply filters if any match this query's source
+                        if (filtersToApply.length > 0) {
+                           const querySourceName =
+                              extractSourceFromQuery(cellText);
 
-                        // Filter to only include those matching this query's source or joined sources
-                        const filtersForSource = querySourceName
-                           ? filtersToApply.filter((filter) => {
-                                const filterSourceName =
-                                   dimensionToSourceMap.get(
-                                      filter.dimensionName,
+                           // Get the set of joined sources for this query's source
+                           const joinedSources =
+                              (querySourceName &&
+                                 sourceJoinsMap.get(querySourceName)) ||
+                              new Set<string>();
+
+                           // Filter to only include those matching this query's source or joined sources
+                           const filtersForSource = querySourceName
+                              ? filtersToApply.filter((filter) => {
+                                   const filterSourceName =
+                                      dimensionToSourceMap.get(
+                                         filter.dimensionName,
+                                      );
+                                   if (!filterSourceName) return false;
+                                   return (
+                                      filterSourceName === querySourceName ||
+                                      joinedSources.has(filterSourceName)
                                    );
-                                if (!filterSourceName) return false;
-                                return (
-                                   filterSourceName === querySourceName ||
-                                   joinedSources.has(filterSourceName)
-                                );
-                             })
-                           : [];
+                                })
+                              : [];
 
-                        if (filtersForSource.length > 0) {
-                           const filterClause = generateFilterClause(
-                              filtersForSource,
-                              dimensionToSourceMap,
-                              querySourceName,
-                           );
-                           if (filterClause) {
-                              queryToExecute = injectWhereClause(
-                                 cellText,
-                                 filterClause,
+                           if (filtersForSource.length > 0) {
+                              const filterClause = generateFilterClause(
+                                 filtersForSource,
+                                 dimensionToSourceMap,
+                                 querySourceName,
                               );
+                              if (filterClause) {
+                                 queryToExecute = injectWhereClause(
+                                    cellText,
+                                    filterClause,
+                                 );
+                              }
                            }
                         }
+
+                        // Execute using models API
+                        const response =
+                           await apiClients.models.executeQueryModel(
+                              projectName,
+                              packageName,
+                              modelPath,
+                              {
+                                 query: queryToExecute,
+                                 versionId,
+                              },
+                           );
+                        result = response.data.result;
+                     } else {
+                        // Non-query code cell (or no filters applied) - use notebook cell execution API
+                        const response =
+                           await apiClients.notebooks.executeNotebookCell(
+                              projectName,
+                              packageName,
+                              notebookPath,
+                              cellIndex,
+                              versionId,
+                           );
+
+                        const executedCell = response.data;
+                        result = executedCell.result;
+                        newSources =
+                           rawCell.newSources || executedCell.newSources;
                      }
 
-                     // Execute using models API
-                     const response = await apiClients.models.executeQueryModel(
-                        projectName,
-                        packageName,
-                        modelPath,
-                        {
-                           query: queryToExecute,
-                           versionId,
-                        },
+                     // Update state incrementally
+                     setEnhancedCells((prev) => {
+                        const next = [...prev];
+                        // Ensure we have a cell to update (in case state was reset externally, though unlikely)
+                        if (!next[cellIndex]) {
+                           next[cellIndex] = { ...rawCell };
+                        }
+                        next[cellIndex] = {
+                           ...next[cellIndex],
+                           result,
+                           newSources,
+                        };
+                        return next;
+                     });
+                  } catch (cellError) {
+                     console.error(
+                        `Error executing cell ${cellIndex}:`,
+                        cellError,
                      );
-                     result = response.data.result;
-                  } else {
-                     // Non-query code cell (or no filters applied) - use notebook cell execution API
-                     const response =
-                        await apiClients.notebooks.executeNotebookCell(
-                           projectName,
-                           packageName,
-                           notebookPath,
-                           i,
-                           versionId,
-                        );
-
-                     const executedCell = response.data;
-                     result = executedCell.result;
-                     newSources = rawCell.newSources || executedCell.newSources;
+                     // Don't update result on error, leave as is (undefined)
                   }
+               };
 
-                  // Update state incrementally
-                  setEnhancedCells((prev) => {
-                     const next = [...prev];
-                     // Ensure we have a cell to update (in case state was reset externally, though unlikely)
-                     if (!next[i]) {
-                        next[i] = { ...rawCell };
-                     }
-                     next[i] = {
-                        ...next[i],
-                        result,
-                        newSources,
-                     };
-                     return next;
-                  });
-               } catch (cellError) {
-                  console.error(`Error executing cell ${i}:`, cellError);
-                  // Don't update result on error, leave as is (undefined)
+               executionTasks.push(executeCell);
+            }
+
+            // Execute with limited concurrency (up to 4 parallel requests)
+            const executing: Promise<void>[] = [];
+
+            for (const task of executionTasks) {
+               const promise = task().then(() => {
+                  executing.splice(executing.indexOf(promise), 1);
+               });
+               executing.push(promise);
+
+               if (executing.length >= MAX_CONCURRENT) {
+                  await Promise.race(executing);
                }
             }
+
+            // Wait for remaining tasks to complete
+            await Promise.all(executing);
          } catch (error) {
             console.error("Error executing notebook cells:", error);
             setExecutionError(error as Error);
