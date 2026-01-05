@@ -375,6 +375,12 @@ paths:
                   $ref: "#/components/schemas/BigqueryConnection"
                 snowflakeConnection:
                   $ref: "#/components/schemas/SnowflakeConnection"
+                duckdbConnection:
+                  $ref: "#/components/schemas/DuckdbConnection"
+                motherduckConnection:
+                  $ref: "#/components/schemas/MotherDuckConnection"
+                trinoConnection:
+                  $ref: "#/components/schemas/TrinoConnection"
       responses:
         "200":
           description: Connection updated successfully
