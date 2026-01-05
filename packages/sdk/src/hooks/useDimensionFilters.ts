@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
    DimensionSpec,
    getDimensionKey,
-   makeDimensionKey,
 } from "./useDimensionalFilterRangeData";
 
 /**
