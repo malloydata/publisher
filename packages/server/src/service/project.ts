@@ -406,8 +406,6 @@ export class Project {
       if (body.name) {
          _package.setName(body.name);
       }
-      logger.info("body", body)
-      logger.info("body", body.location)
       _package.setPackageMetadata({
          name: body.name,
          description: body.description,
