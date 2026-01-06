@@ -253,13 +253,13 @@ export class ProjectStore {
          metadata: project.metadata || {},
       };
       const existingProject = await repository.getProjectByName(projectName);
-      
+
       if (existingProject) {
          const updateData = {
             description: projectDescription,
             metadata: project.metadata || {},
          };
-         
+
          await repository.updateProject(existingProject.id, updateData);
          return { id: existingProject.id, name: projectName };
       } else {
@@ -702,7 +702,9 @@ export class ProjectStore {
       return updatedProject;
    }
 
-   public async deleteProject(projectName: string): Promise<Project | undefined> {
+   public async deleteProject(
+      projectName: string,
+   ): Promise<Project | undefined> {
       await this.finishedInitialization;
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
@@ -711,7 +713,7 @@ export class ProjectStore {
       if (!project) {
          return;
       }
-      
+
       const projectPath = project.metadata?.location;
       this.projects.delete(projectName);
       await this.deleteProjectFromDatabase(projectName);
@@ -720,10 +722,10 @@ export class ProjectStore {
             await fs.promises.rm(projectPath, { recursive: true, force: true });
             logger.info(`Deleted project directory: ${projectPath}`);
          } catch (err) {
-            logger.error('Error removing project directory', { error: err });
+            logger.error("Error removing project directory", { error: err });
          }
       }
-      
+
       return project;
    }
 

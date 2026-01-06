@@ -97,16 +97,16 @@ export class ProjectRepository {
       const setClauses: string[] = [];
       const params: unknown[] = [];
 
-       if (updates.name !== undefined && updates.name !== existing.name) {
+      if (updates.name !== undefined && updates.name !== existing.name) {
          setClauses.push(`name = ?`);
          params.push(updates.name);
       }
-      
+
       if (updates.path !== undefined && updates.path !== existing.path) {
          setClauses.push(`path = ?`);
          params.push(updates.path);
       }
-   
+
       if (updates.description !== undefined) {
          setClauses.push(`description = ?`);
          params.push(updates.description);

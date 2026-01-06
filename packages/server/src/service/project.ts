@@ -59,11 +59,11 @@ export class Project {
 
    private async writeProjectReadme(readme?: string): Promise<void> {
       if (readme === undefined) return;
-      
-      const readmePath = path.join(this.projectPath, 'README.md');
-      
+
+      const readmePath = path.join(this.projectPath, "README.md");
+
       try {
-         await fs.promises.writeFile(readmePath, readme, 'utf-8');
+         await fs.promises.writeFile(readmePath, readme, "utf-8");
          logger.info(`Updated README.md for project ${this.projectName}`);
       } catch (err) {
          logger.error(`Failed to write README.md`, { error: err });
@@ -362,35 +362,35 @@ export class Project {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: { name: string; description?: string }
+      metadata: { name: string; description?: string },
    ): Promise<void> {
       const packagePath = path.join(this.projectPath, packageName);
-      const manifestPath = path.join(packagePath, 'publisher.json');
-      
+      const manifestPath = path.join(packagePath, "publisher.json");
+
       try {
          // Read existing manifest
          let existingManifest: Record<string, unknown> = {};
          try {
-            const content = await fs.promises.readFile(manifestPath, 'utf-8');
+            const content = await fs.promises.readFile(manifestPath, "utf-8");
             existingManifest = JSON.parse(content);
          } catch (err) {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
-         
+
          // Update with new metadata
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
          };
-         
+
          // Write back to file
          await fs.promises.writeFile(
             manifestPath,
             JSON.stringify(updatedManifest, null, 2),
-            'utf-8'
+            "utf-8",
          );
-         
+
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (err) {
          logger.error(`Failed to write publisher.json`, { error: err });
