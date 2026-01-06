@@ -392,8 +392,8 @@ export class Project {
          );
 
          logger.info(`Updated publisher.json for ${packageName}`);
-      } catch (err) {
-         logger.error(`Failed to write publisher.json`, { error: err });
+      } catch (error) {
+         logger.error(`Failed to write publisher.json`, { error });
          throw new Error(`Failed to update package manifest`);
       }
    }
@@ -406,6 +406,8 @@ export class Project {
       if (body.name) {
          _package.setName(body.name);
       }
+      logger.info("body", body)
+      logger.info("body", body.location)
       _package.setPackageMetadata({
          name: body.name,
          description: body.description,
