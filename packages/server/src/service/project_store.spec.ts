@@ -334,6 +334,7 @@ describe("ProjectStore Service", () => {
       writeFileSync(
          publisherConfigPath,
          JSON.stringify({
+            frozenConfig: false,
             projects: [
                {
                   name: projectName,
@@ -347,6 +348,8 @@ describe("ProjectStore Service", () => {
             ],
          }),
       );
+
+      await projectStore.finishedInitialization;
 
       // Get the project
       const project = await projectStore.getProject(projectName);
