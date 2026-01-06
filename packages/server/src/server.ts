@@ -590,16 +590,13 @@ app.patch(
    `${API_PREFIX}/projects/:projectName/packages/:packageName`,
    async (req, res) => {
       try {
-         const projectName = req.params.projectName;
-         const packageName = req.params.packageName;
-
-         const updated = await packageController.updatePackage(
-            projectName,
-            packageName,
-            req.body,
+         res.status(200).json(
+            await packageController.updatePackage(
+               req.params.projectName,
+               req.params.packageName,
+               req.body,
+            ),
          );
-
-         res.status(200).json(updated);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -612,11 +609,12 @@ app.delete(
    `${API_PREFIX}/projects/:projectName/packages/:packageName`,
    async (req, res) => {
       try {
-         const projectName = req.params.projectName;
-         const packageName = req.params.packageName;
-
-         await packageController.deletePackage(projectName, packageName);
-         res.status(200).json({ success: true });
+         res.status(200).json(
+            await packageController.deletePackage(
+               req.params.projectName,
+               req.params.packageName,
+            ),
+         );
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
