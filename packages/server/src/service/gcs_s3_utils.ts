@@ -159,9 +159,12 @@ async function listAllCloudFiles(
 
       return allFiles;
    } catch (error) {
-      logger.error(`Failed to list ${storageType} objects in bucket ${bucket}`, {
-         error,
-      });
+      logger.error(
+         `Failed to list ${storageType} objects in bucket ${bucket}`,
+         {
+            error,
+         },
+      );
       throw new Error(
          `Failed to list objects in ${storageType} bucket ${bucket}: ${error instanceof Error ? error.message : String(error)}`,
       );

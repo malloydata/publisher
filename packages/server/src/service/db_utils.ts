@@ -425,7 +425,11 @@ export async function getTablesForSchema(
    const parsedUri = parseCloudUri(schemaName);
 
    if (parsedUri && connection.type === "duckdb") {
-      const { type: cloudType, bucket: bucketName, path: directoryPath } = parsedUri;
+      const {
+         type: cloudType,
+         bucket: bucketName,
+         path: directoryPath,
+      } = parsedUri;
 
       const attachedDatabases =
          connection.duckdbConnection?.attachedDatabases || [];
@@ -723,7 +727,11 @@ export async function listTablesForSchema(
       const parsedUri = parseCloudUri(schemaName);
 
       if (parsedUri) {
-         const { type: cloudType, bucket: bucketName, path: directoryPath } = parsedUri;
+         const {
+            type: cloudType,
+            bucket: bucketName,
+            path: directoryPath,
+         } = parsedUri;
 
          const attachedDatabases =
             connection.duckdbConnection.attachedDatabases || [];
