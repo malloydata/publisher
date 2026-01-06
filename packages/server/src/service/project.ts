@@ -373,7 +373,7 @@ export class Project {
          try {
             const content = await fs.promises.readFile(manifestPath, "utf-8");
             existingManifest = JSON.parse(content);
-         } catch (err) {
+         } catch (_err) {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
