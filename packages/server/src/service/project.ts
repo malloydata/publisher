@@ -393,7 +393,7 @@ export class Project {
 
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
-         logger.error(`Failed to write publisher.json`, { error });
+         logger.error(`Failed to update publisher.json`, { error });
          throw new Error(`Failed to update package manifest`);
       }
    }
@@ -414,7 +414,7 @@ export class Project {
       });
 
       await this.writePackageManifest(packageName, {
-         name: body.name || packageName,
+         name: packageName,
          description: body.description,
       });
 

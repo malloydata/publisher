@@ -56,8 +56,8 @@ mock.module("../storage/StorageManager", () => {
                   data: MockData,
                ): Promise<MockData> => ({
                   id,
-                  name: data.name || "test-project",
-                  path: data.path || "/test/path",
+                  name: data.name,
+                  path: data.path,
                   description: data.description,
                   metadata: data.metadata || {},
                   createdAt: new Date(),
