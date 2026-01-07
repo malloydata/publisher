@@ -72,7 +72,7 @@ export default function ConnectionExplorer({
                      }}
                   >
                      <Typography variant="overline" fontWeight="bold">
-                        Paths
+                        Table Paths
                      </Typography>
                      <FormControlLabel
                         control={
