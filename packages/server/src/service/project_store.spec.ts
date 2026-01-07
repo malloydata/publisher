@@ -7,6 +7,7 @@ import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { ProjectStore } from "./project_store";
 import { Project } from "./project";
+import { readFileSync } from "fs";
 
 type MockData = Record<string, unknown>;
 
@@ -408,6 +409,79 @@ describe("ProjectStore Service", () => {
          expect(project).toBeInstanceOf(Project);
          expect(project.metadata.name).toBe(projectName);
       });
+   });
+
+   it("should return 401 when trying to create project with frozen config", async () => {
+      mock.module("../config", () => ({
+         isPublisherConfigFrozen: () => true,
+      }));
+
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: true,
+            projects: [],
+         }),
+      );
+
+      const frozenProjectStore = new ProjectStore(serverRootPath);
+      await frozenProjectStore.finishedInitialization;
+
+      const projects = await frozenProjectStore.listProjects();
+      expect(projects).toEqual([]);
+
+      const config = JSON.parse(readFileSync(publisherConfigPath, "utf-8"));
+      expect(config.frozenConfig).toBe(true);
+   });
+
+   it("should return 500 when project creation fails due to invalid path", async () => {
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  name: projectName,
+                  packages: [
+                     {
+                        name: projectName,
+                        location: "/invalid/nonexistent/path",
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      await expect(projectStore.getProject(projectName)).rejects.toThrow();
+   });
+
+   it("should return 500 when project creation fails due to missing packages", async () => {
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  name: projectName,
+               },
+            ],
+         }),
+      );
+
+      await expect(projectStore.getProject(projectName)).rejects.toThrow();
    });
 });
 
