@@ -33,13 +33,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
-            echo "Cache hit! Using cached dependencies..."
-            bun install --frozen-lockfile --no-summary
-          else
-            echo "Cache miss! Installing dependencies..."
-            bun install --frozen-lockfile
-          fi
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
         shell: bash
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
