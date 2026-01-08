@@ -22,13 +22,11 @@ jobs:
           submodules: "true"
 
       - name: Setup Bun
-        if: matrix.os != 'ubuntu-latest'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.23
 
       - name: Cache Bun dependencies
-        if: matrix.os != 'ubuntu-latest'
         id: bun-cache
         uses: actions/cache@v4
         with:
@@ -38,7 +36,6 @@ jobs:
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        if: matrix.os != 'ubuntu-latest'
         run: |
           if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
             echo "Cache hit! Using cached dependencies..."
@@ -52,18 +49,15 @@ jobs:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Generate API types
-        if: matrix.os != 'ubuntu-latest'
         run: bun run generate-api-types
         shell: bash
 
       - name: Build
-        if: matrix.os != 'ubuntu-latest'
         run: bun run build
         shell: bash
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Run tests
-        if: matrix.os != 'ubuntu-latest'
         run: bun run test
         shell: bash
