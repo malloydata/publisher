@@ -481,6 +481,7 @@ describe("service/connection_service", () => {
          (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
 
          const partialUpdate: Partial<ApiConnection> = {
+            type: "postgres",
             postgresConnection: {
                host: "new-host",
                port: 5432,
