@@ -59,8 +59,10 @@ mock.module("../storage/StorageManager", () => {
                   name: data.name || "test-project",
                   path: data.path || "/test/path",
                   description: data.description,
-                  readme: data.readme,
-                  metadata: data.metadata || {},
+                  metadata: {
+                     ...(data.metadata || {}),
+                     readme: data.readme,
+                  },
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
