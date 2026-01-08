@@ -120,7 +120,7 @@ export class ConnectionService {
       const existingConnections = project.listApiConnections();
 
       const updatedConnection = {
-         ...dbConnection,
+         ...dbConnection.config,
          ...connection,
          name: connectionName,
       };
