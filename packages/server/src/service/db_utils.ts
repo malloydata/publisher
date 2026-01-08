@@ -7,9 +7,10 @@ import {
    CloudStorageCredentials,
    gcsConnectionToCredentials,
    getCloudTablesWithColumns,
-   isDataFile,
-   listAllCloudFiles,
+   listAllDataFilesInBucket,
    listCloudBuckets,
+   listFilesInCloudDirectory,
+   parseCloudUri,
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
 import { ApiConnection } from "./model";
@@ -324,35 +325,47 @@ export async function getSchemasForConnection(
          const attachedDatabases =
             connection.duckdbConnection.attachedDatabases || [];
 
-         for (const attachedDb of attachedDatabases) {
-            if (
+         // Process all cloud storage connections in parallel
+         const cloudDatabases = attachedDatabases.filter(
+            (attachedDb) =>
                (attachedDb.type === "gcs" || attachedDb.type === "s3") &&
-               (attachedDb.gcsConnection || attachedDb.s3Connection)
-            ) {
-               const credentials =
-                  attachedDb.type === "gcs"
-                     ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
-                     : s3ConnectionToCredentials(attachedDb.s3Connection!);
+               (attachedDb.gcsConnection || attachedDb.s3Connection),
+         );
 
-               try {
-                  const buckets = await listCloudBuckets(credentials);
-                  for (const bucket of buckets) {
-                     schemas.push({
-                        name: `${attachedDb.type}.${bucket.name}`,
-                        isHidden: false,
-                        isDefault: false,
-                     });
-                  }
-                  logger.info(
-                     `Listed ${buckets.length} ${attachedDb.type.toUpperCase()} buckets for attached database ${attachedDb.name}`,
-                  );
-               } catch (cloudError) {
-                  logger.warn(
-                     `Failed to list ${attachedDb.type.toUpperCase()} buckets for ${attachedDb.name}`,
-                     { error: cloudError },
-                  );
-               }
+         const cloudDbPromises = cloudDatabases.map(async (attachedDb) => {
+            const dbType = attachedDb.type as "gcs" | "s3";
+            const credentials =
+               dbType === "gcs"
+                  ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
+                  : s3ConnectionToCredentials(attachedDb.s3Connection!);
+
+            try {
+               const buckets = await listCloudBuckets(credentials);
+               const scheme = dbType === "gcs" ? "gs" : "s3";
+
+               logger.info(
+                  `Listed ${buckets.length} ${dbType.toUpperCase()} buckets for attached database ${attachedDb.name}`,
+               );
+
+               // Just return bucket URIs as schemas - fast!
+               // Files/directories will be listed when user selects a bucket
+               return buckets.map((bucket) => ({
+                  name: `${scheme}://${bucket.name}`,
+                  isHidden: false,
+                  isDefault: false,
+               }));
+            } catch (cloudError) {
+               logger.warn(
+                  `Failed to list ${dbType.toUpperCase()} buckets for ${attachedDb.name}`,
+                  { error: cloudError },
+               );
+               return [];
             }
+         });
+
+         const cloudSchemaArrays = await Promise.all(cloudDbPromises);
+         for (const cloudSchemas of cloudSchemaArrays) {
+            schemas.push(...cloudSchemas);
          }
 
          return schemas;
@@ -408,47 +421,56 @@ export async function getTablesForSchema(
    schemaName: string,
    malloyConnection: Connection,
 ): Promise<ApiTable[]> {
-   // First get the list of table names
-   const tableNames = await listTablesForSchema(
-      connection,
-      schemaName,
-      malloyConnection,
-   );
+   // Check if this is a cloud storage file path (gs://bucket/path/file.ext or s3://bucket/path/file.ext)
+   const parsedUri = parseCloudUri(schemaName);
 
-   const catalogName = schemaName.split(".")[0];
-
-   if (
-      (catalogName === "gcs" || catalogName === "s3") &&
-      connection.type === "duckdb"
-   ) {
-      console.log(
-         `Getting ${catalogName.toUpperCase()} tables for schema`,
-         schemaName,
-      );
-      console.log("tableNames", tableNames);
-      const bucketName = schemaName.split(".")[1];
-      console.log("bucketName", bucketName);
+   if (parsedUri && connection.type === "duckdb") {
+      const {
+         type: cloudType,
+         bucket: bucketName,
+         path: directoryPath,
+      } = parsedUri;
 
       const attachedDatabases =
          connection.duckdbConnection?.attachedDatabases || [];
       const credentials = getCloudCredentialsFromAttachedDatabases(
          attachedDatabases,
-         catalogName as "gcs" | "s3",
+         cloudType,
       );
 
       if (!credentials) {
          throw new Error(
-            `${catalogName.toUpperCase()} credentials not found in attached databases`,
+            `${cloudType.toUpperCase()} credentials not found in attached databases`,
          );
       }
+
+      let fileKeys: string[];
+      if (directoryPath) {
+         const fileNames = await listFilesInCloudDirectory(
+            credentials,
+            bucketName,
+            directoryPath,
+         );
+         fileKeys = fileNames.map((fileName) => `${directoryPath}/${fileName}`);
+      } else {
+         fileKeys = await listAllDataFilesInBucket(credentials, bucketName);
+      }
+
+      console.log("File keys:", fileKeys);
 
       return await getCloudTablesWithColumns(
          malloyConnection,
          credentials,
          bucketName,
-         tableNames,
+         fileKeys,
       );
    }
+
+   const tableNames = await listTablesForSchema(
+      connection,
+      schemaName,
+      malloyConnection,
+   );
 
    // Fetch all table sources in parallel
    const tableSourcePromises = tableNames.map(async (tableName) => {
@@ -702,42 +724,54 @@ export async function listTablesForSchema(
          throw new Error("DuckDB connection is required");
       }
 
-      const catalogName = schemaName.split(".")[0];
-      const actualSchemaName = schemaName.split(".")[1];
+      const parsedUri = parseCloudUri(schemaName);
 
-      if (catalogName === "gcs" || catalogName === "s3") {
-         const bucketName = actualSchemaName;
+      if (parsedUri) {
+         const {
+            type: cloudType,
+            bucket: bucketName,
+            path: directoryPath,
+         } = parsedUri;
+
          const attachedDatabases =
             connection.duckdbConnection.attachedDatabases || [];
 
          const credentials = getCloudCredentialsFromAttachedDatabases(
             attachedDatabases,
-            catalogName as "gcs" | "s3",
+            cloudType,
          );
 
          if (!credentials) {
             throw new Error(
-               `${catalogName.toUpperCase()} credentials not found in attached databases`,
+               `${cloudType.toUpperCase()} credentials not found in attached databases`,
             );
          }
 
          try {
-            const objects = await listAllCloudFiles(credentials, bucketName);
-            return objects
-               .filter((obj) => isDataFile(obj.key))
-               .map((obj) => obj.key);
+            if (directoryPath) {
+               return await listFilesInCloudDirectory(
+                  credentials,
+                  bucketName,
+                  directoryPath,
+               );
+            } else {
+               return await listAllDataFilesInBucket(credentials, bucketName);
+            }
          } catch (error) {
             logger.error(
-               `Error listing ${catalogName.toUpperCase()} objects in bucket ${bucketName}`,
+               `Error listing ${cloudType.toUpperCase()} objects in ${schemaName}`,
                {
                   error,
                },
             );
             throw new Error(
-               `Failed to list files in ${catalogName.toUpperCase()} bucket ${bucketName}: ${(error as Error).message}`,
+               `Failed to list files in ${schemaName}: ${(error as Error).message}`,
             );
          }
       }
+
+      const catalogName = schemaName.split(".")[0];
+      const actualSchemaName = schemaName.split(".")[1];
 
       // Regular DuckDB table listing
       try {
