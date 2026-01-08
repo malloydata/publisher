@@ -19,7 +19,28 @@ mock.module("../storage/StorageManager", () => {
 
          getRepository() {
             return {
+               // ===== PROJECT METHODS =====
                listProjects: async (): Promise<unknown[]> => [],
+
+               getProjectById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  name: "test-project",
+                  path: "/test/path",
+                  description: "Test description",
+                  metadata: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getProjectByName: async (
+                  _name: string,
+               ): Promise<MockData | null> => {
+                  // Return null to simulate "project doesn't exist yet"
+                  return null;
+               },
+
                createProject: async (data: MockData): Promise<MockData> => ({
                   id: "test-project-id",
                   name: data.name,
@@ -29,40 +50,94 @@ mock.module("../storage/StorageManager", () => {
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                updateProject: async (
                   id: string,
                   data: MockData,
                ): Promise<MockData> => ({
                   id,
-                  ...data,
+                  name: "test-project",
+                  path: "/test/path",
+                  description: data.description,
+                  metadata: data.metadata || {},
+                  createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
+               deleteProject: async (_id: string): Promise<void> => {},
+
+               // ===== PACKAGE METHODS =====
                listPackages: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
+
+               getPackageById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-package",
+                  description: "Test package",
+                  manifestPath: "/test/manifest.json",
+                  metadata: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getPackageByName: async (
+                  _projectId: string,
+                  _name: string,
+               ): Promise<MockData | null> => null,
+
                createPackage: async (data: MockData): Promise<MockData> => ({
                   id: "test-package-id",
                   projectId: data.projectId,
                   name: data.name,
-                  version: data.version,
                   description: data.description,
                   manifestPath: data.manifestPath,
                   metadata: data.metadata,
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                updatePackage: async (
-                  _id: string,
+                  id: string,
                   data: MockData,
                ): Promise<MockData> => ({
-                  id: _id,
-                  ...data,
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-package",
+                  description: data.description,
+                  manifestPath: "/test/manifest.json",
+                  metadata: data.metadata || {},
+                  createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                deletePackage: async (_id: string): Promise<void> => {},
+
+               // ===== CONNECTION METHODS =====
                listConnections: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
+
+               getConnectionById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-connection",
+                  type: "postgres",
+                  config: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getConnectionByName: async (
+                  _projectId: string,
+                  _name: string,
+               ): Promise<MockData | null> => null,
+
                createConnection: async (data: MockData): Promise<MockData> => ({
                   id: "test-connection-id",
                   projectId: data.projectId,
@@ -72,14 +147,20 @@ mock.module("../storage/StorageManager", () => {
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                updateConnection: async (
-                  _id: string,
+                  id: string,
                   data: MockData,
                ): Promise<MockData> => ({
-                  id: _id,
-                  ...data,
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-connection",
+                  type: "postgres",
+                  config: data.config || {},
+                  createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                deleteConnection: async (_id: string): Promise<void> => {},
             };
          }
@@ -253,6 +334,7 @@ describe("ProjectStore Service", () => {
       writeFileSync(
          publisherConfigPath,
          JSON.stringify({
+            frozenConfig: false,
             projects: [
                {
                   name: projectName,
@@ -266,6 +348,8 @@ describe("ProjectStore Service", () => {
             ],
          }),
       );
+
+      await projectStore.finishedInitialization;
 
       // Get the project
       const project = await projectStore.getProject(projectName);

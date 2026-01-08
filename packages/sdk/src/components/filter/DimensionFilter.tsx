@@ -265,6 +265,7 @@ export function DimensionFilter({
       if (value1) {
          onChange({
             dimensionName: spec.dimensionName,
+            source: spec.source,
             matchType: newMatchType,
             value: value1,
             ...(requiresTwoValues(newMatchType) && value2 && { value2 }),
@@ -294,6 +295,7 @@ export function DimensionFilter({
       ) {
          onChange({
             dimensionName: spec.dimensionName,
+            source: spec.source,
             matchType,
             value: newValue1,
             ...(needsTwoValues && newValue2 && { value2: newValue2 }),

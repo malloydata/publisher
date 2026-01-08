@@ -219,6 +219,22 @@ export class ProjectStore {
       logger.info(`Synced project "${projectName}" to database`);
    }
 
+   public async deleteProjectFromDatabase(projectName: string): Promise<void> {
+      const repository = this.storageManager.getRepository();
+
+      // Get the project from database
+      const dbProject = await repository.getProjectByName(projectName);
+
+      if (!dbProject) {
+         logger.error(`Project "${projectName}" not found in database`);
+         return;
+      }
+
+      // Delete the project (this will cascade delete connections and packages)
+      await repository.deleteProject(dbProject.id);
+      logger.info(`Deleted project "${projectName}" from database`);
+   }
+
    private async addProjectMetadata(
       project: Project,
       repository: ReturnType<typeof this.storageManager.getRepository>,
@@ -228,9 +244,7 @@ export class ProjectStore {
          throw new Error("Project name is required but not found");
       }
       const projectPath = project.metadata?.location || "";
-      const projectDescription =
-         (project.metadata as { description?: string })?.description ??
-         undefined;
+      const projectDescription = project.metadata?.readme;
 
       const projectData = {
          name: projectName,
@@ -238,16 +252,18 @@ export class ProjectStore {
          description: projectDescription,
          metadata: project.metadata || {},
       };
+      const existingProject = await repository.getProjectByName(projectName);
 
-      try {
+      if (existingProject) {
+         const updateData = {
+            description: projectDescription,
+            metadata: project.metadata || {},
+         };
+
+         await repository.updateProject(existingProject.id, updateData);
+         return { id: existingProject.id, name: projectName };
+      } else {
          return await repository.createProject(projectData);
-      } catch (err) {
-         // If project exists, update it
-         const existingProject = await repository.getProjectByName(projectName);
-         if (existingProject) {
-            return repository.updateProject(existingProject.id, projectData);
-         }
-         throw err;
       }
    }
 
@@ -686,7 +702,9 @@ export class ProjectStore {
       return updatedProject;
    }
 
-   public async deleteProject(projectName: string) {
+   public async deleteProject(
+      projectName: string,
+   ): Promise<Project | undefined> {
       await this.finishedInitialization;
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
@@ -695,7 +713,19 @@ export class ProjectStore {
       if (!project) {
          return;
       }
+
+      const projectPath = project.metadata?.location;
       this.projects.delete(projectName);
+      await this.deleteProjectFromDatabase(projectName);
+      if (projectPath) {
+         try {
+            await fs.promises.rm(projectPath, { recursive: true, force: true });
+            logger.info(`Deleted project directory: ${projectPath}`);
+         } catch (err) {
+            logger.error("Error removing project directory", { error: err });
+         }
+      }
+
       return project;
    }
 
