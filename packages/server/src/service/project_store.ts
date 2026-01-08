@@ -1,6 +1,7 @@
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import AdmZip from "adm-zip";
+import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -32,6 +33,7 @@ type ApiProject = components["schemas"]["Project"];
 export class ProjectStore {
    public serverRootPath: string;
    private projects: Map<string, Project> = new Map();
+   private projectMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
@@ -576,8 +578,33 @@ export class ProjectStore {
       reload: boolean = false,
    ): Promise<Project> {
       await this.finishedInitialization;
-      let project = this.projects.get(projectName);
-      if (project === undefined || reload) {
+
+      // Check if project is already loaded first
+      const project = this.projects.get(projectName);
+      if (project !== undefined && !reload) {
+         return project;
+      }
+
+      // We need to acquire the mutex to prevent concurrent requests from creating the
+      // project multiple times.
+      let projectMutex = this.projectMutexes.get(projectName);
+      if (projectMutex?.isLocked()) {
+         await projectMutex.waitForUnlock();
+         const existingProject = this.projects.get(projectName);
+         if (existingProject && !reload) {
+            return existingProject;
+         }
+      }
+      projectMutex = new Mutex();
+      this.projectMutexes.set(projectName, projectMutex);
+
+      return projectMutex.runExclusive(async () => {
+         // Double-check after acquiring mutex
+         const existingProject = this.projects.get(projectName);
+         if (existingProject !== undefined && !reload) {
+            return existingProject;
+         }
+
          const projectManifest = await ProjectStore.reloadProjectManifest(
             this.serverRootPath,
          );
@@ -585,19 +612,19 @@ export class ProjectStore {
             (p) => p.name === projectName,
          );
          const projectPath =
-            project?.metadata.location || projectConfig?.packages[0]?.location;
+            existingProject?.metadata.location ||
+            projectConfig?.packages[0]?.location;
          if (!projectPath) {
             throw new ProjectNotFoundError(
                `Project "${projectName}" could not be resolved to a path.`,
             );
          }
-         project = await this.addProject({
+         return await this.addProject({
             name: projectName,
             resource: `${API_PREFIX}/projects/${projectName}`,
             connections: projectConfig?.connections || [],
          });
-      }
-      return project;
+      });
    }
 
    public async addProject(
