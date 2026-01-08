@@ -2,11 +2,6 @@ name: Cross Platform Tests
 
 on:
   workflow_call:
-  workflow_dispatch:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
 
 jobs:
   cross_platform_test:

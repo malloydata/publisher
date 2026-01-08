@@ -55,13 +55,8 @@ jobs:
             ${{ runner.os }}-bun-
       - name: Install dependencies
         run: |
-          if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
-            echo "Cache hit! Using cached dependencies..."
-            bun install --frozen-lockfile --no-summary
-          else
-            echo "Cache miss! Installing dependencies..."
-            bun install --frozen-lockfile
-          fi
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
       - name: Check formatting
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
@@ -92,13 +87,8 @@ jobs:
             ${{ runner.os }}-bun-
       - name: build server
         run: |
-          if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
-            echo "Cache hit! Using cached dependencies..."
-            bun install --frozen-lockfile --no-summary
-          else
-            echo "Cache miss! Installing dependencies..."
-            bun install --frozen-lockfile
-          fi
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
           bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
