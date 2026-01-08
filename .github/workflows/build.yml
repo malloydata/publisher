@@ -37,21 +37,6 @@ jobs:
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
         run: bun run lint
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: "true" # Fetch submodules
-      - name: Spin-up services
-        run: docker compose --profile ci up -d
-      - name: Install dependencies
-        run: docker exec -t publisher-ci bun install
-      - name: Build code
-        run: docker exec -t publisher-ci bun run build
-      - name: Run tests
-        run: docker exec -t publisher-ci sh -c "cd packages/server && bun test"
   npx_test:
     name: npx test
     runs-on: ubuntu-latest
@@ -90,3 +75,97 @@ jobs:
             echo "✗ API test failed: Expected 1 project, got different response"
             exit 1
           fi
+
+  build_ci_image:
+    name: Build CI Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build CI Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/Dockerfile.ci
+          push: false
+          tags: publisher-ci:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Output directly to tar file - buildx saves the image to tar without loading into daemon
+          outputs: type=docker,dest=/tmp/publisher-ci-image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: publisher-ci-image
+          path: /tmp/publisher-ci-image.tar
+          retention-days: 1
+
+  cross_platform_test:
+    name: Cross Platform Tests (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      # Native Windows build to test actual Windows paths (D:\something, C:\Users\...)
+      - name: Setup Bun
+        if: matrix.os == 'windows-latest'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.23
+
+      - name: Install dependencies
+        if: matrix.os == 'windows-latest'
+        run: bun install
+        shell: bash
+
+      - name: Generate API types
+        if: matrix.os == 'windows-latest'
+        run: bun run generate-api-types
+        shell: bash
+
+      - name: Build
+        if: matrix.os == 'windows-latest'
+        run: bun run build
+        shell: bash
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+
+      - name: Run tests (tests Windows paths like D:\a\repo\...)
+        if: matrix.os == 'windows-latest'
+        run: bun run test
+        shell: bash
+
+      # macOS continues with native build (no Docker needed)
+      - name: Setup Bun
+        if: matrix.os == 'macos-latest'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.23
+
+      - name: Install dependencies
+        if: matrix.os == 'macos-latest'
+        run: bun install
+
+      - name: Generate API types
+        if: matrix.os == 'macos-latest'
+        run: bun run generate-api-types
+
+      - name: Build
+        if: matrix.os == 'macos-latest'
+        run: bun run build
+
+      - name: Run tests
+        if: matrix.os == 'macos-latest'
+        run: bun run test
