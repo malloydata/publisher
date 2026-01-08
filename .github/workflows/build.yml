@@ -121,36 +121,6 @@ jobs:
             exit 1
           fi
 
-  build_ci_image:
-    name: Build CI Docker Image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: "true"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build CI Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./docker/Dockerfile.ci
-          push: false
-          tags: publisher-ci:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # Output directly to tar file - buildx saves the image to tar without loading into daemon
-          outputs: type=docker,dest=/tmp/publisher-ci-image.tar
-
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: publisher-ci-image
-          path: /tmp/publisher-ci-image.tar
-          retention-days: 1
-
   cross_platform_test:
     name: Trigger Cross Platform Tests
     uses: ./.github/workflows/cross-platform-tests.yml
