@@ -54,38 +54,38 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
                },
             });
 
-         expect(result).toBeDefined();
-         expect(result.isError).not.toBe(true); // Should be success
-         expect(result.content).toBeDefined();
+            expect(result).toBeDefined();
+            expect(result.isError).not.toBe(true); // Should be success
+            expect(result.content).toBeDefined();
 
-         const content = result.content as Array<{
-            type: string;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            [key: string]: any;
-         }>;
-         expect(Array.isArray(content)).toBe(true);
-         // Expect 1 content block (result)
-         expect(content.length).toBe(1);
+            const content = result.content as Array<{
+               type: string;
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               [key: string]: any;
+            }>;
+            expect(Array.isArray(content)).toBe(true);
+            // Expect 1 content block (result)
+            expect(content.length).toBe(1);
 
-         // Check structure of each block
-         for (const block of content) {
-            expect(block.type).toBe("resource");
-            expect(block.resource).toBeDefined();
-            expect(block.resource.type).toBe("application/json");
-            expect(block.resource.text).toBeDefined();
-            expect(typeof block.resource.text).toBe("string");
-         }
+            // Check structure of each block
+            for (const block of content) {
+               expect(block.type).toBe("resource");
+               expect(block.resource).toBeDefined();
+               expect(block.resource.type).toBe("application/json");
+               expect(block.resource.text).toBeDefined();
+               expect(typeof block.resource.text).toBe("string");
+            }
 
-         // Basic check on the first block (result)
+            // Basic check on the first block (result)
 
-         const queryResultBlock = content[0].resource;
-         expect(queryResultBlock.uri).toContain("#result");
-         const queryResultData = JSON.parse(queryResultBlock.text);
-         expect(queryResultData).toBeDefined();
-         // Check properties directly on the parsed Result object
-         expect(queryResultData.data).toBeDefined();
-         expect(Array.isArray(queryResultData.data.array_value)).toBe(true);
-         // Could add more specific checks on data if needed
+            const queryResultBlock = content[0].resource;
+            expect(queryResultBlock.uri).toContain("#result");
+            const queryResultData = JSON.parse(queryResultBlock.text);
+            expect(queryResultData).toBeDefined();
+            // Check properties directly on the parsed Result object
+            expect(queryResultData.data).toBeDefined();
+            expect(Array.isArray(queryResultData.data.array_value)).toBe(true);
+            // Could add more specific checks on data if needed
          },
          { timeout: 30000 },
       );
@@ -93,42 +93,44 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
       it(
          "should successfully execute a nested view using sourceName and queryName",
          async () => {
-         if (!env) throw new Error("Test environment not initialized");
-         const params = {
-            projectName: PROJECT_NAME,
-            packageName: PACKAGE_NAME,
-            modelPath: "flights.malloy",
-            sourceName: "flights", // Added sourceName
-            queryName: "top_carriers",
-         };
+            if (!env) throw new Error("Test environment not initialized");
+            const params = {
+               projectName: PROJECT_NAME,
+               packageName: PACKAGE_NAME,
+               modelPath: "flights.malloy",
+               sourceName: "flights", // Added sourceName
+               queryName: "top_carriers",
+            };
 
-         // Expect RESOLUTION with success
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         const result: any = await mcpClient.callTool({
-            name: "malloy_executeQuery",
-            arguments: params,
-         });
+            // Expect RESOLUTION with success
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const result: any = await mcpClient.callTool({
+               name: "malloy_executeQuery",
+               arguments: params,
+            });
 
-         expect(result).toBeDefined();
-         expect(result.isError).toBe(false); // Expecting success
-         expect(result.content).toBeDefined();
-         expect(Array.isArray(result.content)).toBe(true);
-         // Expect 1 content block (result)
-         expect(result.content.length).toBeGreaterThan(0);
+            expect(result).toBeDefined();
+            expect(result.isError).toBe(false); // Expecting success
+            expect(result.content).toBeDefined();
+            expect(Array.isArray(result.content)).toBe(true);
+            // Expect 1 content block (result)
+            expect(result.content.length).toBeGreaterThan(0);
 
-         // Check the structure of the first content block (result)
-         const queryResultBlock = result.content![0];
-         expect(queryResultBlock.type).toBe("resource");
-         expect(queryResultBlock.resource).toBeDefined();
-         expect(queryResultBlock.resource.type).toBe("application/json");
-         expect(queryResultBlock.resource.uri).toMatch(/result/); // Check URI contains queryResult
-         expect(queryResultBlock.resource.text).toBeDefined();
+            // Check the structure of the first content block (result)
+            const queryResultBlock = result.content![0];
+            expect(queryResultBlock.type).toBe("resource");
+            expect(queryResultBlock.resource).toBeDefined();
+            expect(queryResultBlock.resource.type).toBe("application/json");
+            expect(queryResultBlock.resource.uri).toMatch(/result/); // Check URI contains queryResult
+            expect(queryResultBlock.resource.text).toBeDefined();
 
-         // Optionally, parse and check the actual data
-         const queryResultPayload = JSON.parse(queryResultBlock.resource.text);
-         expect(queryResultPayload).toBeDefined();
-         // Add more specific data checks if needed, e.g., check for specific columns or row count > 0
-         // Example: expect(queryResultPayload._queryResult.data.rows.length).toBeGreaterThan(0);
+            // Optionally, parse and check the actual data
+            const queryResultPayload = JSON.parse(
+               queryResultBlock.resource.text,
+            );
+            expect(queryResultPayload).toBeDefined();
+            // Add more specific data checks if needed, e.g., check for specific columns or row count > 0
+            // Example: expect(queryResultPayload._queryResult.data.rows.length).toBeGreaterThan(0);
          },
          { timeout: 20000 },
       );
@@ -136,36 +138,37 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
       it(
          "should return application error for invalid Malloy query syntax",
          async () => {
-         if (!env) throw new Error("Test environment not initialized");
-         const params = {
-            projectName: PROJECT_NAME,
-            packageName: PACKAGE_NAME,
-            modelPath: "flights.malloy",
-            query: "run: flights->{BAD SYNTAX aggregate: flight_count is count()}",
-         };
+            if (!env) throw new Error("Test environment not initialized");
+            const params = {
+               projectName: PROJECT_NAME,
+               packageName: PACKAGE_NAME,
+               modelPath: "flights.malloy",
+               query: "run: flights->{BAD SYNTAX aggregate: flight_count is count()}",
+            };
 
-         // Application Error (Malloy Compilation): Expect RESOLUTION with isError: true
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         const result: any = await mcpClient.callTool({
-            name: "malloy_executeQuery",
-            arguments: params,
-         });
+            // Application Error (Malloy Compilation): Expect RESOLUTION with isError: true
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const result: any = await mcpClient.callTool({
+               name: "malloy_executeQuery",
+               arguments: params,
+            });
 
-         expect(result.isError).toBe(true);
-         expect(result.content).toBeDefined();
-         // Check the new structure: resource -> application/json
-         const errorBlockSyntax = result.content![0];
-         expect(errorBlockSyntax.type).toBe("resource");
-         expect(errorBlockSyntax.resource).toBeDefined();
-         expect(errorBlockSyntax.resource.type).toBe("application/json");
+            expect(result.isError).toBe(true);
+            expect(result.content).toBeDefined();
+            // Check the new structure: resource -> application/json
+            const errorBlockSyntax = result.content![0];
+            expect(errorBlockSyntax.type).toBe("resource");
+            expect(errorBlockSyntax.resource).toBeDefined();
+            expect(errorBlockSyntax.resource.type).toBe("application/json");
 
-         // Check for Malloy compilation error message from getMalloyErrorDetails
-         const errorJsonTextSyntax = errorBlockSyntax.resource.text as string;
-         const errorPayloadSyntax = JSON.parse(errorJsonTextSyntax);
-         expect(errorPayloadSyntax.error).toMatch(
-            /syntax error|no viable alternative/i,
-         );
-         expect(Array.isArray(errorPayloadSyntax.suggestions)).toBe(true);
+            // Check for Malloy compilation error message from getMalloyErrorDetails
+            const errorJsonTextSyntax = errorBlockSyntax.resource
+               .text as string;
+            const errorPayloadSyntax = JSON.parse(errorJsonTextSyntax);
+            expect(errorPayloadSyntax.error).toMatch(
+               /syntax error|no viable alternative/i,
+            );
+            expect(Array.isArray(errorPayloadSyntax.suggestions)).toBe(true);
          },
          { timeout: 20000 },
       );
