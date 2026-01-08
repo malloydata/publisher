@@ -57,9 +57,24 @@ export class Project {
       void this.reloadProjectMetadata();
    }
 
+   private async writeProjectReadme(readme?: string): Promise<void> {
+      if (readme === undefined) return;
+
+      const readmePath = path.join(this.projectPath, "README.md");
+
+      try {
+         await fs.promises.writeFile(readmePath, readme, "utf-8");
+         logger.info(`Updated README.md for project ${this.projectName}`);
+      } catch (err) {
+         logger.error(`Failed to write README.md`, { error: err });
+         throw new Error(`Failed to update project README`);
+      }
+   }
+
    public async update(payload: ApiProject) {
       if (payload.readme !== undefined) {
          this.metadata.readme = payload.readme;
+         await this.writeProjectReadme(payload.readme);
       }
 
       // Handle connections update
@@ -345,6 +360,44 @@ export class Project {
       return this.packages.get(packageName);
    }
 
+   private async writePackageManifest(
+      packageName: string,
+      metadata: { name: string; description?: string },
+   ): Promise<void> {
+      const packagePath = path.join(this.projectPath, packageName);
+      const manifestPath = path.join(packagePath, "publisher.json");
+
+      try {
+         // Read existing manifest
+         let existingManifest: Record<string, unknown> = {};
+         try {
+            const content = await fs.promises.readFile(manifestPath, "utf-8");
+            existingManifest = JSON.parse(content);
+         } catch (_err) {
+            logger.warn(`Could not read manifest for ${packageName}`);
+         }
+
+         // Update with new metadata
+         const updatedManifest = {
+            ...existingManifest,
+            name: metadata.name,
+            description: metadata.description,
+         };
+
+         // Write back to file
+         await fs.promises.writeFile(
+            manifestPath,
+            JSON.stringify(updatedManifest, null, 2),
+            "utf-8",
+         );
+
+         logger.info(`Updated publisher.json for ${packageName}`);
+      } catch (error) {
+         logger.error(`Failed to update publisher.json`, { error });
+         throw new Error(`Failed to update package manifest`);
+      }
+   }
+
    public async updatePackage(packageName: string, body: ApiPackage) {
       const _package = this.packages.get(packageName);
       if (!_package) {
@@ -359,6 +412,12 @@ export class Project {
          resource: body.resource,
          location: body.location,
       });
+
+      await this.writePackageManifest(packageName, {
+         name: packageName,
+         description: body.description,
+      });
+
       return _package.getPackageMetadata();
    }
 

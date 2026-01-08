@@ -1854,6 +1854,44 @@ components:
           type: string
           description: MySQL password for authentication
 
+    GCSConnection:
+      type: object
+      description: Google Cloud Storage connection configuration for DuckDB
+      properties:
+        keyId:
+          type: string
+          description: GCS HMAC access key ID
+        secret:
+          type: string
+          description: GCS HMAC secret key
+      required:
+        - keyId
+        - secret
+
+    S3Connection:
+      type: object
+      description: AWS S3 connection configuration for DuckDB
+      properties:
+        accessKeyId:
+          type: string
+          description: AWS access key ID
+        secretAccessKey:
+          type: string
+          description: AWS secret access key
+        region:
+          type: string
+          description: AWS region (e.g., us-east-1)
+          default: us-east-1
+        endpoint:
+          type: string
+          description: Custom S3-compatible endpoint URL (optional, for MinIO, etc.)
+        sessionToken:
+          type: string
+          description: AWS session token for temporary credentials (optional)
+      required:
+        - accessKeyId
+        - secretAccessKey
+
     BigqueryConnection:
       type: object
       description: Google BigQuery database connection configuration
@@ -1969,7 +2007,7 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum: [bigquery, snowflake, postgres]
+          enum: [bigquery, snowflake, postgres, gcs, s3]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         bigqueryConnection:
@@ -1978,7 +2016,10 @@ components:
           $ref: "#/components/schemas/SnowflakeConnection"
         postgresConnection:
           $ref: "#/components/schemas/PostgresConnection"
-
+        gcsConnection:
+          $ref: "#/components/schemas/GCSConnection"
+        s3Connection:
+          $ref: "#/components/schemas/S3Connection"
     # TODO: What is this?  Can we remove it?
     SqlSource:
       type: object

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { DimensionSpec } from "./useDimensionalFilterRangeData";
+import {
+   DimensionSpec,
+   getDimensionKey,
+} from "./useDimensionalFilterRangeData";
 
 /**
  * Match types for filtering dimensions
@@ -29,6 +32,8 @@ export type FilterValue = FilterValuePrimitive | FilterValuePrimitive[];
  */
 export interface FilterSelection {
    dimensionName: string;
+   /** Source name - required to uniquely identify filters when same dimension name exists in multiple sources */
+   source: string;
    matchType: MatchType;
    value: FilterValue;
    value2?: FilterValuePrimitive; // For "Between" match type
@@ -54,15 +59,12 @@ export interface UseDimensionFiltersParams {
  * Result from the useDimensionFilters hook
  */
 export interface UseDimensionFiltersResult {
-   /** Current filter states */
+   /** Current filter states, keyed by composite key (source:dimensionName) */
    filterStates: Map<string, DimensionFilterState>;
-   /** Update a filter selection */
-   updateFilter: (
-      dimensionName: string,
-      selection: FilterSelection | null,
-   ) => void;
-   /** Clear a specific filter */
-   clearFilter: (dimensionName: string) => void;
+   /** Update a filter selection using composite key */
+   updateFilter: (key: string, selection: FilterSelection | null) => void;
+   /** Clear a specific filter using composite key */
+   clearFilter: (key: string) => void;
    /** Clear all filters */
    clearAllFilters: () => void;
    /** Get active filters (with selections) */
@@ -207,13 +209,14 @@ export function useDimensionFilters(
 ): UseDimensionFiltersResult {
    const { dimensionSpecs } = params;
 
-   // Initialize filter states
+   // Initialize filter states using composite keys (source:dimensionName)
    const [filterStates, setFilterStates] = useState<
       Map<string, DimensionFilterState>
    >(() => {
       const initialStates = new Map<string, DimensionFilterState>();
       dimensionSpecs.forEach((spec) => {
-         initialStates.set(spec.dimensionName, {
+         const key = getDimensionKey(spec);
+         initialStates.set(key, {
             spec,
             selection: null,
          });
@@ -227,9 +230,10 @@ export function useDimensionFilters(
          const newStates = new Map<string, DimensionFilterState>();
 
          dimensionSpecs.forEach((spec) => {
+            const key = getDimensionKey(spec);
             // Preserve existing selection if the dimension already exists
-            const existingState = prevStates.get(spec.dimensionName);
-            newStates.set(spec.dimensionName, {
+            const existingState = prevStates.get(key);
+            newStates.set(key, {
                spec,
                selection: existingState?.selection ?? null,
             });
@@ -239,15 +243,15 @@ export function useDimensionFilters(
       });
    }, [dimensionSpecs]);
 
-   // Update a filter selection
+   // Update a filter selection using composite key
    const updateFilter = useCallback(
-      (dimensionName: string, selection: FilterSelection | null) => {
+      (key: string, selection: FilterSelection | null) => {
          setFilterStates((prevStates) => {
             const newStates = new Map(prevStates);
-            const existingState = newStates.get(dimensionName);
+            const existingState = newStates.get(key);
 
             if (existingState) {
-               newStates.set(dimensionName, {
+               newStates.set(key, {
                   ...existingState,
                   selection,
                });
@@ -259,10 +263,10 @@ export function useDimensionFilters(
       [],
    );
 
-   // Clear a specific filter
+   // Clear a specific filter using composite key
    const clearFilter = useCallback(
-      (dimensionName: string) => {
-         updateFilter(dimensionName, null);
+      (key: string) => {
+         updateFilter(key, null);
       },
       [updateFilter],
    );

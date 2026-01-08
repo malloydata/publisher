@@ -96,26 +96,27 @@ export class ProjectRepository {
       const now = this.now();
       const setClauses: string[] = [];
       const params: unknown[] = [];
-      let paramIndex = 1;
 
-      if (updates.name !== undefined) {
-         setClauses.push(`name = $${paramIndex++}`);
+      if (updates.name !== undefined && updates.name !== existing.name) {
+         setClauses.push(`name = ?`);
          params.push(updates.name);
       }
-      if (updates.path !== undefined) {
-         setClauses.push(`path = $${paramIndex++}`);
+
+      if (updates.path !== undefined && updates.path !== existing.path) {
+         setClauses.push(`path = ?`);
          params.push(updates.path);
       }
+
       if (updates.description !== undefined) {
-         setClauses.push(`description = $${paramIndex++}`);
+         setClauses.push(`description = ?`);
          params.push(updates.description);
       }
       if (updates.metadata !== undefined) {
-         setClauses.push(`metadata = $${paramIndex++}`);
+         setClauses.push(`metadata = ?`);
          params.push(JSON.stringify(updates.metadata));
       }
 
-      setClauses.push(`updated_at = $${paramIndex++}`);
+      setClauses.push(`updated_at = ?`);
       params.push(now.toISOString());
       params.push(id);
 
