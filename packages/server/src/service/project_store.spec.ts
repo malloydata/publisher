@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, rmSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
@@ -358,12 +358,21 @@ describe("ProjectStore Service", () => {
       const project = await projectStore.getProject(projectName);
 
       // Update the project
-      const updatedProject = await project.update({
+      await project.update({
          name: projectName,
          readme: "Updated README content",
       });
 
-      expect(updatedProject.metadata.readme).toBe("Updated README content");
+      const readmePath = path.join(
+         serverRootPath,
+         "publisher_data",
+         projectName,
+         "README.md",
+      );
+
+      expect(existsSync(readmePath)).toBe(true);
+      const readmeContent = readFileSync(readmePath, "utf-8");
+      expect(readmeContent).toBe("Updated README content");
    });
 
    it("should handle project reload", async () => {
