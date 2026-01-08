@@ -122,5 +122,5 @@ jobs:
           fi
 
   cross_platform_test:
-    name: Trigger Cross Platform Tests
+    name: Cross Platform Tests
     uses: ./.github/workflows/cross-platform-tests.yml

@@ -10,7 +10,8 @@ on:
 
 jobs:
   cross_platform_test:
-    name: Cross Platform Tests (${{ matrix.os }})
+    name: >-
+      Platform: (${{ matrix.os }})${{ github.event.pull_request && format(' - PR: {0}', github.event.pull_request.title) || '' }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
