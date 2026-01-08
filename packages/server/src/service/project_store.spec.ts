@@ -64,7 +64,7 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
 
-               deleteProject: async (_id: string): Promise<void> => { },
+               deleteProject: async (_id: string): Promise<void> => {},
 
                // ===== PACKAGE METHODS =====
                listPackages: async (
@@ -114,7 +114,7 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
 
-               deletePackage: async (_id: string): Promise<void> => { },
+               deletePackage: async (_id: string): Promise<void> => {},
 
                // ===== CONNECTION METHODS =====
                listConnections: async (
@@ -161,7 +161,7 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
 
-               deleteConnection: async (_id: string): Promise<void> => { },
+               deleteConnection: async (_id: string): Promise<void> => {},
             };
          }
       },
