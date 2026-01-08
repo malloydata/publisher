@@ -73,7 +73,7 @@ export async function initializeSchema(
 }
 
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
-   const tables = ["connections", "packages", "projects"];
+   const tables = ["packages", "connections", "projects"];
 
    console.log("Dropping tables:", tables.join(", "));
 

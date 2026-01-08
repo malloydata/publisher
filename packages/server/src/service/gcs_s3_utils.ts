@@ -9,7 +9,7 @@ import { logger } from "../logger";
 
 type ApiTable = components["schemas"]["Table"];
 
-export type CloudStorageType = "gcs" | "s3";
+type CloudStorageType = "gcs" | "s3";
 
 export interface CloudStorageCredentials {
    type: CloudStorageType;
@@ -20,12 +20,12 @@ export interface CloudStorageCredentials {
    sessionToken?: string;
 }
 
-export interface CloudStorageBucket {
+interface CloudStorageBucket {
    name: string;
    creationDate?: Date;
 }
 
-export interface CloudStorageObject {
+interface CloudStorageObject {
    key: string;
    size?: number;
    lastModified?: Date;
@@ -112,87 +112,66 @@ export async function listCloudBuckets(
    }
 }
 
-async function listCloudObjectsInFolder(
+// Flat listing with pagination - much faster than recursive DFS
+// Makes only O(total_files / 1000) API calls instead of O(num_folders)
+async function listAllCloudFiles(
    credentials: CloudStorageCredentials,
    bucket: string,
    prefix: string = "",
 ): Promise<CloudStorageObject[]> {
    const client = createCloudStorageClient(credentials);
    const storageType = credentials.type.toUpperCase();
-   const uri = buildCloudUri(credentials.type, bucket, prefix);
-
-   try {
-      const response = await client.send(
-         new ListObjectsV2Command({
-            Bucket: bucket,
-            Prefix: prefix,
-            Delimiter: "/",
-         }),
-      );
-
-      const objects: CloudStorageObject[] = [];
-
-      for (const folderPrefix of response.CommonPrefixes || []) {
-         if (folderPrefix.Prefix) {
-            objects.push({
-               key: folderPrefix.Prefix,
-               isFolder: true,
-            });
-         }
-      }
-
-      for (const content of response.Contents || []) {
-         if (content.Key && content.Key !== prefix) {
-            objects.push({
-               key: content.Key,
-               size: content.Size,
-               lastModified: content.LastModified,
-               isFolder: false,
-            });
-         }
-      }
-
-      return objects;
-   } catch (error) {
-      logger.error(`Failed to list ${storageType} objects`, {
-         error,
-         bucket,
-         prefix,
-      });
-      throw new Error(
-         `Failed to list objects in ${uri}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-   }
-}
-
-export async function listAllCloudFiles(
-   credentials: CloudStorageCredentials,
-   bucket: string,
-   prefix: string = "",
-): Promise<CloudStorageObject[]> {
    const allFiles: CloudStorageObject[] = [];
 
-   async function traverse(currentPrefix: string): Promise<void> {
-      const objects = await listCloudObjectsInFolder(
-         credentials,
-         bucket,
-         currentPrefix,
+   try {
+      let continuationToken: string | undefined;
+
+      // Paginate through all objects (1000 per page)
+      do {
+         const response = await client.send(
+            new ListObjectsV2Command({
+               Bucket: bucket,
+               Prefix: prefix,
+               ContinuationToken: continuationToken,
+               // No Delimiter = flat listing of ALL objects
+            }),
+         );
+
+         for (const content of response.Contents || []) {
+            if (content.Key) {
+               allFiles.push({
+                  key: content.Key,
+                  size: content.Size,
+                  lastModified: content.LastModified,
+                  isFolder: false,
+               });
+            }
+         }
+
+         continuationToken = response.IsTruncated
+            ? response.NextContinuationToken
+            : undefined;
+      } while (continuationToken);
+
+      logger.info(
+         `Listed ${allFiles.length} files in ${storageType} bucket ${bucket}`,
       );
 
-      for (const obj of objects) {
-         if (obj.isFolder) {
-            await traverse(obj.key);
-         } else {
-            allFiles.push(obj);
-         }
-      }
+      return allFiles;
+   } catch (error) {
+      logger.error(
+         `Failed to list ${storageType} objects in bucket ${bucket}`,
+         {
+            error,
+         },
+      );
+      throw new Error(
+         `Failed to list objects in ${storageType} bucket ${bucket}: ${error instanceof Error ? error.message : String(error)}`,
+      );
    }
-
-   await traverse(prefix);
-   return allFiles;
 }
 
-export function isDataFile(key: string): boolean {
+function isDataFile(key: string): boolean {
    const lowerKey = key.toLowerCase();
    return (
       lowerKey.endsWith(".csv") ||
@@ -203,7 +182,7 @@ export function isDataFile(key: string): boolean {
    );
 }
 
-export function getFileType(key: string): string {
+function getFileType(key: string): string {
    const lowerKey = key.toLowerCase();
    if (lowerKey.endsWith(".csv")) return "csv";
    if (lowerKey.endsWith(".parquet")) return "parquet";
@@ -213,7 +192,7 @@ export function getFileType(key: string): string {
    return "unknown";
 }
 
-export function buildCloudUri(
+function buildCloudUri(
    type: CloudStorageType,
    bucket: string,
    key: string,
@@ -228,77 +207,146 @@ function standardizeRunSQLResult(result: unknown): unknown[] {
       : (result as { rows?: unknown[] }).rows || [];
 }
 
+// Batch size for parallel schema fetching to avoid overwhelming the connection
+const SCHEMA_FETCH_BATCH_SIZE = 10;
+
+async function getTableSchema(
+   malloyConnection: Connection,
+   credentials: CloudStorageCredentials,
+   bucketName: string,
+   fileKey: string,
+): Promise<ApiTable> {
+   const uri = buildCloudUri(credentials.type, bucketName, fileKey);
+   const fileType = getFileType(fileKey);
+
+   try {
+      let describeQuery: string;
+
+      switch (fileType) {
+         case "csv":
+            describeQuery = `DESCRIBE SELECT * FROM read_csv('${uri}', auto_detect=true) LIMIT 1`;
+            break;
+         case "parquet":
+            describeQuery = `DESCRIBE SELECT * FROM read_parquet('${uri}') LIMIT 1`;
+            break;
+         case "json":
+            describeQuery = `DESCRIBE SELECT * FROM read_json('${uri}', auto_detect=true) LIMIT 1`;
+            break;
+         case "jsonl":
+            describeQuery = `DESCRIBE SELECT * FROM read_json('${uri}', format='newline_delimited', auto_detect=true) LIMIT 1`;
+            break;
+         default:
+            logger.warn(`Unsupported file type for ${fileKey}`);
+            return { resource: uri, columns: [] };
+      }
+
+      const result = await malloyConnection.runSQL(describeQuery);
+      const rows = standardizeRunSQLResult(result);
+      const columns = rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         return {
+            name: (typedRow.column_name || typedRow.name) as string,
+            type: (typedRow.column_type || typedRow.type) as string,
+         };
+      });
+
+      return { resource: uri, columns };
+   } catch (error) {
+      logger.warn(
+         `Failed to get schema for ${credentials.type.toUpperCase()} file: ${uri}`,
+         { error },
+      );
+      return { resource: uri, columns: [] };
+   }
+}
+
 export async function getCloudTablesWithColumns(
    malloyConnection: Connection,
    credentials: CloudStorageCredentials,
    bucketName: string,
    fileKeys: string[],
 ): Promise<ApiTable[]> {
-   const tables: ApiTable[] = [];
+   const allTables: ApiTable[] = [];
 
-   for (const fileKey of fileKeys) {
-      const uri = buildCloudUri(credentials.type, bucketName, fileKey);
-      const fileType = getFileType(fileKey);
+   // Process in batches to avoid overwhelming the connection
+   for (let i = 0; i < fileKeys.length; i += SCHEMA_FETCH_BATCH_SIZE) {
+      const batch = fileKeys.slice(i, i + SCHEMA_FETCH_BATCH_SIZE);
 
-      try {
-         let describeQuery: string;
+      // Process batch in parallel
+      const batchResults = await Promise.all(
+         batch.map((fileKey) =>
+            getTableSchema(malloyConnection, credentials, bucketName, fileKey),
+         ),
+      );
 
-         switch (fileType) {
-            case "csv":
-               describeQuery = `DESCRIBE SELECT * FROM read_csv('${uri}', auto_detect=true) LIMIT 1`;
-               break;
-            case "parquet":
-               describeQuery = `DESCRIBE SELECT * FROM read_parquet('${uri}') LIMIT 1`;
-               break;
-            case "json":
-               describeQuery = `DESCRIBE SELECT * FROM read_json('${uri}', auto_detect=true) LIMIT 1`;
-               break;
-            case "jsonl":
-               describeQuery = `DESCRIBE SELECT * FROM read_json('${uri}', format='newline_delimited', auto_detect=true) LIMIT 1`;
-               break;
-            default:
-               logger.warn(`Unsupported file type for ${fileKey}`);
-               tables.push({
-                  resource: uri,
-                  columns: [],
-               });
-               continue;
-         }
+      allTables.push(...batchResults);
 
-         const result = await malloyConnection.runSQL(describeQuery);
-         const rows = standardizeRunSQLResult(result);
-         const columns = rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return {
-               name: (typedRow.column_name || typedRow.name) as string,
-               type: (typedRow.column_type || typedRow.type) as string,
-            };
-         });
-
-         tables.push({
-            resource: uri,
-            columns,
-         });
-
-         logger.info(
-            `Got schema for ${credentials.type.toUpperCase()} file: ${uri}`,
-            {
-               columnCount: columns.length,
-            },
-         );
-      } catch (error) {
-         logger.warn(
-            `Failed to get schema for ${credentials.type.toUpperCase()} file: ${uri}`,
-            {
-               error,
-            },
-         );
-         tables.push({
-            resource: uri,
-            columns: [],
-         });
-      }
+      logger.info(
+         `Processed batch ${Math.floor(i / SCHEMA_FETCH_BATCH_SIZE) + 1}/${Math.ceil(fileKeys.length / SCHEMA_FETCH_BATCH_SIZE)} (${allTables.length}/${fileKeys.length} files)`,
+      );
    }
 
-   return tables;
+   return allTables;
+}
+
+export function parseCloudUri(uri: string): {
+   type: CloudStorageType;
+   bucket: string;
+   path: string;
+} | null {
+   const gsMatch = uri.match(/^gs:\/\/([^/]+)(?:\/(.*))?$/);
+   if (gsMatch) {
+      return {
+         type: "gcs",
+         bucket: gsMatch[1],
+         path: gsMatch[2] || "",
+      };
+   }
+
+   const s3Match = uri.match(/^s3:\/\/([^/]+)(?:\/(.*))?$/);
+   if (s3Match) {
+      return {
+         type: "s3",
+         bucket: s3Match[1],
+         path: s3Match[2] || "",
+      };
+   }
+
+   return null;
+}
+
+export async function listFilesInCloudDirectory(
+   credentials: CloudStorageCredentials,
+   bucketName: string,
+   directoryPath: string,
+): Promise<string[]> {
+   const files = await listAllCloudFiles(credentials, bucketName);
+
+   const filesInDirectory = files
+      .filter((obj) => {
+         if (!isDataFile(obj.key)) return false;
+
+         const lastSlashIndex = obj.key.lastIndexOf("/");
+         const fileDir =
+            lastSlashIndex > 0 ? obj.key.substring(0, lastSlashIndex) : "";
+
+         return fileDir === directoryPath;
+      })
+      .map((obj) => {
+         const lastSlashIndex = obj.key.lastIndexOf("/");
+         return lastSlashIndex > 0
+            ? obj.key.substring(lastSlashIndex + 1)
+            : obj.key;
+      });
+
+   return filesInDirectory;
+}
+
+// List all data files in a bucket with their full relative paths
+export async function listAllDataFilesInBucket(
+   credentials: CloudStorageCredentials,
+   bucketName: string,
+): Promise<string[]> {
+   const files = await listAllCloudFiles(credentials, bucketName);
+   return files.filter((obj) => isDataFile(obj.key)).map((obj) => obj.key);
 }

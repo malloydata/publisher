@@ -261,7 +261,9 @@ function TablesInSchema({
    return (
       <>
          <Typography variant="overline" fontWeight="bold">
-            Tables in {schemaName}
+            {schemaName.includes("gs") || schemaName.includes("s3")
+               ? `Table Files in ${schemaName}`
+               : `Tables in ${schemaName}`}
          </Typography>
          <Divider />
          <Box sx={{ mt: 1, mb: 1 }}>
