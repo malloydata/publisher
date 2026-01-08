@@ -80,31 +80,30 @@ export class PackageRepository {
       const now = this.now();
       const setClauses: string[] = [];
       const params: unknown[] = [];
-      let paramIndex = 1;
 
       if (updates.name !== undefined) {
-         setClauses.push(`name = $${paramIndex++}`);
+         setClauses.push(`name = ?`);
          params.push(updates.name);
       }
       if (updates.description !== undefined) {
-         setClauses.push(`description = $${paramIndex++}`);
+         setClauses.push(`description = ?`);
          params.push(updates.description);
       }
       if (updates.manifestPath !== undefined) {
-         setClauses.push(`manifest_path = $${paramIndex++}`);
+         setClauses.push(`manifest_path = ?`);
          params.push(updates.manifestPath);
       }
       if (updates.metadata !== undefined) {
-         setClauses.push(`metadata = $${paramIndex++}`);
+         setClauses.push(`metadata = ?`);
          params.push(JSON.stringify(updates.metadata));
       }
 
-      setClauses.push(`updated_at = $${paramIndex++}`);
+      setClauses.push(`updated_at = ?`);
       params.push(now.toISOString());
       params.push(id);
 
       await this.db.run(
-         `UPDATE packages SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`,
+         `UPDATE packages SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 

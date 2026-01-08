@@ -3,7 +3,10 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { Box, Paper, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RawNotebook } from "../../client";
-import { useDimensionalFilterRangeData } from "../../hooks/useDimensionalFilterRangeData";
+import {
+   getDimensionKey,
+   useDimensionalFilterRangeData,
+} from "../../hooks/useDimensionalFilterRangeData";
 import {
    FilterSelection,
    useDimensionFilters,
@@ -27,6 +30,9 @@ import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 import { NotebookCell } from "./NotebookCell";
 import { EnhancedNotebookCell } from "./types";
+
+// Maximum number of concurrent cell executions to avoid overwhelming the server
+const MAX_CONCURRENT = 4;
 
 interface NotebookProps {
    resourceUri: string;
@@ -118,11 +124,13 @@ export default function Notebook({
       [filterStates, getActiveFilters],
    );
 
-   // Create a map of dimension name -> source name for quick lookup
+   // Create a map of dimension key -> source name for quick lookup
+   // Using composite keys (source:dimensionName) to avoid collisions
    const dimensionToSourceMap = useMemo(() => {
       const map = new Map<string, string>();
       for (const spec of dimensionSpecs) {
-         map.set(spec.dimensionName, spec.source);
+         const key = getDimensionKey(spec);
+         map.set(key, spec.source);
       }
       return map;
    }, [dimensionSpecs]);
@@ -149,6 +157,7 @@ export default function Notebook({
 
    // Unified cell execution function
    // Executes all notebook cells, optionally applying filters to query cells
+   // Runs up to 4 requests in parallel for better performance
    const executeCells = useCallback(
       async (filtersToApply: FilterSelection[] = []) => {
          if (!isSuccess || !notebook?.notebookCells) return;
@@ -168,7 +177,9 @@ export default function Notebook({
          setExecutionError(null);
 
          try {
-            // Execute cells sequentially
+            // Build execution tasks for code cells
+            const executionTasks: Array<() => Promise<void>> = [];
+
             for (let i = 0; i < notebook.notebookCells.length; i++) {
                const rawCell = notebook.notebookCells[i];
 
@@ -182,101 +193,126 @@ export default function Notebook({
                   cellText.includes("->") ||
                   /^\s*(run|query)\s*:/m.test(cellText);
 
-               try {
-                  let result: string | undefined;
-                  let newSources: string[] | undefined;
+               // Capture cell index for closure
+               const cellIndex = i;
 
-                  if (hasQuery && modelPath && filtersToApply.length > 0) {
-                     // Query cell - use models API with optional filters
-                     let queryToExecute = cellText;
+               const executeCell = async () => {
+                  try {
+                     let result: string | undefined;
+                     let newSources: string[] | undefined;
 
-                     // Apply filters if any match this query's source
-                     if (filtersToApply.length > 0) {
-                        const querySourceName =
-                           extractSourceFromQuery(cellText);
+                     if (hasQuery && modelPath && filtersToApply.length > 0) {
+                        // Query cell - use models API with optional filters
+                        let queryToExecute = cellText;
 
-                        // Get the set of joined sources for this query's source
-                        const joinedSources =
-                           (querySourceName &&
-                              sourceJoinsMap.get(querySourceName)) ||
-                           new Set<string>();
+                        // Apply filters if any match this query's source
+                        if (filtersToApply.length > 0) {
+                           const querySourceName =
+                              extractSourceFromQuery(cellText);
 
-                        // Filter to only include those matching this query's source or joined sources
-                        const filtersForSource = querySourceName
-                           ? filtersToApply.filter((filter) => {
-                                const filterSourceName =
-                                   dimensionToSourceMap.get(
-                                      filter.dimensionName,
+                           // Get the set of joined sources for this query's source
+                           const joinedSources =
+                              (querySourceName &&
+                                 sourceJoinsMap.get(querySourceName)) ||
+                              new Set<string>();
+
+                           // Filter to only include those matching this query's source or joined sources
+                           // FilterSelection now includes source, so we can check directly
+                           const filtersForSource = querySourceName
+                              ? filtersToApply.filter((filter) => {
+                                   return (
+                                      filter.source === querySourceName ||
+                                      joinedSources.has(filter.source)
                                    );
-                                if (!filterSourceName) return false;
-                                return (
-                                   filterSourceName === querySourceName ||
-                                   joinedSources.has(filterSourceName)
-                                );
-                             })
-                           : [];
+                                })
+                              : [];
 
-                        if (filtersForSource.length > 0) {
-                           const filterClause = generateFilterClause(
-                              filtersForSource,
-                              dimensionToSourceMap,
-                              querySourceName,
-                           );
-                           if (filterClause) {
-                              queryToExecute = injectWhereClause(
-                                 cellText,
-                                 filterClause,
+                           if (filtersForSource.length > 0) {
+                              const filterClause = generateFilterClause(
+                                 filtersForSource,
+                                 dimensionToSourceMap,
+                                 querySourceName,
                               );
+                              if (filterClause) {
+                                 queryToExecute = injectWhereClause(
+                                    cellText,
+                                    filterClause,
+                                 );
+                              }
                            }
                         }
+
+                        // Execute using models API
+                        const response =
+                           await apiClients.models.executeQueryModel(
+                              projectName,
+                              packageName,
+                              modelPath,
+                              {
+                                 query: queryToExecute,
+                                 versionId,
+                              },
+                           );
+                        result = response.data.result;
+                     } else {
+                        // Non-query code cell (or no filters applied) - use notebook cell execution API
+                        const response =
+                           await apiClients.notebooks.executeNotebookCell(
+                              projectName,
+                              packageName,
+                              notebookPath,
+                              cellIndex,
+                              versionId,
+                           );
+
+                        const executedCell = response.data;
+                        result = executedCell.result;
+                        newSources =
+                           rawCell.newSources || executedCell.newSources;
                      }
 
-                     // Execute using models API
-                     const response = await apiClients.models.executeQueryModel(
-                        projectName,
-                        packageName,
-                        modelPath,
-                        {
-                           query: queryToExecute,
-                           versionId,
-                        },
+                     // Update state incrementally
+                     setEnhancedCells((prev) => {
+                        const next = [...prev];
+                        // Ensure we have a cell to update (in case state was reset externally, though unlikely)
+                        if (!next[cellIndex]) {
+                           next[cellIndex] = { ...rawCell };
+                        }
+                        next[cellIndex] = {
+                           ...next[cellIndex],
+                           result,
+                           newSources,
+                        };
+                        return next;
+                     });
+                  } catch (cellError) {
+                     console.error(
+                        `Error executing cell ${cellIndex}:`,
+                        cellError,
                      );
-                     result = response.data.result;
-                  } else {
-                     // Non-query code cell (or no filters applied) - use notebook cell execution API
-                     const response =
-                        await apiClients.notebooks.executeNotebookCell(
-                           projectName,
-                           packageName,
-                           notebookPath,
-                           i,
-                           versionId,
-                        );
-
-                     const executedCell = response.data;
-                     result = executedCell.result;
-                     newSources = rawCell.newSources || executedCell.newSources;
+                     // Don't update result on error, leave as is (undefined)
                   }
+               };
 
-                  // Update state incrementally
-                  setEnhancedCells((prev) => {
-                     const next = [...prev];
-                     // Ensure we have a cell to update (in case state was reset externally, though unlikely)
-                     if (!next[i]) {
-                        next[i] = { ...rawCell };
-                     }
-                     next[i] = {
-                        ...next[i],
-                        result,
-                        newSources,
-                     };
-                     return next;
-                  });
-               } catch (cellError) {
-                  console.error(`Error executing cell ${i}:`, cellError);
-                  // Don't update result on error, leave as is (undefined)
+               executionTasks.push(executeCell);
+            }
+
+            // Execute with limited concurrency (up to 4 parallel requests)
+            const executing: Promise<void>[] = [];
+
+            for (const task of executionTasks) {
+               const promise = task().then(() => {
+                  executing.splice(executing.indexOf(promise), 1);
+               });
+               executing.push(promise);
+
+               if (executing.length >= MAX_CONCURRENT) {
+                  await Promise.race(executing);
                }
             }
+
+            // Wait for remaining tasks to complete
+            await Promise.all(executing);
          } catch (error) {
             console.error("Error executing notebook cells:", error);
             setExecutionError(error as Error);
@@ -339,10 +375,10 @@ export default function Notebook({
       }
    }, [activeFilters, isExecuting, executeCells]);
 
-   // Handle filter change
+   // Handle filter change using composite key
    const handleFilterChange = useCallback(
-      (dimensionName: string) => (selection: FilterSelection | null) => {
-         updateFilter(dimensionName, selection);
+      (key: string) => (selection: FilterSelection | null) => {
+         updateFilter(key, selection);
       },
       [updateFilter],
    );
@@ -392,11 +428,9 @@ export default function Notebook({
                         }}
                      >
                         {dimensionSpecs.map((spec) => {
-                           const values =
-                              filterValuesData.get(spec.dimensionName) || [];
-                           const filterState = filterStates.get(
-                              spec.dimensionName,
-                           );
+                           const key = getDimensionKey(spec);
+                           const values = filterValuesData.get(key) || [];
+                           const filterState = filterStates.get(key);
                            // Skip Retrieval filters if no retrievalFn provided
                            if (
                               spec.filterType === "Retrieval" &&
@@ -406,14 +440,12 @@ export default function Notebook({
                            }
 
                            return (
-                              <Box key={spec.dimensionName}>
+                              <Box key={key}>
                                  <DimensionFilter
                                     spec={spec}
                                     values={values}
                                     selection={filterState?.selection}
-                                    onChange={handleFilterChange(
-                                       spec.dimensionName,
-                                    )}
+                                    onChange={handleFilterChange(key)}
                                     retrievalFn={retrievalFn}
                                  />
                               </Box>
