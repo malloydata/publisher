@@ -32,7 +32,18 @@ describe("service/package", () => {
 
    afterEach(async () => {
       sinon.restore();
-      await fs.rm(testPackageDirectory, { recursive: true });
+      // On Windows, DuckDB connections may still have file handles open,
+      // causing EBUSY errors. Add a small delay and handle cleanup gracefully.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+         await fs.rm(testPackageDirectory, { recursive: true, force: true });
+      } catch (error) {
+         // Ignore EBUSY errors on Windows - they don't affect test results
+         // and the files will be cleaned up eventually
+         if ((error as NodeJS.ErrnoException).code !== "EBUSY") {
+            throw error;
+         }
+      }
    });
 
    it("should create a package instance", async () => {

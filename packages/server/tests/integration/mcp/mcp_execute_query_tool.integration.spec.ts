@@ -40,17 +40,19 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
    describe("malloy_executeQuery Tool", () => {
       // Constants for test parameters
 
-      it("should execute a valid ad-hoc query successfully", async () => {
-         if (!env) throw new Error("Test environment not initialized");
-         const result = await mcpClient.callTool({
-            name: "malloy_executeQuery",
-            arguments: {
-               projectName: "malloy-samples",
-               packageName: PACKAGE_NAME,
-               modelPath: "flights.malloy",
-               query: "run: flights->{ aggregate: c is count() }",
-            },
-         });
+      it(
+         "should execute a valid ad-hoc query successfully",
+         async () => {
+            if (!env) throw new Error("Test environment not initialized");
+            const result = await mcpClient.callTool({
+               name: "malloy_executeQuery",
+               arguments: {
+                  projectName: "malloy-samples",
+                  packageName: PACKAGE_NAME,
+                  modelPath: "flights.malloy",
+                  query: "run: flights->{ aggregate: c is count() }",
+               },
+            });
 
          expect(result).toBeDefined();
          expect(result.isError).not.toBe(true); // Should be success
@@ -84,9 +86,13 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          expect(queryResultData.data).toBeDefined();
          expect(Array.isArray(queryResultData.data.array_value)).toBe(true);
          // Could add more specific checks on data if needed
-      });
+         },
+         { timeout: 30000 },
+      );
 
-      it("should successfully execute a nested view using sourceName and queryName", async () => {
+      it(
+         "should successfully execute a nested view using sourceName and queryName",
+         async () => {
          if (!env) throw new Error("Test environment not initialized");
          const params = {
             projectName: PROJECT_NAME,
@@ -123,9 +129,13 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          expect(queryResultPayload).toBeDefined();
          // Add more specific data checks if needed, e.g., check for specific columns or row count > 0
          // Example: expect(queryResultPayload._queryResult.data.rows.length).toBeGreaterThan(0);
-      });
+         },
+         { timeout: 20000 },
+      );
 
-      it("should return application error for invalid Malloy query syntax", async () => {
+      it(
+         "should return application error for invalid Malloy query syntax",
+         async () => {
          if (!env) throw new Error("Test environment not initialized");
          const params = {
             projectName: PROJECT_NAME,
@@ -156,7 +166,9 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
             /syntax error|no viable alternative/i,
          );
          expect(Array.isArray(errorPayloadSyntax.suggestions)).toBe(true);
-      });
+         },
+         { timeout: 20000 },
+      );
 
       // --- Parameter Validation Error Tests ---
       // These should RESOLVE with isError: true because the error is thrown

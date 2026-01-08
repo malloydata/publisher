@@ -1,6 +1,7 @@
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import AdmZip from "adm-zip";
+import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import simpleGit from "simple-git";
@@ -23,10 +24,10 @@ import {
    ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { Connection } from "../storage/DatabaseInterface";
+import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
-import { StorageManager, StorageConfig } from "../storage/StorageManager";
-import { Connection } from "../storage/DatabaseInterface";
 
 export class ProjectStore {
    public serverRootPath: string;
@@ -865,12 +866,14 @@ export class ProjectStore {
 
       // Processing by each unique location
       for (const [groupedLocation, packagesForLocation] of locationGroups) {
-         // Create a temporary directory for the shared download
-         const tempDownloadPath = `${absoluteTargetPath}/.temp_${Buffer.from(
-            groupedLocation,
-         )
-            .toString("base64")
-            .replace(/[^a-zA-Z0-9]/g, "")}`;
+         // Use a hash instead of base64 to keep paths short (Windows MAX_PATH limit)
+         // This works for both local and remote paths
+         const locationHash = crypto
+            .createHash("sha256")
+            .update(groupedLocation)
+            .digest("hex")
+            .substring(0, 16); // Use first 16 chars for shorter paths
+         const tempDownloadPath = `${absoluteTargetPath}/.temp_${locationHash}`;
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
          try {
