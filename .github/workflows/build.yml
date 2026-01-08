@@ -19,6 +19,7 @@ jobs:
         with:
           bun-version: 1.2.23
       - name: Cache Bun dependencies
+        id: bun-cache
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -27,7 +28,13 @@ jobs:
             ${{ runner.os }}-bun-
       - name: Typecheck
         run: |
-          bun install --frozen-lockfile
+          if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
+            echo "Cache hit! Using cached dependencies..."
+            bun install --frozen-lockfile --no-summary
+          else
+            echo "Cache miss! Installing dependencies..."
+            bun install --frozen-lockfile
+          fi
           bun run generate-api-types
           bun run build:sdk
           bun run typecheck
@@ -39,6 +46,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
       - name: Cache Bun dependencies
+        id: bun-cache
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -46,7 +54,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: |
+          if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
+            echo "Cache hit! Using cached dependencies..."
+            bun install --frozen-lockfile --no-summary
+          else
+            echo "Cache miss! Installing dependencies..."
+            bun install --frozen-lockfile
+          fi
       - name: Check formatting
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
@@ -68,6 +83,7 @@ jobs:
         with:
           bun-version: 1.2.23
       - name: Cache Bun dependencies
+        id: bun-cache
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -75,7 +91,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       - name: build server
-        run: bun install --frozen-lockfile && bun run build
+        run: |
+          if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
+            echo "Cache hit! Using cached dependencies..."
+            bun install --frozen-lockfile --no-summary
+          else
+            echo "Cache miss! Installing dependencies..."
+            bun install --frozen-lockfile
+          fi
+          bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
       - name: Link local package
@@ -128,52 +152,5 @@ jobs:
           retention-days: 1
 
   cross_platform_test:
-    name: Cross Platform Tests (${{ matrix.os }})
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: "true"
-
-      - name: Setup Bun
-        if: matrix.os != 'ubuntu-latest'
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.2.23
-
-      - name: Cache Bun dependencies
-        if: matrix.os != 'ubuntu-latest'
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        if: matrix.os != 'ubuntu-latest'
-        run: bun install --frozen-lockfile
-        shell: bash
-        env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
-
-      - name: Generate API types
-        if: matrix.os != 'ubuntu-latest'
-        run: bun run generate-api-types
-        shell: bash
-
-      - name: Build
-        if: matrix.os != 'ubuntu-latest'
-        run: bun run build
-        shell: bash
-        env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
-
-      - name: Run tests
-        if: matrix.os != 'ubuntu-latest'
-        run: bun run test
-        shell: bash
+    name: Trigger Cross Platform Tests
+    uses: ./.github/workflows/cross-platform-tests.yml
