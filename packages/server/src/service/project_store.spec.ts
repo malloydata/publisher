@@ -337,47 +337,45 @@ describe("ProjectStore Service", () => {
       expect(projects.map((p) => p.name)).toContain(projectName2);
    });
 
-   it(
-      "should handle project updates",
-      async () => {
-         // Create a project directory
-         const projectPath = path.join(serverRootPath, projectName);
-         mkdirSync(projectPath, { recursive: true });
-         // Create publisher.json manifest file
-         writeFileSync(
-            path.join(projectPath, "publisher.json"),
-            JSON.stringify({
-               name: projectName,
-               description: "Test package",
-            }),
-         );
-         // Create publisher config
-         const publisherConfigPath = path.join(
-            serverRootPath,
-            "publisher.config.json",
-         );
-         writeFileSync(
-            publisherConfigPath,
-            JSON.stringify({
-               frozenConfig: false,
-               projects: [
-                  {
-                     name: projectName,
-                     packages: [
-                        {
-                           name: projectName,
-                           location: projectPath,
-                        },
-                     ],
-                  },
-               ],
-            }),
-         );
+   it("should handle project updates", async () => {
+      // Create a project directory
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      // Create publisher.json manifest file
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({
+            name: projectName,
+            description: "Test package",
+         }),
+      );
+      // Create publisher config
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  name: projectName,
+                  packages: [
+                     {
+                        name: projectName,
+                        location: projectPath,
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
 
-         await projectStore.finishedInitialization;
+      await projectStore.finishedInitialization;
 
-         // Get the project
-         const project = await projectStore.getProject(projectName);
+      // Get the project
+      const project = await projectStore.getProject(projectName);
 
       // Update the project
       await project.update({
