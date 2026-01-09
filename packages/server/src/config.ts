@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { PUBLISHER_CONFIG_NAME, API_PREFIX } from "./constants";
 import { components } from "./api";
+import { API_PREFIX, PUBLISHER_CONFIG_NAME } from "./constants";
 
 type FilesystemPath = `./${string}` | `../${string}` | `/${string}`;
 type GcsPath = `gs://${string}`;
@@ -131,12 +131,7 @@ export const convertConnectionsToApiConnections = (
    return connections.map((conn) => ({
       ...conn,
       name: conn.name,
-      type: conn.type as
-         | "postgres"
-         | "bigquery"
-         | "snowflake"
-         | "trino"
-         | "mysql",
+      type: conn.type as ApiConnection["type"],
       resource: `${API_PREFIX}/connections/${conn.name}`,
    }));
 };

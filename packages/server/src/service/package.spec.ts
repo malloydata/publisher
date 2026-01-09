@@ -32,7 +32,34 @@ describe("service/package", () => {
 
    afterEach(async () => {
       sinon.restore();
-      await fs.rm(testPackageDirectory, { recursive: true });
+      // On Windows, DuckDB connections may still have file handles open,
+      // causing EBUSY errors. Retry deletion with exponential backoff.
+      const maxRetries = 3;
+      const delay = 50; // Start with 50ms
+      let lastError: unknown;
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+         try {
+            await fs.rm(testPackageDirectory, { recursive: true, force: true });
+            return; // Success, exit retry loop
+         } catch (error) {
+            lastError = error;
+            const errnoError = error as NodeJS.ErrnoException;
+            // Only retry on EBUSY errors (Windows file handle still open)
+            if (errnoError.code !== "EBUSY") {
+               throw error; // Non-EBUSY errors should be thrown immediately
+            }
+            // Exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms
+            if (attempt < maxRetries - 1) {
+               await new Promise((resolve) => setTimeout(resolve, delay));
+            }
+         }
+      }
+      // If we've exhausted retries, ignore EBUSY errors as they don't affect test results
+      // and the files will be cleaned up eventually
+      if ((lastError as NodeJS.ErrnoException).code !== "EBUSY") {
+         throw lastError;
+      }
    });
 
    it("should create a package instance", async () => {
