@@ -138,9 +138,6 @@ export class Project {
          apiConnections,
       );
 
-      // // Scan filesystem for packages
-      await project.scanForPackages();
-
       return project;
    }
 
@@ -186,37 +183,6 @@ export class Project {
          );
       }
       return connection;
-   }
-
-   public async scanForPackages(): Promise<void> {
-      try {
-         const entries = await fs.promises.readdir(this.projectPath, {
-            withFileTypes: true,
-         });
-
-         for (const entry of entries) {
-            if (entry.isDirectory()) {
-               const packagePath = path.join(this.projectPath, entry.name);
-               const publisherJsonPath = path.join(
-                  packagePath,
-                  "publisher.json",
-               );
-
-               // Check if this directory contains a publisher.json file
-               try {
-                  await fs.promises.access(publisherJsonPath);
-                  // This is a valid package - add it to packageStatuses
-                  this.setPackageStatus(entry.name, PackageStatus.SERVING);
-               } catch {
-                  // Not a package directory, skip it
-               }
-            }
-         }
-      } catch (error) {
-         logger.error(`Error scanning for packages in ${this.projectPath}`, {
-            error,
-         });
-      }
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
@@ -475,6 +441,36 @@ export class Project {
       // Remove from internal tracking
       this.packages.delete(packageName);
       this.packageStatuses.delete(packageName);
+   }
+
+   public updateConnections(
+      malloyConnections: Map<string, BaseConnection>,
+      apiConnections: ApiConnection[],
+   ): void {
+      this.malloyConnections = malloyConnections;
+      this.apiConnections = apiConnections;
+   }
+
+   public deleteConnection(connectionName: string): void {
+      const deleted = this.malloyConnections.delete(connectionName);
+
+      const index = this.apiConnections.findIndex(
+         (conn) => conn.name === connectionName,
+      );
+
+      if (index !== -1) {
+         this.apiConnections.splice(index, 1);
+      }
+
+      if (deleted || index !== -1) {
+         logger.info(
+            `Removed connection ${connectionName} from project ${this.projectName}`,
+         );
+      } else {
+         logger.warn(
+            `Connection ${connectionName} not found in project ${this.projectName}`,
+         );
+      }
    }
 
    public async serialize(): Promise<ApiProject> {

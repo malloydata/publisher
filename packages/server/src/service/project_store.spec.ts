@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
@@ -56,10 +56,13 @@ mock.module("../storage/StorageManager", () => {
                   data: MockData,
                ): Promise<MockData> => ({
                   id,
-                  name: "test-project",
-                  path: "/test/path",
+                  name: data.name || "test-project",
+                  path: data.path || "/test/path",
                   description: data.description,
-                  metadata: data.metadata || {},
+                  metadata: {
+                     ...(data.metadata || {}),
+                     readme: data.readme,
+                  },
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
@@ -334,58 +337,63 @@ describe("ProjectStore Service", () => {
       expect(projects.map((p) => p.name)).toContain(projectName2);
    });
 
-   it(
-      "should handle project updates",
-      async () => {
-         // Create a project directory
-         const projectPath = path.join(serverRootPath, projectName);
-         mkdirSync(projectPath, { recursive: true });
-         // Create publisher.json manifest file
-         writeFileSync(
-            path.join(projectPath, "publisher.json"),
-            JSON.stringify({
-               name: projectName,
-               description: "Test package",
-            }),
-         );
-         // Create publisher config
-         const publisherConfigPath = path.join(
-            serverRootPath,
-            "publisher.config.json",
-         );
-         writeFileSync(
-            publisherConfigPath,
-            JSON.stringify({
-               frozenConfig: false,
-               projects: [
-                  {
-                     name: projectName,
-                     packages: [
-                        {
-                           name: projectName,
-                           location: projectPath,
-                        },
-                     ],
-                  },
-               ],
-            }),
-         );
-
-         await projectStore.finishedInitialization;
-
-         // Get the project
-         const project = await projectStore.getProject(projectName);
-
-         // Update the project
-         const updatedProject = await project.update({
+   it("should handle project updates", async () => {
+      // Create a project directory
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      // Create publisher.json manifest file
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({
             name: projectName,
-            readme: "Updated README content",
-         });
+            description: "Test package",
+         }),
+      );
+      // Create publisher config
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  name: projectName,
+                  packages: [
+                     {
+                        name: projectName,
+                        location: projectPath,
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
 
-         expect(updatedProject.metadata.readme).toBe("Updated README content");
-      },
-      { timeout: 30000 },
-   );
+      await projectStore.finishedInitialization;
+
+      // Get the project
+      const project = await projectStore.getProject(projectName);
+
+      // Update the project
+      await project.update({
+         name: projectName,
+         readme: "Updated README content",
+      });
+
+      const readmePath = path.join(
+         serverRootPath,
+         "publisher_data",
+         projectName,
+         "README.md",
+      );
+
+      expect(existsSync(readmePath)).toBe(true);
+      const readmeContent = readFileSync(readmePath, "utf-8");
+      expect(readmeContent).toBe("Updated README content");
+   });
 
    it(
       "should handle project reload",
