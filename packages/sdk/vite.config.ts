@@ -59,6 +59,8 @@ export default ({ mode }) => {
                "@mui/icons-material",
                "@mui/system",
                "@mui/x-tree-view",
+               // Handle subpath imports from @mui/x-tree-view
+               /^@mui\/x-tree-view\/.*/,
 
                // Other large React libraries
                "@react-spring/web",

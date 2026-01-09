@@ -31,6 +31,8 @@ export default ({ mode }) => {
             : // In production, use the built SDK to avoid duplicate dependencies
               path.resolve(__dirname, "../sdk/dist/index.es.js"),
       },
+      // Ensure subpath imports from @mui/x-tree-view are resolved correctly
+      conditions: ["import", "module", "browser", "default"],
    };
 
    // Disable chunking entirely to avoid initialization order issues
@@ -62,6 +64,10 @@ export default ({ mode }) => {
          emptyOutDir: true,
          chunkSizeWarningLimit: 1000,
          target: "esnext",
+         commonjsOptions: {
+            include: [/node_modules/],
+            transformMixedEsModules: true,
+         },
          rollupOptions: {
             onwarn(warning, warn) {
                if (
@@ -99,6 +105,14 @@ export default ({ mode }) => {
             "@mui/material",
             "@mui/icons-material",
             "@mui/system",
+            "@mui/x-tree-view",
+            // Include subpath imports from @mui/x-tree-view
+            "@mui/x-tree-view/TreeItem2",
+            "@mui/x-tree-view/RichTreeView",
+            "@mui/x-tree-view/TreeItem2Provider",
+            "@mui/x-tree-view/useTreeItem2",
+            "@mui/x-tree-view/TreeItem2Icon",
+            "@mui/x-tree-view/models",
          ],
          exclude: [],
       },
