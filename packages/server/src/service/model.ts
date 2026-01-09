@@ -1,3 +1,4 @@
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    Annotation,
    API,
@@ -25,6 +26,7 @@ import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    MODEL_FILE_SUFFIX,
@@ -509,15 +511,36 @@ export class Model {
          );
       }
 
-      const importBaseURL = new URL(
-         "file://" + path.dirname(fullModelPath) + "/",
-      );
-      const modelURL = new URL("file://" + fullModelPath);
+      const modelURL = new URL(`file://${fullModelPath}`);
+      const baseUrl = new URL(".", modelURL);
+      const fileUrl = new URL(baseUrl.pathname, "file:");
+      const workingDirectory = fileURLToPath(fileUrl);
+      const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
+
+      const modelConnections = new Map<string, Connection>();
+      for (const [name, connection] of connections.entries()) {
+         const isDuckDB =
+            connection instanceof DuckDBConnection ||
+            connection.constructor.name === "DuckDBConnection";
+         if (isDuckDB) {
+            // Create a new DuckDB connection with the model's directory as working directory.
+            // Using :memory: for model-specific connections to avoid conflicts.
+            const modelDuckDBConnection = new DuckDBConnection(
+               name,
+               ":memory:",
+               workingDirectory,
+            );
+            modelConnections.set(name, modelDuckDBConnection);
+         } else {
+            // Keep non-DuckDB connections as it is
+            modelConnections.set(name, connection);
+         }
+      }
 
       const runtime = new Runtime({
          urlReader,
-         connections: new FixedConnectionMap(connections, "duckdb"),
+         connections: new FixedConnectionMap(modelConnections, "duckdb"),
       });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
