@@ -18,9 +18,23 @@ jobs:
         # Building the SDK is necessary to generate the .d.ts files used for type checking.
         with:
           bun-version: 1.2.23
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
       - name: Typecheck
         run: |
-          bun install
+          if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
+            echo "Cache hit! Using cached dependencies..."
+            bun install --frozen-lockfile --no-summary
+          else
+            echo "Cache miss! Installing dependencies..."
+            bun install --frozen-lockfile
+          fi
           bun run generate-api-types
           bun run build:sdk
           bun run typecheck
@@ -31,27 +45,22 @@ jobs:
       - uses: actions/checkout@v3
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
       - name: Install dependencies
-        run: bun install
+        run: |
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
       - name: Check formatting
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
         run: bun run lint
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: "true" # Fetch submodules
-      - name: Spin-up services
-        run: docker compose --profile ci up -d
-      - name: Install dependencies
-        run: docker exec -t publisher-ci bun install
-      - name: Build code
-        run: docker exec -t publisher-ci bun run build
-      - name: Run tests
-        run: docker exec -t publisher-ci sh -c "cd packages/server && bun test"
   npx_test:
     name: npx test
     runs-on: ubuntu-latest
@@ -68,8 +77,19 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.23
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
       - name: build server
-        run: bun install && bun run build
+        run: |
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
+          bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
       - name: Link local package
@@ -90,3 +110,7 @@ jobs:
             echo "✗ API test failed: Expected 1 project, got different response"
             exit 1
           fi
+
+  cross_platform_test:
+    name: Cross Platform Tests
+    uses: ./.github/workflows/cross-platform-tests.yml

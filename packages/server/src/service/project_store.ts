@@ -1,6 +1,8 @@
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import AdmZip from "adm-zip";
+import { Mutex } from "async-mutex";
+import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import simpleGit from "simple-git";
@@ -23,14 +25,15 @@ import {
    ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { Connection } from "../storage/DatabaseInterface";
+import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
-import { StorageManager, StorageConfig } from "../storage/StorageManager";
-import { Connection } from "../storage/DatabaseInterface";
 
 export class ProjectStore {
    public serverRootPath: string;
    private projects: Map<string, Project> = new Map();
+   private projectMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
@@ -597,8 +600,33 @@ export class ProjectStore {
       reload: boolean = false,
    ): Promise<Project> {
       await this.finishedInitialization;
-      let project = this.projects.get(projectName);
-      if (project === undefined || reload) {
+
+      // Check if project is already loaded first
+      const project = this.projects.get(projectName);
+      if (project !== undefined && !reload) {
+         return project;
+      }
+
+      // We need to acquire the mutex to prevent concurrent requests from creating the
+      // project multiple times.
+      let projectMutex = this.projectMutexes.get(projectName);
+      if (projectMutex?.isLocked()) {
+         await projectMutex.waitForUnlock();
+         const existingProject = this.projects.get(projectName);
+         if (existingProject && !reload) {
+            return existingProject;
+         }
+      }
+      projectMutex = new Mutex();
+      this.projectMutexes.set(projectName, projectMutex);
+
+      return projectMutex.runExclusive(async () => {
+         // Double-check after acquiring mutex
+         const existingProject = this.projects.get(projectName);
+         if (existingProject !== undefined && !reload) {
+            return existingProject;
+         }
+
          const projectManifest = await ProjectStore.reloadProjectManifest(
             this.serverRootPath,
          );
@@ -606,19 +634,19 @@ export class ProjectStore {
             (p) => p.name === projectName,
          );
          const projectPath =
-            project?.metadata.location || projectConfig?.packages[0]?.location;
+            existingProject?.metadata.location ||
+            projectConfig?.packages[0]?.location;
          if (!projectPath) {
             throw new ProjectNotFoundError(
                `Project "${projectName}" could not be resolved to a path.`,
             );
          }
-         project = await this.addProject({
+         return await this.addProject({
             name: projectName,
             resource: `${API_PREFIX}/projects/${projectName}`,
             connections: projectConfig?.connections || [],
          });
-      }
-      return project;
+      });
    }
 
    public async addProject(
@@ -887,12 +915,14 @@ export class ProjectStore {
 
       // Processing by each unique location
       for (const [groupedLocation, packagesForLocation] of locationGroups) {
-         // Create a temporary directory for the shared download
-         const tempDownloadPath = `${absoluteTargetPath}/.temp_${Buffer.from(
-            groupedLocation,
-         )
-            .toString("base64")
-            .replace(/[^a-zA-Z0-9]/g, "")}`;
+         // Use a hash instead of base64 to keep paths short (Windows MAX_PATH limit)
+         // This works for both local and remote paths
+         const locationHash = crypto
+            .createHash("sha256")
+            .update(groupedLocation)
+            .digest("hex")
+            .substring(0, 16); // Use first 16 chars for shorter paths
+         const tempDownloadPath = `${absoluteTargetPath}/.temp_${locationHash}`;
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
          try {
