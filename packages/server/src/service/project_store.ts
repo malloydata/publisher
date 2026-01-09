@@ -360,6 +360,17 @@ export class ProjectStore {
          const existingConnections =
             await repository.listConnections(projectId);
 
+         const currentConnectionNames = new Set(
+            connections.map((conn) => conn.name).filter(Boolean),
+         );
+
+         for (const existingConn of existingConnections) {
+            if (!currentConnectionNames.has(existingConn.name)) {
+               logger.info(`Deleting removed connection: ${existingConn.name}`);
+               await repository.deleteConnection(existingConn.id);
+            }
+         }
+
          // Add/update connections
          for (const conn of connections) {
             if (!conn.name) {
@@ -401,6 +412,7 @@ export class ProjectStore {
          name: conn.name,
          type: conn.type as Connection["type"],
          config: conn,
+         isConnectionFromConfig: conn.isConnectionFromConfig ?? false,
       };
 
       try {
@@ -409,6 +421,7 @@ export class ProjectStore {
             await repository.updateConnection(existingConn.id, {
                type: connectionData.type,
                config: connectionData.config,
+               isConnectionFromConfig: conn.isConnectionFromConfig ?? false,
             });
             logger.info(`Updated existing connection: ${conn.name}`);
          } else {

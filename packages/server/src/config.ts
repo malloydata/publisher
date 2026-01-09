@@ -84,6 +84,7 @@ export const convertConnectionsToApiConnections = (
       name: conn.name,
       type: conn.type as ApiConnection["type"],
       resource: `${API_PREFIX}/connections/${conn.name}`,
+      isConnectionFromConfig: true,
    }));
 };
 
