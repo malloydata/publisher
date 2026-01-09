@@ -112,7 +112,8 @@ function CustomTreeItem2Label({ item, ...other }: CustomLabelProps) {
 }
 
 interface CustomTreeItemProps
-   extends Omit<UseTreeItem2Parameters, "rootRef">,
+   extends
+      Omit<UseTreeItem2Parameters, "rootRef">,
       Omit<React.HTMLAttributes<HTMLLIElement>, "onFocus"> {}
 
 const CustomTreeItem = React.forwardRef(function CustomTreeItem(
