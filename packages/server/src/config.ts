@@ -39,6 +39,49 @@ export type ProcessedPublisherConfig = {
    projects: ProcessedProject[];
 };
 
+function substituteEnvVars(value: string): string {
+   const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)(:-([^}]*))?\}/g;
+
+   return value.replace(
+      envVarPattern,
+      (_match, varName, _unused, defaultValue) => {
+         const envValue = process.env[varName];
+
+         if (envValue !== undefined) {
+            return envValue;
+         }
+
+         if (defaultValue !== undefined) {
+            return defaultValue;
+         }
+
+         throw new Error(
+            `Environment variable '\${${varName}}' is not set and no default value provided in configuration file`,
+         );
+      },
+   );
+}
+
+function processConfigValue(value: unknown): unknown {
+   if (typeof value === "string") {
+      return substituteEnvVars(value);
+   }
+
+   if (Array.isArray(value)) {
+      return value.map((item) => processConfigValue(item));
+   }
+
+   if (value !== null && typeof value === "object") {
+      const result: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+         result[key] = processConfigValue(val);
+      }
+      return result;
+   }
+
+   return value;
+}
+
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    const publisherConfigPath = path.join(serverRoot, PUBLISHER_CONFIG_NAME);
    if (!fs.existsSync(publisherConfigPath)) {
@@ -47,19 +90,25 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
          projects: [],
       };
    }
-   const rawConfig = JSON.parse(fs.readFileSync(publisherConfigPath, "utf8"));
+   const rawContent = fs.readFileSync(publisherConfigPath, "utf8");
+   const rawConfig = JSON.parse(rawContent) as unknown;
+
+   const processedConfig = processConfigValue(rawConfig);
 
    if (
-      rawConfig.projects &&
-      typeof rawConfig.projects === "object" &&
-      !Array.isArray(rawConfig.projects)
+      processedConfig &&
+      typeof processedConfig === "object" &&
+      "projects" in processedConfig &&
+      processedConfig.projects &&
+      typeof processedConfig.projects === "object" &&
+      !Array.isArray(processedConfig.projects)
    ) {
       throw new Error(
          "Config has changed. Please update your config to the new format.",
       );
    }
 
-   return rawConfig as PublisherConfig;
+   return processedConfig as PublisherConfig;
 };
 
 export const isPublisherConfigFrozen = (serverRoot: string) => {
