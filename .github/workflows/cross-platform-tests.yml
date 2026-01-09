@@ -1,0 +1,54 @@
+name: Cross Platform Tests
+
+on:
+  workflow_call:
+
+jobs:
+  cross_platform_test:
+    name: >-
+      Platform: (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.23
+
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: |
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
+        shell: bash
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
+
+      - name: Generate API types
+        run: bun run generate-api-types
+        shell: bash
+
+      - name: Build
+        run: bun run build
+        shell: bash
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
+
+      - name: Run tests
+        run: bun run test
+        shell: bash
