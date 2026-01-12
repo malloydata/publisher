@@ -40,7 +40,7 @@ export type ProcessedPublisherConfig = {
 };
 
 function substituteEnvVars(value: string): string {
-   const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)(:-([^}]*))?\}/g;
+   const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 
    return value.replace(
       envVarPattern,
@@ -56,7 +56,7 @@ function substituteEnvVars(value: string): string {
          }
 
          throw new Error(
-            `Environment variable '\${${varName}}' is not set and no default value provided in configuration file`,
+            `Environment variable '\${${varName}}' is not set in configuration file`,
          );
       },
    );
