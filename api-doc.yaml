@@ -287,6 +287,154 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+    post:
+      tags:
+        - connections
+      operationId: create-connection
+      summary: Create a new database connection
+      description: |
+        Creates a new database connection in the specified project.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Connection"
+      responses:
+        "201":
+          description: Connection created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Connection already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags:
+        - connections
+      operationId: update-connection
+      summary: Update an existing database connection
+      description: |
+        Updates the configuration of an existing database connection.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection to update
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                postgresConnection:
+                  $ref: "#/components/schemas/PostgresConnection"
+                mysqlConnection:
+                  $ref: "#/components/schemas/MysqlConnection"
+                bigqueryConnection:
+                  $ref: "#/components/schemas/BigqueryConnection"
+                snowflakeConnection:
+                  $ref: "#/components/schemas/SnowflakeConnection"
+                duckdbConnection:
+                  $ref: "#/components/schemas/DuckdbConnection"
+                motherduckConnection:
+                  $ref: "#/components/schemas/MotherDuckConnection"
+                trinoConnection:
+                  $ref: "#/components/schemas/TrinoConnection"
+      responses:
+        "200":
+          description: Connection updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags:
+        - connections
+      operationId: delete-connection
+      summary: Delete a database connection
+      description: |
+        Permanently deletes a database connection from the project.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection to delete
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: Connection deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /projects/{projectName}/connections/{connectionName}/schemas:
     get:
