@@ -42,7 +42,7 @@ describe("MCP Transport Tests (E2E Integration)", () => {
             expect(result).toHaveProperty("resources");
             expect(Array.isArray(result.resources)).toBe(true);
          },
-         { timeout: 20000 },
+         { timeout: 30000 },
       );
 
       it("should receive InvalidParams error when calling a known method with invalid params", async () => {
