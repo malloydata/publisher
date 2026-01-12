@@ -1,5 +1,13 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -126,7 +134,9 @@ describe("DuckDB Attached Databases", () => {
             },
          };
 
-         expect(invalidConfig.bigqueryConnection.defaultProjectId).toBeDefined();
+         expect(
+            invalidConfig.bigqueryConnection.defaultProjectId,
+         ).toBeDefined();
          expect(
             (invalidConfig.bigqueryConnection as Record<string, unknown>)
                .serviceAccountKeyJson,
@@ -453,7 +463,9 @@ describe("createPackageDuckDBConnections", () => {
 
          createdConnections = malloyConnections;
 
-         const conn = malloyConnections.get("file_test") as unknown as DuckDBConnection;
+         const conn = malloyConnections.get(
+            "file_test",
+         ) as unknown as DuckDBConnection;
          await conn.runSQL("CREATE TABLE test_table (id INT);");
 
          const dbPath = path.join(PACKAGE_TEST_DIR, "file_test.duckdb");
