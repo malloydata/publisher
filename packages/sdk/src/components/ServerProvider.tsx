@@ -4,8 +4,8 @@ import React, {
    createContext,
    ReactNode,
    useContext,
-   useMemo,
    useEffect,
+   useMemo,
    useState,
 } from "react";
 import {
@@ -49,6 +49,7 @@ export interface ServerProviderProps {
     * @default true
     */
    mutable?: boolean;
+   enableStatusCheck?: boolean;
 }
 
 const getApiClients = (
@@ -91,6 +92,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
    getAccessToken,
    baseURL,
    mutable: mutableProp,
+   enableStatusCheck = false,
 }) => {
    const apiClients = useMemo(
       () => getApiClients(baseURL, getAccessToken),
@@ -105,6 +107,11 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
 
    // Fetch status on mount
    useEffect(() => {
+      if (!enableStatusCheck) {
+         setIsLoadingStatus(false);
+         return;
+      }
+
       let isMounted = true;
 
       const fetchStatus = async () => {
@@ -141,7 +148,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
       return () => {
          isMounted = false;
       };
-   }, [apiClients, mutableProp]);
+   }, [apiClients, mutableProp, enableStatusCheck]);
 
    const value: ServerContextValue = {
       server,
