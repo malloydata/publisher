@@ -77,6 +77,7 @@ export class Model {
    private modelInfo: Malloy.ModelInfo | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
+   private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
    private meter = metrics.getMeter("publisher");
@@ -98,6 +99,7 @@ export class Model {
       // TODO(jjs) - remove these
       sources: ApiSource[] | undefined,
       queries: ApiQuery[] | undefined,
+      sourceInfos: Malloy.SourceInfo[] | undefined,
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
    ) {
@@ -109,6 +111,7 @@ export class Model {
       this.modelMaterializer = modelMaterializer;
       this.sources = sources;
       this.queries = queries;
+      this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
       this.modelInfo = this.modelDef
@@ -139,10 +142,56 @@ export class Model {
          let modelDef = undefined;
          let sources = undefined;
          let queries = undefined;
+         const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
             modelDef = (await modelMaterializer.getModel())._modelDef;
             sources = Model.getSources(modelPath, modelDef);
             queries = Model.getQueries(modelPath, modelDef);
+
+            // Collect sourceInfos from imported models first
+            // This follows the same pattern as notebook imports handling
+            const imports = modelDef.imports || [];
+            const importedSourceNames = new Set<string>();
+            for (const importLocation of imports) {
+               try {
+                  const modelString = await runtime.urlReader.readURL(
+                     new URL(importLocation.importURL),
+                  );
+                  const importedModelDef = (
+                     await runtime
+                        .loadModel(modelString as string, { importBaseURL })
+                        .getModel()
+                  )._modelDef;
+                  const importedModelInfo =
+                     modelDefToModelInfo(importedModelDef);
+                  const importedSources = importedModelInfo.entries.filter(
+                     (entry) => entry.kind === "source",
+                  ) as Malloy.SourceInfo[];
+                  for (const source of importedSources) {
+                     if (!importedSourceNames.has(source.name)) {
+                        sourceInfos.push(source);
+                        importedSourceNames.add(source.name);
+                     }
+                  }
+               } catch (importError) {
+                  // Log but don't fail if we can't load an import's sourceInfo
+                  logger.warn("Failed to load sourceInfo from import", {
+                     importURL: importLocation.importURL,
+                     error: importError,
+                  });
+               }
+            }
+
+            // Add locally-defined sources (not already added from imports)
+            const localModelInfo = modelDefToModelInfo(modelDef);
+            const localSources = localModelInfo.entries.filter(
+               (entry) => entry.kind === "source",
+            ) as Malloy.SourceInfo[];
+            for (const source of localSources) {
+               if (!importedSourceNames.has(source.name)) {
+                  sourceInfos.push(source);
+               }
+            }
          }
 
          return new Model(
@@ -154,6 +203,7 @@ export class Model {
             modelDef,
             sources,
             queries,
+            sourceInfos.length > 0 ? sourceInfos : undefined,
             runnableNotebookCells,
             undefined,
          );
@@ -180,6 +230,7 @@ export class Model {
             undefined,
             undefined,
             undefined,
+            undefined,
             computedError as Error,
          );
       }
@@ -198,11 +249,7 @@ export class Model {
    }
 
    public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.modelDef
-         ? modelDefToModelInfo(this.modelDef).entries.filter((entry) => {
-              return entry.kind === "source";
-           })
-         : undefined;
+      return this.sourceInfos;
    }
 
    public getQueries(): ApiQuery[] | undefined {
