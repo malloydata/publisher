@@ -37,7 +37,7 @@ export class ProjectStore {
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
-   private storageManager: StorageManager;
+   public storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
    });
@@ -357,9 +357,6 @@ export class ProjectStore {
    ): Promise<void> {
       try {
          const connections = project.listApiConnections();
-         const existingConnections =
-            await repository.listConnections(projectId);
-
          // Add/update connections
          for (const conn of connections) {
             if (!conn.name) {
@@ -367,12 +364,17 @@ export class ProjectStore {
                continue;
             }
 
-            await this.addConnection(
-               conn,
+            // Check if connection exists
+            const existingConn = await repository.getConnectionByName(
                projectId,
-               existingConnections,
-               repository,
+               conn.name,
             );
+
+            if (existingConn) {
+               await this.updateConnection(conn, projectId, repository);
+            } else {
+               await this.addConnection(conn, projectId, repository);
+            }
          }
       } catch (err: unknown) {
          const error = err as Error;
@@ -381,20 +383,15 @@ export class ProjectStore {
       }
    }
 
-   private async addConnection(
+   public async addConnection(
       conn: ReturnType<Project["listApiConnections"]>[number],
       projectId: string,
-      existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       if (!conn.name) {
          logger.warn("Skipping connection with undefined name");
          return;
       }
-
-      const existingConn = existingConnections.find(
-         (c) => c.name === conn.name,
-      );
 
       const connectionData = {
          projectId,
@@ -404,21 +401,46 @@ export class ProjectStore {
       };
 
       try {
-         if (existingConn) {
-            // Update existing connection
-            await repository.updateConnection(existingConn.id, {
-               type: connectionData.type,
-               config: connectionData.config,
-            });
-            logger.info(`Updated existing connection: ${conn.name}`);
-         } else {
-            // Create new connection
-            await repository.createConnection(connectionData);
-            logger.info(`Created connection: ${conn.name}`);
-         }
+         await repository.createConnection(connectionData);
+         logger.info(`Created connection: ${conn.name}`);
       } catch (err: unknown) {
          const error = err as Error;
-         logger.error(`Failed to sync connection ${conn.name}:`, error);
+         logger.error(`Failed to create connection ${conn.name}:`, error);
+         throw error;
+      }
+   }
+
+   public async updateConnection(
+      conn: ReturnType<Project["listApiConnections"]>[number],
+      projectId: string,
+      repository: ReturnType<typeof this.storageManager.getRepository>,
+   ): Promise<void> {
+      if (!conn.name) {
+         throw new Error("Connection name is required for update");
+      }
+
+      const existingConn = await repository.getConnectionByName(
+         projectId,
+         conn.name,
+      );
+
+      if (!existingConn) {
+         logger.error(`Connection "${conn.name}" not found in project`);
+      }
+
+      const connectionData = {
+         type: conn.type as Connection["type"],
+         config: conn,
+      };
+
+      try {
+         if (existingConn) {
+            await repository.updateConnection(existingConn.id, connectionData);
+         }
+         logger.info(`Updated connection: ${conn.name}`);
+      } catch (err: unknown) {
+         const error = err as Error;
+         logger.error(`Failed to update connection ${conn.name}:`, error);
          throw error;
       }
    }
