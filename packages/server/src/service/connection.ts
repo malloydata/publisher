@@ -336,7 +336,7 @@ async function attachSnowflake(
    await connection.runSQL(secretString);
 
    const testresult = await connection.runSQL(
-      `SELECT * FROM snowflake_scan('SELECT 1', '${attachedDb.name}_secret');`,
+      `SELECT * FROM snowflake_query('SELECT 1', '${attachedDb.name}_secret');`,
    );
    logger.info(`Testing Snowflake connection:`, testresult.rows);
 

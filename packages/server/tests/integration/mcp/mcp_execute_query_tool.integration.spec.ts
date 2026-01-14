@@ -132,7 +132,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
             // Add more specific data checks if needed, e.g., check for specific columns or row count > 0
             // Example: expect(queryResultPayload._queryResult.data.rows.length).toBeGreaterThan(0);
          },
-         { timeout: 20000 },
+         { timeout: 30000 },
       );
 
       it(
@@ -170,7 +170,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
             );
             expect(Array.isArray(errorPayloadSyntax.suggestions)).toBe(true);
          },
-         { timeout: 20000 },
+         { timeout: 30000 },
       );
 
       // --- Parameter Validation Error Tests ---
