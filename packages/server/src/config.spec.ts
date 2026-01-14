@@ -295,12 +295,21 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         const result = getPublisherConfig(testServerRoot) as any;
+         const result = getPublisherConfig(testServerRoot);
+         const projectWithSettings = result
+            .projects[0] as (typeof result.projects)[0] & {
+            settings: {
+               apiEndpoint: string;
+               credentials: {
+                  apiKey: string;
+               };
+            };
+         };
 
-         expect(result.projects[0].settings.apiEndpoint).toBe(
+         expect(projectWithSettings.settings.apiEndpoint).toBe(
             "https://api.example.com/v1",
          );
-         expect(result.projects[0].settings.credentials.apiKey).toBe(
+         expect(projectWithSettings.settings.credentials.apiKey).toBe(
             "secret-key-123",
          );
       });
@@ -394,11 +403,13 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         const result = getPublisherConfig(testServerRoot) as any;
+         const result = getPublisherConfig(testServerRoot);
 
          // The key should remain as-is (not substituted)
          expect(result.projects[0]).toHaveProperty("${KEY_NAME}");
-         expect(result.projects[0]["${KEY_NAME}"]).toBe("some-value");
+         expect(
+            (result.projects[0] as Record<string, unknown>)["${KEY_NAME}"],
+         ).toBe("some-value");
       });
 
       it("should preserve keys with variable syntax while substituting values", () => {
@@ -418,14 +429,18 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         const result = getPublisherConfig(testServerRoot) as any;
+         const result = getPublisherConfig(testServerRoot);
 
          // Key should not be substituted
          expect(result.projects[0]).toHaveProperty("${DYNAMIC_KEY}");
-         expect(result.projects[0]["${DYNAMIC_KEY}"]).toBe("value1");
+         expect(
+            (result.projects[0] as Record<string, unknown>)["${DYNAMIC_KEY}"],
+         ).toBe("value1");
 
          // Value should be substituted
-         expect(result.projects[0]["normal_key"]).toBe("substituted-value");
+         expect(
+            (result.projects[0] as Record<string, unknown>)["normal_key"],
+         ).toBe("substituted-value");
       });
 
       it("should handle mixed scenario: variable in key and different variable in value", () => {
@@ -444,13 +459,15 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         const result = getPublisherConfig(testServerRoot) as any;
+         const result = getPublisherConfig(testServerRoot);
 
          // Key remains with variable syntax
          expect(result.projects[0]).toHaveProperty("${KEY_VAR}");
 
          // Value is substituted
-         expect(result.projects[0]["${KEY_VAR}"]).toBe("actual-value");
+         expect(
+            (result.projects[0] as Record<string, unknown>)["${KEY_VAR}"],
+         ).toBe("actual-value");
       });
 
       it("should substitute variables in package names since they are values", () => {
@@ -507,13 +524,17 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         const result = getPublisherConfig(testServerRoot) as any;
+         const result = getPublisherConfig(testServerRoot);
+         const projectWithMetadata = result
+            .projects[0] as (typeof result.projects)[0] & {
+            metadata: Record<string, { setting: string }>;
+         };
 
          // Key should remain unchanged
-         expect(result.projects[0].metadata).toHaveProperty("${DYNAMIC_PROP}");
+         expect(projectWithMetadata.metadata).toHaveProperty("${DYNAMIC_PROP}");
 
          // Nested value should be substituted
-         expect(result.projects[0].metadata["${DYNAMIC_PROP}"].setting).toBe(
+         expect(projectWithMetadata.metadata["${DYNAMIC_PROP}"].setting).toBe(
             "test-value",
          );
 
@@ -580,14 +601,22 @@ describe("Config Environment Variable Substitution", () => {
             JSON.stringify(configWithExtras, null, 2),
          );
 
-         const result = getPublisherConfig(testServerRoot) as any;
+         const result = getPublisherConfig(testServerRoot);
+         const projectWithExtras = result
+            .projects[0] as (typeof result.projects)[0] & {
+            count: number;
+            enabled: boolean;
+            ratio: number;
+            metadata: null;
+            tags: string[];
+         };
 
          expect(result.frozenConfig).toBe(true);
-         expect(result.projects[0].count).toBe(42);
-         expect(result.projects[0].enabled).toBe(true);
-         expect(result.projects[0].ratio).toBe(3.14);
-         expect(result.projects[0].metadata).toBe(null);
-         expect(result.projects[0].tags).toEqual(["tag1", "tag2"]);
+         expect(projectWithExtras.count).toBe(42);
+         expect(projectWithExtras.enabled).toBe(true);
+         expect(projectWithExtras.ratio).toBe(3.14);
+         expect(projectWithExtras.metadata).toBe(null);
+         expect(projectWithExtras.tags).toEqual(["tag1", "tag2"]);
       });
 
       it("should handle config with no environment variables", () => {
@@ -747,9 +776,13 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         const result = getPublisherConfig(testServerRoot) as any;
+         const result = getPublisherConfig(testServerRoot);
+         const projectWithTags = result
+            .projects[0] as (typeof result.projects)[0] & {
+            tags: string[];
+         };
 
-         expect(result.projects[0].tags).toEqual([
+         expect(projectWithTags.tags).toEqual([
             "analytics",
             "production",
             "static-tag",
