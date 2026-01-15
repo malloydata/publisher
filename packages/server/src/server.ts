@@ -408,7 +408,6 @@ app.get(
             req.params.connectionName,
             req.params.schemaName,
          );
-         logger.info("results", { results });
          res.status(200).json(results);
       } catch (error) {
          logger.error(error);
@@ -429,7 +428,6 @@ app.get(
             req.params.schemaName,
             req.params.tablePath,
          );
-         logger.info("results", { results });
          res.status(200).json(results);
       } catch (error) {
          logger.error(error);
