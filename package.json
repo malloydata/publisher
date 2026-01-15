@@ -65,6 +65,6 @@
   "resolutions": {
     "duckdb": "1.4.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.334"
+    "@malloydata/malloy-interfaces": "^0.0.333"
   }
 }

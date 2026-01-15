@@ -523,17 +523,24 @@ export class Model {
          const isDuckDB =
             connection instanceof DuckDBConnection ||
             connection.constructor.name === "DuckDBConnection";
-         if (isDuckDB) {
+         if (
+            isDuckDB &&
+            (connection as unknown as { workingDirectory?: string })
+               .workingDirectory !== workingDirectory
+         ) {
             // Create a new DuckDB connection with the model's directory as working directory.
-            // Using :memory: for model-specific connections to avoid conflicts.
+            // IMPORTANT: Reuse the same databasePath to share secrets and attachments via DuckDB's activeDBs cache.
+            const databasePath =
+               (connection as unknown as { databasePath?: string })
+                  .databasePath || ":memory:";
             const modelDuckDBConnection = new DuckDBConnection(
                name,
-               ":memory:",
+               databasePath,
                workingDirectory,
             );
             modelConnections.set(name, modelDuckDBConnection);
          } else {
-            // Keep non-DuckDB connections as it is
+            // Keep connection as-is (same workingDirectory or non-DuckDB)
             modelConnections.set(name, connection);
          }
       }
