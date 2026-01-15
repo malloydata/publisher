@@ -449,7 +449,7 @@ export class Project {
       this.apiConnections = apiConnections;
    }
 
-   public async deleteConnection(connectionName: string): void {
+   public async deleteConnection(connectionName: string): Promise<void> {
       this.malloyConnections.get(connectionName)?.close();
       const isDeleted = this.malloyConnections.delete(connectionName);
 

@@ -18,7 +18,7 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
-import { logger } from "../logger";
+import { formatDuration, logger } from "../logger";
 import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
