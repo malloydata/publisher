@@ -1,5 +1,6 @@
 import { check, sleep } from "k6";
 import {
+   getAvailablePackages,
    getModelData,
    getModels,
    getPackages,
@@ -39,7 +40,11 @@ export const breakpointTest: TestPreset = {
    },
    run: () => {
       const packages = getPackages();
+      const availablePackages = getAvailablePackages();
       for (const pkg of packages) {
+         if (!availablePackages.includes(pkg.name)) {
+            continue;
+         }
          for (const model of getModels(pkg.name)) {
             const modelData = getModelData(pkg.name, model.path);
             for (const view of getViews(modelData)) {
