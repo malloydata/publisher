@@ -484,7 +484,6 @@ export class Project {
    }
 
    public async deleteDuckDBConnection(connectionName: string): Promise<void> {
-      
       const duckdbPath = path.join(
          this.projectPath,
          `${connectionName}.duckdb`,
