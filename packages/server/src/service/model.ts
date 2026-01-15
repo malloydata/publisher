@@ -518,19 +518,14 @@ export class Model {
       const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
-      const duckdbConnection = new DuckDBConnection(
-         "duckdb",
-         ":memory:",
-         workingDirectory,
+      const duckdbConnection = connections.get("duckdb") as DuckDBConnection;
+      await duckdbConnection.runSQL(
+         `SET FILE_SEARCH_PATH='${workingDirectory}';`,
       );
-      const modelConnections = new Map([
-         ...connections.entries(),
-         ["duckdb", duckdbConnection],
-      ]);
 
       const runtime = new Runtime({
          urlReader,
-         connections: new FixedConnectionMap(modelConnections, "duckdb"),
+         connections: new FixedConnectionMap(connections, "duckdb"),
       });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
