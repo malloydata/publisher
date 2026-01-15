@@ -358,10 +358,10 @@ describe("createProjectConnections - DuckDB", () => {
    });
 
    describe("Positive Tests", () => {
-      it("should create duckdb connection", async () => {
+      it("should create a named duckdb connection", async () => {
          const connections: ApiConnection[] = [
             {
-               name: "duckdb",
+               name: "my_duckdb_conn",
                type: "duckdb",
                duckdbConnection: {
                   attachedDatabases: [],
@@ -374,9 +374,9 @@ describe("createProjectConnections - DuckDB", () => {
 
          createdConnections = malloyConnections;
 
-         expect(malloyConnections.has("duckdb")).toBe(true);
+         expect(malloyConnections.has("my_duckdb_conn")).toBe(true);
          expect(apiConnections.length).toBe(1);
-         expect(apiConnections[0].name).toBe("duckdb");
+         expect(apiConnections[0].name).toBe("my_duckdb_conn");
          expect(apiConnections[0].type).toBe("duckdb");
       });
 
@@ -704,6 +704,261 @@ describe("createProjectConnections - DuckDB", () => {
          ).rejects.toThrow(
             "DuckDB attached databases names cannot conflict with connection name",
          );
+      });
+
+      it("should throw when DuckDB connection name is 'duckdb'", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [],
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
+      });
+
+      it("should throw when DuckDB connection name is 'duckdb' with attached databases", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "my_bigquery",
+                        type: "bigquery",
+                        bigqueryConnection: {
+                           defaultProjectId: "test-project",
+                           serviceAccountKeyJson: JSON.stringify({
+                              type: "service_account",
+                              project_id: "test-project",
+                              private_key: "test-key",
+                              client_email: "test@test.com",
+                           }),
+                        },
+                     },
+                  ],
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
+      });
+
+      it("should throw on unsupported connection type", async () => {
+         const connections = [
+            {
+               name: "unsupported",
+               type: "redis" as "duckdb",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Unsupported connection type");
+      });
+
+      it("should throw when connection name is missing", async () => {
+         const connections = [
+            {
+               type: "duckdb",
+               duckdbConnection: { attachedDatabases: [] },
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow();
+      });
+   });
+});
+
+describe("createProjectConnections - Other Connection Types", () => {
+   const PROJECT_TEST_DIR = path.join(
+      os.tmpdir(),
+      "connection-validation-tests",
+   );
+   let createdConnections: Map<string, unknown> = new Map();
+
+   beforeEach(async () => {
+      await fs.mkdir(PROJECT_TEST_DIR, { recursive: true });
+   });
+
+   afterEach(async () => {
+      for (const conn of createdConnections.values()) {
+         try {
+            if (typeof (conn as { close?: () => Promise<void> }).close === "function") {
+               await (conn as { close: () => Promise<void> }).close();
+            }
+         } catch {
+            // Ignore
+         }
+      }
+      createdConnections.clear();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+         await fs.rm(PROJECT_TEST_DIR, { recursive: true, force: true });
+      } catch {
+         // Ignore
+      }
+   });
+
+   describe("Snowflake Connection Validation", () => {
+      it("should throw when Snowflake config is missing", async () => {
+         const connections = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake connection configuration is missing");
+      });
+
+      it("should throw when Snowflake account is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  username: "test",
+                  password: "test",
+                  warehouse: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake account is required");
+      });
+
+      it("should throw when Snowflake username is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  account: "test-account",
+                  password: "test",
+                  warehouse: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake username is required");
+      });
+
+      it("should throw when Snowflake password and private key are both missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  account: "test-account",
+                  username: "test",
+                  warehouse: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            "Snowflake password or private key or private key path is required",
+         );
+      });
+
+      it("should throw when Snowflake warehouse is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  account: "test-account",
+                  username: "test",
+                  password: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake warehouse is required");
+      });
+   });
+
+   describe("Trino Connection Validation", () => {
+      it("should throw when Trino config is missing", async () => {
+         const connections = [
+            {
+               name: "trino_test",
+               type: "trino",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Trino connection configuration is missing");
+      });
+
+      it("should throw when Trino server URL is invalid (no protocol)", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "trino_test",
+               type: "trino",
+               trinoConnection: {
+                  server: "localhost:8080",
+                  port: 8080,
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            'Invalid Trino connection: expected "http://server:port" or "https://server:port"',
+         );
+      });
+   });
+
+   describe("MotherDuck Connection Validation", () => {
+      it("should throw when MotherDuck config is missing", async () => {
+         const connections = [
+            {
+               name: "md_test",
+               type: "motherduck",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("MotherDuck connection configuration is missing");
+      });
+
+      it("should throw when MotherDuck access token is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "md_test",
+               type: "motherduck",
+               motherduckConnection: {},
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("MotherDuck access token is required");
       });
    });
 });
