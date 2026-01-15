@@ -565,7 +565,7 @@ export class ProjectStore {
                const packages = project.packages;
                const connections = project.connections;
 
-               logger.info(`Project ${project.name} status:`, {
+               logger.debug(`Project ${project.name} status:`, {
                   connectionsCount: project.connections?.length || 0,
                   packagesCount: packages?.length || 0,
                });

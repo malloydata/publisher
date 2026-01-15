@@ -186,7 +186,7 @@ export class Project {
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
-      logger.info("Listing packages", { projectPath: this.projectPath });
+      logger.debug("Listing packages", { projectPath: this.projectPath });
       try {
          const packageMetadata = await Promise.all(
             Array.from(this.packageStatuses.keys()).map(async (packageName) => {
