@@ -364,7 +364,16 @@ describe("createProjectConnections - DuckDB", () => {
                name: "my_duckdb_conn",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
@@ -386,7 +395,16 @@ describe("createProjectConnections - DuckDB", () => {
                name: "my_duckdb",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
@@ -406,7 +424,16 @@ describe("createProjectConnections - DuckDB", () => {
                name: "attr_test",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
@@ -438,7 +465,16 @@ describe("createProjectConnections - DuckDB", () => {
                name: "my_duck",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
@@ -460,7 +496,16 @@ describe("createProjectConnections - DuckDB", () => {
                name: "file_test",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
@@ -492,12 +537,34 @@ describe("createProjectConnections - DuckDB", () => {
             {
                name: "duplicate",
                type: "duckdb",
-               duckdbConnection: { attachedDatabases: [] },
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
             },
             {
                name: "duplicate",
                type: "duckdb",
-               duckdbConnection: { attachedDatabases: [] },
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs2",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
             },
          ];
 
@@ -518,7 +585,18 @@ describe("createProjectConnections - DuckDB", () => {
             {
                name: "",
                type: "duckdb",
-               duckdbConnection: { attachedDatabases: [] },
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
             },
          ];
 
@@ -752,6 +830,24 @@ describe("createProjectConnections - DuckDB", () => {
          ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
       });
 
+      it("should throw when DuckDB connection has no attached databases", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "no_attached_db",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [],
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            "DuckDB connection must have at least one attached database",
+         );
+      });
+
       it("should throw on unsupported connection type", async () => {
          const connections = [
             {
@@ -769,7 +865,18 @@ describe("createProjectConnections - DuckDB", () => {
          const connections = [
             {
                type: "duckdb",
-               duckdbConnection: { attachedDatabases: [] },
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
             },
          ] as ApiConnection[];
 
