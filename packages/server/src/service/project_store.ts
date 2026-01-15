@@ -24,7 +24,7 @@ import {
    PackageNotFoundError,
    ProjectNotFoundError,
 } from "../errors";
-import { logger } from "../logger";
+import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
@@ -188,8 +188,9 @@ export class ProjectStore {
          }
 
          this.isInitialized = true;
+         const initializationDuration = performance.now() - initialTime;
          logger.info(
-            `Project store successfully initialized in ${performance.now() - initialTime}ms`,
+            `Project store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
       } catch (error) {
          logger.error("Error initializing project store", { error });
@@ -765,6 +766,10 @@ export class ProjectStore {
       }
 
       const projectPath = project.metadata?.location;
+
+      // Close all connections before removing the project
+      project.closeAllConnections();
+
       this.projects.delete(projectName);
       await this.deleteProjectFromDatabase(projectName);
       if (projectPath) {

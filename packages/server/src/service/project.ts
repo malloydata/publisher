@@ -452,7 +452,8 @@ export class Project {
    }
 
    public deleteConnection(connectionName: string): void {
-      const deleted = this.malloyConnections.delete(connectionName);
+      this.malloyConnections.get(connectionName)?.close();
+      const isDeleted = this.malloyConnections.delete(connectionName);
 
       const index = this.apiConnections.findIndex(
          (conn) => conn.name === connectionName,
@@ -462,7 +463,7 @@ export class Project {
          this.apiConnections.splice(index, 1);
       }
 
-      if (deleted || index !== -1) {
+      if (isDeleted || index !== -1) {
          logger.info(
             `Removed connection ${connectionName} from project ${this.projectName}`,
          );
@@ -471,6 +472,29 @@ export class Project {
             `Connection ${connectionName} not found in project ${this.projectName}`,
          );
       }
+   }
+
+   public closeAllConnections(): void {
+      // Close all Malloy connections
+      for (const [connectionName, connection] of this.malloyConnections) {
+         try {
+            connection.close();
+            logger.info(
+               `Closed connection ${connectionName} for project ${this.projectName}`,
+            );
+         } catch (error) {
+            logger.error(
+               `Error closing connection ${connectionName} for project ${this.projectName}`,
+               { error },
+            );
+         }
+      }
+
+      // Clear connection maps
+      this.malloyConnections.clear();
+      this.apiConnections = [];
+
+      logger.info(`Closed all connections for project ${this.projectName}`);
    }
 
    public async serialize(): Promise<ApiProject> {
