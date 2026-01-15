@@ -794,7 +794,10 @@ describe("createProjectConnections - Other Connection Types", () => {
    afterEach(async () => {
       for (const conn of createdConnections.values()) {
          try {
-            if (typeof (conn as { close?: () => Promise<void> }).close === "function") {
+            if (
+               typeof (conn as { close?: () => Promise<void> }).close ===
+               "function"
+            ) {
                await (conn as { close: () => Promise<void> }).close();
             }
          } catch {
