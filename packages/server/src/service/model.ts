@@ -518,9 +518,15 @@ export class Model {
       const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
-      const modelConnections = new Map<string, Connection>();
-      const duckdbConnection = new DuckDBConnection("duckdb", ":memory:", workingDirectory);
-      modelConnections.set("duckdb", duckdbConnection);
+      const duckdbConnection = new DuckDBConnection(
+         "duckdb",
+         ":memory:",
+         workingDirectory,
+      );
+      const modelConnections = new Map([
+         ...connections.entries(),
+         ["duckdb", duckdbConnection],
+      ]);
 
       const runtime = new Runtime({
          urlReader,

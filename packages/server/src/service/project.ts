@@ -269,7 +269,6 @@ export class Project {
                packageName,
                path.join(this.projectPath, packageName),
                this.malloyConnections,
-               this.apiConnections,
             );
             this.packages.set(packageName, _package);
 
@@ -314,7 +313,6 @@ export class Project {
                packageName,
                packagePath,
                this.malloyConnections,
-               this.apiConnections,
             ),
          );
       } catch (error) {
@@ -486,22 +484,36 @@ export class Project {
    }
 
    public async deleteDuckDBConnection(connectionName: string): Promise<void> {
-
       for (const _package of this.packages.values()) {
          await _package.deleteDuckDBConnection(connectionName);
       }
 
-      const duckdbPath = path.join(this.projectPath, `${connectionName}.duckdb`);
-      fs.promises.access(duckdbPath).then(() => {
-         fs.promises.rm(duckdbPath).then(() => {
-            logger.info(
-               `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
+      const duckdbPath = path.join(
+         this.projectPath,
+         `${connectionName}.duckdb`,
+      );
+      fs.promises
+         .access(duckdbPath)
+         .then(() => {
+            fs.promises
+               .rm(duckdbPath)
+               .then(() => {
+                  logger.info(
+                     `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                  );
+               })
+               .catch((error) => {
+                  logger.error(
+                     `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                     { error },
+                  );
+               });
+         })
+         .catch((error) => {
+            logger.error(
+               `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+               { error },
             );
-         }).catch((error) => {
-            logger.error(`Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`, { error });
-            });
-      }).catch((error) => {
-         logger.error(`Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`, { error });
-      });
+         });
    }
 }

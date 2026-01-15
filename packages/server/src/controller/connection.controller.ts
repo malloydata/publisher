@@ -40,7 +40,7 @@ export class ConnectionController {
       const connection = project.getApiConnection(connectionName);
 
       // For DuckDB connections, get the connection from a package
-      if (connection.name === "duckdb") {
+      if (connection.name === "duckdb" && connection.type === "duckdb") {
          const packages = await project.listPackages();
          if (packages.length === 0) {
             return project.getMalloyConnection(connectionName);
