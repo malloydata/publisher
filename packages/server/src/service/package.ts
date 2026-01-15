@@ -401,26 +401,4 @@ export class Package {
    public setPackageMetadata(packageMetadata: ApiPackage) {
       this.packageMetadata = packageMetadata;
    }
-
-   public async deleteDuckDBConnection(connectionName: string) {
-      const duckdbPath = this.packagePath + `/${connectionName}.duckdb`;
-      if (await fs.exists(duckdbPath)) {
-         await fs.rm(duckdbPath);
-         logger.info(
-            `Removed DuckDB connection file ${connectionName} from package ${this.packageName}`,
-         );
-      }
-
-      const deleted = this.connections.delete(connectionName);
-
-      if (deleted) {
-         logger.info(
-            `Removed DuckDB connection ${connectionName} from package ${this.packageName}`,
-         );
-      } else {
-         logger.warn(
-            `DuckDB connection ${connectionName} not found in package ${this.packageName}`,
-         );
-      }
-   }
 }
