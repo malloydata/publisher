@@ -759,6 +759,10 @@ export async function createProjectConnections(
                );
             }
 
+            if (connection.name === "duckdb") {
+               throw new Error("DuckDB connection name cannot be 'duckdb'");
+            }
+
             // Create DuckDB connection with project basePath as working directory
             // This ensures relative paths in the project are resolved correctly
             // Use unique memory database path to prevent sharing across connections
