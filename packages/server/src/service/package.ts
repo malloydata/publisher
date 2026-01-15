@@ -18,7 +18,7 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
-import { logger } from "../logger";
+import { formatDuration, logger } from "../logger";
 import { createPackageDuckDBConnections } from "./connection";
 import { ApiConnection, Model } from "./model";
 
@@ -77,8 +77,7 @@ export class Package {
       const manifestValidationTime = performance.now();
       logger.info("Package manifest validation completed", {
          packageName,
-         duration: manifestValidationTime - startTime,
-         unit: "ms",
+         duration: formatDuration(manifestValidationTime - startTime),
       });
 
       try {
@@ -86,8 +85,9 @@ export class Package {
          const packageConfigTime = performance.now();
          logger.info("Package config read completed", {
             packageName,
-            duration: packageConfigTime - manifestValidationTime,
-            unit: "ms",
+            duration: formatDuration(
+               packageConfigTime - manifestValidationTime,
+            ),
          });
          packageConfig.resource = `${API_PREFIX}/projects/${projectName}/packages/${packageName}`;
 
@@ -96,8 +96,7 @@ export class Package {
          logger.info("Databases read completed", {
             packageName,
             databaseCount: databases.length,
-            duration: databasesTime - packageConfigTime,
-            unit: "ms",
+            duration: formatDuration(databasesTime - packageConfigTime),
          });
          const connections = new Map<string, Connection>(projectConnections);
 
@@ -119,8 +118,7 @@ export class Package {
          logger.info("Models loaded", {
             packageName,
             modelCount: models.size,
-            duration: modelsTime - databasesTime,
-            unit: "ms",
+            duration: formatDuration(modelsTime - databasesTime),
          });
          for (const [modelPath, model] of models.entries()) {
             const maybeModel = model as unknown as {
@@ -154,8 +152,7 @@ export class Package {
          });
          logger.info(`Successfully loaded package ${packageName}`, {
             packageName,
-            duration: executionTime,
-            unit: "ms",
+            duration: formatDuration(executionTime),
          });
          return new Package(
             projectName,
@@ -175,6 +172,18 @@ export class Package {
             malloy_package_name: packageName,
             status: "error",
          });
+         // Clean up package directory on failure
+         try {
+            await fs.rm(packagePath, {
+               recursive: true,
+               force: true,
+            });
+            logger.info(`Cleaned up failed package directory: ${packagePath}`);
+         } catch (cleanupError) {
+            logger.warn(`Failed to clean up package directory ${packagePath}`, {
+               error: cleanupError,
+            });
+         }
          throw error;
       }
    }
