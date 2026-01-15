@@ -749,6 +749,10 @@ export async function createProjectConnections(
                throw new Error("DuckDB connection configuration is missing.");
             }
 
+            if (connection.duckdbConnection.attachedDatabases?.some((database) => database.name === connection.name)) {
+               throw new Error(`DuckDB attached databases names cannot conflict with connection name ${connection.name}`);
+            }
+
             // Create DuckDB connection with project basePath as working directory
             // This ensures relative paths in the project are resolved correctly
             // Use unique memory database path to prevent sharing across connections
@@ -862,6 +866,10 @@ export async function createPackageDuckDBConnections(
 
       if (!connection.duckdbConnection) {
          throw new Error("DuckDB connection configuration is missing.");
+      }
+
+      if (connection.duckdbConnection.attachedDatabases?.some((database) => database.name === connection.name)) {
+         throw new Error(`DuckDB attached databases names cannot conflict with connection name ${connection.name}`);
       }
 
       // Create DuckDB connection with project basePath as working directory

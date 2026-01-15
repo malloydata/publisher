@@ -519,31 +519,8 @@ export class Model {
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
       const modelConnections = new Map<string, Connection>();
-      for (const [name, connection] of connections.entries()) {
-         const isDuckDB =
-            connection instanceof DuckDBConnection ||
-            connection.constructor.name === "DuckDBConnection";
-         if (
-            isDuckDB &&
-            (connection as unknown as { workingDirectory?: string })
-               .workingDirectory !== workingDirectory
-         ) {
-            // Create a new DuckDB connection with the model's directory as working directory.
-            // IMPORTANT: Reuse the same databasePath to share secrets and attachments via DuckDB's activeDBs cache.
-            const databasePath =
-               (connection as unknown as { databasePath?: string })
-                  .databasePath || ":memory:";
-            const modelDuckDBConnection = new DuckDBConnection(
-               name,
-               databasePath,
-               workingDirectory,
-            );
-            modelConnections.set(name, modelDuckDBConnection);
-         } else {
-            // Keep connection as-is (same workingDirectory or non-DuckDB)
-            modelConnections.set(name, connection);
-         }
-      }
+      const duckdbConnection = new DuckDBConnection("duckdb", ":memory:", workingDirectory);
+      modelConnections.set("duckdb", duckdbConnection);
 
       const runtime = new Runtime({
          urlReader,

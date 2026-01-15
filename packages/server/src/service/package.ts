@@ -19,7 +19,6 @@ import {
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
 import { logger } from "../logger";
-import { createPackageDuckDBConnections } from "./connection";
 import { ApiConnection, Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -102,13 +101,8 @@ export class Package {
          const connections = new Map<string, Connection>(projectConnections);
 
          // Add a duckdb connection for the package.
-         const duckdbConnections = await createPackageDuckDBConnections(
-            packageConnections,
-            packagePath,
-         );
-         duckdbConnections.malloyConnections.forEach((connection, name) => {
-            connections.set(name, connection);
-         });
+         const duckdbConnection = new DuckDBConnection("duckdb", ":memory:", packagePath);
+         connections.set("duckdb", duckdbConnection);
 
          const models = await Package.loadModels(
             packageName,
@@ -403,5 +397,28 @@ export class Package {
 
    public setPackageMetadata(packageMetadata: ApiPackage) {
       this.packageMetadata = packageMetadata;
+   }
+
+   public async deleteDuckDBConnection(connectionName: string) {
+
+      const duckdbPath = this.packagePath+`/${connectionName}.duckdb`;
+      if (await fs.exists(duckdbPath)) {
+         await fs.rm(duckdbPath);
+         logger.info(
+            `Removed DuckDB connection file ${connectionName} from package ${this.packageName}`,
+         );
+      }
+
+      const deleted = this.connections.delete(connectionName);
+
+      if (deleted) {
+         logger.info(
+            `Removed DuckDB connection ${connectionName} from package ${this.packageName}`,
+         );
+      } else {
+         logger.warn(
+            `DuckDB connection ${connectionName} not found in package ${this.packageName}`,
+         );
+      }
    }
 }

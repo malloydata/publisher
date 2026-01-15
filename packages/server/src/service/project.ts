@@ -451,12 +451,16 @@ export class Project {
       this.apiConnections = apiConnections;
    }
 
-   public deleteConnection(connectionName: string): void {
+   public async deleteConnection(connectionName: string): Promise<void> {
       const deleted = this.malloyConnections.delete(connectionName);
 
       const index = this.apiConnections.findIndex(
          (conn) => conn.name === connectionName,
       );
+
+      if (this.apiConnections[index]?.type === "duckdb") {
+         await this.deleteDuckDBConnection(connectionName);
+      }
 
       if (index !== -1) {
          this.apiConnections.splice(index, 1);
@@ -479,5 +483,25 @@ export class Project {
          connections: this.listApiConnections(),
          packages: await this.listPackages(),
       };
+   }
+
+   public async deleteDuckDBConnection(connectionName: string): Promise<void> {
+
+      for (const _package of this.packages.values()) {
+         await _package.deleteDuckDBConnection(connectionName);
+      }
+
+      const duckdbPath = path.join(this.projectPath, `${connectionName}.duckdb`);
+      fs.promises.access(duckdbPath).then(() => {
+         fs.promises.rm(duckdbPath).then(() => {
+            logger.info(
+               `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
+            );
+         }).catch((error) => {
+            logger.error(`Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`, { error });
+            });
+      }).catch((error) => {
+         logger.error(`Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`, { error });
+      });
    }
 }
