@@ -65,6 +65,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
             );
 
             expect(model.getPath()).toBe(mockModelPath);
@@ -81,6 +82,7 @@ describe("service/model", () => {
                mockModelPath,
                {},
                modelType,
+               undefined,
                undefined,
                undefined,
                undefined,
@@ -107,6 +109,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
                new MalloyError("Compilation error"),
             );
 
@@ -123,6 +126,7 @@ describe("service/model", () => {
                mockModelPath,
                {},
                "notebook" as ModelType,
+               undefined,
                undefined,
                undefined,
                undefined,
@@ -151,6 +155,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
                new Error("Compilation error"),
             );
 
@@ -167,6 +172,7 @@ describe("service/model", () => {
                mockModelPath,
                {},
                "model" as ModelType,
+               undefined,
                undefined,
                undefined,
                undefined,
@@ -196,6 +202,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
                error,
             );
 
@@ -212,6 +219,7 @@ describe("service/model", () => {
                mockModelPath,
                {},
                "model",
+               undefined,
                undefined,
                undefined,
                undefined,
