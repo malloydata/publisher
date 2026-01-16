@@ -1,5 +1,9 @@
 import { check } from "k6";
-import { getModelsClient, getPackagesClient } from "./client_factory.ts";
+import {
+   getModelsClient,
+   getPackagesClient,
+   getPublisherClient,
+} from "./client_factory.ts";
 import type {
    CompiledModel,
    Model,
@@ -62,6 +66,7 @@ export function getAvailablePackages(): Array<string> {
 export const BASE_URL = `${PUBLISHER_URL}/api/v0`;
 const packagesClient = getPackagesClient(BASE_URL, AUTH_TOKEN);
 const modelsClient = getModelsClient(BASE_URL, AUTH_TOKEN);
+const publisherClient = getPublisherClient(BASE_URL, AUTH_TOKEN);
 
 // Check if BigQuery credentials are available
 export const HAS_BIGQUERY_CREDENTIALS =
@@ -332,6 +337,22 @@ export function* getViews(modelData: ModelData) {
       }
    }
 }
+
+export const isServerAvailableAndInitialized = (): boolean => {
+   const { response, data } = publisherClient.getStatus({
+      tags: { name: "get_server_status" },
+   });
+   check(response, {
+      "server status request successful": (r) => r.status === 200,
+      "server is initialized": (_) => data?.initialized === true,
+   });
+   console.log(`Server status: ${response.status}`);
+   if (response.status === 200) {
+      console.log(`Server is initialized: ${data?.initialized}`);
+   }
+
+   return response.status === 200 && data?.initialized === true;
+};
 
 export const queryModelView = (
    packageName: string,
