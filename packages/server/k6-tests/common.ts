@@ -6,15 +6,15 @@ import type {
    Package,
 } from "./clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 
-export const PUBLISHER_URL = __ENV.PUBLISHER_URL || "http://localhost:4000";
-export const PROJECT_NAME = __ENV.PROJECT_NAME || "malloy-samples";
-export const AUTH_TOKEN = __ENV.AUTH_TOKEN || "";
+export const PUBLISHER_URL = __ENV.K6_PUBLISHER_URL || "http://localhost:4000";
+export const PROJECT_NAME = __ENV.K6_PROJECT_NAME || "malloy-samples";
+export const AUTH_TOKEN = __ENV.K6_AUTH_TOKEN || "";
 
-export const WHITELISTED_PACKAGES = __ENV.WHITELISTED_PACKAGES
-   ? (JSON.parse(__ENV.WHITELISTED_PACKAGES) as Array<string>)
+export const WHITELISTED_PACKAGES = __ENV.K6_WHITELISTED_PACKAGES
+   ? (JSON.parse(__ENV.K6_WHITELISTED_PACKAGES) as Array<string>)
    : ["ecommerce", "faa", "imdb", "bigquery-hackernews"];
 
-export const USE_VERSION_ID = __ENV.USE_VERSION_ID === "true" ? true : false;
+export const USE_VERSION_ID = __ENV.K6_USE_VERSION_ID === "true" ? true : false;
 /**
  * Available packages in the k6-tests/packages directory
  * These are the actual package directories that exist
@@ -24,8 +24,8 @@ export const USE_VERSION_ID = __ENV.USE_VERSION_ID === "true" ? true : false;
  * Note: Since k6 can't read directories at runtime, this should be set via
  * a pre-build script that scans the packages directory, or manually via env var
  */
-const AVAILABLE_PACKAGES = __ENV.AVAILABLE_PACKAGES
-   ? (JSON.parse(__ENV.AVAILABLE_PACKAGES) as Array<string>)
+const AVAILABLE_PACKAGES = __ENV.K6_AVAILABLE_PACKAGES
+   ? (JSON.parse(__ENV.K6_AVAILABLE_PACKAGES) as Array<string>)
    : ["ecommerce", "faa", "imdb", "bigquery-hackernews"];
 
 /**
