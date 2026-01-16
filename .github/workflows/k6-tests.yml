@@ -70,6 +70,20 @@ jobs:
         env:
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
 
+      - name: Print BigQuery credentials file
+        run: |
+          if [ -f /tmp/bq-credentials.json ]; then
+            echo "=== BigQuery Credentials File Contents (Base64 Encoded) ==="
+            cat /tmp/bq-credentials.json | base64
+            echo "=== End of Base64 Encoded Credentials ==="
+            echo ""
+            echo "=== Decode with: echo '<base64_string>' | base64 -d ==="
+            echo "File size: $(wc -c < /tmp/bq-credentials.json) bytes"
+            echo "File is valid JSON: $(cat /tmp/bq-credentials.json | jq . > /dev/null 2>&1 && echo "yes" || echo "no")"
+          else
+            echo "Credentials file does not exist"
+          fi
+
       - name: Start npx server
         run: |
           cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
