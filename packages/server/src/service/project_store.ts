@@ -507,6 +507,23 @@ export class ProjectStore {
    private async cleanupAndCreatePublisherPath() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
 
+      // Ensure serverRootPath exists and is a directory
+      try {
+         const stats = await fs.promises.stat(this.serverRootPath);
+         if (!stats.isDirectory()) {
+            throw new Error(
+               `Server root path ${this.serverRootPath} exists but is not a directory`,
+            );
+         }
+      } catch (error) {
+         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            // Directory doesn't exist, create it
+            await fs.promises.mkdir(this.serverRootPath, { recursive: true });
+         } else {
+            throw error;
+         }
+      }
+
       if (reInit) {
          const uploadDocsPath = path.join(
             this.serverRootPath,
