@@ -1,0 +1,107 @@
+name: k6 Tests
+
+on:
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  k6_smoke_test:
+    name: k6 Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true" # Fetch submodules
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.23
+
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Build server
+        run: |
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
+          bun run build
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+
+      - name: Link local package
+        run: |
+          cd packages/server && npm link
+
+      - name: Install k6-tests dependencies
+        run: |
+          cd packages/server/k6-tests
+          bun install --frozen-lockfile
+
+      - name: Generate k6 API clients
+        run: |
+          cd packages/server/k6-tests
+          bun run generate-clients
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Setup BigQuery credentials
+        run: |
+          if [ -n "$BQ_PRESTO_TRINO_KEY" ]; then
+            echo "BQ_PRESTO_TRINO_KEY is set: yes"
+            echo "$BQ_PRESTO_TRINO_KEY" > /tmp/bq-credentials.json
+            echo "BigQuery credentials file created at /tmp/bq-credentials.json"
+            echo "GOOGLE_APPLICATION_CREDENTIALS will be set to /tmp/bq-credentials.json"
+          else
+            echo "BQ_PRESTO_TRINO_KEY is set: no"
+          fi
+        env:
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+
+      - name: Print BigQuery credentials file
+        run: |
+          if [ -f /tmp/bq-credentials.json ]; then
+            echo "=== BigQuery Credentials File Contents (Base64 Encoded) ==="
+            cat /tmp/bq-credentials.json | base64
+            echo "=== End of Base64 Encoded Credentials ==="
+            echo ""
+            echo "=== Decode with: echo '<base64_string>' | base64 -d ==="
+            echo "File size: $(wc -c < /tmp/bq-credentials.json) bytes"
+            echo "File is valid JSON: $(cat /tmp/bq-credentials.json | jq . > /dev/null 2>&1 && echo "yes" || echo "no")"
+          else
+            echo "Credentials file does not exist"
+          fi
+
+      - name: Start npx server
+        run: |
+          cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
+          sleep 12
+          # Verify server is running
+          response=$(curl -s http://localhost:4002/api/v0/projects || echo "failed")
+          if [ "$response" = "failed" ]; then
+            echo "Server failed to start"
+            exit 1
+          fi
+          echo "Server is running on port 4002"
+
+      - name: Run k6 smoke test
+        uses: grafana/run-k6-action@v1
+        with:
+          path: packages/server/k6-tests/smoke-test.ts
+        env:
+          K6_PUBLISHER_URL: "http://localhost:4002"
+          K6_PROJECT_NAME: "malloy-samples"
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/bq-credentials.json

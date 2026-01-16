@@ -40,6 +40,7 @@ export const logger = winston.createLogger({
    transports: [new winston.transports.Console()],
 });
 
+//-
 /**
  * Extracts the trace ID from a W3C traceparent header.
  * Format: version-trace-id-parent-id-trace-flags
