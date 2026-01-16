@@ -53,15 +53,15 @@ bun run all-tests
 
 ## Environment Variables
 
-- `PUBLISHER_URL` - Base URL of the publisher service (default: `http://localhost:4000`)
-- `PROJECT_NAME` - Project name for tests (default: `malloy-samples`)
-- `AUTH_TOKEN` - Authorization token for API requests
+- `K6_PUBLISHER_URL` - Base URL of the publisher service (default: `http://localhost:4000`)
+- `K6_PROJECT_NAME` - Project name for tests (default: `malloy-samples`)
+- `K6_AUTH_TOKEN` - Authorization token for API requests
 - `GOOGLE_APPLICATION_CREDENTIALS` - BigQuery service account JSON (for BigQuery tests)
-- `USE_VERSION_ID` - Set to `"true"` to use version IDs in API calls
-- `MAX_VIEWS_PER_MODEL` - Maximum views to test per model (default: `5`)
-- `DEBUG` - Set to `"true"` for verbose logging
-- `WHITELISTED_PACKAGES` - JSON array of package names to test
-- `AVAILABLE_PACKAGES` - JSON array of available package names
+- `K6_USE_VERSION_ID` - Set to `"true"` to use version IDs in API calls - uses "latest" as versionId when set to true
+- `K6_MAX_VIEWS_PER_MODEL` - Maximum views to test per model (default: `5`)
+- `K6_DEBUG` - Set to `"true"` for verbose logging
+- `K6_WHITELISTED_PACKAGES` - JSON array of package names to test
+- `K6_AVAILABLE_PACKAGES` - JSON array of available package names
 
 ## Client Generation
 

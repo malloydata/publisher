@@ -1,20 +1,24 @@
 import { check } from "k6";
-import { getModelsClient, getPackagesClient } from "./client_factory.ts";
+import {
+   getModelsClient,
+   getPackagesClient,
+   getPublisherClient,
+} from "./client_factory.ts";
 import type {
    CompiledModel,
    Model,
    Package,
 } from "./clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 
-export const PUBLISHER_URL = __ENV.PUBLISHER_URL || "http://localhost:4000";
-export const PROJECT_NAME = __ENV.PROJECT_NAME || "malloy-samples";
-export const AUTH_TOKEN = __ENV.AUTH_TOKEN || "";
+export const PUBLISHER_URL = __ENV.K6_PUBLISHER_URL || "http://localhost:4000";
+export const PROJECT_NAME = __ENV.K6_PROJECT_NAME || "malloy-samples";
+export const AUTH_TOKEN = __ENV.K6_AUTH_TOKEN || "";
 
-export const WHITELISTED_PACKAGES = __ENV.WHITELISTED_PACKAGES
-   ? (JSON.parse(__ENV.WHITELISTED_PACKAGES) as Array<string>)
+export const WHITELISTED_PACKAGES = __ENV.K6_WHITELISTED_PACKAGES
+   ? (JSON.parse(__ENV.K6_WHITELISTED_PACKAGES) as Array<string>)
    : ["ecommerce", "faa", "imdb", "bigquery-hackernews"];
 
-export const USE_VERSION_ID = __ENV.USE_VERSION_ID === "true" ? true : false;
+export const USE_VERSION_ID = __ENV.K6_USE_VERSION_ID === "true" ? true : false;
 /**
  * Available packages in the k6-tests/packages directory
  * These are the actual package directories that exist
@@ -24,8 +28,8 @@ export const USE_VERSION_ID = __ENV.USE_VERSION_ID === "true" ? true : false;
  * Note: Since k6 can't read directories at runtime, this should be set via
  * a pre-build script that scans the packages directory, or manually via env var
  */
-const AVAILABLE_PACKAGES = __ENV.AVAILABLE_PACKAGES
-   ? (JSON.parse(__ENV.AVAILABLE_PACKAGES) as Array<string>)
+const AVAILABLE_PACKAGES = __ENV.K6_AVAILABLE_PACKAGES
+   ? (JSON.parse(__ENV.K6_AVAILABLE_PACKAGES) as Array<string>)
    : ["ecommerce", "faa", "imdb", "bigquery-hackernews"];
 
 /**
@@ -62,6 +66,7 @@ export function getAvailablePackages(): Array<string> {
 export const BASE_URL = `${PUBLISHER_URL}/api/v0`;
 const packagesClient = getPackagesClient(BASE_URL, AUTH_TOKEN);
 const modelsClient = getModelsClient(BASE_URL, AUTH_TOKEN);
+const publisherClient = getPublisherClient(BASE_URL, AUTH_TOKEN);
 
 // Check if BigQuery credentials are available
 export const HAS_BIGQUERY_CREDENTIALS =
@@ -332,6 +337,22 @@ export function* getViews(modelData: ModelData) {
       }
    }
 }
+
+export const isServerAvailableAndInitialized = (): boolean => {
+   const { response, data } = publisherClient.getStatus({
+      tags: { name: "get_server_status" },
+   });
+   check(response, {
+      "server status request successful": (r) => r.status === 200,
+      "server is initialized": (_) => data?.initialized === true,
+   });
+   console.log(`Server status: ${response.status}`);
+   if (response.status === 200) {
+      console.log(`Server is initialized: ${data?.initialized}`);
+   }
+
+   return response.status === 200 && data?.initialized === true;
+};
 
 export const queryModelView = (
    packageName: string,
