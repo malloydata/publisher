@@ -57,6 +57,13 @@ jobs:
       - name: Setup k6
         uses: grafana/setup-k6-action@v1
 
+      - name: Print BQ_PRESTO_TRINO_KEY
+        run: |
+          echo "BQ_PRESTO_TRINO_KEY is set: $([ -n "$BQ_PRESTO_TRINO_KEY" ] && echo "yes" || echo "no")"
+          echo "BQ_PRESTO_TRINO_KEY value: $BQ_PRESTO_TRINO_KEY"
+        env:
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+
       - name: Start npx server
         run: |
           cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
@@ -76,3 +83,4 @@ jobs:
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
