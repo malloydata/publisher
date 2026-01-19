@@ -4,13 +4,13 @@ import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
 import { logger } from "../logger";
 import { testConnectionConfig } from "../service/connection";
+import { ConnectionService } from "../service/connection_service";
 import {
    getConnectionTableSource,
    getSchemasForConnection,
    getTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
-import { ConnectionService } from "../service/connection_service";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -40,7 +40,7 @@ export class ConnectionController {
       const connection = project.getApiConnection(connectionName);
 
       // For DuckDB connections, get the connection from a package
-      if (connection.type === "duckdb") {
+      if (connection.name === "duckdb" && connection.type === "duckdb") {
          const packages = await project.listPackages();
          if (packages.length === 0) {
             return project.getMalloyConnection(connectionName);

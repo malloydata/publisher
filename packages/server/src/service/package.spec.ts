@@ -97,7 +97,6 @@ describe("service/package", () => {
                   "testPackage",
                   testPackageDirectory,
                   new Map(),
-                  [],
                ),
             ).rejects.toThrowError(
                new PackageNotFoundError(
@@ -131,7 +130,6 @@ describe("service/package", () => {
                   "testPackage",
                   testPackageDirectory,
                   new Map(),
-                  [],
                );
 
                expect(packageInstance).toBeInstanceOf(Package);

@@ -19,8 +19,7 @@ import {
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
 import { formatDuration, logger } from "../logger";
-import { createPackageDuckDBConnections } from "./connection";
-import { ApiConnection, Model } from "./model";
+import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
@@ -70,7 +69,6 @@ export class Package {
       packageName: string,
       packagePath: string,
       projectConnections: Map<string, Connection>,
-      packageConnections: ApiConnection[],
    ): Promise<Package> {
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -101,13 +99,12 @@ export class Package {
          const connections = new Map<string, Connection>(projectConnections);
 
          // Add a duckdb connection for the package.
-         const duckdbConnections = await createPackageDuckDBConnections(
-            packageConnections,
+         const duckdbConnection = new DuckDBConnection(
+            "duckdb",
+            ":memory:",
             packagePath,
          );
-         duckdbConnections.malloyConnections.forEach((connection, name) => {
-            connections.set(name, connection);
-         });
+         connections.set("duckdb", duckdbConnection);
 
          const models = await Package.loadModels(
             packageName,

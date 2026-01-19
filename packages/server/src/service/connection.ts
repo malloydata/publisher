@@ -749,6 +749,26 @@ export async function createProjectConnections(
                throw new Error("DuckDB connection configuration is missing.");
             }
 
+            if (
+               connection.duckdbConnection.attachedDatabases?.some(
+                  (database) => database.name === connection.name,
+               )
+            ) {
+               throw new Error(
+                  `DuckDB attached databases names cannot conflict with connection name ${connection.name}`,
+               );
+            }
+
+            if (connection.name === "duckdb") {
+               throw new Error("DuckDB connection name cannot be 'duckdb'");
+            }
+
+            if (connection.duckdbConnection?.attachedDatabases?.length == 0) {
+               throw new Error(
+                  "DuckDB connection must have at least one attached database",
+               );
+            }
+
             // Create DuckDB connection with project basePath as working directory
             // This ensures relative paths in the project are resolved correctly
             // Use unique memory database path to prevent sharing across connections
@@ -813,106 +833,6 @@ export async function createProjectConnections(
 
       // Add the connection to apiConnections (this will be sanitized when returned)
       apiConnections.push(connection);
-   }
-
-   return {
-      malloyConnections: connectionMap,
-      apiConnections: apiConnections,
-   };
-}
-
-/**
- * DuckDB connections need to be instantiated at the package level to ensure
- * the workingDirectory is set correctly. This allows DuckDB to properly resolve
- * relative paths for database files and attached databases within the project context.
- */
-export async function createPackageDuckDBConnections(
-   connections: ApiConnection[] = [],
-   packagePath: string,
-): Promise<{
-   malloyConnections: Map<string, BaseConnection>;
-   apiConnections: InternalConnection[];
-}> {
-   const connectionMap = new Map<string, BaseConnection>();
-
-   const processedConnections = new Set<string>();
-   const apiConnections: InternalConnection[] = [];
-
-   for (const connection of connections) {
-      // Only process DuckDB connections
-      if (connection.type !== "duckdb") {
-         continue;
-      }
-
-      if (connection.name && processedConnections.has(connection.name)) {
-         throw new Error(
-            `CreatePackageDuckDBConnections only supports one DuckDB connection per name, got ${connection.name}`,
-         );
-      }
-
-      if (!connection.name) {
-         throw "Invalid connection configuration.  No name.";
-      }
-
-      logger.info(`Adding DuckDB connection ${connection.name}`, {
-         connection,
-      });
-
-      processedConnections.add(connection.name);
-
-      if (!connection.duckdbConnection) {
-         throw new Error("DuckDB connection configuration is missing.");
-      }
-
-      // Create DuckDB connection with project basePath as working directory
-      // This ensures relative paths in the project are resolved correctly
-      // Use unique memory database path to prevent sharing across connections
-      const duckdbConnection = new DuckDBConnection(
-         connection.name,
-         path.join(packagePath, `${connection.name}.duckdb`),
-         packagePath,
-      );
-
-      // Attach databases if configured
-      if (
-         connection.duckdbConnection.attachedDatabases &&
-         Array.isArray(connection.duckdbConnection.attachedDatabases) &&
-         connection.duckdbConnection.attachedDatabases.length > 0
-      ) {
-         await attachDatabasesToDuckDB(
-            duckdbConnection,
-            connection.duckdbConnection.attachedDatabases,
-         );
-      }
-
-      connectionMap.set(connection.name, duckdbConnection);
-      connection.attributes = getConnectionAttributes(duckdbConnection);
-
-      // Add the connection to apiConnections (this will be sanitized when returned)
-      apiConnections.push(connection);
-   }
-
-   // Create default "duckdb" connection if it doesn't exist
-   if (!connectionMap.has("duckdb")) {
-      const defaultDuckDBConnection = new DuckDBConnection(
-         "duckdb",
-         ":memory:",
-         packagePath,
-      );
-      connectionMap.set("duckdb", defaultDuckDBConnection);
-
-      // Create API connection for the default DuckDB connection
-      const defaultApiConnection: ApiConnection = {
-         name: "duckdb",
-         type: "duckdb",
-         duckdbConnection: {
-            attachedDatabases: [],
-         },
-      };
-      defaultApiConnection.attributes = getConnectionAttributes(
-         defaultDuckDBConnection,
-      );
-      apiConnections.push(defaultApiConnection);
    }
 
    return {

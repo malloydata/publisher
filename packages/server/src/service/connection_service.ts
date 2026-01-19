@@ -169,7 +169,7 @@ export class ConnectionService {
 
       // Update in-memory connections
       const project = await this.projectStore.getProject(projectName, false);
-      project.deleteConnection(connectionName);
+      await project.deleteConnection(connectionName);
 
       // Delete from database
       await repository.deleteConnection(dbConnection.id);
