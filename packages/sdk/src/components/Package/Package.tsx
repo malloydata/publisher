@@ -1,5 +1,6 @@
 import { Box, Grid } from "@mui/material";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
+import { RetrievalFunction } from "../filter/DimensionFilter";
 import { Notebook } from "../Notebook";
 import {
    PackageCard,
@@ -17,11 +18,14 @@ const README_NOTEBOOK = "README.malloynb";
 interface PackageProps {
    onClickPackageFile?: (to: string, event?: React.MouseEvent) => void;
    resourceUri: string;
+   /** Optional retrieval function for semantic search filters */
+   retrievalFn?: RetrievalFunction;
 }
 
 export default function Package({
    onClickPackageFile,
    resourceUri,
+   retrievalFn,
 }: PackageProps) {
    if (!onClickPackageFile) {
       onClickPackageFile = (to: string) => {
@@ -63,7 +67,7 @@ export default function Package({
                   <PackageCardContent>
                      <PackageSectionTitle>README</PackageSectionTitle>
                      <Box sx={{ mt: 1 }}>
-                        <Notebook resourceUri={readmeResourceUri} />
+                        <Notebook resourceUri={readmeResourceUri} retrievalFn={retrievalFn} />
                      </Box>
                   </PackageCardContent>
                </PackageCard>
