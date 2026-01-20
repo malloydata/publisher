@@ -1,4 +1,5 @@
 import { Box, Grid } from "@mui/material";
+import React from "react";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { RetrievalFunction } from "../filter/DimensionFilter";
 import { Notebook } from "../Notebook";
