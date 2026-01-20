@@ -68,7 +68,10 @@ export default function Package({
                   <PackageCardContent>
                      <PackageSectionTitle>README</PackageSectionTitle>
                      <Box sx={{ mt: 1 }}>
-                        <Notebook resourceUri={readmeResourceUri} retrievalFn={retrievalFn} />
+                        <Notebook
+                           resourceUri={readmeResourceUri}
+                           retrievalFn={retrievalFn}
+                        />
                      </Box>
                   </PackageCardContent>
                </PackageCard>
