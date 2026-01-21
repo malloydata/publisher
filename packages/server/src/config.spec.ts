@@ -60,12 +60,8 @@ describe("Config Environment Variable Substitution", () => {
    });
 
    describe("Scenario 1: ${VAR} present in config but value not available", () => {
-      it("should document the bug: undefined variables cause string duplication", () => {
-         // This test documents the ACTUAL behavior which is a BUG
-         // The substituteEnvVars function has a parameter mismatch that causes
-         // undefined variables to be replaced with the entire original string
-
-         // Using a proper filesystem path format
+      it("should throw error when environment variable is not defined", () => {
+         // The correct behavior: throw an error when a required variable is missing
          const locationWithVar = "./path/${UNDEFINED_VAR}/end" as const;
 
          const config: PublisherConfig = {
@@ -84,21 +80,14 @@ describe("Config Environment Variable Substitution", () => {
          };
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-         const result = getPublisherConfig(testServerRoot);
 
-         // Due to the bug, ${UNDEFINED_VAR} gets replaced with the entire original string
-         // Input: './path/${UNDEFINED_VAR}/end'
-         // Match: '${UNDEFINED_VAR}' at position 7
-         // Replacement: './path/${UNDEFINED_VAR}/end' (the whole string)
-         // Result: './path/' + './path/${UNDEFINED_VAR}/end' + '/end'
-         const expectedBuggyOutput = "./path/./path/${UNDEFINED_VAR}/end/end";
-
-         expect(result.projects[0].packages[0].location).toBe(
-            expectedBuggyOutput,
+         // Should throw an error about the missing environment variable
+         expect(() => getPublisherConfig(testServerRoot)).toThrow(
+            "Environment variable '${UNDEFINED_VAR}' is not set in configuration file",
          );
       });
 
-      it("should demonstrate bug with gs:// URLs", () => {
+      it("should throw error for undefined variables in gs:// URLs", () => {
          const locationWithVar = "gs://${BUCKET_NAME}/packages" as const;
 
          const config: PublisherConfig = {
@@ -117,14 +106,10 @@ describe("Config Environment Variable Substitution", () => {
          };
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-         const result = getPublisherConfig(testServerRoot);
 
-         // Bug causes: 'gs://' + 'gs://${BUCKET_NAME}/packages' + '/packages'
-         const expectedBuggyOutput =
-            "gs://gs://${BUCKET_NAME}/packages/packages";
-
-         expect(result.projects[0].packages[0].location).toBe(
-            expectedBuggyOutput,
+         // Should throw an error about the missing environment variable
+         expect(() => getPublisherConfig(testServerRoot)).toThrow(
+            "Environment variable '${BUCKET_NAME}' is not set in configuration file",
          );
       });
    });
