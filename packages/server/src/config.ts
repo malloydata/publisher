@@ -43,24 +43,17 @@ export type ProcessedPublisherConfig = {
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 
-   return value.replace(
-      envVarPattern,
-      (_match, varName, _unused, defaultValue) => {
-         const envValue = process.env[varName];
+   return value.replace(envVarPattern, (_match, varName) => {
+      const envValue = process.env[varName];
 
-         if (envValue !== undefined) {
-            return envValue;
-         }
+      if (envValue !== undefined) {
+         return envValue;
+      }
 
-         if (defaultValue !== undefined) {
-            return defaultValue;
-         }
-
-         throw new Error(
-            `Environment variable '\${${varName}}' is not set in configuration file`,
-         );
-      },
-   );
+      throw new Error(
+         `Environment variable '\${${varName}}' is not set in configuration file`,
+      );
+   });
 }
 
 function processConfigValue(value: unknown): unknown {
