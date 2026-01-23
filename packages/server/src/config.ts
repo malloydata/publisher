@@ -40,6 +40,42 @@ export type ProcessedPublisherConfig = {
    projects: ProcessedProject[];
 };
 
+function substituteEnvVars(value: string): string {
+   const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
+
+   return value.replace(envVarPattern, (_match, varName) => {
+      const envValue = process.env[varName];
+
+      if (envValue !== undefined) {
+         return envValue;
+      }
+
+      throw new Error(
+         `Environment variable '\${${varName}}' is not set in configuration file`,
+      );
+   });
+}
+
+function processConfigValue(value: unknown): unknown {
+   if (typeof value === "string") {
+      return substituteEnvVars(value);
+   }
+
+   if (Array.isArray(value)) {
+      return value.map((item) => processConfigValue(item));
+   }
+
+   if (value !== null && typeof value === "object") {
+      const result: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+         result[key] = processConfigValue(val);
+      }
+      return result;
+   }
+
+   return value;
+}
+
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    const publisherConfigPath = path.join(serverRoot, PUBLISHER_CONFIG_NAME);
    if (!fs.existsSync(publisherConfigPath)) {
@@ -64,13 +100,16 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       };
    }
 
+   // Process environment variables in config values
+   const processedConfig = processConfigValue(rawConfig);
+
    if (
-      rawConfig &&
-      typeof rawConfig === "object" &&
-      "projects" in rawConfig &&
-      rawConfig.projects &&
-      typeof rawConfig.projects === "object" &&
-      !Array.isArray(rawConfig.projects)
+      processedConfig &&
+      typeof processedConfig === "object" &&
+      "projects" in processedConfig &&
+      processedConfig.projects &&
+      typeof processedConfig.projects === "object" &&
+      !Array.isArray(processedConfig.projects)
    ) {
       logger.error(
          `Invalid ${PUBLISHER_CONFIG_NAME}: projects must be an array. Using default empty config.`,
@@ -84,22 +123,22 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    // Ensure projects is an array
    let projects: unknown[] = [];
    if (
-      rawConfig &&
-      typeof rawConfig === "object" &&
-      "projects" in rawConfig &&
-      Array.isArray((rawConfig as { projects: unknown }).projects)
+      processedConfig &&
+      typeof processedConfig === "object" &&
+      "projects" in processedConfig &&
+      Array.isArray((processedConfig as { projects: unknown }).projects)
    ) {
-      projects = (rawConfig as { projects: unknown[] }).projects;
+      projects = (processedConfig as { projects: unknown[] }).projects;
    }
 
    let frozenConfig = false;
    if (
-      rawConfig &&
-      typeof rawConfig === "object" &&
-      "frozenConfig" in rawConfig
+      processedConfig &&
+      typeof processedConfig === "object" &&
+      "frozenConfig" in processedConfig
    ) {
       frozenConfig = Boolean(
-         (rawConfig as { frozenConfig: unknown }).frozenConfig,
+         (processedConfig as { frozenConfig: unknown }).frozenConfig,
       );
    }
 
