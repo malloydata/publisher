@@ -1,13 +1,13 @@
 import type { Params } from "k6/http";
-import { ConnectionsTestClient } from "./clients/connections-test.ts";
-import { ConnectionsClient } from "./clients/connections.ts";
-import { DatabasesClient } from "./clients/databases.ts";
-import { ModelsClient } from "./clients/models.ts";
-import { NotebooksClient } from "./clients/notebooks.ts";
-import { PackagesClient } from "./clients/packages.ts";
-import { ProjectsClient } from "./clients/projects.ts";
-import { PublisherClient } from "./clients/publisher.ts";
-import { WatchModeClient } from "./clients/watch-mode.ts";
+import { ConnectionsTestClient } from "../clients/connections-test.ts";
+import { ConnectionsClient } from "../clients/connections.ts";
+import { DatabasesClient } from "../clients/databases.ts";
+import { ModelsClient } from "../clients/models.ts";
+import { NotebooksClient } from "../clients/notebooks.ts";
+import { PackagesClient } from "../clients/packages.ts";
+import { ProjectsClient } from "../clients/projects.ts";
+import { PublisherClient } from "../clients/publisher.ts";
+import { WatchModeClient } from "../clients/watch-mode.ts";
 
 /**
  * Creates client options with base URL and authorization header

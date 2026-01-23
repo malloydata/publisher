@@ -54,6 +54,11 @@ jobs:
           cd packages/server/k6-tests
           bun run generate-clients
 
+      - name: Clone malloy-samples
+        run: |
+          cd packages/server/k6-tests
+          bun run clone-malloy-samples
+
       - name: Setup k6
         uses: grafana/setup-k6-action@v1
 
@@ -99,7 +104,17 @@ jobs:
       - name: Run k6 smoke test
         uses: grafana/run-k6-action@v1
         with:
-          path: packages/server/k6-tests/smoke-test.ts
+          path: packages/server/k6-tests/smoke-test/smoke-test.ts
+        env:
+          K6_PUBLISHER_URL: "http://localhost:4002"
+          K6_PROJECT_NAME: "malloy-samples"
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/bq-credentials.json
+
+      - name: Run k6 load test
+        uses: grafana/run-k6-action@v1
+        with:
+          path: packages/server/k6-tests/load-test/load-test.ts
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"

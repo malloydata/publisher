@@ -6,7 +6,16 @@ import {
    getPackages,
    getViews,
    queryModelView,
-} from "./common.ts";
+   validateServerIsUpAndInitialized,
+} from "../utils/common.ts";
+
+/**
+ * Setup function - runs once before all VUs
+ * Validates server is up and initialized before running tests
+ */
+export function setup() {
+   validateServerIsUpAndInitialized();
+}
 
 /**
  * Smoke Test - Basic functionality verification
@@ -34,6 +43,27 @@ export const smokeTest: TestPreset = {
          http_req_waiting: ["p(95)<1200"],
          checks: ["rate>0.99"],
          dropped_iterations: ["count==0"],
+         // Per-operation thresholds
+         "http_req_duration{name:list_packages}": [
+            "p(90)<800",
+            "p(95)<1000",
+            "p(99)<1500",
+         ],
+         "http_req_duration{name:list_models}": [
+            "p(90)<800",
+            "p(95)<1000",
+            "p(99)<1500",
+         ],
+         "http_req_duration{name:get_model}": [
+            "p(90)<800",
+            "p(95)<1000",
+            "p(99)<1500",
+         ],
+         "http_req_duration{name:execute_query}": [
+            "p(90)<800",
+            "p(95)<1000",
+            "p(99)<1500",
+         ],
       },
    },
    run: () => {
@@ -111,8 +141,6 @@ export const smokeTest: TestPreset = {
 
             check(queryResponse, {
                "execute query request successful": (r) => r.status === 200,
-               "execute query response time < 2s": (r) =>
-                  r.timings.duration < 2000,
             });
             sleep(1);
          }
