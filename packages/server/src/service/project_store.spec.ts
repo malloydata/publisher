@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
@@ -487,6 +487,125 @@ describe("ProjectStore Service", () => {
       await newProjectStore.finishedInitialization;
       const projects = await newProjectStore.listProjects();
       expect(projects).toEqual([]);
+   });
+
+   it("should handle invalid field names in publisher config without crashing", async () => {
+      // Create publisher config with invalid field names (ramen instead of name, papa instead of packages)
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  invalidKey1: "malloy-samples", // Invalid: should be "name"
+                  invalidKey2: [
+                     // Invalid: should be "packages"
+                     {
+                        name: "ecommerce",
+                        location:
+                           "https://github.com/credibledata/malloy-samples/tree/main/ecommerce",
+                     },
+                  ],
+                  connections: [
+                     {
+                        name: "bigquery",
+                        type: "bigquery",
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      // Create a new project store that will read the invalid config
+      const newProjectStore = new ProjectStore(serverRootPath);
+
+      // Test that the project store handles invalid fields gracefully without crashing
+      await newProjectStore.finishedInitialization;
+      const projects = await newProjectStore.listProjects();
+
+      // Should not crash and should return empty array since invalid projects are filtered out
+      expect(projects).toEqual([]);
+   });
+
+   it("should filter out invalid projects from publisher config", async () => {
+      // Create publisher config with mix of valid and invalid projects
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      const validProjectPath = path.join(serverRootPath, "valid-project");
+      mkdirSync(validProjectPath, { recursive: true });
+      writeFileSync(
+         path.join(validProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: "valid-project",
+            description: "Valid project",
+         }),
+      );
+
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  // Invalid project: missing "name" field
+                  packages: [
+                     {
+                        name: "package1",
+                        location: "./invalid-project",
+                     },
+                  ],
+               },
+               {
+                  // Invalid project: "invalidKey1" instead of "name"
+                  invalidKey1: "invalid-project-2",
+                  packages: [
+                     {
+                        name: "package2",
+                        location: "./invalid-project-2",
+                     },
+                  ],
+               },
+               {
+                  // Invalid project: "invalidKey2" instead of "packages"
+                  name: "invalid-project-3",
+                  invalidKey2: [
+                     {
+                        name: "package3",
+                        location: "./invalid-project-3",
+                     },
+                  ],
+               },
+               {
+                  // Valid project
+                  name: "valid-project",
+                  packages: [
+                     {
+                        name: "valid-project",
+                        location: "./valid-project",
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      // Create a new project store that will read the config
+      const newProjectStore = new ProjectStore(serverRootPath);
+
+      // Test that invalid projects are filtered out
+      await newProjectStore.finishedInitialization;
+      const projects = await newProjectStore.listProjects();
+
+      // Should only have the valid project
+      expect(projects.length).toBe(1);
+      expect(projects[0].name).toBe("valid-project");
    });
 
    it(
