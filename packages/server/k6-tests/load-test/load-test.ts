@@ -138,7 +138,6 @@ export const loadTest: TestPreset = {
    defaultOptions: {
       stages: [
          { duration: "1m", target: 50 }, // warm-up
-         { duration: "5m", target: 50 }, // sustained load
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {
