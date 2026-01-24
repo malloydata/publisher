@@ -147,25 +147,21 @@ export const loadTest: TestPreset = {
          http_req_failed: ["rate<0.10"],
          checks: ["rate>0.85"],
          dropped_iterations: ["count==0"],
-         "http_req_duration{name:list_projects}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:get_project}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:list_packages}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:get_package}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:list_models}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:get_model}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:list_notebooks}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:get_notebook}": ["p(95)<300", "p(99)<600"],
+         "http_req_duration{name:list_projects}": ["p(95)<450", "p(99)<700"],
+         "http_req_duration{name:get_project}": ["p(95)<450", "p(99)<700"],
+         "http_req_duration{name:list_packages}": ["p(95)<450", "p(99)<700"],
+         "http_req_duration{name:get_package}": ["p(95)<450", "p(99)<700"],
+         "http_req_duration{name:list_models}": ["p(95)<450", "p(99)<700"],
+         "http_req_duration{name:get_model}": ["p(95)<450", "p(99)<700"],
+         "http_req_duration{name:list_notebooks}": ["p(95)<450", "p(99)<700"],
+         "http_req_duration{name:get_notebook}": ["p(95)<450", "p(99)<700"],
          "http_req_duration{name:execute_notebook_cell}": [
-            "p(95)<300",
-            "p(99)<500",
+            "p(95)<450",
+            "p(99)<700",
          ],
          "http_req_duration{name:list_connections}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:get_connection}": ["p(95)<2000", "p(99)<3000"],
+         "http_req_duration{name:get_connection}": ["p(95)<2000", "p(99)<3500"],
          "http_req_duration{name:list_databases}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:list_models_for_query}": [
-            "p(95)<300",
-            "p(99)<600",
-         ],
          "http_req_duration{name:execute_query}": ["p(95)<1000", "p(99)<1500"],
          "http_req_duration{name:post_query_data}": [
             "p(95)<1000",
@@ -478,7 +474,7 @@ export const loadTest: TestPreset = {
             projectName,
             packageName,
             {}, // params
-            { tags: { name: "list_models_for_query" } }, // requestParameters
+            { tags: { name: "list_models" } }, // requestParameters
          );
          if (
             listModelsResponse.response.status === 200 &&

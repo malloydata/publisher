@@ -64,30 +64,30 @@ jobs:
 
       - name: Setup BigQuery credentials
         run: |
-          if [ -n "$BQ_PRESTO_TRINO_KEY" ]; then
-            echo "BQ_PRESTO_TRINO_KEY is set: yes"
-            echo "$BQ_PRESTO_TRINO_KEY" > /tmp/bq-credentials.json
-            echo "BigQuery credentials file created at /tmp/bq-credentials.json"
-            echo "GOOGLE_APPLICATION_CREDENTIALS will be set to /tmp/bq-credentials.json"
-          else
-            echo "BQ_PRESTO_TRINO_KEY is set: no"
+          if [ -z "$BQ_PRESTO_TRINO_KEY" ]; then
+            echo "BQ_PRESTO_TRINO_KEY is not set"
+            exit 1
           fi
+
+          # Detect base64 vs JSON
+          if echo "$BQ_PRESTO_TRINO_KEY" | grep -qE '^\s*eyJ'; then
+            echo "Detected Base64 credentials. Decoding..."
+            echo "$BQ_PRESTO_TRINO_KEY" | base64 --decode > /tmp/bq-credentials.json
+          else
+            echo "Detected raw JSON credentials."
+            echo "$BQ_PRESTO_TRINO_KEY" > /tmp/bq-credentials.json
+          fi
+
+          # Validate JSON
+          jq . /tmp/bq-credentials.json > /dev/null
+
+          # Export for rest of job
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/bq-credentials.json" >> $GITHUB_ENV
+
+          echo "BigQuery credentials file created at /tmp/bq-credentials.json"
         env:
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
 
-      - name: Print BigQuery credentials file
-        run: |
-          if [ -f /tmp/bq-credentials.json ]; then
-            echo "=== BigQuery Credentials File Contents (Base64 Encoded) ==="
-            cat /tmp/bq-credentials.json | base64
-            echo "=== End of Base64 Encoded Credentials ==="
-            echo ""
-            echo "=== Decode with: echo '<base64_string>' | base64 -d ==="
-            echo "File size: $(wc -c < /tmp/bq-credentials.json) bytes"
-            echo "File is valid JSON: $(cat /tmp/bq-credentials.json | jq . > /dev/null 2>&1 && echo "yes" || echo "no")"
-          else
-            echo "Credentials file does not exist"
-          fi
 
       - name: Start npx server
         run: |
@@ -109,7 +109,7 @@ jobs:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
-          GOOGLE_APPLICATION_CREDENTIALS: /tmp/bq-credentials.json
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
 
       - name: Run k6 load test
         uses: grafana/run-k6-action@v1
@@ -119,4 +119,4 @@ jobs:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
-          GOOGLE_APPLICATION_CREDENTIALS: /tmp/bq-credentials.json
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
