@@ -99,7 +99,15 @@ jobs:
             echo "Server failed to start"
             exit 1
           fi
+
+          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" http://localhost:4002/api/v0/projects/malloy-samples/connections/bigquery/schemas)
+          status_code=$(echo "$response" | grep "HTTP_STATUS:" | cut -d: -f2)
+          data=$(echo "$response" | grep -v "HTTP_STATUS:")
+          echo "Status Code: $status_code"
+          echo "Response Data: $data"
           echo "Server is running on port 4002"
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
 
       - name: Run k6 smoke test
         uses: grafana/run-k6-action@v1
