@@ -17,7 +17,7 @@
     "clone-malloy-samples": "bunx git clone https://github.com/credibledata/malloy-samples.git ./packages",
     "smoke-test": "k6 run smoke-test/smoke-test.ts",
     "load-test-crud": "bun run load-test-crud-projects && bun run load-test-crud-connections && bun run load-test-crud-packages",
-    "load-test-api": "k6 run load-test/load-test.ts",
+    "load-test": "k6 run load-test/load-test.ts",
     "load-test-crud-connections": "k6 run load-test/load-test-crud-connections.ts",
     "load-test-crud-projects": "k6 run load-test/load-test-crud-projects.ts",
     "load-test-crud-packages": "k6 run load-test/load-test-crud-packages.ts",

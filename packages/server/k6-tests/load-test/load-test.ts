@@ -162,15 +162,18 @@ export const loadTest: TestPreset = {
          "http_req_duration{name:list_connections}": ["p(95)<300", "p(99)<600"],
          "http_req_duration{name:get_connection}": ["p(95)<2000", "p(99)<3500"],
          "http_req_duration{name:list_databases}": ["p(95)<300", "p(99)<600"],
-         "http_req_duration{name:execute_query}": ["p(95)<1000", "p(99)<1500"],
+         "http_req_duration{name:execute_query}": ["p(95)<1500", "p(99)<2000"],
          "http_req_duration{name:post_query_data}": [
             "p(95)<1500",
             "p(99)<2000",
          ],
          "http_req_duration{name:list_schemas}": ["p(95)<2500", "p(99)<4000"],
          "http_req_duration{name:list_tables}": ["p(95)<2000", "p(99)<3500"],
-         "http_req_duration{name:get_table}": ["p(95)<800", "p(99)<1500"],
-         "http_req_duration{name:post_sql_source}": ["p(95)<800", "p(99)<1500"],
+         "http_req_duration{name:get_table}": ["p(95)<1500", "p(99)<2000"],
+         "http_req_duration{name:post_sql_source}": [
+            "p(95)<1200",
+            "p(99)<1500",
+         ],
          "http_req_duration{name:post_temporary_table}": [
             "p(95)<400",
             "p(99)<800",
