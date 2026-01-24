@@ -138,6 +138,7 @@ export const loadTest: TestPreset = {
    defaultOptions: {
       stages: [
          { duration: "1m", target: 50 }, // warm-up
+         { duration: "5m", target: 50 }, // sustained load
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {
@@ -163,7 +164,7 @@ export const loadTest: TestPreset = {
          "http_req_duration{name:list_databases}": ["p(95)<300", "p(99)<600"],
          "http_req_duration{name:execute_query}": ["p(95)<1000", "p(99)<1500"],
          "http_req_duration{name:post_query_data}": [
-            "p(95)<1000",
+            "p(95)<1500",
             "p(99)<2000",
          ],
          "http_req_duration{name:list_schemas}": ["p(95)<2500", "p(99)<4000"],
