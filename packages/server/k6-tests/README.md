@@ -10,6 +10,17 @@ To install dependencies:
 bun install
 ```
 
+## Prerequisites
+
+**Important:** Before running tests, ensure the publisher server is running with the following environment variables to limit log output:
+
+```bash
+DISABLE_RESPONSE_LOGGING=true
+LOG_LEVEL=info  # or LOG_LEVEL=warn
+```
+
+Start the server before running any k6 tests.
+
 ## Available Tests
 
 ### Smoke Test

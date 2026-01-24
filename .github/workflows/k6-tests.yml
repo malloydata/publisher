@@ -5,8 +5,8 @@ on:
     branches: [main, master]
 
 jobs:
-  k6_smoke_test:
-    name: k6 Smoke Test
+  k6_tests:
+    name: k6 Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -114,6 +114,7 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
           DISABLE_RESPONSE_LOGGING: true
 
+      # Smoke test runs for 1 minute total with 5 virtual users
       - name: Run k6 smoke test
         uses: grafana/run-k6-action@v1
         with:
@@ -121,9 +122,9 @@ jobs:
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
-          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
 
+      # Load test runs for 7 minutes total: 1 min ramp-up to 50 virtual users → 5 min sustained load with 50 virtual users → 1 min ramp-down to 0 virtual users
       - name: Run k6 load test
         uses: grafana/run-k6-action@v1
         with:
@@ -131,5 +132,4 @@ jobs:
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
-          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
