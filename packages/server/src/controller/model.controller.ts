@@ -38,16 +38,27 @@ export class ModelController {
       packageName: string,
       modelPath: string,
    ): Promise<ApiCompiledModel> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
-      const model = p.getModel(modelPath);
-      if (!model) {
-         throw new ModelNotFoundError(`${modelPath} does not exist`);
+      try {
+         const project = await this.projectStore.getProject(projectName, false);
+         const p = await project.getPackage(packageName, false);
+         const model = p.getModel(modelPath);
+         if (!model) {
+            throw new ModelNotFoundError(`${modelPath} does not exist`);
+         }
+         if (model.getType() === "notebook") {
+            throw new ModelNotFoundError(`${modelPath} is a notebook`);
+         }
+         return await model.getModel();
+      } catch (error) {
+         // Re-throw ModelNotFoundError as-is
+         if (error instanceof ModelNotFoundError) {
+            throw error;
+         }
+         // Wrap other errors with more context
+         throw new Error(
+            `Failed to get model ${modelPath} from package ${packageName} in project ${projectName}: ${error}`,
+         );
       }
-      if (model.getType() === "notebook") {
-         throw new ModelNotFoundError(`${modelPath} is a notebook`);
-      }
-      return model.getModel();
    }
 
    public async getNotebook(
