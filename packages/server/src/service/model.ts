@@ -210,13 +210,13 @@ export class Model {
       } catch (error) {
          let computedError = error;
          if (error instanceof Error && error.stack) {
-            console.error("Error stack", error.stack);
+            logger.error("Error stack", error.stack);
          }
 
          if (error instanceof MalloyError) {
             const problems = error.problems;
             for (const problem of problems) {
-               console.error("Problem", problem);
+               logger.error("Problem", problem);
             }
             computedError = new ModelCompilationError(error);
          }
@@ -300,7 +300,7 @@ export class Model {
       if (this.compilationError) {
          throw this.compilationError;
       }
-      logger.info("queryName", { queryName, query });
+      logger.debug("queryName", { queryName, query });
       let runnable: QueryMaterializer;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
@@ -405,7 +405,7 @@ export class Model {
       const notebookCells: ApiNotebookCell[] = (
          this.runnableNotebookCells as RunnableNotebookCell[]
       ).map((cell) => {
-         console.log("cell.queryInfo", cell.queryInfo);
+         logger.debug("cell.queryInfo", cell.queryInfo);
          return {
             type: cell.type,
             text: cell.text,
@@ -511,9 +511,9 @@ export class Model {
                   text: cell.text,
                };
             } else {
-               console.log("Error message: ", errorMessage);
+               logger.error("Error message: ", errorMessage);
             }
-            console.log("Cell content: ", cellIndex, cell.type, cell.text);
+            logger.debug("Cell content: ", cellIndex, cell.type, cell.text);
             throw new BadRequestError(`Cell execution failed: ${errorMessage}`);
          }
       }
