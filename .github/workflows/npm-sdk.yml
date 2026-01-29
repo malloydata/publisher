@@ -2,10 +2,14 @@ name: Publish SDK/APP to NPM
 
 on:
   workflow_dispatch:
-
+  pull_request:
+    branches: [main]
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,16 +62,12 @@ jobs:
           npm publish --access public
           cd ../app
           npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Build & publish Server package
         run: |
           cd packages/server
           NODE_ENV=production bun run build
           npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Revert workspace dependencies
         run: |
