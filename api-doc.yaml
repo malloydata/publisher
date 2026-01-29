@@ -1824,7 +1824,7 @@ components:
         compactJson:
           type: boolean
           default: false
-          description: If true, returns a simple JSON array of row objectsin the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.
+          description: 'If true, returns a simple JSON array of row objects in the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.'
         versionId:
           type: string
           description: Version ID
