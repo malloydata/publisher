@@ -1,3 +1,4 @@
+import { logger } from "../../logger";
 import { DuckDBConnection } from "./DuckDBConnection";
 
 export async function initializeSchema(
@@ -11,12 +12,12 @@ export async function initializeSchema(
    }
 
    if (force) {
-      console.log(
+      logger.info(
          "Reinitializing database schema dropping and recreating all tables",
       );
       await dropAllTables(db);
    } else {
-      console.log("Creating database schema for the first time...");
+      logger.info("Creating database schema for the first time...");
    }
 
    // Projects table
@@ -75,14 +76,14 @@ export async function initializeSchema(
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = ["packages", "connections", "projects"];
 
-   console.log("Dropping tables:", tables.join(", "));
+   logger.info("Dropping tables:", tables.join(", "));
 
    for (const table of tables) {
       try {
          await db.run(`DROP TABLE IF EXISTS ${table} `);
-         console.log(`Dropped table: ${table}`);
+         logger.info(`Dropped table: ${table}`);
       } catch (err) {
-         console.warn(` Warning: Could not drop table ${table}:`, err);
+         logger.warn(` Warning: Could not drop table ${table}:`, err);
       }
    }
 }

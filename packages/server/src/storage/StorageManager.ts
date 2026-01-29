@@ -1,3 +1,4 @@
+import { logger } from "../logger";
 import { DatabaseConnection, ResourceRepository } from "./DatabaseInterface";
 import { DuckDBConnection } from "./duckdb/DuckDBConnection";
 import { DuckDBRepository } from "./duckdb/DuckDBRepository";
@@ -37,11 +38,11 @@ export class StorageManager {
 
    async initialize(reinit: boolean = false): Promise<void> {
       if (reinit) {
-         console.log(
-            "RE-INITIALIZATION MODE: Database will be dropped and recreated",
+         logger.info(
+            "Reinitialization mode: Database will be dropped and recreated",
          );
       } else {
-         console.log("NORMAL MODE: Loading from existing database");
+         logger.info("Normal mode: Loading from existing database");
       }
 
       switch (this.config.type) {
