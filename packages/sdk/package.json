@@ -51,6 +51,10 @@
       "./src/index.ts",
       "./dist/index.*.js"
    ],
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/malloydata/publisher.git"
+   },
    "publishConfig": {
       "access": "public"
    },

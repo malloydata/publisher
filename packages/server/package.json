@@ -6,6 +6,10 @@
    "bin": {
       "malloy-publisher": "dist/server.js"
    },
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/malloydata/publisher.git"
+   },
    "publishConfig": {
       "access": "public"
    },
