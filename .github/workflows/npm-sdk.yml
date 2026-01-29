@@ -17,16 +17,19 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Verify OIDC token is available
+      - name: Verify OIDC configuration
         run: |
+          echo "Checking OIDC setup..."
           if [ -n "$NODE_AUTH_TOKEN" ]; then
-            echo "✅ OIDC token is available (NODE_AUTH_TOKEN is set)"
+            echo "⚠️ NODE_AUTH_TOKEN is set (will be cleared before publish to use OIDC)"
+            echo "Note: setup-node may set a default token that interferes with OIDC"
           else
-            echo "⚠️ NODE_AUTH_TOKEN is not set - OIDC may not be configured correctly"
+            echo "✅ NODE_AUTH_TOKEN is not set (OIDC will be used)"
           fi
+          echo "OIDC authentication occurs during 'npm publish', not with 'npm whoami'"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -64,6 +67,8 @@ jobs:
           NODE_ENV=production bun run build
 
       - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           cd packages/sdk
           npm publish --access public
@@ -71,6 +76,8 @@ jobs:
           npm publish --access public
 
       - name: Build & publish Server package
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           cd packages/server
           NODE_ENV=production bun run build
