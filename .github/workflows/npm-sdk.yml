@@ -71,7 +71,8 @@ jobs:
           NODE_AUTH_TOKEN: ""
         run: |
           cd packages/sdk
-          npm publish --access public
+          npm publish --access public --tag latest
+
           cd ../app
           npm publish --access public
 
