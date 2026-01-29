@@ -20,7 +20,15 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
-          always-auth: true
+
+      - name: Verify OIDC token is available
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            echo "✅ OIDC token is available (NODE_AUTH_TOKEN is set)"
+            echo "Note: OIDC authentication only occurs during 'npm publish', not with 'npm whoami'"
+          else
+            echo "⚠️ NODE_AUTH_TOKEN is not set - OIDC may not be configured correctly"
+          fi
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -56,11 +64,6 @@ jobs:
         run: |
           cd packages/app
           NODE_ENV=production bun run build
-
-      - name: Verify NPM authentication
-        run: |
-          npm whoami --registry=https://registry.npmjs.org
-          echo "✅ NPM authentication successful"
 
       - name: Publish to NPM
         run: |
