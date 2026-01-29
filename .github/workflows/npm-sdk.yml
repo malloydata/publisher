@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+          always-auth: true
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -55,6 +56,11 @@ jobs:
         run: |
           cd packages/app
           NODE_ENV=production bun run build
+
+      - name: Verify NPM authentication
+        run: |
+          npm whoami --registry=https://registry.npmjs.org
+          echo "✅ NPM authentication successful"
 
       - name: Publish to NPM
         run: |
