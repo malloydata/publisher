@@ -1,0 +1,135 @@
+name: k6 Tests
+
+on:
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  k6_tests:
+    name: k6 Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true" # Fetch submodules
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.23
+
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Build server
+        run: |
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          bun install --frozen-lockfile
+          bun run build
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+
+      - name: Link local package
+        run: |
+          cd packages/server && npm link
+
+      - name: Install k6-tests dependencies
+        run: |
+          cd packages/server/k6-tests
+          bun install --frozen-lockfile
+
+      - name: Generate k6 API clients
+        run: |
+          cd packages/server/k6-tests
+          bun run generate-clients
+
+      - name: Clone malloy-samples
+        run: |
+          cd packages/server/k6-tests
+          bun run clone-malloy-samples
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Setup BigQuery credentials
+        run: |
+          if [ -z "$BQ_PRESTO_TRINO_KEY" ]; then
+            echo "BQ_PRESTO_TRINO_KEY is not set"
+            exit 1
+          fi
+
+          # Detect base64 vs JSON
+          if echo "$BQ_PRESTO_TRINO_KEY" | grep -qE '^\s*eyJ'; then
+            echo "Detected Base64 credentials. Decoding..."
+            echo "$BQ_PRESTO_TRINO_KEY" | base64 --decode > /tmp/bq-credentials.json
+          else
+            echo "Detected raw JSON credentials."
+            echo "$BQ_PRESTO_TRINO_KEY" > /tmp/bq-credentials.json
+          fi
+
+          # Validate JSON
+          jq . /tmp/bq-credentials.json > /dev/null
+
+          # Export for rest of job
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/bq-credentials.json" >> $GITHUB_ENV
+
+          echo "BigQuery credentials file created at /tmp/bq-credentials.json"
+        env:
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+
+
+      - name: Start npx server
+        run: |
+          cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
+          sleep 12
+          # Verify server is running
+          response=$(curl -s http://localhost:4002/api/v0/projects || echo "failed")
+          if [ "$response" = "failed" ]; then
+            echo "Server failed to start"
+            exit 1
+          fi
+          echo "Response Data: $response"
+
+          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" http://localhost:4002/api/v0/projects/malloy-samples/connections/bigquery/schemas)
+          status_code=$(echo "$response" | grep "HTTP_STATUS:" | cut -d: -f2)
+          data=$(echo "$response" | grep -v "HTTP_STATUS:")
+          if [ ${#data} -eq 0 ]; then
+            echo "Error: Response data is empty"
+            exit 1
+          fi
+          echo "Status Code: $status_code"
+          echo "Server is running on port 4002"
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
+          DISABLE_RESPONSE_LOGGING: true
+
+      # Smoke test runs for 1 minute total with 5 virtual users
+      - name: Run k6 smoke test
+        uses: grafana/run-k6-action@v1
+        with:
+          path: packages/server/k6-tests/smoke-test/smoke-test.ts
+        env:
+          K6_PUBLISHER_URL: "http://localhost:4002"
+          K6_PROJECT_NAME: "malloy-samples"
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
+
+      # Load test runs for 7 minutes total: 1 min ramp-up to 50 virtual users → 5 min sustained load with 50 virtual users → 1 min ramp-down to 0 virtual users
+      - name: Run k6 load test
+        uses: grafana/run-k6-action@v1
+        with:
+          path: packages/server/k6-tests/load-test/load-test.ts
+        env:
+          K6_PUBLISHER_URL: "http://localhost:4002"
+          K6_PROJECT_NAME: "malloy-samples"
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}

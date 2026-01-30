@@ -1,10 +1,14 @@
 {
    "name": "@malloy-publisher/server",
    "description": "Malloy Publisher Server",
-   "version": "0.0.160",
+   "version": "0.0.161",
    "main": "dist/server.js",
    "bin": {
       "malloy-publisher": "dist/server.js"
+   },
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/malloydata/publisher.git"
    },
    "publishConfig": {
       "access": "public"

@@ -13,18 +13,15 @@
     "k6": "^0.0.0"
   },
   "scripts": {
-    "build": "tsc",
-    "smoke-test": "k6 run smoke-test.ts",
-    "breakpoint-test": "k6 run breakpoint-test.ts",
-    "stress-test": "k6 run stress-test.ts",
-    "soak-test": "k6 run soak-test.ts",
-    "spike-test": "k6 run spike-test.ts",
-    "load-test": "bun run load-test-projects && bun run load-test-connections && bun run load-test-packages",
-    "load-test-connections": "k6 run load-test-connections.ts",
-    "load-test-projects": "k6 run load-test-projects.ts",
-    "load-test-packages": "k6 run load-test-packages.ts",
-    "all-tests": "bun run smoke-test && bun run load-test && bun run spike-test && bun run stress-test && bun run breakpoint-test && bun run soak-test",
+    "build": "bun run clean && bun run clone-malloy-samples && bun run generate-clients",
+    "clone-malloy-samples": "bunx git clone https://github.com/credibledata/malloy-samples.git ./packages",
+    "smoke-test": "k6 run smoke-test/smoke-test.ts",
+    "load-test-crud": "bun run load-test-crud-projects && bun run load-test-crud-connections && bun run load-test-crud-packages",
+    "load-test": "k6 run load-test/load-test.ts",
+    "load-test-crud-connections": "k6 run load-test/load-test-crud-connections.ts",
+    "load-test-crud-projects": "k6 run load-test/load-test-crud-projects.ts",
+    "load-test-crud-packages": "k6 run load-test/load-test-crud-packages.ts",
     "generate-clients": "openapi-to-k6 ../../../api-doc.yaml ./clients --mode tags --disable-analytics --verbose",
-    "clean": "rm -rf ./node_modules && rm -rf ./clients && rm -rf ./results"
+    "clean": "rm -rf ./clients && rm -rf ./packages && rm -rf ./results"
   }
 }

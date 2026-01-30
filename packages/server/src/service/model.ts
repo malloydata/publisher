@@ -11,6 +11,7 @@ import {
    ModelMaterializer,
    NamedModelObject,
    NamedQuery,
+   QueryData,
    QueryMaterializer,
    Runtime,
    StructDef,
@@ -293,6 +294,7 @@ export class Model {
       query?: string,
    ): Promise<{
       result: Malloy.Result;
+      compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
    }> {
@@ -300,7 +302,6 @@ export class Model {
       if (this.compilationError) {
          throw this.compilationError;
       }
-      logger.info("queryName", { queryName, query });
       let runnable: QueryMaterializer;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
@@ -376,6 +377,7 @@ export class Model {
       });
       return {
          result: API.util.wrapResult(queryResults),
+         compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
       };

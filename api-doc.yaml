@@ -1821,6 +1821,10 @@ components:
         queryName:
           type: string
           description: Name of a query to execute on a source in the model. Requires the sourceName parameter is set. If the queryName parameter is set, the query parameter must be empty.
+        compactJson:
+          type: boolean
+          default: false
+          description: 'If true, returns a simple JSON array of row objects in the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.'
         versionId:
           type: string
           description: Version ID
