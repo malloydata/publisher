@@ -1,0 +1,5 @@
+node_modules/
+dist/
+src/api/generated/
+*.log
+.DS_Store
