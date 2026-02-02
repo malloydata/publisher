@@ -1,7 +1,7 @@
-import { PublisherClient } from '../api/client.js';
-import Table from 'cli-table3';
-import * as fs from 'fs-extra';
-import { logSuccess, logInfo, logError } from '../utils/logger.js';
+import { PublisherClient } from "../api/client.js";
+import Table from "cli-table3";
+import * as fs from "fs-extra";
+import { logSuccess, logInfo, logError } from "../utils/logger.js";
 
 export async function listConnections(
   client: PublisherClient,
@@ -15,7 +15,7 @@ export async function listConnections(
   }
 
   const table = new Table({
-    head: ['Name', 'Type'],
+    head: ["Name", "Type"],
   });
 
   connections.forEach((c: any) => {
@@ -66,7 +66,7 @@ export async function createConnection(
   } else if (options.json) {
     connection = JSON.parse(options.json);
   } else {
-    throw new Error('Either --file or --json is required');
+    throw new Error("Either --file or --json is required");
   }
 
   await client.createConnection(projectName, connection);
@@ -89,7 +89,7 @@ export async function updateConnection(
   } else if (options.json) {
     connection = JSON.parse(options.json);
   } else {
-    throw new Error('Either --file or --json is required');
+    throw new Error("Either --file or --json is required");
   }
 
   await client.updateConnection(projectName, connectionName, connection);

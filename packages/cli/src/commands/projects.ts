@@ -1,18 +1,18 @@
-import { PublisherClient } from '../api/client.js';
-import Table from 'cli-table3';
-import { logSuccess, logInfo, logWarning } from '../utils/logger.js';
+import { PublisherClient } from "../api/client.js";
+import Table from "cli-table3";
+import { logSuccess, logInfo, logWarning } from "../utils/logger.js";
 
 export async function listProjects(client: PublisherClient): Promise<void> {
   logInfo(`Fetching projects from ${client.getBaseURL()}...`);
   const projects = await client.listProjects();
 
   if (projects.length === 0) {
-    logInfo('No projects found.');
+    logInfo("No projects found.");
     return;
   }
 
   const table = new Table({
-    head: ['Name', 'Packages', 'Connections'],
+    head: ["Name", "Packages", "Connections"],
   });
 
   projects.forEach((p: any) => {
@@ -49,7 +49,7 @@ export async function updateProject(
   if (options.location) updates.location = options.location;
 
   if (Object.keys(updates).length === 1) {
-    logWarning('No updates specified');
+    logWarning("No updates specified");
     return;
   }
 

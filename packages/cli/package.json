@@ -2,36 +2,28 @@
   "name": "@malloydata/publisher-cli",
   "version": "0.0.1",
   "description": "CLI for Malloy Publisher - Manage projects, packages, and connections",
-  "main": "./dist/index.js",
   "type": "module",
-  "engines": {
-    "bun": ">=1.2.2"
-  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "malloy-pub": "./dist/index.js"
   },
   "scripts": {
-    "dev": "bun link && bunx tsc --watch",
-    "test": "bun test",
-    "format": "bunx prettier --write src",
-    "lint": "bunx eslint . --ext .ts --ignore-path .gitignore --fix",
-    "build": "bunx tsc",
-    "clean": "bunx rimraf dist node_modules",
     "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/api/generated --additional-properties=supportsES6=true,withSeparateModelsAndApi=true,apiPackage=api,modelPackage=models,stringEnums=true",
     "prebuild": "bun run generate-api-types",
-    "install-globally": "bun install --quiet && bun run build && sudo ln -sf $(pwd)/dist/index.js /usr/local/bin/malloy-pub && echo '✓ malloy-pub installed globally!'",
-    "uninstall-globally": "sudo rm -f /usr/local/bin/malloy-pub && echo '✓ malloy-pub uninstalled!'",
-    "typecheck": "bunx tsc --noEmit"
+    "build": "bun build src/index.ts --outdir dist --target node --format esm && chmod +x dist/index.js",
+    "dev": "bun run src/index.ts --",
+    "lint": "bunx eslint ./src --fix",
+    "format": "bunx prettier --write --parser typescript 'src/**/*.{ts,tsx}'",
+    "typecheck": "bun run tsc --noEmit",
+    "test": "bun test"
   },
-  "keywords": ["malloy", "publisher", "cli", "database"],
-  "author": "Malloy",
-  "license": "MIT",
   "dependencies": {
     "axios": "^1.7.7",
+    "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
     "commander": "^12.1.0",
-    "fs-extra": "^11.3.3",
-    "winston": "^3.11.0"
+    "fs-extra": "^11.3.3"
   },
   "devDependencies": {
     "@openapitools/openapi-generator-cli": "^2.20.2",
@@ -43,7 +35,6 @@
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
     "prettier": "^3.0.0",
-    "rimraf": "^5.0.1",
     "typescript": "^5.3.3"
   }
 }

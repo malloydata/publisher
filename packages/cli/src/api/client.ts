@@ -5,7 +5,7 @@ import {
   ConnectionsApi,
 } from "./generated";
 import { AxiosError } from "axios";
-import { logAxiosError } from '../utils/logger.js';
+import { logAxiosError } from "../utils/logger.js";
 
 export class PublisherClient {
   private projectsApi: ProjectsApi;

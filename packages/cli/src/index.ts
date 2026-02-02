@@ -1,10 +1,10 @@
-#!/usr/bin/env nodebun run build
+#!/usr/bin/env node
 import { Command } from "commander";
 import { PublisherClient } from "./api/client";
-import { logError } from './utils/logger.js';
-import * as projectCommands from './commands/projects.js';
-import * as packageCommands from './commands/packages.js';
-import * as connectionCommands from './commands/connections.js';
+import { logError } from "./utils/logger.js";
+import * as projectCommands from "./commands/projects.js";
+import * as packageCommands from "./commands/packages.js";
+import * as connectionCommands from "./commands/connections.js";
 
 const program = new Command();
 
@@ -40,19 +40,18 @@ program
 
       switch (noun) {
         case "project":
-          console.log("test1")
           await projectCommands.listProjects(client);
           break;
         case "package":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await packageCommands.listPackages(client, options.project);
           break;
         case "connection":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await connectionCommands.listConnections(client, options.project);
@@ -63,7 +62,7 @@ program
           process.exit(1);
       }
     } catch (error: any) {
-      logError('Command failed', error);
+      logError("Command failed", error);
       process.exit(1);
     }
   });
@@ -84,7 +83,7 @@ program
           break;
         case "package":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await packageCommands.getPackage(
@@ -95,7 +94,7 @@ program
           break;
         case "connection":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await connectionCommands.getConnection(client, options.project, name);
@@ -105,7 +104,7 @@ program
           process.exit(1);
       }
     } catch (error: any) {
-      logError('Command failed', error);
+      logError("Command failed", error);
       process.exit(1);
     }
   });
@@ -128,14 +127,14 @@ program
       switch (noun) {
         case "project":
           if (!name) {
-            logError('Project name is required');
+            logError("Project name is required");
             process.exit(1);
           }
           await projectCommands.createProject(client, name);
           break;
         case "package":
           if (!options.project || !options.package || !options.location) {
-            logError('--project, --package, and --location required');
+            logError("--project, --package, and --location required");
             process.exit(1);
           }
           await packageCommands.createPackage(
@@ -148,7 +147,7 @@ program
           break;
         case "connection":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await connectionCommands.createConnection(
@@ -162,7 +161,7 @@ program
           process.exit(1);
       }
     } catch (error: any) {
-      logError('Command failed', error);
+      logError("Command failed", error);
       process.exit(1);
     }
   });
@@ -188,7 +187,7 @@ program
           break;
         case "package":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await packageCommands.updatePackage(
@@ -200,7 +199,7 @@ program
           break;
         case "connection":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await connectionCommands.updateConnection(
@@ -215,7 +214,7 @@ program
           process.exit(1);
       }
     } catch (error: any) {
-      logError('Command failed', error);
+      logError("Command failed", error);
       process.exit(1);
     }
   });
@@ -236,7 +235,7 @@ program
           break;
         case "package":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await packageCommands.deletePackage(
@@ -247,7 +246,7 @@ program
           break;
         case "connection":
           if (!options.project) {
-            logError('--project is required');
+            logError("--project is required");
             process.exit(1);
           }
           await connectionCommands.deleteConnection(
@@ -261,7 +260,7 @@ program
           process.exit(1);
       }
     } catch (error: any) {
-      logError('Command failed', error);
+      logError("Command failed", error);
       process.exit(1);
     }
   });

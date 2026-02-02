@@ -1,6 +1,6 @@
-import { PublisherClient } from '../api/client.js';
-import Table from 'cli-table3';
-import { logSuccess, logInfo } from '../utils/logger.js';
+import { PublisherClient } from "../api/client.js";
+import Table from "cli-table3";
+import { logSuccess, logInfo } from "../utils/logger.js";
 
 export async function listPackages(
   client: PublisherClient,
@@ -14,7 +14,7 @@ export async function listPackages(
   }
 
   const table = new Table({
-    head: ['Name', 'Location'],
+    head: ["Name", "Location"],
   });
 
   packages.forEach((p: any) => {
