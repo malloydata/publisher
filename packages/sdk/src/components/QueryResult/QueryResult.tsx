@@ -3,6 +3,7 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
+import ResultContainer from "../RenderedResult/ResultContainer";
 import { useServer } from "../ServerProvider";
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
@@ -12,6 +13,7 @@ interface QueryResultProps {
    sourceName?: string;
    queryName?: string;
    resourceUri?: string;
+   height?: number;
 }
 
 export function createEmbeddedQueryResult(props: QueryResultProps): string {
@@ -37,7 +39,7 @@ export function EmbeddedQueryResult({
 }: {
    embeddedQueryResult: string;
 }): React.ReactElement {
-   const { query, sourceName, queryName, resourceUri } = JSON.parse(
+   const { query, sourceName, queryName, resourceUri, height } = JSON.parse(
       embeddedQueryResult,
    ) as QueryResultProps;
    const { modelPath } = parseResourceUri(resourceUri);
@@ -54,6 +56,7 @@ export function EmbeddedQueryResult({
          sourceName={sourceName}
          queryName={queryName}
          resourceUri={resourceUri}
+         height={height}
       />
    );
 }
@@ -63,6 +66,7 @@ export default function QueryResult({
    sourceName,
    queryName,
    resourceUri,
+   height = 400,
 }: QueryResultProps) {
    const { modelPath, projectName, packageName, versionId } =
       parseResourceUri(resourceUri);
@@ -97,7 +101,7 @@ export default function QueryResult({
          )}
          {isSuccess && (
             <Suspense fallback={<div>Loading...</div>}>
-               <RenderedResult result={data.data.result} />
+               <ResultContainer result={data.data.result} maxHeight={height} />
             </Suspense>
          )}
          {isError && (
