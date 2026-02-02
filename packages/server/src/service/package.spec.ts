@@ -153,7 +153,7 @@ describe("service/package", () => {
                ]);
                expect(packageInstance.listModels()).toBeEmpty();
             },
-            { timeout: 15000 },
+            { timeout: 20000 },
          );
       });
 

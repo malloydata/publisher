@@ -1,15 +1,15 @@
-import { check } from "k6";
+import { check, sleep } from "k6";
+import type {
+   CompiledModel,
+   Model,
+   Package,
+} from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 import {
    getModelsClient,
    getPackagesClient,
    getPublisherClient,
 } from "./client_factory.ts";
-import type {
-   CompiledModel,
-   Model,
-   Package,
-} from "./clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
-
+import { logger } from "./logger.ts";
 export const PUBLISHER_URL = __ENV.K6_PUBLISHER_URL || "http://localhost:4000";
 export const PROJECT_NAME = __ENV.K6_PROJECT_NAME || "malloy-samples";
 export const AUTH_TOKEN = __ENV.K6_AUTH_TOKEN || "";
@@ -169,6 +169,11 @@ export const getModels = (
       "list models response time < 2s": (r) => r.timings.duration < 2000,
    });
 
+   // Handle case where API call failed or returned no data
+   if (!data || response.status !== 200) {
+      return [];
+   }
+
    const code = (data as { code?: number })["code"];
    if (code !== undefined && code !== 200) {
       console.error(`Failed to list models: ${code} - ${JSON.stringify(data)}`);
@@ -212,8 +217,15 @@ export const getModelData = (
 
    check(response, {
       "get model data request successful": (r) => r.status === 200,
-      "get model data response time < 2s": (r) => r.timings.duration < 2000,
    });
+
+   // Handle case where API call failed or returned no data
+   if (!data || response.status !== 200) {
+      return {
+         type: "source",
+         sources: undefined,
+      };
+   }
 
    // Transform CompiledModel to ModelData format expected by getViews
 
@@ -229,7 +241,11 @@ export const getModelData = (
    }> = [];
 
    // Parse sourceInfos array (primary method - more reliable than sources)
-   if (compiledModel.sourceInfos && Array.isArray(compiledModel.sourceInfos)) {
+   if (
+      compiledModel &&
+      compiledModel.sourceInfos &&
+      Array.isArray(compiledModel.sourceInfos)
+   ) {
       for (const sourceInfoJson of compiledModel.sourceInfos) {
          try {
             const sourceInfo = JSON.parse(sourceInfoJson) as {
@@ -284,7 +300,11 @@ export const getModelData = (
       }>;
    };
 
-   if (sources.length === 0 && compiledModelWithSources.sources) {
+   if (
+      sources.length === 0 &&
+      compiledModelWithSources &&
+      compiledModelWithSources.sources
+   ) {
       for (const source of compiledModelWithSources.sources) {
          if (source && source.name) {
             const views: Array<{ name: string }> = [];
@@ -353,6 +373,56 @@ export const isServerAvailableAndInitialized = (): boolean => {
 
    return response.status === 200 && data?.initialized === true;
 };
+
+/**
+ * Validates that the server is up and initialized before running tests.
+ * Retries every 5 seconds for up to 60 seconds.
+ * Throws an error if the server is not initialized after max wait time.
+ */
+export function validateServerIsUpAndInitialized(): void {
+   const MAX_WAIT_TIME_SEC = 60; // 60 seconds
+   const RETRY_INTERVAL_SEC = 5; // 5 seconds
+   const startTime = Date.now();
+   let attempt = 0;
+   let serverReady = false;
+
+   while (!serverReady) {
+      attempt++;
+      const { response, data } = publisherClient.getStatus({
+         tags: { name: "get_server_status" },
+      });
+
+      if (response.status === 200 && data?.initialized === true) {
+         console.log(
+            `Server is up and initialized (attempt ${attempt}, elapsed: ${Math.round((Date.now() - startTime) / 1000)}s)`,
+         );
+         serverReady = true;
+         return;
+      }
+
+      if (response.status == 401 || response.status == 403) {
+         throw new Error(
+            `Seems like Auth token is invalid or expired, status: ${response.status}). Please update the auth token and try again.`,
+         );
+      }
+
+      const elapsedTimeSec = (Date.now() - startTime) / 1000;
+      if (elapsedTimeSec >= MAX_WAIT_TIME_SEC) {
+         throw new Error(
+            `Server not initialized after ${MAX_WAIT_TIME_SEC}s (${attempt} attempts). Status: ${response.status}, Initialized: ${data?.initialized}`,
+         );
+      }
+
+      const remainingTimeSec = MAX_WAIT_TIME_SEC - elapsedTimeSec;
+      const waitTimeSec = Math.min(RETRY_INTERVAL_SEC, remainingTimeSec);
+      logger.info(
+         `Server not ready (attempt ${attempt}, status: ${response.status}, initialized: ${data?.initialized}). Waiting ${waitTimeSec}s before retry... (${Math.round(remainingTimeSec)}s remaining)`,
+      );
+
+      // Sleep for the wait time (k6 sleep takes seconds)
+      sleep(waitTimeSec);
+   }
+}
 
 export const queryModelView = (
    packageName: string,

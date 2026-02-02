@@ -10,6 +10,17 @@ To install dependencies:
 bun install
 ```
 
+## Prerequisites
+
+**Important:** Before running tests, ensure the publisher server is running with the following environment variables to limit log output:
+
+```bash
+DISABLE_RESPONSE_LOGGING=true
+LOG_LEVEL=info  # or LOG_LEVEL=warn
+```
+
+Start the server before running any k6 tests.
+
 ## Available Tests
 
 ### Smoke Test
@@ -17,41 +28,62 @@ bun install
 Basic functionality verification under minimal load:
 
 ```bash
-bun run smoke-test
+bun run smoke-test              # Standard test
+./scripts/run-with-otel.sh smoke-test/smoke-test.ts  # With OpenTelemetry export
 ```
 
 ### Load Tests
 
-Individual CRUD operation load tests:
+#### CRUD Load Tests
+
+Specific tests for CRUD (Create, Read, Update, Delete) operations on individual resource types:
 
 ```bash
-bun run load-test-projects      # Projects CRUD load test
-bun run load-test-connections   # Connections CRUD load test
-bun run load-test-packages      # Packages CRUD load test
+bun run load-test-crud-projects      # Projects CRUD load test
+bun run load-test-crud-connections   # Connections CRUD load test
+bun run load-test-crud-packages      # Packages CRUD load test
+bun run load-test-crud               # Run all three CRUD tests sequentially
 ```
 
-Combined load test (runs all three):
+Run CRUD tests with OpenTelemetry export:
 
 ```bash
-bun run load-test
+./scripts/run-with-otel.sh load-test/load-test-crud-projects.ts
+./scripts/run-with-otel.sh load-test/load-test-crud-connections.ts
+./scripts/run-with-otel.sh load-test/load-test-crud-packages.ts
 ```
 
-### Performance Tests
+#### Comprehensive Load Test
+
+Focused on comprehensive API read operations and query execution. Tests listing, getting, and querying various resources (projects, packages, models, notebooks, connections, databases, queries, SQL sources) under normal load:
 
 ```bash
-bun run spike-test        # Spike test - sudden traffic spikes
-bun run stress-test       # Stress test - beyond normal capacity
-bun run breakpoint-test   # Breakpoint test - find maximum capacity
-bun run soak-test         # Soak test - sustained load over time
+bun run load-test               # Standard test
+./scripts/run-with-otel.sh load-test/load-test.ts  # With OTEL export
 ```
 
-### Run All Tests
+## OpenTelemetry & Prometheus Integration
+
+Export k6 metrics to Prometheus via OpenTelemetry for visualization in Grafana.
+
+
+**Usage:**
+Use the `run-with-otel.sh` script to run any test with OpenTelemetry export:
 
 ```bash
-bun run all-tests
+./scripts/run-with-otel.sh <test-file> [additional-k6-args...]
+```
+
+Examples:
+```bash
+./scripts/run-with-otel.sh smoke-test/smoke-test.ts
+./scripts/run-with-otel.sh load-test/load-test.ts --duration 5m
+./scripts/run-with-otel.sh load-test/load-test-crud-projects.ts
 ```
 
 ## Environment Variables
+
+### Test Configuration
 
 - `K6_PUBLISHER_URL` - Base URL of the publisher service (default: `http://localhost:4000`)
 - `K6_PROJECT_NAME` - Project name for tests (default: `malloy-samples`)
@@ -63,12 +95,44 @@ bun run all-tests
 - `K6_WHITELISTED_PACKAGES` - JSON array of package names to test
 - `K6_AVAILABLE_PACKAGES` - JSON array of available package names
 
-## Client Generation
+### OpenTelemetry Export (when using `run-with-otel.sh`)
+
+These environment variables are automatically set by `run-with-otel.sh` but can be overridden:
+
+- `K6_OTEL_GRPC_EXPORTER_ENDPOINT` - OTEL collector gRPC endpoint (default: `localhost:4317`)
+- `K6_OTEL_GRPC_EXPORTER_INSECURE` - Disable TLS for plain gRPC (default: `true` - set automatically by script)
+- `K6_OTEL_SERVICE_NAME` - Service name for metrics (default: `k6-load-test`)
+- `K6_OTEL_EXPORTER_PROTOCOL` - Exporter protocol: `grpc` or `http/protobuf` (default: `grpc`)
+- `K6_OTEL_HTTP_EXPORTER_ENDPOINT` - OTEL collector HTTP endpoint (default: `localhost:4318`)
+- `K6_OTEL_FLUSH_INTERVAL` - How often k6 flushes internal metrics (default: `1s`)
+- `K6_OTEL_EXPORT_INTERVAL` - How often k6 exports to OTEL collector (default: `2s` in script, `10s` otherwise)
+
+## Setup & Build
+
+### Clone Malloy Samples
+
+Clone the malloy-samples repository (required for tests):
+
+```bash
+bun run clone-malloy-samples
+```
+
+This clones the [malloy-samples](https://github.com/credibledata/malloy-samples) repository into `./packages` directory.
+
+### Client Generation
 
 To regenerate API clients from OpenAPI spec:
 
 ```bash
 bun run generate-clients
+```
+
+### Build
+
+Run the full build process (cleanup, clone samples, and generate clients):
+
+```bash
+bun run build
 ```
 
 ## Cleanup
@@ -77,12 +141,4 @@ Remove generated files and dependencies:
 
 ```bash
 bun run clean
-```
-
-## Build
-
-Compile TypeScript:
-
-```bash
-bun run build
 ```

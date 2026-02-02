@@ -829,6 +829,7 @@ app.post(
                req.body.sourceName as string,
                req.body.queryName as string,
                req.body.query as string,
+               req.body.compactJson === true,
             ),
          );
       } catch (error) {
