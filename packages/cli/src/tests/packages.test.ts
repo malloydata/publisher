@@ -13,9 +13,7 @@ describe("Package Commands", () => {
   test("listPackages should call listPackages API", async () => {
     const mockClient = {
       listPackages: mock(() =>
-        Promise.resolve([
-          { name: "pkg-1", location: "/packages/pkg-1" },
-        ]),
+        Promise.resolve([{ name: "pkg-1", location: "/packages/pkg-1" }]),
       ),
     } as unknown as PublisherClient;
 
@@ -48,9 +46,7 @@ describe("Package Commands", () => {
     await packageCommands.getPackage(mockClient, "proj", "pkg-1");
 
     expect(mockClient.getPackage).toHaveBeenCalledWith("proj", "pkg-1");
-    expect(consoleLogSpy).toHaveBeenCalledWith(
-      JSON.stringify(pkg, null, 2),
-    );
+    expect(consoleLogSpy).toHaveBeenCalledWith(JSON.stringify(pkg, null, 2));
   });
 
   test("createPackage should call API with correct arguments", async () => {
@@ -99,21 +95,14 @@ describe("Package Commands", () => {
       updatePackage: mock(() => Promise.resolve()),
     } as unknown as PublisherClient;
 
-    await packageCommands.updatePackage(
-      mockClient,
-      "proj",
-      "pkg-1",
-      { location: "/new/location" },
-    );
+    await packageCommands.updatePackage(mockClient, "proj", "pkg-1", {
+      location: "/new/location",
+    });
 
-    expect(mockClient.updatePackage).toHaveBeenCalledWith(
-      "proj",
-      "pkg-1",
-      {
-        name: "pkg-1",
-        location: "/new/location",
-      },
-    );
+    expect(mockClient.updatePackage).toHaveBeenCalledWith("proj", "pkg-1", {
+      name: "pkg-1",
+      location: "/new/location",
+    });
   });
 
   test("updatePackage should call update API with description", async () => {
@@ -121,21 +110,14 @@ describe("Package Commands", () => {
       updatePackage: mock(() => Promise.resolve()),
     } as unknown as PublisherClient;
 
-    await packageCommands.updatePackage(
-      mockClient,
-      "proj",
-      "pkg-1",
-      { description: "Updated description" },
-    );
+    await packageCommands.updatePackage(mockClient, "proj", "pkg-1", {
+      description: "Updated description",
+    });
 
-    expect(mockClient.updatePackage).toHaveBeenCalledWith(
-      "proj",
-      "pkg-1",
-      {
-        name: "pkg-1",
-        description: "Updated description",
-      },
-    );
+    expect(mockClient.updatePackage).toHaveBeenCalledWith("proj", "pkg-1", {
+      name: "pkg-1",
+      description: "Updated description",
+    });
   });
 
   test("deletePackage should call delete API with correct args", async () => {
@@ -143,15 +125,8 @@ describe("Package Commands", () => {
       deletePackage: mock(() => Promise.resolve()),
     } as unknown as PublisherClient;
 
-    await packageCommands.deletePackage(
-      mockClient,
-      "proj",
-      "pkg-1",
-    );
+    await packageCommands.deletePackage(mockClient, "proj", "pkg-1");
 
-    expect(mockClient.deletePackage).toHaveBeenCalledWith(
-      "proj",
-      "pkg-1",
-    );
+    expect(mockClient.deletePackage).toHaveBeenCalledWith("proj", "pkg-1");
   });
 });

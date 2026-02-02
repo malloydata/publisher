@@ -57,9 +57,7 @@ describe("Connection Commands", () => {
     await connectionCommands.getConnection(mockClient, "proj", "conn1");
 
     expect(mockClient.getConnection).toHaveBeenCalledWith("proj", "conn1");
-    expect(consoleLogSpy).toHaveBeenCalledWith(
-      JSON.stringify(conn, null, 2),
-    );
+    expect(consoleLogSpy).toHaveBeenCalledWith(JSON.stringify(conn, null, 2));
   });
 
   test("createConnection should create from JSON string", async () => {
@@ -74,10 +72,10 @@ describe("Connection Commands", () => {
 
     await connectionCommands.createConnection(mockClient, "proj", { json });
 
-    expect(mockClient.createConnection).toHaveBeenCalledWith(
-      "proj",
-      { name: "conn1", type: "mysql" },
-    );
+    expect(mockClient.createConnection).toHaveBeenCalledWith("proj", {
+      name: "conn1",
+      type: "mysql",
+    });
   });
 
   test("createConnection should create from file (single connection)", async () => {
@@ -95,10 +93,10 @@ describe("Connection Commands", () => {
     });
 
     expect(fs.readJSON).toHaveBeenCalledWith("conn.json");
-    expect(mockClient.createConnection).toHaveBeenCalledWith(
-      "proj",
-      { name: "conn1", type: "postgres" },
-    );
+    expect(mockClient.createConnection).toHaveBeenCalledWith("proj", {
+      name: "conn1",
+      type: "postgres",
+    });
   });
 
   test("createConnection should bulk create from file", async () => {
@@ -118,16 +116,14 @@ describe("Connection Commands", () => {
     });
 
     expect(mockClient.createConnection).toHaveBeenCalledTimes(2);
-    expect(mockClient.createConnection).toHaveBeenNthCalledWith(
-      1,
-      "proj",
-      { name: "c1", type: "bigquery" },
-    );
-    expect(mockClient.createConnection).toHaveBeenNthCalledWith(
-      2,
-      "proj",
-      { name: "c2", type: "snowflake" },
-    );
+    expect(mockClient.createConnection).toHaveBeenNthCalledWith(1, "proj", {
+      name: "c1",
+      type: "bigquery",
+    });
+    expect(mockClient.createConnection).toHaveBeenNthCalledWith(2, "proj", {
+      name: "c2",
+      type: "snowflake",
+    });
   });
 
   test("createConnection should pick named connection from file", async () => {
@@ -147,10 +143,10 @@ describe("Connection Commands", () => {
       name: "c2",
     });
 
-    expect(mockClient.createConnection).toHaveBeenCalledWith(
-      "proj",
-      { name: "c2", type: "snowflake" },
-    );
+    expect(mockClient.createConnection).toHaveBeenCalledWith("proj", {
+      name: "c2",
+      type: "snowflake",
+    });
   });
 
   test("createConnection should throw if named connection not found", async () => {
@@ -186,18 +182,14 @@ describe("Connection Commands", () => {
       type: "mysql",
     });
 
-    await connectionCommands.updateConnection(
-      mockClient,
-      "proj",
-      "conn1",
-      { json },
-    );
+    await connectionCommands.updateConnection(mockClient, "proj", "conn1", {
+      json,
+    });
 
-    expect(mockClient.updateConnection).toHaveBeenCalledWith(
-      "proj",
-      "conn1",
-      { name: "conn1", type: "mysql" },
-    );
+    expect(mockClient.updateConnection).toHaveBeenCalledWith("proj", "conn1", {
+      name: "conn1",
+      type: "mysql",
+    });
   });
 
   test("updateConnection should update from file", async () => {
@@ -210,30 +202,21 @@ describe("Connection Commands", () => {
       updateConnection: mock(() => Promise.resolve()),
     } as unknown as PublisherClient;
 
-    await connectionCommands.updateConnection(
-      mockClient,
-      "proj",
-      "conn1",
-      { file: "conn.json" },
-    );
+    await connectionCommands.updateConnection(mockClient, "proj", "conn1", {
+      file: "conn.json",
+    });
 
-    expect(mockClient.updateConnection).toHaveBeenCalledWith(
-      "proj",
-      "conn1",
-      { name: "conn1", type: "postgres" },
-    );
+    expect(mockClient.updateConnection).toHaveBeenCalledWith("proj", "conn1", {
+      name: "conn1",
+      type: "postgres",
+    });
   });
 
   test("updateConnection should throw if neither file nor json is provided", async () => {
     const mockClient = {} as PublisherClient;
 
     await expect(
-      connectionCommands.updateConnection(
-        mockClient,
-        "proj",
-        "conn1",
-        {},
-      ),
+      connectionCommands.updateConnection(mockClient, "proj", "conn1", {}),
     ).rejects.toThrow("Either --file or --json is required");
   });
 
@@ -242,15 +225,8 @@ describe("Connection Commands", () => {
       deleteConnection: mock(() => Promise.resolve()),
     } as unknown as PublisherClient;
 
-    await connectionCommands.deleteConnection(
-      mockClient,
-      "proj",
-      "conn1",
-    );
+    await connectionCommands.deleteConnection(mockClient, "proj", "conn1");
 
-    expect(mockClient.deleteConnection).toHaveBeenCalledWith(
-      "proj",
-      "conn1",
-    );
+    expect(mockClient.deleteConnection).toHaveBeenCalledWith("proj", "conn1");
   });
 });
