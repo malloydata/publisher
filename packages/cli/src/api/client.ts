@@ -5,6 +5,7 @@ import {
   ConnectionsApi,
 } from "./generated";
 import { AxiosError } from "axios";
+import { logAxiosError } from '../utils/logger.js';
 
 export class PublisherClient {
   private projectsApi: ProjectsApi;
@@ -220,6 +221,7 @@ export class PublisherClient {
   }
 
   private handleError(error: AxiosError): Error {
+    logAxiosError(error);
     if (error.response) {
       const message =
         (error.response.data as any)?.message || error.response.statusText;
