@@ -1,6 +1,6 @@
 import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
-import { logSuccess, logInfo } from "../utils/logger.js";
+import { logSuccess, logInfo, logOutput } from "../utils/logger.js";
 
 export async function listPackages(
   client: PublisherClient,
@@ -21,7 +21,7 @@ export async function listPackages(
     table.push([p.name, p.location]);
   });
 
-  console.log(table.toString());
+  logOutput(table.toString());
 }
 
 export async function getPackage(
@@ -30,7 +30,7 @@ export async function getPackage(
   packageName: string,
 ): Promise<void> {
   const pkg = await client.getPackage(projectName, packageName);
-  console.log(JSON.stringify(pkg, null, 2));
+  logOutput(JSON.stringify(pkg, null, 2));
 }
 
 export async function createPackage(

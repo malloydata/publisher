@@ -41,6 +41,12 @@ export const logger = winston.createLogger({
   transports: [new winston.transports.Console()],
 });
 
+const rawLogger = winston.createLogger({
+  level: "info",
+  format: winston.format.printf((info: any) => info.message),
+  transports: [new winston.transports.Console()],
+});
+
 /**
  * Format duration in milliseconds to a human-readable string with unit
  * @param durationMs Duration in milliseconds
@@ -116,4 +122,8 @@ export const logDebug = (
   metadata?: Record<string, unknown>,
 ) => {
   logger.debug(message, metadata);
+};
+
+export const logOutput = (content: string) => {
+  rawLogger.info(content);
 };

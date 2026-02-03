@@ -1,7 +1,19 @@
 #!/usr/bin/env node
+
+process.removeAllListeners("warning");
+process.on("warning", (warning) => {
+  if (
+    warning.name === "DeprecationWarning" &&
+    warning.message.includes("url.parse")
+  ) {
+    return;
+  }
+  logWarning(`${warning.name}: ${warning.message}`);
+});
+
 import { Command } from "commander";
 import { PublisherClient } from "./api/client";
-import { logError } from "./utils/logger.js";
+import { logError, logOutput, logWarning } from "./utils/logger.js";
 import * as projectCommands from "./commands/projects.js";
 import * as packageCommands from "./commands/packages.js";
 import * as connectionCommands from "./commands/connections.js";
@@ -58,7 +70,7 @@ program
           break;
         default:
           logError(`Unknown resource: ${noun}`);
-          console.log("Valid types: project, package, connection");
+          logOutput("Valid types: project, package, connection");
           process.exit(1);
       }
     } catch (error: any) {

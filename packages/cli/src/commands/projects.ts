@@ -1,6 +1,6 @@
 import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
-import { logSuccess, logInfo, logWarning } from "../utils/logger.js";
+import { logSuccess, logInfo, logWarning, logOutput } from "../utils/logger.js";
 
 export async function listProjects(client: PublisherClient): Promise<void> {
   logInfo(`Fetching projects from ${client.getBaseURL()}...`);
@@ -19,7 +19,7 @@ export async function listProjects(client: PublisherClient): Promise<void> {
     table.push([p.name, p.packages?.length || 0, p.connections?.length || 0]);
   });
 
-  console.log(table.toString());
+  logOutput(table.toString());
   logInfo(`Total: ${projects.length} project(s)`);
 }
 
@@ -28,7 +28,7 @@ export async function getProject(
   name: string,
 ): Promise<void> {
   const project = await client.getProject(name);
-  console.log(JSON.stringify(project, null, 2));
+  logOutput(JSON.stringify(project, null, 2));
 }
 
 export async function createProject(

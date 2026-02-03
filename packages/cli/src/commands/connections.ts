@@ -1,7 +1,7 @@
 import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
 import * as fs from "fs-extra";
-import { logSuccess, logInfo, logError } from "../utils/logger.js";
+import { logSuccess, logInfo, logOutput } from "../utils/logger.js";
 
 export async function listConnections(
   client: PublisherClient,
@@ -22,7 +22,7 @@ export async function listConnections(
     table.push([c.name, c.type]);
   });
 
-  console.log(table.toString());
+  logOutput(table.toString());
 }
 
 export async function getConnection(
@@ -31,7 +31,7 @@ export async function getConnection(
   connectionName: string,
 ): Promise<void> {
   const conn = await client.getConnection(projectName, connectionName);
-  console.log(JSON.stringify(conn, null, 2));
+  logOutput(JSON.stringify(conn, null, 2));
 }
 
 export async function createConnection(
