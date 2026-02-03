@@ -1,10 +1,10 @@
-import { expect, it, describe } from "bun:test";
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import sinon from "sinon";
+import { describe, expect, it } from "bun:test";
 import fs from "fs/promises";
+import sinon from "sinon";
 
-import { Model, ModelType } from "./model";
 import { BadRequestError, ModelNotFoundError } from "../errors";
+import { Model, ModelType } from "./model";
 
 describe("service/model", () => {
    const packageName = "test-package";
@@ -190,7 +190,7 @@ describe("service/model", () => {
       });
 
       describe("getQueryResults", () => {
-         it("should throw ModelCompilationError if a compilation error exists", async () => {
+         it("should throw BadRequestError if a non-MalloyError compilation error exists", async () => {
             const error = new Error("Compilation error");
             const model = new Model(
                packageName,
@@ -208,7 +208,7 @@ describe("service/model", () => {
 
             await expect(async () => {
                await model.getQueryResults();
-            }).toThrowError(Error);
+            }).toThrowError(BadRequestError);
 
             sinon.restore();
          });
