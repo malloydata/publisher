@@ -6,8 +6,6 @@ import { Loading } from "../Loading";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import { useServer } from "../ServerProvider";
 
-const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
-
 interface QueryResultProps {
    query?: string;
    sourceName?: string;
