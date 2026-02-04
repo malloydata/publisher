@@ -43,14 +43,14 @@ function getClient(): PublisherClient {
 
 // LIST COMMAND
 program
-  .command("list <noun>")
+  .command("list <resource>")
   .description("List resources (project, package, connection)")
   .option("--project <n>", "Project name (required for package/connection)")
-  .action(async (noun, options) => {
+  .action(async (resource, options) => {
     try {
       const client = getClient();
 
-      switch (noun) {
+      switch (resource) {
         case "project":
           await projectCommands.listProjects(client);
           break;
@@ -69,7 +69,7 @@ program
           await connectionCommands.listConnections(client, options.project);
           break;
         default:
-          logError(`Unknown resource: ${noun}`);
+          logError(`Unknown resource: ${resource}`);
           logOutput("Valid types: project, package, connection");
           process.exit(1);
       }
@@ -81,15 +81,15 @@ program
 
 // GET COMMAND
 program
-  .command("get <noun> [name]")
+  .command("get <resource> [name]")
   .description("Get resource details")
   .option("--project <n>", "Project name (required for package/connection)")
   .option("--package <n>", "Package name")
-  .action(async (noun, name, options) => {
+  .action(async (resource, name, options) => {
     try {
       const client = getClient();
 
-      switch (noun) {
+      switch (resource) {
         case "project":
           await projectCommands.getProject(client, name);
           break;
@@ -112,7 +112,7 @@ program
           await connectionCommands.getConnection(client, options.project, name);
           break;
         default:
-          logError(`Unknown resource: ${noun}`);
+          logError(`Unknown resource: ${resource}`);
           process.exit(1);
       }
     } catch (error: any) {
@@ -123,7 +123,7 @@ program
 
 // CREATE COMMAND
 program
-  .command("create <noun> [name]")
+  .command("create <resource> [name]")
   .description("Create a resource")
   .option("--project <n>", "Project name")
   .option("--package <n>", "Package name")
@@ -132,11 +132,11 @@ program
   .option("--file <path>", "JSON file (for connections)")
   .option("--json <string>", "JSON string (for connections)")
   .option("--name <n>", "Connection name from file (optional)")
-  .action(async (noun, name, options) => {
+  .action(async (resource, name, options) => {
     try {
       const client = getClient();
 
-      switch (noun) {
+      switch (resource) {
         case "project":
           if (!name) {
             logError("Project name is required");
@@ -169,7 +169,7 @@ program
           );
           break;
         default:
-          logError(`Unknown resource: ${noun}`);
+          logError(`Unknown resource: ${resource}`);
           process.exit(1);
       }
     } catch (error: any) {
@@ -180,7 +180,7 @@ program
 
 // UPDATE COMMAND
 program
-  .command("update <noun> [name]")
+  .command("update <resource> [name]")
   .description("Update a resource")
   .option("--project <n>", "Project name")
   .option("--package <n>", "Package name")
@@ -189,11 +189,11 @@ program
   .option("--description <text>", "Description")
   .option("--file <path>", "JSON file (for connections)")
   .option("--json <string>", "JSON string (for connections)")
-  .action(async (noun, name, options) => {
+  .action(async (resource, name, options) => {
     try {
       const client = getClient();
 
-      switch (noun) {
+      switch (resource) {
         case "project":
           await projectCommands.updateProject(client, name, options);
           break;
@@ -222,7 +222,7 @@ program
           );
           break;
         default:
-          logError(`Unknown resource: ${noun}`);
+          logError(`Unknown resource: ${resource}`);
           process.exit(1);
       }
     } catch (error: any) {
@@ -233,15 +233,15 @@ program
 
 // DELETE COMMAND
 program
-  .command("delete <noun> [name]")
+  .command("delete <resource> [name]")
   .description("Delete a resource")
   .option("--project <n>", "Project name (required for package/connection)")
   .option("--package <n>", "Package name")
-  .action(async (noun, name, options) => {
+  .action(async (resource, name, options) => {
     try {
       const client = getClient();
 
-      switch (noun) {
+      switch (resource) {
         case "project":
           await projectCommands.deleteProject(client, name);
           break;
@@ -268,7 +268,7 @@ program
           );
           break;
         default:
-          logError(`Unknown resource: ${noun}`);
+          logError(`Unknown resource: ${resource}`);
           process.exit(1);
       }
     } catch (error: any) {
