@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/sdk",
    "description": "Malloy Publisher SDK",
-   "version": "0.0.161",
+   "version": "0.0.164",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
@@ -51,6 +51,10 @@
       "./src/index.ts",
       "./dist/index.*.js"
    ],
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/malloydata/publisher.git"
+   },
    "publishConfig": {
       "access": "public"
    },

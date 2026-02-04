@@ -300,31 +300,68 @@ export class Model {
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
-         throw this.compilationError;
+         // Re-throw MalloyError and ModelCompilationError as-is (they map to 400/424)
+         if (
+            this.compilationError instanceof MalloyError ||
+            this.compilationError instanceof ModelCompilationError
+         ) {
+            throw this.compilationError;
+         }
+         // For other compilation errors, wrap as BadRequestError (400)
+         throw new BadRequestError(
+            `Model compilation failed: ${this.compilationError.message}`,
+         );
       }
       let runnable: QueryMaterializer;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
-      if (!sourceName && !queryName && query) {
-         runnable = this.modelMaterializer.loadQuery("\n" + query);
-      } else if (queryName && !query) {
-         runnable = this.modelMaterializer.loadQuery(
-            `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
-         );
-      } else {
-         const endTime = performance.now();
-         const executionTime = endTime - startTime;
-         this.queryExecutionHistogram.record(executionTime, {
-            "malloy.model.path": this.modelPath,
-            "malloy.model.query.name": queryName,
-            "malloy.model.query.source": sourceName,
-            "malloy.model.query.query": query,
-            "malloy.model.query.status": "error",
+
+      // Wrap loadQuery calls in try-catch to handle query parsing errors
+      try {
+         if (!sourceName && !queryName && query) {
+            runnable = this.modelMaterializer.loadQuery("\n" + query);
+         } else if (queryName && !query) {
+            runnable = this.modelMaterializer.loadQuery(
+               `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
+            );
+         } else {
+            const endTime = performance.now();
+            const executionTime = endTime - startTime;
+            this.queryExecutionHistogram.record(executionTime, {
+               "malloy.model.path": this.modelPath,
+               "malloy.model.query.name": queryName,
+               "malloy.model.query.source": sourceName,
+               "malloy.model.query.query": query,
+               "malloy.model.query.status": "error",
+            });
+            throw new BadRequestError(
+               "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
+            );
+         }
+      } catch (error) {
+         // Re-throw BadRequestError as-is
+         if (error instanceof BadRequestError) {
+            throw error;
+         }
+         // Re-throw MalloyError as-is (maps to 400)
+         if (error instanceof MalloyError) {
+            throw error;
+         }
+         // For other query parsing errors, wrap as BadRequestError
+         const errorMessage =
+            error instanceof Error ? error.message : String(error);
+         logger.error("Query parsing error", {
+            error,
+            errorMessage,
+            projectName: this.packageName,
+            modelPath: this.modelPath,
+            query,
+            queryName,
+            sourceName,
          });
-         throw new BadRequestError(
-            "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
-         );
+         throw new BadRequestError(`Invalid query: ${errorMessage}`);
       }
+
       const rowLimit =
          (await runnable.getPreparedResult()).resultExplore.limit || ROW_LIMIT;
       const endTime = performance.now();
