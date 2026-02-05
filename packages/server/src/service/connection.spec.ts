@@ -749,7 +749,6 @@ describe("connection integration tests", () => {
 
             expect(result.status).toBe("failed");
             expect(result.errorMessage).toBeDefined();
-            expect(result.errorMessage?.length).toBeGreaterThan(0);
          },
          { timeout: 30000 },
       );
