@@ -1,8 +1,8 @@
 name: k6 Tests
 
 on:
-  pull_request:
-    branches: [main, master]
+  push:
+    branches: [main]
 
 jobs:
   k6_tests:
