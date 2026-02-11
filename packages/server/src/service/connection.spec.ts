@@ -115,11 +115,11 @@ describe("connection integration tests", () => {
                   name: "pg_test",
                   type: "postgres",
                   postgresConnection: {
-                     host: "localhost",
+                     host: process.env.POSTGRES_TEST_HOST,
                      port: 5432,
                      userName: process.env.POSTGRES_TEST_USER!,
                      password: process.env.POSTGRES_TEST_PASSWORD!,
-                     databaseName: "postgres",
+                     databaseName: process.env.POSTGRES_TEST_DATABASE,
                   },
                };
 
@@ -172,7 +172,7 @@ describe("connection integration tests", () => {
                   return;
                }
 
-               const connectionString = `host=${"localhost"} port=${"5432"} dbname=${"postgres"} user=${process.env.POSTGRES_TEST_USER} password=${process.env.POSTGRES_TEST_PASSWORD}`;
+               const connectionString = `host=${process.env.POSTGRES_TEST_HOST} port=${"5432"} dbname=${process.env.POSTGRES_TEST_DATABASE} user=${process.env.POSTGRES_TEST_USER} password=${process.env.POSTGRES_TEST_PASSWORD}`;
 
                const postgresAttachment: AttachedDatabase = {
                   name: "pg_conn_string",
@@ -546,11 +546,11 @@ describe("connection integration tests", () => {
                      name: "pg_multi",
                      type: "postgres",
                      postgresConnection: {
-                        host: "localhost",
+                        host: process.env.POSTGRES_TEST_HOST,
                         port: 5432,
                         userName: process.env.POSTGRES_TEST_USER!,
                         password: process.env.POSTGRES_TEST_PASSWORD!,
-                        databaseName: "postgres",
+                        databaseName: process.env.POSTGRES_TEST_DATABASE,
                      },
                   });
                }
@@ -670,11 +670,11 @@ describe("connection integration tests", () => {
                name: "pg_duplicate",
                type: "postgres",
                postgresConnection: {
-                  host: "localhost",
+                  host: process.env.POSTGRES_TEST_HOST,
                   port: 5432,
                   userName: process.env.POSTGRES_TEST_USER!,
                   password: process.env.POSTGRES_TEST_PASSWORD!,
-                  databaseName: "postgres",
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
                },
             };
 
@@ -714,11 +714,11 @@ describe("connection integration tests", () => {
                name: "test_postgres",
                type: "postgres",
                postgresConnection: {
-                  host: "localhost",
+                  host: process.env.POSTGRES_TEST_HOST,
                   port: 5432,
                   userName: process.env.POSTGRES_TEST_USER!,
                   password: process.env.POSTGRES_TEST_PASSWORD!,
-                  databaseName: "postgres",
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
                },
             };
 
@@ -737,7 +737,7 @@ describe("connection integration tests", () => {
                name: "test_postgres_invalid",
                type: "postgres",
                postgresConnection: {
-                  host: "localhost",
+                  host: process.env.POSTGRES_TEST_HOST,
                   port: 5432,
                   userName: "invalid_user",
                   password: "invalid_password",
@@ -779,11 +779,11 @@ describe("connection integration tests", () => {
             name: "pg_special",
             type: "postgres",
             postgresConnection: {
-               host: "localhost",
+               host: process.env.POSTGRES_TEST_HOST,
                port: 5432,
                userName: process.env.POSTGRES_TEST_USER!,
                password: process.env.POSTGRES_TEST_PASSWORD!,
-               databaseName: "postgres",
+               databaseName: process.env.POSTGRES_TEST_DATABASE,
             },
          };
 
@@ -822,11 +822,11 @@ describe("connection integration tests", () => {
                name: "pg_attrs",
                type: "postgres",
                postgresConnection: {
-                  host: "localhost",
+                  host: process.env.POSTGRES_TEST_HOST,
                   port: 5432,
                   userName: process.env.POSTGRES_TEST_USER!,
                   password: process.env.POSTGRES_TEST_PASSWORD!,
-                  databaseName: "postgres",
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
                },
             };
 
