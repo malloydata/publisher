@@ -18,7 +18,6 @@ import {
    registerHealthEndpoints,
    registerSignalHandlers,
 } from "./health";
-import { prometheusExporter } from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
@@ -255,14 +254,6 @@ app.get(`${API_PREFIX}/status`, async (_req, res) => {
       logger.error("Error getting status", { error });
       const { json, status } = internalErrorToHttpError(error as Error);
       res.status(status).json(json);
-   }
-});
-
-app.get("/metrics", (req, res) => {
-   if (prometheusExporter) {
-      prometheusExporter.getMetricsRequestHandler(req, res);
-   } else {
-      res.status(503).send("Metrics not available");
    }
 });
 
