@@ -13,10 +13,15 @@ import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
+import {
+   drainingGuard,
+   registerHealthEndpoints,
+   registerSignalHandlers,
+} from "./health";
+import { prometheusExporter } from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
-
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
@@ -33,6 +38,15 @@ function parseArgs() {
          i++;
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
+         i++;
+      } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
+         process.env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
+         i++;
+      } else if (
+         arg === "--shutdown_graceful_close_timeout_seconds" &&
+         args[i + 1]
+      ) {
+         process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = args[i + 1];
          i++;
       } else if (arg === "--init") {
          process.env.INITIALIZE_STORAGE = "true";
@@ -54,6 +68,15 @@ function parseArgs() {
          console.log(
             "  --mcp_port <number>    Port for MCP server (default: 4040)",
          );
+         console.log(
+            "  --shutdown_drain_duration_seconds <number>  Time in seconds to keep service in draining state before closing servers (default: 0)",
+         );
+         console.log(
+            "  --shutdown_graceful_close_timeout_seconds <number>  Time in seconds to wait after closing servers before exit (default: 0)",
+         );
+         console.log(
+            "  --init                 Initialize the storage (default: false)",
+         );
          console.log("  --help, -h             Show this help message");
          process.exit(0);
       }
@@ -67,6 +90,12 @@ const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
 const MCP_ENDPOINT = "/mcp";
+const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
+   process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
+);
+const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
+   process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
+);
 // Find the app directory - handle NPX vs local execution
 let ROOT: string;
 if (require.main) {
@@ -212,6 +241,12 @@ app.use(
 );
 app.use(bodyParser.json());
 
+// Register health check endpoints
+registerHealthEndpoints(app);
+
+// Register draining guard middleware - must be after health endpoints but before other routes
+app.use(drainingGuard);
+
 app.get(`${API_PREFIX}/status`, async (_req, res) => {
    try {
       const status = await projectStore.getStatus();
@@ -220,6 +255,14 @@ app.get(`${API_PREFIX}/status`, async (_req, res) => {
       logger.error("Error getting status", { error });
       const { json, status } = internalErrorToHttpError(error as Error);
       res.status(status).json(json);
+   }
+});
+
+app.get("/metrics", (req, res) => {
+   if (prometheusExporter) {
+      prometheusExporter.getMetricsRequestHandler(req, res);
+   } else {
+      res.status(503).send("Metrics not available");
    }
 });
 
@@ -905,3 +948,10 @@ const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
 mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
+
+registerSignalHandlers(
+   mainServer,
+   mcpServer,
+   SHUTDOWN_DRAIN_DURATION_SECONDS,
+   SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS,
+);
