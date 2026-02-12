@@ -1640,6 +1640,10 @@ components:
         initialized:
           type: boolean
           description: Whether the server is fully initialized and ready to serve requests
+        operationalState:
+          type: string
+          enum: ["initializing", "serving", "draining"]
+          description: Status of the server; initializing when the server is loading projects, packages and connections, serving when the server is initialized and ready to serve requests, and draining when the server is going to shut down
         frozenConfig:
           type: boolean
           description: Whether the server configuration is frozen (read-only mode). When true, all mutation operations are disabled.
