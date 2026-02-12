@@ -440,6 +440,11 @@ export const loadTest: TestPreset = {
                check(response.response, {
                   "get connection request successful": (r) => r.status === 200,
                });
+               if (response.response.status !== 200) {
+                  logger.error(
+                     `get connection failed: status=${response.response.status}, body=${response.response.body}`,
+                  );
+               }
             });
          }
       });
@@ -590,6 +595,11 @@ export const loadTest: TestPreset = {
                      "post query data request successful": (r) =>
                         r.status === 200,
                   });
+                  if (response.response.status !== 200) {
+                     logger.error(
+                        `post query data failed: status=${response.response.status}, body=${response.response.body}`,
+                     );
+                  }
                } catch (error) {
                   logger.warn(`Failed to post query data: ${error}`);
                }
@@ -619,6 +629,11 @@ export const loadTest: TestPreset = {
                   check(schemasResponse.response, {
                      "list schemas request successful": (r) => r.status === 200,
                   });
+                  if (schemasResponse.response.status !== 200) {
+                     logger.error(
+                        `list schemas failed: status=${schemasResponse.response.status}, body=${schemasResponse.response.body}`,
+                     );
+                  }
 
                   sleep(0.1);
 
@@ -646,6 +661,11 @@ export const loadTest: TestPreset = {
                                  "list tables request successful": (r) =>
                                     r.status === 200,
                               });
+                              if (tablesResponse.response.status !== 200) {
+                                 logger.error(
+                                    `list tables failed: status=${tablesResponse.response.status}, body=${tablesResponse.response.body}`,
+                                 );
+                              }
 
                               sleep(0.1);
 
@@ -717,6 +737,11 @@ export const loadTest: TestPreset = {
                      "post sql source request successful": (r) =>
                         r.status === 200,
                   });
+                  if (response.response.status !== 200) {
+                     logger.error(
+                        `post sql source failed: status=${response.response.status}, body=${response.response.body}`,
+                     );
+                  }
                } catch (error) {
                   logger.warn(`Failed to post sql source: ${error}`);
                }
@@ -739,6 +764,11 @@ export const loadTest: TestPreset = {
                      "post temporary table request successful": (r) =>
                         r.status === 200,
                   });
+                  if (response.response.status !== 200) {
+                     logger.error(
+                        `post temporary table failed: status=${response.response.status}, body=${response.response.body}`,
+                     );
+                  }
                } catch (error) {
                   logger.warn(`Failed to post temporary table: ${error}`);
                }
