@@ -119,7 +119,15 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
          logMetadata.traceId = traceId;
       }
 
-      logger.info(`${req.method} ${req.url}`, logMetadata);
+      // Skip logging for metrics and health endpoints to reduce log noise
+      if (
+         req.url !== "/metrics" &&
+         req.url !== "/health" &&
+         req.url !== "/health/liveness" &&
+         req.url !== "/health/readiness"
+      ) {
+         logger.info(`${req.method} ${req.url}`, logMetadata);
+      }
    });
    next();
 };
