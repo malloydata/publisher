@@ -30,6 +30,4 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           platforms: ${{ matrix.platform }}
-          tags: ${{ env.REGISTRY_IMAGE }}:local-${{ env.PLATFORM_PAIR  }}
           push: false
-          load: false
