@@ -134,13 +134,30 @@ export function setup(): SetupData {
  * - 95th percentile response time < 2s
  * - Error rate < 2%
  */
+// Parse stages from environment variable or use defaults
+function getStages(): Array<{ duration: string; target: number }> {
+   const stagesEnv = __ENV.K6_CUSTOM_STAGES;
+   if (stagesEnv) {
+      try {
+         const parsed = JSON.parse(stagesEnv);
+         if (Array.isArray(parsed)) {
+            return parsed;
+         }
+      } catch (e) {
+         logger.warn(`Failed to parse K6_CUSTOM_STAGES, using defaults: ${e}`);
+      }
+   }
+   // Default stages
+   return [
+      { duration: "1m", target: 50 }, // warm-up
+      { duration: "5m", target: 50 }, // sustained load
+      { duration: "1m", target: 0 }, // ramp down
+   ];
+}
+
 export const loadTest: TestPreset = {
    defaultOptions: {
-      stages: [
-         { duration: "1m", target: 50 }, // warm-up
-         { duration: "5m", target: 50 }, // sustained load
-         { duration: "1m", target: 0 }, // ramp down
-      ],
+      stages: getStages(),
       thresholds: {
          http_req_duration: ["p(90)<600", "p(95)<800"],
          http_req_waiting: ["p(95)<800"],
