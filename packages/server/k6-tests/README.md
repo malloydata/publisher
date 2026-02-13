@@ -66,7 +66,6 @@ bun run load-test               # Standard test
 
 Export k6 metrics to Prometheus via OpenTelemetry for visualization in Grafana.
 
-
 **Usage:**
 Use the `run-with-otel.sh` script to run any test with OpenTelemetry export:
 
@@ -75,6 +74,7 @@ Use the `run-with-otel.sh` script to run any test with OpenTelemetry export:
 ```
 
 Examples:
+
 ```bash
 ./scripts/run-with-otel.sh smoke-test/smoke-test.ts
 ./scripts/run-with-otel.sh load-test/load-test.ts --duration 5m
@@ -94,6 +94,7 @@ Examples:
 - `K6_DEBUG` - Set to `"true"` for verbose logging
 - `K6_WHITELISTED_PACKAGES` - JSON array of package names to test
 - `K6_AVAILABLE_PACKAGES` - JSON array of available package names
+- `K6_CUSTOM_STAGES` - JSON array of custom load test stages to override defaults. Format: `[{"duration": "1m", "target": 50}, {"duration": "5m", "target": 50}, {"duration": "1m", "target": 0}]`. If not set, uses default stages (1m warm-up at 50 users, 5m sustained at 50 users, 1m ramp-down to 0)
 
 ### OpenTelemetry Export (when using `run-with-otel.sh`)
 
