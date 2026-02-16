@@ -6,11 +6,11 @@ import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
+import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
-import { CompileController } from "./controller/compile.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
@@ -197,8 +197,8 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
             error: { code: -32603, message: "Internal server error" },
             id:
                typeof req.body === "object" &&
-               req.body !== null &&
-               "id" in req.body
+                  req.body !== null &&
+                  "id" in req.body
                   ? req.body.id
                   : null,
          });

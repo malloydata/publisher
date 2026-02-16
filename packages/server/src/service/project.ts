@@ -1,9 +1,9 @@
+import type { LogMessage } from "@malloydata/malloy";
 import {
    FixedConnectionMap,
    MalloyError,
    Runtime,
 } from "@malloydata/malloy";
-import type { LogMessage } from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
@@ -178,12 +178,18 @@ export class Project {
       const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
       const virtualUrl = new URL(virtualUri);
 
+      // Read the model file and extract its preamble (pragmas + imports) so that
+      // the user's query inherits the model's import context.
+      const modelPath = path.join(this.projectPath, packageName, modelName);
+      const preamble = await extractPreamble(modelPath);
+      const fullSource = preamble ? `${preamble}\n${source}` : source;
+
       // Create a URL Reader that serves the source string for the virtual file,
       // but falls back to the disk for everything else (imports).
       const interceptingReader = {
          readURL: async (url: URL) => {
             if (url.toString() === virtualUri) {
-               return source;
+               return fullSource;
             }
             return URL_READER.readURL(url);
          },
@@ -247,7 +253,7 @@ export class Project {
                try {
                   const packageMetadata = (
                      this.packageStatuses.get(packageName)?.status ===
-                     PackageStatus.LOADING
+                        PackageStatus.LOADING
                         ? undefined
                         : await this.getPackage(packageName, false)
                   )?.getPackageMetadata();
@@ -470,9 +476,9 @@ export class Project {
          });
          throw new Error(
             "Package loading. Can't unload. " +
-               this.projectName +
-               " " +
-               packageName,
+            this.projectName +
+            " " +
+            packageName,
          );
       } else if (packageStatus?.status === PackageStatus.SERVING) {
          this.setPackageStatus(packageName, PackageStatus.UNLOADING);
@@ -590,4 +596,44 @@ export class Project {
             );
          });
    }
+}
+
+/**
+ * Extracts the preamble from a Malloy model file — the leading block of
+ * `##!` pragmas, `import` statements, blank lines, and comments that appear
+ * before any `source:`, `query:`, or `run:` definition. This allows a
+ * submitted query to inherit the model's import context.
+ */
+export async function extractPreamble(modelPath: string): Promise<string> {
+   try {
+      const content = await fs.promises.readFile(modelPath, "utf8");
+      return extractPreambleFromSource(content);
+   } catch {
+      // If the model file can't be read, return empty preamble
+      // and let the compilation surface any import errors naturally.
+      return "";
+   }
+}
+
+/**
+ * Extracts the preamble from Malloy source text. Exported for testing.
+ */
+export function extractPreambleFromSource(content: string): string {
+   const lines = content.split("\n");
+   const preambleLines: string[] = [];
+
+   for (const line of lines) {
+      const trimmed = line.trim();
+      // Stop at the first source/query/run definition
+      if (
+         trimmed.startsWith("source:") ||
+         trimmed.startsWith("query:") ||
+         trimmed.startsWith("run:")
+      ) {
+         break;
+      }
+      preambleLines.push(line);
+   }
+
+   return preambleLines.join("\n").trimEnd();
 }
