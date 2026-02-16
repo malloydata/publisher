@@ -10,6 +10,7 @@ import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
+import { CompileController } from "./controller/compile.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
@@ -118,6 +119,7 @@ const modelController = new ModelController(projectStore);
 const packageController = new PackageController(projectStore);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
+const compileController = new CompileController(projectStore);
 
 export const mcpApp = express();
 
@@ -891,6 +893,23 @@ app.get(
          );
       } catch (error) {
          logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/compile`,
+   async (req, res) => {
+      try {
+         const result = await compileController.compile(
+            req.params.projectName,
+            req.body.source,
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         logger.error("Compilation error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

@@ -1,3 +1,9 @@
+import {
+   FixedConnectionMap,
+   MalloyError,
+   Runtime,
+} from "@malloydata/malloy";
+import type { LogMessage } from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
@@ -10,6 +16,7 @@ import {
    ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { URL_READER } from "../utils";
 import { createProjectConnections, InternalConnection } from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
@@ -157,6 +164,47 @@ export class Project {
          readme,
       };
       return this.metadata;
+   }
+
+   public async compileSource(source: string): Promise<LogMessage[]> {
+      // Define a virtual file path inside the project directory.
+      // This allows the query to import other files in the project via relative paths.
+      const virtualUri = `file://${this.projectPath}/__compile_check.malloy`;
+      const virtualUrl = new URL(virtualUri);
+
+      // Create a URL Reader that serves the source string for the virtual file,
+      // but falls back to the disk for everything else (imports).
+      const interceptingReader = {
+         readURL: async (url: URL) => {
+            if (url.toString() === virtualUri) {
+               return source;
+            }
+            return URL_READER.readURL(url);
+         },
+      };
+
+      // Initialize Runtime with the project's active connections
+      const runtime = new Runtime({
+         urlReader: interceptingReader,
+         connections: new FixedConnectionMap(
+            this.malloyConnections,
+            "duckdb",
+         ),
+      });
+
+      // Attempt to compile
+      try {
+         const model = await runtime.loadModel(virtualUrl).getModel();
+         // If successful, return any non-fatal warnings
+         return model.problems;
+      } catch (error) {
+         // If parsing/compilation fails, return the errors
+         if (error instanceof MalloyError) {
+            return error.problems;
+         }
+         // If it's a system error (e.g. file not found), throw it up
+         throw error;
+      }
    }
 
    public listApiConnections(): ApiConnection[] {
