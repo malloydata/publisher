@@ -10,10 +10,12 @@ export class CompileController {
 
    public async compile(
       projectName: string,
+      packageName: string,
+      modelName: string,
       source: string,
    ): Promise<{ status: string; problems: LogMessage[] }> {
       const project = await this.projectStore.getProject(projectName, false);
-      const problems = await project.compileSource(source);
+      const problems = await project.compileSource(packageName, modelName, source);
 
       // Determine overall status based on presence of errors
       const hasErrors = problems.some((p) => p.severity === "error");

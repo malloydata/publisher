@@ -166,10 +166,16 @@ export class Project {
       return this.metadata;
    }
 
-   public async compileSource(source: string): Promise<LogMessage[]> {
-      // Define a virtual file path inside the project directory.
-      // This allows the query to import other files in the project via relative paths.
-      const virtualUri = `file://${this.projectPath}/__compile_check.malloy`;
+   public async compileSource(
+      packageName: string,
+      modelName: string,
+      source: string,
+   ): Promise<LogMessage[]> {
+      // Place the virtual file in the model's directory so relative imports resolve correctly.
+      const modelDir = path.dirname(
+         path.join(this.projectPath, packageName, modelName),
+      );
+      const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
       const virtualUrl = new URL(virtualUri);
 
       // Create a URL Reader that serves the source string for the virtual file,

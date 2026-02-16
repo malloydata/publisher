@@ -900,11 +900,13 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/compile`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
    async (req, res) => {
       try {
          const result = await compileController.compile(
             req.params.projectName,
+            req.params.packageName,
+            req.params.modelName,
             req.body.source,
          );
          res.status(200).json(result);
