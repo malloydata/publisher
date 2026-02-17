@@ -3,8 +3,6 @@
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
 
-# Pre-built base image with all slow system dependencies
-# Build this once and push: docker build --target base-deps -t your-registry/publisher-base:1.0 .
 FROM oven/bun:1.2.23-slim AS base-deps
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
