@@ -64,7 +64,12 @@ jobs:
       - name: Install dependencies
         env:
           BUN_INSTALL_CACHE_DIR: ${{ runner.os == 'Windows' && env.WINDOWS_BUN_CACHE_DIR || '' }}
-        run: bun install --frozen-lockfile --prefer-offline --ignore-scripts
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+        run: bun install --frozen-lockfile --prefer-offline
+        shell: bash
+
+      - name: Rebuild DuckDB native bindings
+        run: env -u BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS bun install duckdb
         shell: bash
 
       - name: Generate API types
