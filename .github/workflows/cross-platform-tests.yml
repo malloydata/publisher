@@ -32,10 +32,8 @@ jobs:
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile ${{ matrix.os == 'windows-latest' && '--linker=isolated' || '' }}
+        run: bun install --frozen-lockfile --prefer-offline --ignore-scripts
         shell: bash
-        env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Generate API types
         run: bun run generate-api-types
