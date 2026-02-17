@@ -68,10 +68,6 @@ jobs:
         run: bun install --frozen-lockfile --prefer-offline
         shell: bash
 
-      - name: Rebuild DuckDB native bindings
-        run: env -u BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS bun install duckdb
-        shell: bash
-
       - name: Generate API types
         run: bun run generate-api-types
         shell: bash
