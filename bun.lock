@@ -89,6 +89,8 @@
       },
       "devDependencies": {
         "@openapitools/openapi-generator-cli": "^2.20.2",
+        "@shikijs/langs": "^1.16.3",
+        "@shikijs/themes": "^1.16.3",
         "@types/bun": "^1.2.21",
         "@types/k6": "^1.0.2",
         "@types/react": "^19.1.7",

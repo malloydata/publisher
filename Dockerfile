@@ -1,17 +1,18 @@
-# The generate-api-types scripts require Java.
+# syntax=docker/dockerfile:1.4
+
+# Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
 
-# Production runtime — stable tooling layers first for max caching
-FROM oven/bun:1.2.23-slim AS runner
+# Pre-built base image with all slow system dependencies
+# Build this once and push: docker build --target base-deps -t your-registry/publisher-base:1.0 .
+FROM oven/bun:1.2.23-slim AS base-deps
 
-# All system dependencies in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates unzip git \
     openssl libcurl4 libssl3 dnsutils iputils-ping file && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# DuckDB CLI + Snowflake driver + Node 20 LTS
 RUN curl -L https://install.duckdb.org | bash && \
     ln -s /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb && \
     curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
@@ -37,25 +38,29 @@ COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
 
 # Install all workspace dependencies once (cached across builds)
-RUN bun install
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
 
 # Build SDK first
 COPY packages/sdk/ ./packages/sdk/
 WORKDIR /publisher/packages/sdk
-RUN bun run build
+RUN --mount=type=cache,target=/root/.bun \
+    bun run build
 
 # Build app
 WORKDIR /publisher/packages/app
 COPY packages/app/ ./
-RUN NODE_OPTIONS='--max-old-space-size=4096' bun run build:server
+RUN --mount=type=cache,target=/root/.bun \
+    NODE_OPTIONS='--max-old-space-size=4096' bun run build:server
 
 # Build server
 WORKDIR /publisher/packages/server
 COPY packages/server/ ./
-RUN bun run build:server-only
+RUN --mount=type=cache,target=/root/.bun \
+    bun run build:server-only
 
-# Final image — continue from the cached runner base
-FROM runner AS final
+# Final image
+FROM base-deps AS final
 WORKDIR /publisher
 
 # Copy built artifacts from builder
@@ -68,7 +73,8 @@ COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
 COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
 
 # Install production-only deps
-RUN bun install --production
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --production
 
 # Runtime config
 ENV NODE_ENV=production
