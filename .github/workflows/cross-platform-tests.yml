@@ -5,6 +5,10 @@ on:
 
 permissions: {}
 
+# Bun bug in Windows: https://github.com/oven-sh/bun/issues/17011#issuecomment-2769196629
+# We need to use a custom userprofile and cache directory for Windows. And also need to disable the Defender real-time monitoring.
+# There is no solution for this yet (but a couple of active issues), so we need to use this workaround for faster CI runs.
+
 env:
   WINDOWS_USERPROFILE: 'D:'
   WINDOWS_BUN_CACHE_DIR: 'D:\.bun\install\cache'
@@ -44,14 +48,6 @@ jobs:
           USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         with:
           bun-version: 1.2.23
-
-      - name: Cache Bun dependencies (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/cache@v5
-        with:
-          path: ${{ env.WINDOWS_BUN_CACHE_DIR }}
-          key: ${{ matrix.os }}-bun-${{ hashFiles('**/bun.lock') }}
-          restore-keys: ${{ matrix.os }}-bun-
 
       - name: Cache Bun dependencies (Linux/macOS)
         if: runner.os != 'Windows'
