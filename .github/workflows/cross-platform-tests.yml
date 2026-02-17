@@ -27,14 +27,19 @@ jobs:
         id: bun-cache
         uses: actions/cache@v4
         with:
-          path: ~/.bun/install/cache
+          path: |
+            ~/.bun/install/cache
+            node_modules
+            **/node_modules
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
+          enableCrossOsArchive: false
 
       - name: Install dependencies
+        if: steps.bun-cache.outputs.cache-hit != 'true'
         run: |
-          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
+          echo "Cache miss — installing dependencies"
           bun install --frozen-lockfile
         shell: bash
         env:
