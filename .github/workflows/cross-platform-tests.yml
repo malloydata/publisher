@@ -23,33 +23,29 @@ jobs:
         with:
           bun-version: 1.2.23
 
-      - name: Install dependencies (Unix)
-        if: matrix.os != 'windows-latest'
-        run: bun install --frozen-lockfile
-        shell: bash
+      - name: Cache Bun dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
-      - name: Install dependencies (Windows)
-        if: matrix.os == 'windows-latest'
-        run: bun install --frozen-lockfile --linker=isolated
-        shell: pwsh
+      - name: Install dependencies
+        run: bun install --frozen-lockfile ${{ matrix.os == 'windows-latest' && '--linker=isolated' || '' }}
+        shell: bash
         env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Generate API types
         run: bun run generate-api-types
         shell: bash
 
-      - name: Build (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Build
         run: bun run build
         shell: bash
-
-      - name: Build (Windows)
-        if: matrix.os == 'windows-latest'
-        run: bun run build
-        shell: pwsh
         env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Run tests
         run: bun run test
