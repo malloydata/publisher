@@ -30,7 +30,7 @@ jobs:
 
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --linker=isolated
         shell: pwsh
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
