@@ -25,6 +25,7 @@ type AttachedDatabase = components["schemas"]["AttachedDatabase"];
  * BigQuery:
  *   - BIGQUERY_TEST_PROJECT_ID
  *   - BIGQUERY_TEST_SERVICE_ACCOUNT_JSON (full JSON string)
+ *   - BIGQUERY_TEST_TABLE (optional, format: dataset.table - enables live query test)
  *
  * Snowflake:
  *   - SNOWFLAKE_TEST_ACCOUNT
@@ -216,7 +217,7 @@ describe("connection integration tests", () => {
             process.env.BIGQUERY_TEST_SERVICE_ACCOUNT_JSON;
 
          it(
-            "should create DuckDB connection with attached BigQuery database",
+            "should create DuckDB connection with attached BigQuery database and query a table",
             async () => {
                if (!hasBigQueryCredentials()) {
                   console.log("Skipping: BigQuery credentials not configured");
@@ -258,8 +259,16 @@ describe("connection integration tests", () => {
                   (row) => Object.values(row)[0],
                );
                expect(dbNames).toContain("bq_test");
+               const bqTable = process.env.BIGQUERY_TEST_TABLE;
+               if (bqTable) {
+                  const result = await connection.runSQL(
+                     `SELECT * FROM bq_test.${bqTable} LIMIT 1`,
+                  );
+                  expect(result.rows).toBeDefined();
+                  expect(result.rows.length).toBeGreaterThan(0);
+               }
             },
-            { timeout: 30000 },
+            { timeout: 60000 },
          );
 
          it(
@@ -554,8 +563,20 @@ describe("connection integration tests", () => {
                      },
                   });
                }
-
-               // Add S3 if available
+               if (
+                  process.env.BIGQUERY_TEST_PROJECT_ID &&
+                  process.env.BIGQUERY_TEST_SERVICE_ACCOUNT_JSON
+               ) {
+                  attachments.push({
+                     name: "bq_multi",
+                     type: "bigquery",
+                     bigqueryConnection: {
+                        defaultProjectId: process.env.BIGQUERY_TEST_PROJECT_ID,
+                        serviceAccountKeyJson:
+                           process.env.BIGQUERY_TEST_SERVICE_ACCOUNT_JSON,
+                     },
+                  });
+               }
                if (
                   process.env.S3_TEST_ACCESS_KEY_ID &&
                   process.env.S3_TEST_SECRET_ACCESS_KEY
@@ -605,7 +626,7 @@ describe("connection integration tests", () => {
                   expect(dbNames).toContain(attachment.name!);
                });
             },
-            { timeout: 45000 },
+            { timeout: 60000 },
          );
       });
 
@@ -774,7 +795,6 @@ describe("connection integration tests", () => {
             return;
          }
 
-         // Test with credentials containing special SQL characters
          const specialCharsAttachment: AttachedDatabase = {
             name: "pg_special",
             type: "postgres",
@@ -795,7 +815,6 @@ describe("connection integration tests", () => {
             },
          };
 
-         // Should not throw SQL syntax errors
          const { malloyConnections } = await createProjectConnections(
             [duckdbConnection],
             testProjectPath,

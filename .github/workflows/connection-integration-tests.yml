@@ -1,0 +1,84 @@
+name: Connection Integration Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/server/src/service/connection.ts"
+      - "packages/server/src/service/connection.spec.ts"
+      - ".github/workflows/connection-integration-tests.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/server/src/service/connection.ts"
+      - "packages/server/src/service/connection.spec.ts"
+  workflow_dispatch:
+
+jobs:
+  connection-integration-tests:
+    name: Connection Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: malloy_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Setup BigQuery credentials
+        env:
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+        run: |
+          if [ -z "$BQ_PRESTO_TRINO_KEY" ]; then
+            echo "BQ_PRESTO_TRINO_KEY is not set"
+            exit 1
+          fi
+          # Detect base64 vs JSON
+          if echo "$BQ_PRESTO_TRINO_KEY" | grep -qE '^\s*eyJ'; then
+            echo "Detected Base64 credentials. Decoding..."
+            echo "$BQ_PRESTO_TRINO_KEY" | base64 --decode > /tmp/bq-credentials.json
+          else
+            echo "Detected raw JSON credentials."
+            echo "$BQ_PRESTO_TRINO_KEY" > /tmp/bq-credentials.json
+          fi
+          # Validate JSON
+          jq . /tmp/bq-credentials.json > /dev/null
+          # Export for rest of job
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/bq-credentials.json" >> $GITHUB_ENV
+          echo "BIGQUERY_TEST_PROJECT_ID=$(jq -r '.project_id' /tmp/bq-credentials.json)" >> $GITHUB_ENV
+          echo "BIGQUERY_TEST_SERVICE_ACCOUNT_JSON=$(cat /tmp/bq-credentials.json)" >> $GITHUB_ENV
+          echo "BigQuery credentials file created at /tmp/bq-credentials.json"
+
+      - name: Run connection integration tests
+        env:
+          POSTGRES_TEST_HOST: localhost
+          POSTGRES_TEST_PORT: "5432"
+          POSTGRES_TEST_USER: postgres
+          POSTGRES_TEST_PASSWORD: postgres
+          POSTGRES_TEST_DATABASE: malloy_test
+          BIGQUERY_TEST_TABLE: ${{ secrets.BIGQUERY_TEST_TABLE }}
+        run: |
+          cd packages/server
+          bun test --timeout 100000 src/service/connection.spec.ts
