@@ -3,6 +3,12 @@ name: Cross Platform Tests
 on:
   workflow_call:
 
+permissions: {}
+
+env:
+  WINDOWS_USERPROFILE: 'D:'
+  WINDOWS_BUN_CACHE_DIR: 'D:\.bun\install\cache'
+
 jobs:
   cross_platform_test:
     name: >-
@@ -14,24 +20,50 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Configure Temp Directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $TEMP_DIR = "$env:WINDOWS_USERPROFILE\Temp"
+          New-Item -ItemType Directory -Force -Path $TEMP_DIR | Out-Null
+          "TEMP=$TEMP_DIR" >> $env:GITHUB_ENV
+          "TMP=$TEMP_DIR"  >> $env:GITHUB_ENV
+
+      - name: Disable Windows Defender (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - uses: actions/checkout@v4
         with:
           submodules: "true"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        env:
+          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         with:
           bun-version: 1.2.23
 
-      - name: Cache Bun dependencies
+      - name: Cache Bun dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.WINDOWS_BUN_CACHE_DIR }}
+          key: ${{ matrix.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: ${{ matrix.os }}-bun-
+
+      - name: Cache Bun dependencies (Linux/macOS)
+        if: runner.os != 'Windows'
         uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+          restore-keys: ${{ runner.os }}-bun-
 
       - name: Install dependencies
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.os == 'Windows' && env.WINDOWS_BUN_CACHE_DIR || '' }}
         run: bun install --frozen-lockfile --prefer-offline --ignore-scripts
         shell: bash
 
@@ -42,8 +74,6 @@ jobs:
       - name: Build
         run: bun run build
         shell: bash
-        env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Run tests
         run: bun run test
