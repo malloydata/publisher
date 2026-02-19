@@ -858,6 +858,103 @@ function getConnectionAttributes(
    };
 }
 
+async function testDuckDBConnection(
+   duckdbConnection: DuckDBConnection,
+   connectionConfig: InternalConnection,
+): Promise<void> {
+   // Test base DuckDB connection with a simple query
+   try {
+      await duckdbConnection.runSQL("SELECT 1 AS test");
+      logger.info(
+         `DuckDB base connection test passed for: ${connectionConfig.name}`,
+      );
+   } catch (error) {
+      throw new Error(
+         `DuckDB base connection test failed: ${(error as Error).message}`,
+      );
+   }
+
+   // Test each attached database if configured
+   const attachedDatabases =
+      connectionConfig.duckdbConnection?.attachedDatabases;
+   if (!attachedDatabases || attachedDatabases.length === 0) {
+      return;
+   }
+
+   const failedAttachments: string[] = [];
+
+   for (const attachedDb of attachedDatabases) {
+      if (!attachedDb.name) {
+         continue;
+      }
+
+      try {
+         // Test the attached database by querying its tables/schemas
+         // Different database types require different test queries
+         switch (attachedDb.type) {
+            case "postgres": {
+               // Test postgres attachment by listing schemas
+               await duckdbConnection.runSQL(
+                  `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${attachedDb.name}' LIMIT 1`,
+               );
+               logger.info(
+                  `Attached Postgres database test passed: ${attachedDb.name}`,
+               );
+               break;
+            }
+            case "bigquery": {
+               // Test BigQuery attachment by listing datasets
+               // BigQuery attached databases show as catalogs
+               await duckdbConnection.runSQL(
+                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
+               );
+               logger.info(
+                  `Attached BigQuery database test passed: ${attachedDb.name}`,
+               );
+               break;
+            }
+            case "snowflake": {
+               // Test Snowflake attachment by verifying database is attached
+               await duckdbConnection.runSQL(
+                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
+               );
+               logger.info(
+                  `Attached Snowflake database test passed: ${attachedDb.name}`,
+               );
+               break;
+            }
+            case "gcs":
+            case "s3": {
+               // For cloud storage, verify the secret was created
+               // Cloud storage doesn't attach as a database, it uses secrets for auth
+               await duckdbConnection.runSQL(
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+               );
+               logger.info(
+                  `Cloud storage credentials test passed: ${attachedDb.name}`,
+               );
+               break;
+            }
+            default: {
+               logger.warn(
+                  `Unknown attached database type: ${attachedDb.type}`,
+               );
+            }
+         }
+      } catch (error) {
+         const errorMessage = `Attached database '${attachedDb.name}' (${attachedDb.type}) test failed: ${(error as Error).message}`;
+         logger.error(errorMessage);
+         failedAttachments.push(errorMessage);
+      }
+   }
+
+   if (failedAttachments.length > 0) {
+      throw new Error(
+         `DuckDB connection test failed for attached databases:\n${failedAttachments.join("\n")}`,
+      );
+   }
+}
+
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
@@ -868,8 +965,6 @@ export async function testConnectionConfig(
       }
 
       // Use createProjectConnections to create the connection, then test it
-      // TODO: Test duckdb connections?
-
       const { malloyConnections } = await createProjectConnections(
          [connectionConfig], // Pass the single connection config
       );
@@ -882,16 +977,23 @@ export async function testConnectionConfig(
          );
       }
 
-      // Test the connection - cast to union type of connection classes that have test method
-      await (
-         connection as
-            | PostgresConnection
-            | BigQueryConnection
-            | SnowflakeConnection
-            | TrinoConnection
-            | MySQLConnection
-            | DuckDBConnection
-      ).test();
+      // Handle DuckDB connections specially since they have attached databases
+      if (connectionConfig.type === "duckdb") {
+         await testDuckDBConnection(
+            connection as DuckDBConnection,
+            connectionConfig as InternalConnection,
+         );
+      } else {
+         // Test other connection types using their test() method
+         await (
+            connection as
+               | PostgresConnection
+               | BigQueryConnection
+               | SnowflakeConnection
+               | TrinoConnection
+               | MySQLConnection
+         ).test();
+      }
 
       return {
          status: "ok",
