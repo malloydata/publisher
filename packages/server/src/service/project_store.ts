@@ -24,6 +24,7 @@ import {
    PackageNotFoundError,
    ProjectNotFoundError,
 } from "../errors";
+import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
@@ -188,11 +189,13 @@ export class ProjectStore {
          }
 
          this.isInitialized = true;
+         markReady();
          const initializationDuration = performance.now() - initialTime;
          logger.info(
             `Project store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
       } catch (error) {
+         markNotReady();
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing project store", errorData);
          process.exit(1);
@@ -573,6 +576,8 @@ export class ProjectStore {
          projects: [] as Array<components["schemas"]["Project"]>,
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
+         operationalState:
+            getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
       };
 
       const projects = await this.listProjects(true);
