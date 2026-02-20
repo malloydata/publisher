@@ -80,4 +80,4 @@ ENV PATH="/root/.duckdb/cli/latest:$PATH"
 RUN mkdir -p /etc/publisher
 EXPOSE 4000
 
-CMD ["bun", "run", "--preload", "./packages/server/dist/instrumentation.js", "./packages/server/dist/server.js"]
+CMD ["bun", "run", "./packages/server/dist/server.js"]
