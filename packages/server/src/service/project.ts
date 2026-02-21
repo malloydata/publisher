@@ -1,9 +1,5 @@
 import type { LogMessage } from "@malloydata/malloy";
-import {
-   FixedConnectionMap,
-   MalloyError,
-   Runtime,
-} from "@malloydata/malloy";
+import { FixedConnectionMap, MalloyError, Runtime } from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
@@ -198,10 +194,7 @@ export class Project {
       // Initialize Runtime with the project's active connections
       const runtime = new Runtime({
          urlReader: interceptingReader,
-         connections: new FixedConnectionMap(
-            this.malloyConnections,
-            "duckdb",
-         ),
+         connections: new FixedConnectionMap(this.malloyConnections, "duckdb"),
       });
 
       // Attempt to compile
@@ -253,7 +246,7 @@ export class Project {
                try {
                   const packageMetadata = (
                      this.packageStatuses.get(packageName)?.status ===
-                        PackageStatus.LOADING
+                     PackageStatus.LOADING
                         ? undefined
                         : await this.getPackage(packageName, false)
                   )?.getPackageMetadata();
@@ -476,9 +469,9 @@ export class Project {
          });
          throw new Error(
             "Package loading. Can't unload. " +
-            this.projectName +
-            " " +
-            packageName,
+               this.projectName +
+               " " +
+               packageName,
          );
       } else if (packageStatus?.status === PackageStatus.SERVING) {
          this.setPackageStatus(packageName, PackageStatus.UNLOADING);

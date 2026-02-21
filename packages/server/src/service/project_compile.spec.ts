@@ -6,10 +6,10 @@ import { extractPreamble, extractPreambleFromSource } from "./project";
 describe("extractPreambleFromSource", () => {
    it("should extract pragmas and imports before a source definition", () => {
       const content = [
-         '##! experimental.parameters',
+         "##! experimental.parameters",
          'import "utils.malloy"',
          'import { revenue } from "metrics.malloy"',
-         '',
+         "",
          'source: my_source is duckdb.table("data.parquet")',
          '  dimension: name is "test"',
       ].join("\n");
@@ -17,18 +17,18 @@ describe("extractPreambleFromSource", () => {
       const result = extractPreambleFromSource(content);
       expect(result).toBe(
          [
-            '##! experimental.parameters',
+            "##! experimental.parameters",
             'import "utils.malloy"',
             'import { revenue } from "metrics.malloy"',
-         ].join("\n")
+         ].join("\n"),
       );
    });
 
    it("should extract pragmas and imports before a run statement", () => {
       const content = [
          'import { my_source } from "model.malloy"',
-         '',
-         'run: my_source -> { aggregate: count() }',
+         "",
+         "run: my_source -> { aggregate: count() }",
       ].join("\n");
 
       const result = extractPreambleFromSource(content);
@@ -38,8 +38,8 @@ describe("extractPreambleFromSource", () => {
    it("should extract pragmas and imports before a query definition", () => {
       const content = [
          'import { my_source } from "model.malloy"',
-         '',
-         'query: top_items is my_source -> { limit: 10 }',
+         "",
+         "query: top_items is my_source -> { limit: 10 }",
       ].join("\n");
 
       const result = extractPreambleFromSource(content);
@@ -69,21 +69,21 @@ describe("extractPreambleFromSource", () => {
 
    it("should preserve comments in the preamble", () => {
       const content = [
-         '##! experimental.parameters',
-         '// This model defines revenue metrics',
+         "##! experimental.parameters",
+         "// This model defines revenue metrics",
          'import { revenue } from "metrics.malloy"',
-         '// Main source below',
+         "// Main source below",
          'source: my_source is duckdb.table("data.parquet")',
       ].join("\n");
 
       const result = extractPreambleFromSource(content);
       expect(result).toBe(
          [
-            '##! experimental.parameters',
-            '// This model defines revenue metrics',
+            "##! experimental.parameters",
+            "// This model defines revenue metrics",
             'import { revenue } from "metrics.malloy"',
-            '// Main source below',
-         ].join("\n")
+            "// Main source below",
+         ].join("\n"),
       );
    });
 
@@ -92,10 +92,10 @@ describe("extractPreambleFromSource", () => {
          'import { a } from "file_a.malloy"',
          'import { b } from "file_b.malloy"',
          'import { c, d } from "file_c.malloy"',
-         '',
-         'source: combined is a {',
-         '  join_one: b on b.id = a.b_id',
-         '}',
+         "",
+         "source: combined is a {",
+         "  join_one: b on b.id = a.b_id",
+         "}",
       ].join("\n");
 
       const result = extractPreambleFromSource(content);
@@ -104,26 +104,26 @@ describe("extractPreambleFromSource", () => {
             'import { a } from "file_a.malloy"',
             'import { b } from "file_b.malloy"',
             'import { c, d } from "file_c.malloy"',
-         ].join("\n")
+         ].join("\n"),
       );
    });
 
    it("should return all content when there are no source/query/run definitions", () => {
       const content = [
-         '##! experimental.parameters',
+         "##! experimental.parameters",
          'import { revenue } from "metrics.malloy"',
-         '',
-         '// no definitions yet',
+         "",
+         "// no definitions yet",
       ].join("\n");
 
       const result = extractPreambleFromSource(content);
       expect(result).toBe(
          [
-            '##! experimental.parameters',
+            "##! experimental.parameters",
             'import { revenue } from "metrics.malloy"',
-            '',
-            '// no definitions yet',
-         ].join("\n")
+            "",
+            "// no definitions yet",
+         ].join("\n"),
       );
    });
 
@@ -134,7 +134,7 @@ describe("extractPreambleFromSource", () => {
    it("should handle indented source/query/run definitions", () => {
       const content = [
          'import "model.malloy"',
-         '',
+         "",
          '  source: indented is duckdb.table("data.parquet")',
       ].join("\n");
 
@@ -145,7 +145,7 @@ describe("extractPreambleFromSource", () => {
 
    it("should not stop on 'source' appearing in comments or strings", () => {
       const content = [
-         '// This file defines the source of truth',
+         "// This file defines the source of truth",
          'import "model.malloy"',
          'source: my_source is duckdb.table("data.parquet")',
       ].join("\n");
@@ -153,9 +153,9 @@ describe("extractPreambleFromSource", () => {
       const result = extractPreambleFromSource(content);
       expect(result).toBe(
          [
-            '// This file defines the source of truth',
+            "// This file defines the source of truth",
             'import "model.malloy"',
-         ].join("\n")
+         ].join("\n"),
       );
    });
 });
@@ -179,7 +179,7 @@ describe("extractPreamble (file-based)", () => {
    it("should read and extract preamble from a file", async () => {
       const content = [
          'import { revenue } from "metrics.malloy"',
-         '',
+         "",
          'source: my_source is duckdb.table("data.parquet")',
       ].join("\n");
       fs.writeFileSync(testModelPath, content);
