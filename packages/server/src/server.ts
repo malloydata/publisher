@@ -908,6 +908,7 @@ app.post(
             req.params.packageName,
             req.params.modelName,
             req.body.source,
+            req.body.includeSql === true,
          );
          res.status(200).json(result);
       } catch (error) {

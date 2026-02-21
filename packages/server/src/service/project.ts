@@ -166,7 +166,8 @@ export class Project {
       packageName: string,
       modelName: string,
       source: string,
-   ): Promise<LogMessage[]> {
+      includeSql: boolean = false,
+   ): Promise<{ problems: LogMessage[]; sql?: string }> {
       // Place the virtual file in the model's directory so relative imports resolve correctly.
       const modelDir = path.dirname(
          path.join(this.projectPath, packageName, modelName),
@@ -199,13 +200,27 @@ export class Project {
 
       // Attempt to compile
       try {
-         const model = await runtime.loadModel(virtualUrl).getModel();
+         const modelMaterializer = runtime.loadModel(virtualUrl);
+         const model = await modelMaterializer.getModel();
+
+         // If includeSql is requested and compilation succeeded, attempt to extract SQL
+         let sql: string | undefined;
+         if (includeSql) {
+            try {
+               const queryMaterializer = modelMaterializer.loadFinalQuery();
+               sql = await queryMaterializer.getSQL();
+            } catch {
+               // Source may not contain a runnable query (e.g. only source definitions),
+               // in which case we simply omit the sql field.
+            }
+         }
+
          // If successful, return any non-fatal warnings
-         return model.problems;
+         return { problems: model.problems, sql };
       } catch (error) {
          // If parsing/compilation fails, return the errors
          if (error instanceof MalloyError) {
-            return error.problems;
+            return { problems: error.problems };
          }
          // If it's a system error (e.g. file not found), throw it up
          throw error;

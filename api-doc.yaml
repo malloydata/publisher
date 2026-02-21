@@ -2449,6 +2449,10 @@ components:
         source:
           type: string
           description: Malloy source code to compile
+        includeSql:
+          type: boolean
+          default: false
+          description: If true, returns the generated SQL alongside compilation results (only available when compilation succeeds and the source contains a runnable query).
       required:
         - source
 
@@ -2465,6 +2469,9 @@ components:
           description: List of compilation problems (errors and warnings)
           items:
             $ref: "#/components/schemas/CompileProblem"
+        sql:
+          type: string
+          description: Generated SQL for the compiled query. Only present when includeSql is true and compilation succeeds with a runnable query.
 
     CompileProblem:
       type: object

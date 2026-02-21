@@ -13,12 +13,14 @@ export class CompileController {
       packageName: string,
       modelName: string,
       source: string,
-   ): Promise<{ status: string; problems: LogMessage[] }> {
+      includeSql: boolean = false,
+   ): Promise<{ status: string; problems: LogMessage[]; sql?: string }> {
       const project = await this.projectStore.getProject(projectName, false);
-      const problems = await project.compileSource(
+      const { problems, sql } = await project.compileSource(
          packageName,
          modelName,
          source,
+         includeSql,
       );
 
       // Determine overall status based on presence of errors
@@ -27,6 +29,7 @@ export class CompileController {
       return {
          status: hasErrors ? "error" : "success",
          problems: problems,
+         ...(sql !== undefined && { sql }),
       };
    }
 }
