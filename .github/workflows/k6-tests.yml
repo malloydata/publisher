@@ -1,6 +1,8 @@
 name: k6 Tests
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -89,10 +91,49 @@ jobs:
         env:
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
 
+      - name: Start CPU/memory monitoring
+        run: |
+          mkdir -p /tmp/metrics
+          python3 - << 'EOF' &
+          import time, csv, datetime
+          import subprocess
+
+          def get_metrics():
+              # CPU %
+              cpu = float(subprocess.check_output(
+                  "grep 'cpu ' /proc/stat | awk '{usage=($2+$4)*100/($2+$3+$4+$5)} END {print usage}'",
+                  shell=True).decode().strip())
+              # Memory MB
+              mem = {}
+              for line in open('/proc/meminfo'):
+                  k, v = line.split(':')
+                  mem[k.strip()] = int(v.split()[0]) // 1024
+              used = mem['MemTotal'] - mem['MemAvailable']
+              free = mem['MemAvailable']
+              return cpu, used, free
+
+          with open('/tmp/metrics/metrics.csv', 'w', newline='') as f:
+              w = csv.writer(f)
+              w.writerow(['timestamp', 'cpu_pct', 'mem_used_mb', 'mem_free_mb'])
+              while True:
+                  try:
+                      cpu, used, free = get_metrics()
+                      ts = datetime.datetime.utcnow().isoformat()
+                      w.writerow([ts, round(cpu, 2), used, free])
+                      f.flush()
+                  except Exception:
+                      pass
+                  time.sleep(5)
+          EOF
+          echo $! > /tmp/metrics/monitor.pid
+          echo "Monitoring started (PID: $(cat /tmp/metrics/monitor.pid))"
 
       - name: Start npx server
         run: |
           cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          echo "Server PID: $SERVER_PID"
           sleep 12
           # Verify server is running
           response=$(curl -s http://localhost:4002/api/v0/projects || echo "failed")
@@ -117,9 +158,13 @@ jobs:
 
       # Smoke test runs for 1 minute total with 5 virtual users
       - name: Run k6 smoke test
-        uses: grafana/run-k6-action@v1
-        with:
-          path: packages/server/k6-tests/smoke-test/smoke-test.ts
+        run: |
+          mkdir -p /tmp/k6-results
+          cd packages/server/k6-tests
+          k6 run \
+            --out json=/tmp/k6-results/smoke-test-results.json \
+            smoke-test/smoke-test.ts \
+            2>&1 | tee /tmp/k6-results/smoke-test-summary.txt
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
@@ -127,10 +172,192 @@ jobs:
 
       # Load test runs for 7 minutes total: 1 min ramp-up to 50 virtual users → 5 min sustained load with 50 virtual users → 1 min ramp-down to 0 virtual users
       - name: Run k6 load test
-        uses: grafana/run-k6-action@v1
-        with:
-          path: packages/server/k6-tests/load-test/load-test.ts
+        run: |
+          mkdir -p /tmp/k6-results
+          cd packages/server/k6-tests
+          k6 run \
+            --out json=/tmp/k6-results/load-test-results.json \
+            load-test/load-test.ts \
+            2>&1 | tee /tmp/k6-results/load-test-summary.txt
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
+          K6_STAGES: '[{"duration":"1m","target":50},{"duration":"1m","target":50},{"duration":"1m","target":0}]'
+      - name: Stop monitoring and generate charts
+        if: always()
+        run: |
+          # Stop monitor
+          if [ -f /tmp/metrics/monitor.pid ]; then
+            kill $(cat /tmp/metrics/monitor.pid) 2>/dev/null || true
+          fi
+          sleep 2
+
+          pip install matplotlib --quiet
+
+          python3 - << 'EOF'
+          import csv, matplotlib
+          matplotlib.use('Agg')
+          import matplotlib.pyplot as plt
+          import matplotlib.dates as mdates
+          from datetime import datetime
+
+          rows = []
+          with open('/tmp/metrics/metrics.csv') as f:
+              for r in csv.DictReader(f):
+                  rows.append(r)
+
+          if not rows:
+              print("No metrics data collected")
+              exit(0)
+
+          times = [datetime.fromisoformat(r['timestamp']) for r in rows]
+          cpu   = [float(r['cpu_pct'])     for r in rows]
+          used  = [float(r['mem_used_mb']) for r in rows]
+          free  = [float(r['mem_free_mb']) for r in rows]
+
+          fmt = mdates.DateFormatter('%H:%M:%S')
+
+          # --- CPU chart ---
+          fig, ax = plt.subplots(figsize=(12, 4))
+          ax.plot(times, cpu, color='#e41a1c', linewidth=1.5, label='CPU %')
+          ax.fill_between(times, cpu, alpha=0.2, color='#e41a1c')
+          ax.set_title('CPU Usage Over Time')
+          ax.set_ylabel('CPU (%)')
+          ax.set_ylim(0, 100)
+          ax.xaxis.set_major_formatter(fmt)
+          fig.autofmt_xdate()
+          ax.grid(True, alpha=0.3)
+          ax.legend()
+          fig.tight_layout()
+          fig.savefig('/tmp/metrics/cpu.png', dpi=120)
+          plt.close()
+
+          # --- Memory chart ---
+          fig, ax = plt.subplots(figsize=(12, 4))
+          ax.stackplot(times, used, free,
+                       labels=['Used (MB)', 'Free (MB)'],
+                       colors=['#377eb8', '#4daf4a'], alpha=0.8)
+          ax.set_title('Memory Usage Over Time')
+          ax.set_ylabel('Memory (MB)')
+          ax.xaxis.set_major_formatter(fmt)
+          fig.autofmt_xdate()
+          ax.grid(True, alpha=0.3)
+          ax.legend(loc='upper left')
+          fig.tight_layout()
+          fig.savefig('/tmp/metrics/memory.png', dpi=120)
+          plt.close()
+
+          # --- Summary stats ---
+          print(f"=== Metrics Summary ===")
+          print(f"Duration:        {(times[-1]-times[0]).seconds}s ({len(rows)} samples)")
+          print(f"Avg CPU:         {sum(cpu)/len(cpu):.1f}%")
+          print(f"Peak CPU:        {max(cpu):.1f}%")
+          print(f"Avg Mem Used:    {sum(used)/len(used):.0f} MB")
+          print(f"Peak Mem Used:   {max(used):.0f} MB")
+          EOF
+        continue-on-error: true
+
+      - name: Upload monitoring charts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-charts.zip
+          path: |
+            /tmp/metrics/cpu.png
+            /tmp/metrics/memory.png
+            /tmp/metrics/metrics.csv
+          retention-days: 30
+        continue-on-error: true
+
+      - name: Extract k6 summary metrics
+        if: always()
+        run: |
+          mkdir -p /tmp/k6-results
+
+          # Extract final summary from JSON for smoke test
+          if [ -f /tmp/k6-results/smoke-test-results.json ]; then
+            echo "=== Smoke Test Summary Metrics ===" > /tmp/k6-results/smoke-test-metrics.txt
+            jq -r '
+              .root_group.checks as $checks |
+              .root_group.http_req_duration as $duration |
+              .root_group.http_reqs as $reqs |
+              .root_group.iterations as $iterations |
+              .root_group.vus as $vus |
+              "
+              HTTP Requests: \($reqs.count) (\($reqs.rate) req/s)
+              Iterations: \($iterations.count) (\($iterations.rate) iter/s)
+              Virtual Users: \($vus.value) (min: \($vus.min), max: \($vus.max))
+              HTTP Request Duration:
+                - Average: \($duration.avg)ms
+                - Min: \($duration.min)ms
+                - Max: \($duration.max)ms
+                - Median: \($duration.med)ms
+                - P90: \($duration."p(90)")ms
+                - P95: \($duration."p(95)")ms
+              Checks: \($checks.rate * 100)% passed (\($checks.passes)/\($checks.count))
+              HTTP Request Failed: \(.root_group.http_req_failed.rate * 100)%
+              Data Received: \(.root_group.data_received.count) (\(.root_group.data_received.rate))
+              Data Sent: \(.root_group.data_sent.count) (\(.root_group.data_sent.rate)
+              "
+            ' /tmp/k6-results/smoke-test-results.json >> /tmp/k6-results/smoke-test-metrics.txt 2>/dev/null || echo "Could not extract smoke test metrics from JSON"
+          fi
+
+          # Extract final summary from JSON for load test
+          if [ -f /tmp/k6-results/load-test-results.json ]; then
+            echo "" >> /tmp/k6-results/load-test-metrics.txt
+            echo "=== Load Test Summary Metrics ===" >> /tmp/k6-results/load-test-metrics.txt
+            jq -r '
+              .root_group.checks as $checks |
+              .root_group.http_req_duration as $duration |
+              .root_group.http_reqs as $reqs |
+              .root_group.iterations as $iterations |
+              .root_group.vus as $vus |
+              "
+              HTTP Requests: \($reqs.count) (\($reqs.rate) req/s)
+              Iterations: \($iterations.count) (\($iterations.rate) iter/s)
+              Virtual Users: \($vus.value) (min: \($vus.min), max: \($vus.max))
+              HTTP Request Duration:
+                - Average: \($duration.avg)ms
+                - Min: \($duration.min)ms
+                - Max: \($duration.max)ms
+                - Median: \($duration.med)ms
+                - P90: \($duration."p(90)")ms
+                - P95: \($duration."p(95)")ms
+              Checks: \($checks.rate * 100)% passed (\($checks.passes)/\($checks.count))
+              HTTP Request Failed: \(.root_group.http_req_failed.rate * 100)%
+              Data Received: \(.root_group.data_received.count) (\(.root_group.data_received.rate))
+              Data Sent: \(.root_group.data_sent.count) (\(.root_group.data_sent.rate)
+              "
+            ' /tmp/k6-results/load-test-results.json >> /tmp/k6-results/load-test-metrics.txt 2>/dev/null || echo "Could not extract load test metrics from JSON"
+          fi
+
+          # Display extracted metrics
+          if [ -f /tmp/k6-results/load-test-metrics.txt ]; then
+            cat /tmp/k6-results/load-test-metrics.txt
+          fi
+        continue-on-error: true
+
+      - name: Upload k6 test summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-test-summaries.zip
+          path: |
+            /tmp/k6-results/smoke-test-summary.txt
+            /tmp/k6-results/load-test-summary.txt
+            /tmp/k6-results/smoke-test-metrics.txt
+            /tmp/k6-results/load-test-metrics.txt
+          retention-days: 30
+        continue-on-error: true
+
+      - name: Upload k6 JSON results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-test-results-json.zip
+          path: |
+            /tmp/k6-results/smoke-test-results.json
+            /tmp/k6-results/load-test-results.json
+          retention-days: 30
+        continue-on-error: true
