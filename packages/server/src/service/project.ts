@@ -261,7 +261,7 @@ export class Project {
                try {
                   const packageMetadata = (
                      this.packageStatuses.get(packageName)?.status ===
-                        PackageStatus.LOADING
+                     PackageStatus.LOADING
                         ? undefined
                         : await this.getPackage(packageName, false)
                   )?.getPackageMetadata();
@@ -484,9 +484,9 @@ export class Project {
          });
          throw new Error(
             "Package loading. Can't unload. " +
-            this.projectName +
-            " " +
-            packageName,
+               this.projectName +
+               " " +
+               packageName,
          );
       } else if (packageStatus?.status === PackageStatus.SERVING) {
          this.setPackageStatus(packageName, PackageStatus.UNLOADING);
