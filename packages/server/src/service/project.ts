@@ -312,11 +312,18 @@ export class Project {
       // package multiple times.
       let packageMutex = this.packageMutexes.get(packageName);
       if (packageMutex?.isLocked()) {
+         logger.debug(
+            `Package ${packageName} is being loaded, waiting for unlock...`,
+         );
          await packageMutex.waitForUnlock();
+         logger.debug(`Package ${packageName} unlocked`);
          const existingPackage = this.packages.get(packageName);
          if (existingPackage) {
+            logger.debug(`Package ${packageName} loaded by another request`);
             return existingPackage;
          }
+         // If package still doesn't exist after unlock, it might have failed to load
+         // Continue to try loading it ourselves
       }
       packageMutex = new Mutex();
       this.packageMutexes.set(packageName, packageMutex);
@@ -332,19 +339,23 @@ export class Project {
          this.setPackageStatus(packageName, PackageStatus.LOADING);
 
          try {
+            logger.debug(`Loading package ${packageName}...`);
+            const packagePath = path.join(this.projectPath, packageName);
             const _package = await Package.create(
                this.projectName,
                packageName,
-               path.join(this.projectPath, packageName),
+               packagePath,
                this.malloyConnections,
             );
             this.packages.set(packageName, _package);
 
             // Set package status to serving
             this.setPackageStatus(packageName, PackageStatus.SERVING);
+            logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
          } catch (error) {
+            logger.error(`Failed to load package ${packageName}`, { error });
             // Clean up on error - mutex will be automatically released by runExclusive
             this.packages.delete(packageName);
             this.packageStatuses.delete(packageName);

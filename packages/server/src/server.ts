@@ -1,3 +1,10 @@
+// Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
+import "./instrumentation";
+import {
+   getPrometheusMetricsHandler,
+   httpMetricsMiddleware,
+} from "./instrumentation";
+
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as bodyParser from "body-parser";
 import cors from "cors";
@@ -20,6 +27,7 @@ import {
    registerSignalHandlers,
 } from "./health";
 import { logger, loggerMiddleware } from "./logger";
+
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
 // Parse command line arguments
@@ -111,7 +119,7 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 
 const app = express();
 app.use(loggerMiddleware);
-
+app.use(httpMetricsMiddleware);
 const projectStore = new ProjectStore(SERVER_ROOT);
 const watchModeController = new WatchModeController(projectStore);
 const connectionController = new ConnectionController(projectStore);
@@ -222,7 +230,10 @@ if (!isDevelopment) {
          target: "http://localhost:5173",
          changeOrigin: true,
          ws: true,
-         pathFilter: (path) => !path.startsWith("/api/"),
+         pathFilter: (path) =>
+            !path.startsWith("/api/") &&
+            !path.startsWith("/metrics") &&
+            !path.startsWith("/health"),
       }),
    );
 }
@@ -244,6 +255,15 @@ app.use(bodyParser.json());
 
 // Register health check endpoints
 registerHealthEndpoints(app);
+
+// Register Prometheus metrics endpoint
+try {
+   const metricsHandler = getPrometheusMetricsHandler();
+   app.get("/metrics", metricsHandler);
+   logger.info("Prometheus metrics endpoint registered at /metrics");
+} catch (error) {
+   logger.warn("Failed to register Prometheus metrics endpoint", { error });
+}
 
 // Register draining guard middleware - must be after health endpoints but before other routes
 app.use(drainingGuard);

@@ -8,6 +8,7 @@ import {
 import http from "http";
 import { AddressInfo } from "net";
 import path from "path";
+import { fileURLToPath } from "url";
 import { URL } from "url";
 
 // --- Real Server Import ---
@@ -31,8 +32,11 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
    // --- Store and Set SERVER_ROOT Env Var ---
    // The ProjectStore relies on SERVER_ROOT to find publisher.config.json.
    originalServerRoot = process.env.SERVER_ROOT; // Store original value
-   // Resolve the path to 'packages/server' based on the location of this file (__dirname)
-   const serverPackageDir = path.resolve(__dirname, "../../"); // Go up two levels from .../packages/server/src/__tests__
+   // Resolve the path to 'packages/server' based on the location of this file
+   // Use import.meta.url for cross-platform compatibility (works on Windows)
+   const __filename = fileURLToPath(import.meta.url);
+   const __dirname = path.dirname(__filename);
+   const serverPackageDir = path.resolve(__dirname, "../../"); // Go up two levels from .../packages/server/tests/harness
    process.env.SERVER_ROOT = serverPackageDir;
    console.log(
       `[E2E Test Setup] Temporarily set SERVER_ROOT=${process.env.SERVER_ROOT}`,
