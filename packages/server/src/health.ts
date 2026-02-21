@@ -13,6 +13,7 @@
 import { Express, NextFunction, Request, Response } from "express";
 import { Server } from "http";
 import { components } from "./api";
+import { shutdownSDK } from "./instrumentation";
 import { logger } from "./logger";
 export type OperationalState =
    components["schemas"]["ServerStatus"]["operationalState"];
@@ -111,6 +112,13 @@ export function registerSignalHandlers(
          closeServer(server, "Main server"),
          closeServer(mcpServer, "MCP server"),
       ]);
+
+      try {
+         await shutdownSDK();
+         logger.info("OpenTelemetry SDK shut down");
+      } catch (_error) {
+         /* do nothing */
+      }
 
       try {
          logger.close();
