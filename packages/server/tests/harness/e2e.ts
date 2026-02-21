@@ -7,6 +7,7 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import http from "http";
 import path from "path";
+import { fileURLToPath } from "url";
 import { URL } from "url";
 
 /**
@@ -30,6 +31,9 @@ export async function startE2E(): Promise<E2EEnv & { stop(): Promise<void> }> {
    // 1.  Set SERVER_ROOT so ProjectStore loader finds publisher.config.json
    //--------------------------------------------------------------------------
    originalServerRoot = process.env.SERVER_ROOT;
+   // Use import.meta.url for cross-platform compatibility (works on Windows)
+   const __filename = fileURLToPath(import.meta.url);
+   const __dirname = path.dirname(__filename);
    const serverPackageDir = path.resolve(__dirname, "../../../"); // packages/server
    process.env.SERVER_ROOT = serverPackageDir;
 
