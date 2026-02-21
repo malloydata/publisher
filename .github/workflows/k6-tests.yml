@@ -12,6 +12,13 @@ jobs:
     name: k6 Tests
     runs-on: ubuntu-latest
     steps:
+      - name: Collect Workflow Telemetry
+        uses: catchpoint/workflow-telemetry-action@v2
+        with:
+          comment_on_pr: true
+          job_summary: true
+          metric_frequency: 5
+
       - uses: actions/checkout@v4
         with:
           submodules: "true" # Fetch submodules
@@ -91,61 +98,6 @@ jobs:
         env:
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
 
-
-      - name: Start CPU monitoring
-        run: |
-          mkdir -p /tmp/cpu-monitoring
-          # Start background CPU monitoring script
-          cat > /tmp/cpu-monitoring/monitor.sh << 'EOF'
-          #!/bin/bash
-          echo "timestamp,pid,%cpu,%mem,rss_mb,vsz_mb,command" > /tmp/cpu-monitoring/cpu_usage.csv
-          echo "timestamp,cpu_total%,mem_total_mb,mem_used_mb,mem_free_mb,mem_available_mb,load_avg" > /tmp/cpu-monitoring/system_metrics.csv
-
-          while true; do
-            timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-            # Monitor malloy-publisher process and related Node.js/Bun processes
-            # Match: malloy-publisher, node processes running malloy, bun processes, k6 processes
-            ps aux | grep -E "malloy-publisher|node.*malloy|bun.*malloy|k6 run" | grep -v grep | while read line; do
-              # Parse ps output: USER PID %CPU %MEM RSS VSZ TTY STAT START TIME COMMAND
-              pid=$(echo "$line" | awk '{print $2}')
-              cpu=$(echo "$line" | awk '{print $3}')
-              mem=$(echo "$line" | awk '{print $4}')
-              rss=$(echo "$line" | awk '{print $6}')
-              vsz=$(echo "$line" | awk '{print $5}')
-              # Convert RSS and VSZ from KB to MB
-              rss_mb=$(echo "$rss" | awk '{printf "%.2f", $1/1024}')
-              vsz_mb=$(echo "$vsz" | awk '{printf "%.2f", $1/1024}')
-              # Get command (everything from column 11 onwards)
-              cmd=$(echo "$line" | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's/ *$//')
-              echo "$timestamp,$pid,$cpu,$mem,$rss_mb,$vsz_mb,$cmd" >> /tmp/cpu-monitoring/cpu_usage.csv
-            done
-
-            # System-wide metrics
-            # Memory metrics (most reliable)
-            mem_info=$(free -m | grep Mem)
-            mem_total=$(echo "$mem_info" | awk '{print $2}')
-            mem_used=$(echo "$mem_info" | awk '{print $3}')
-            mem_free=$(echo "$mem_info" | awk '{print $4}')
-            mem_available=$(echo "$mem_info" | awk '{print $7}')
-
-            # CPU metrics - sum of all process CPU usage (approximation)
-            cpu_total=$(ps aux | awk 'NR>1 {sum+=$3} END {printf "%.2f", sum}')
-
-            # Load average
-            load_avg=$(cat /proc/loadavg | awk '{print $1","$2","$3}')
-
-            echo "$timestamp,$cpu_total,$mem_total,$mem_used,$mem_free,$mem_available,$load_avg" >> /tmp/cpu-monitoring/system_metrics.csv
-
-            sleep 5
-          done
-          EOF
-          chmod +x /tmp/cpu-monitoring/monitor.sh
-          /tmp/cpu-monitoring/monitor.sh &
-          echo $! > /tmp/cpu-monitoring/monitor.pid
-          echo "CPU monitoring started (PID: $(cat /tmp/cpu-monitoring/monitor.pid))"
-        continue-on-error: true
-
       - name: Start npx server
         run: |
           cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
@@ -201,102 +153,7 @@ jobs:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
-
-      - name: Stop CPU monitoring and collect data
-        if: always()
-        run: |
-          # Stop monitoring script
-          if [ -f /tmp/cpu-monitoring/monitor.pid ]; then
-            MONITOR_PID=$(cat /tmp/cpu-monitoring/monitor.pid)
-            if ps -p $MONITOR_PID > /dev/null 2>&1; then
-              kill $MONITOR_PID || true
-              echo "CPU monitoring stopped"
-            fi
-          fi
-
-          # Wait a moment for final writes
-          sleep 2
-
-          # Generate summary statistics
-          if [ -f /tmp/cpu-monitoring/cpu_usage.csv ]; then
-            echo "=== CPU Usage Summary ===" > /tmp/cpu-monitoring/cpu_summary.txt
-            echo "" >> /tmp/cpu-monitoring/cpu_summary.txt
-
-            # Calculate average CPU usage (skip header and empty lines)
-            # CSV format: timestamp,pid,%cpu,%mem,rss_mb,vsz_mb,command
-            awk -F',' 'NR>1 && $3!="" && $3+0 == $3 {
-              cpu_sum+=$3
-              mem_sum+=$4
-              rss_sum+=$5
-              count++
-            }
-            END {
-              if (count > 0) {
-                printf "Average CPU Usage: %.2f%%\n", cpu_sum/count
-                printf "Average Memory Usage: %.2f%%\n", mem_sum/count
-                printf "Average RSS Memory: %.2f MB\n", rss_sum/count
-                printf "Total Samples: %d\n", count
-              }
-            }' /tmp/cpu-monitoring/cpu_usage.csv >> /tmp/cpu-monitoring/cpu_summary.txt
-
-            echo "" >> /tmp/cpu-monitoring/cpu_summary.txt
-            echo "=== Peak CPU Usage ===" >> /tmp/cpu-monitoring/cpu_summary.txt
-            awk -F',' 'NR>1 && $3!="" && $3+0 == $3 {print $3}' /tmp/cpu-monitoring/cpu_usage.csv | sort -rn | head -5 | \
-              awk '{printf "Peak %d: %.2f%%\n", NR, $1}' >> /tmp/cpu-monitoring/cpu_summary.txt
-
-            echo "" >> /tmp/cpu-monitoring/cpu_summary.txt
-            echo "=== Peak Memory Usage ===" >> /tmp/cpu-monitoring/cpu_summary.txt
-            awk -F',' 'NR>1 && $4!="" && $4+0 == $4 {print $4}' /tmp/cpu-monitoring/cpu_usage.csv | sort -rn | head -5 | \
-              awk '{printf "Peak %d: %.2f%%\n", NR, $1}' >> /tmp/cpu-monitoring/cpu_summary.txt
-
-            echo "" >> /tmp/cpu-monitoring/cpu_summary.txt
-            echo "=== System-Wide Metrics Summary ===" >> /tmp/cpu-monitoring/cpu_summary.txt
-            if [ -f /tmp/cpu-monitoring/system_metrics.csv ]; then
-              awk -F',' 'NR>1 && $2!="" && $2+0 == $2 {
-                cpu_total_sum+=$2
-                mem_used_sum+=$4
-                mem_free_sum+=$5
-                count++
-              }
-              END {
-                if (count > 0) {
-                  printf "Average System CPU Usage: %.2f%%\n", cpu_total_sum/count
-                  printf "Average Memory Used: %.2f MB\n", mem_used_sum/count
-                  printf "Average Memory Free: %.2f MB\n", mem_free_sum/count
-                }
-              }' /tmp/cpu-monitoring/system_metrics.csv >> /tmp/cpu-monitoring/cpu_summary.txt
-            fi
-
-            echo "" >> /tmp/cpu-monitoring/cpu_summary.txt
-            echo "=== Process CPU Usage Sample (first 20 lines) ===" >> /tmp/cpu-monitoring/cpu_summary.txt
-            head -20 /tmp/cpu-monitoring/cpu_usage.csv >> /tmp/cpu-monitoring/cpu_summary.txt
-
-            cat /tmp/cpu-monitoring/cpu_summary.txt
-          else
-            echo "CPU usage data file not found"
-          fi
-        continue-on-error: true
-
-      - name: Upload CPU monitoring data
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpu-monitoring-data
-          path: |
-            /tmp/cpu-monitoring/cpu_usage.csv
-            /tmp/cpu-monitoring/system_metrics.csv
-          retention-days: 30
-        continue-on-error: true
-
-      - name: Upload CPU summary
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpu-monitoring-summary
-          path: /tmp/cpu-monitoring/*.txt
-          retention-days: 30
-        continue-on-error: true
-
+          K6_STAGES: '[{"duration":"1m","target":50},{"duration":"1m","target":50},{"duration":"1m","target":0}]'
       - name: Extract k6 summary metrics
         if: always()
         run: |
