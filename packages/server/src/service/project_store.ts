@@ -196,7 +196,8 @@ export class ProjectStore {
          );
       } catch (error) {
          markNotReady();
-         logger.error("Error initializing project store", { error });
+         const errorData = this.extractErrorDataFromError(error);
+         logger.error("Error initializing project store", errorData);
          process.exit(1);
       }
    }
@@ -533,7 +534,7 @@ export class ProjectStore {
             PUBLISHER_DATA_DIR,
          );
          logger.info(
-            `Re init: Cleaning up upload documents path ${uploadDocsPath}`,
+            `Reinitialization mode: Cleaning up upload documents path ${uploadDocsPath}`,
          );
          try {
             await fs.promises.rm(uploadDocsPath, {
@@ -1025,11 +1026,10 @@ export class ProjectStore {
                }
             }
          } catch (error) {
+            const errorData = this.extractErrorDataFromError(error);
             logger.error(
                `Failed to download or mount location "${groupedLocation}"`,
-               {
-                  error,
-               },
+               errorData,
             );
             throw new PackageNotFoundError(
                `Failed to download or mount location: ${groupedLocation}`,
@@ -1075,9 +1075,11 @@ export class ProjectStore {
             );
             return;
          } catch (error) {
-            logger.error(`Failed to download GCS directory "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to download GCS directory "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to download GCS directory: ${location}`,
             );
@@ -1093,9 +1095,11 @@ export class ProjectStore {
             await this.downloadGitHubDirectory(location, targetPath);
             return;
          } catch (error) {
-            logger.error(`Failed to clone GitHub repository "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to clone GitHub repository "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to clone GitHub repository: ${location}`,
             );
@@ -1111,9 +1115,11 @@ export class ProjectStore {
             await this.downloadS3Directory(location, projectName, targetPath);
             return;
          } catch (error) {
-            logger.error(`Failed to download S3 directory "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to download S3 directory "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to download S3 directory: ${location}`,
             );
@@ -1137,9 +1143,11 @@ export class ProjectStore {
             );
             return;
          } catch (error) {
-            logger.error(`Failed to mount local directory "${packagePath}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to mount local directory "${packagePath}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to mount local directory: ${packagePath}`,
             );
@@ -1332,10 +1340,11 @@ export class ProjectStore {
       await new Promise<void>((resolve, reject) => {
          simpleGit().clone(repoUrl, absoluteDirPath, {}, (err) => {
             if (err) {
-               console.error(err);
-               logger.error(`Failed to clone GitHub repository "${repoUrl}"`, {
-                  error: err,
-               });
+               const errorData = this.extractErrorDataFromError(err);
+               logger.error(
+                  `Failed to clone GitHub repository "${repoUrl}"`,
+                  errorData,
+               );
                reject(err);
             }
             resolve();
@@ -1395,5 +1404,24 @@ export class ProjectStore {
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
 
       // https://github.com/credibledata/malloy-samples/imdb/publisher.json -> ${absoluteDirPath}/publisher.json
+   }
+
+   private extractErrorDataFromError(error: unknown): {
+      error: string;
+      stack?: string;
+      task?: unknown;
+   } {
+      const errorMessage =
+         error instanceof Error ? error.message : String(error);
+      const errorData: { error: string; stack?: string; task?: unknown } = {
+         error: errorMessage,
+      };
+      if (error instanceof Error && logger.level === "debug") {
+         errorData.stack = error.stack;
+      }
+      if (error && typeof error === "object" && "task" in error) {
+         errorData.task = (error as { task?: unknown }).task;
+      }
+      return errorData;
    }
 }
