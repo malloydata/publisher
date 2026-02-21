@@ -13,6 +13,7 @@ import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
+import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
@@ -126,6 +127,7 @@ const modelController = new ModelController(projectStore);
 const packageController = new PackageController(projectStore);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
+const compileController = new CompileController(projectStore);
 
 export const mcpApp = express();
 
@@ -911,6 +913,26 @@ app.get(
          );
       } catch (error) {
          logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
+   async (req, res) => {
+      try {
+         const result = await compileController.compile(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.modelName,
+            req.body.source,
+            req.body.includeSql === true,
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         logger.error("Compilation error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
