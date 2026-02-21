@@ -183,7 +183,7 @@ jobs:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
-
+          K6_STAGES: '[{"duration":"1m","target":50},{"duration":"1m","target":50},{"duration":"1m","target":0}]'
       - name: Stop monitoring and generate charts
         if: always()
         run: |
