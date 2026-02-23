@@ -575,7 +575,7 @@ export async function getConnectionTableSource(
             type: field.type,
          };
       });
-      logger.info(`Successfully fetched schema for ${tablePath}`, {
+      logger.debug(`Successfully fetched schema for ${tablePath}`, {
          fieldCount: fields.length,
       });
       return {
