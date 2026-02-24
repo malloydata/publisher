@@ -3,6 +3,16 @@ name: Cross Platform Tests
 on:
   workflow_call:
 
+permissions: {}
+
+# Bun bug in Windows: https://github.com/oven-sh/bun/issues/17011#issuecomment-2769196629
+# We need to use a custom userprofile and cache directory for Windows. And also need to disable the Defender real-time monitoring.
+# There is no solution for this yet (but a couple of active issues), so we need to use this workaround for faster CI runs.
+
+env:
+  WINDOWS_USERPROFILE: 'D:'
+  WINDOWS_BUN_CACHE_DIR: 'D:\.bun\install\cache'
+
 jobs:
   cross_platform_test:
     name: >-
@@ -14,31 +24,45 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Configure Temp Directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $TEMP_DIR = "$env:WINDOWS_USERPROFILE\Temp"
+          New-Item -ItemType Directory -Force -Path $TEMP_DIR | Out-Null
+          "TEMP=$TEMP_DIR" >> $env:GITHUB_ENV
+          "TMP=$TEMP_DIR"  >> $env:GITHUB_ENV
+
+      - name: Disable Windows Defender (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - uses: actions/checkout@v4
         with:
           submodules: "true"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        env:
+          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         with:
           bun-version: 1.2.23
 
-      - name: Cache Bun dependencies
-        id: bun-cache
-        uses: actions/cache@v4
+      - name: Cache Bun dependencies (Linux/macOS)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+          restore-keys: ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: |
-          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
-          bun install --frozen-lockfile
-        shell: bash
         env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
+          BUN_INSTALL_CACHE_DIR: ${{ runner.os == 'Windows' && env.WINDOWS_BUN_CACHE_DIR || '' }}
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+        run: bun install --frozen-lockfile --prefer-offline
+        shell: bash
 
       - name: Generate API types
         run: bun run generate-api-types
@@ -47,8 +71,6 @@ jobs:
       - name: Build
         run: bun run build
         shell: bash
-        env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Run tests
         run: bun run test

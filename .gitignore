@@ -9,3 +9,6 @@ __pycache__/
 
 # Log files
 *.log
+
+packages/server/k6-tests/clients/
+packages/server/k6-tests/results/

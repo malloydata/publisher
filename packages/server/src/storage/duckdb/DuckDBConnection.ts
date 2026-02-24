@@ -1,3 +1,4 @@
+import { Mutex } from "async-mutex";
 import * as duckdb from "duckdb";
 import * as path from "path";
 import { DatabaseConnection } from "../DatabaseInterface";
@@ -6,6 +7,7 @@ export class DuckDBConnection implements DatabaseConnection {
    private db: duckdb.Database | null = null;
    private connection: duckdb.Connection | null = null;
    private dbPath: string;
+   private mutex: Mutex = new Mutex();
 
    constructor(dbPath?: string) {
       // Default to storing in the server root directory
@@ -88,17 +90,19 @@ export class DuckDBConnection implements DatabaseConnection {
    async isInitialized(): Promise<boolean> {
       if (!this.connection) return false;
 
-      return new Promise((resolve) => {
-         this.connection!.all(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'",
-            (err, rows) => {
-               if (err) {
-                  resolve(false);
-                  return;
-               }
-               resolve(rows && rows.length > 0);
-            },
-         );
+      return this.mutex.runExclusive(async () => {
+         return new Promise<boolean>((resolve) => {
+            this.connection!.all(
+               "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'",
+               (err, rows) => {
+                  if (err) {
+                     resolve(false);
+                     return;
+                  }
+                  resolve(rows && rows.length > 0);
+               },
+            );
+         });
       });
    }
 
@@ -107,25 +111,27 @@ export class DuckDBConnection implements DatabaseConnection {
          throw new Error("Database not initialized");
       }
 
-      return new Promise((resolve, reject) => {
-         const callback = (err: Error | null) => {
-            if (err) {
-               reject(
-                  new Error(
-                     `Query execution failed: ${err.message}\nQuery: ${query}`,
-                  ),
-               );
-               return;
-            }
-            resolve();
-         };
+      return this.mutex.runExclusive(async () => {
+         return new Promise<void>((resolve, reject) => {
+            const callback = (err: Error | null) => {
+               if (err) {
+                  reject(
+                     new Error(
+                        `Query execution failed: ${err.message}\nQuery: ${query}`,
+                     ),
+                  );
+                  return;
+               }
+               resolve();
+            };
 
-         // Pass params directly without the params argument if empty
-         if (params && params.length > 0) {
-            this.connection!.run(query, ...params, callback);
-         } else {
-            this.connection!.run(query, callback);
-         }
+            // Pass params directly without the params argument if empty
+            if (params && params.length > 0) {
+               this.connection!.run(query, ...params, callback);
+            } else {
+               this.connection!.run(query, callback);
+            }
+         });
       });
    }
 
@@ -134,24 +140,26 @@ export class DuckDBConnection implements DatabaseConnection {
          throw new Error("Database not initialized");
       }
 
-      return new Promise((resolve, reject) => {
-         const callback = (err: Error | null, rows: unknown[]) => {
-            if (err) {
-               reject(
-                  new Error(
-                     `Query execution failed: ${err.message}\nQuery: ${query}`,
-                  ),
-               );
-               return;
-            }
-            resolve((rows || []) as T[]);
-         };
+      return this.mutex.runExclusive(async () => {
+         return new Promise<T[]>((resolve, reject) => {
+            const callback = (err: Error | null, rows: unknown[]) => {
+               if (err) {
+                  reject(
+                     new Error(
+                        `Query execution failed: ${err.message}\nQuery: ${query}`,
+                     ),
+                  );
+                  return;
+               }
+               resolve((rows || []) as T[]);
+            };
 
-         if (params && params.length > 0) {
-            this.connection!.all(query, ...params, callback);
-         } else {
-            this.connection!.all(query, callback);
-         }
+            if (params && params.length > 0) {
+               this.connection!.all(query, ...params, callback);
+            } else {
+               this.connection!.all(query, callback);
+            }
+         });
       });
    }
 

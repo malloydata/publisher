@@ -186,7 +186,7 @@ export class Project {
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
-      logger.info("Listing packages", { projectPath: this.projectPath });
+      logger.debug("Listing packages", { projectPath: this.projectPath });
       try {
          const packageMetadata = await Promise.all(
             Array.from(this.packageStatuses.keys()).map(async (packageName) => {
@@ -244,11 +244,18 @@ export class Project {
       // package multiple times.
       let packageMutex = this.packageMutexes.get(packageName);
       if (packageMutex?.isLocked()) {
+         logger.debug(
+            `Package ${packageName} is being loaded, waiting for unlock...`,
+         );
          await packageMutex.waitForUnlock();
+         logger.debug(`Package ${packageName} unlocked`);
          const existingPackage = this.packages.get(packageName);
          if (existingPackage) {
+            logger.debug(`Package ${packageName} loaded by another request`);
             return existingPackage;
          }
+         // If package still doesn't exist after unlock, it might have failed to load
+         // Continue to try loading it ourselves
       }
       packageMutex = new Mutex();
       this.packageMutexes.set(packageName, packageMutex);
@@ -264,20 +271,23 @@ export class Project {
          this.setPackageStatus(packageName, PackageStatus.LOADING);
 
          try {
+            logger.debug(`Loading package ${packageName}...`);
+            const packagePath = path.join(this.projectPath, packageName);
             const _package = await Package.create(
                this.projectName,
                packageName,
-               path.join(this.projectPath, packageName),
+               packagePath,
                this.malloyConnections,
-               this.apiConnections,
             );
             this.packages.set(packageName, _package);
 
             // Set package status to serving
             this.setPackageStatus(packageName, PackageStatus.SERVING);
+            logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
          } catch (error) {
+            logger.error(`Failed to load package ${packageName}`, { error });
             // Clean up on error - mutex will be automatically released by runExclusive
             this.packages.delete(packageName);
             this.packageStatuses.delete(packageName);
@@ -314,7 +324,6 @@ export class Project {
                packageName,
                packagePath,
                this.malloyConnections,
-               this.apiConnections,
             ),
          );
       } catch (error) {
@@ -451,18 +460,23 @@ export class Project {
       this.apiConnections = apiConnections;
    }
 
-   public deleteConnection(connectionName: string): void {
-      const deleted = this.malloyConnections.delete(connectionName);
+   public async deleteConnection(connectionName: string): Promise<void> {
+      this.malloyConnections.get(connectionName)?.close();
+      const isDeleted = this.malloyConnections.delete(connectionName);
 
       const index = this.apiConnections.findIndex(
          (conn) => conn.name === connectionName,
       );
 
+      if (this.apiConnections[index]?.type === "duckdb") {
+         await this.deleteDuckDBConnection(connectionName);
+      }
+
       if (index !== -1) {
          this.apiConnections.splice(index, 1);
       }
 
-      if (deleted || index !== -1) {
+      if (isDeleted || index !== -1) {
          logger.info(
             `Removed connection ${connectionName} from project ${this.projectName}`,
          );
@@ -473,11 +487,64 @@ export class Project {
       }
    }
 
+   public closeAllConnections(): void {
+      // Close all Malloy connections
+      for (const [connectionName, connection] of this.malloyConnections) {
+         try {
+            connection.close();
+            logger.info(
+               `Closed connection ${connectionName} for project ${this.projectName}`,
+            );
+         } catch (error) {
+            logger.error(
+               `Error closing connection ${connectionName} for project ${this.projectName}`,
+               { error },
+            );
+         }
+      }
+
+      // Clear connection maps
+      this.malloyConnections.clear();
+      this.apiConnections = [];
+
+      logger.info(`Closed all connections for project ${this.projectName}`);
+   }
+
    public async serialize(): Promise<ApiProject> {
       return {
          ...this.metadata,
          connections: this.listApiConnections(),
          packages: await this.listPackages(),
       };
+   }
+
+   public async deleteDuckDBConnection(connectionName: string): Promise<void> {
+      const duckdbPath = path.join(
+         this.projectPath,
+         `${connectionName}.duckdb`,
+      );
+      fs.promises
+         .access(duckdbPath)
+         .then(() => {
+            fs.promises
+               .rm(duckdbPath)
+               .then(() => {
+                  logger.info(
+                     `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                  );
+               })
+               .catch((error) => {
+                  logger.error(
+                     `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                     { error },
+                  );
+               });
+         })
+         .catch((error) => {
+            logger.error(
+               `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+               { error },
+            );
+         });
    }
 }

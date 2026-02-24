@@ -1,10 +1,10 @@
-import { expect, it, describe } from "bun:test";
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import sinon from "sinon";
+import { describe, expect, it } from "bun:test";
 import fs from "fs/promises";
+import sinon from "sinon";
 
-import { Model, ModelType } from "./model";
 import { BadRequestError, ModelNotFoundError } from "../errors";
+import { Model, ModelType } from "./model";
 
 describe("service/model", () => {
    const packageName = "test-package";
@@ -65,6 +65,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
             );
 
             expect(model.getPath()).toBe(mockModelPath);
@@ -81,6 +82,7 @@ describe("service/model", () => {
                mockModelPath,
                {},
                modelType,
+               undefined,
                undefined,
                undefined,
                undefined,
@@ -107,6 +109,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
                new MalloyError("Compilation error"),
             );
 
@@ -123,6 +126,7 @@ describe("service/model", () => {
                mockModelPath,
                {},
                "notebook" as ModelType,
+               undefined,
                undefined,
                undefined,
                undefined,
@@ -151,6 +155,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
                new Error("Compilation error"),
             );
 
@@ -173,6 +178,7 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
             );
 
             await expect(async () => {
@@ -184,7 +190,7 @@ describe("service/model", () => {
       });
 
       describe("getQueryResults", () => {
-         it("should throw ModelCompilationError if a compilation error exists", async () => {
+         it("should throw BadRequestError if a non-MalloyError compilation error exists", async () => {
             const error = new Error("Compilation error");
             const model = new Model(
                packageName,
@@ -196,12 +202,13 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
                error,
             );
 
             await expect(async () => {
                await model.getQueryResults();
-            }).toThrowError(Error);
+            }).toThrowError(BadRequestError);
 
             sinon.restore();
          });
@@ -212,6 +219,7 @@ describe("service/model", () => {
                mockModelPath,
                {},
                "model",
+               undefined,
                undefined,
                undefined,
                undefined,

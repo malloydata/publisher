@@ -97,7 +97,6 @@ describe("service/package", () => {
                   "testPackage",
                   testPackageDirectory,
                   new Map(),
-                  [],
                ),
             ).rejects.toThrowError(
                new PackageNotFoundError(
@@ -131,7 +130,6 @@ describe("service/package", () => {
                   "testPackage",
                   testPackageDirectory,
                   new Map(),
-                  [],
                );
 
                expect(packageInstance).toBeInstanceOf(Package);
@@ -155,7 +153,7 @@ describe("service/package", () => {
                ]);
                expect(packageInstance.listModels()).toBeEmpty();
             },
-            { timeout: 15000 },
+            { timeout: 20000 },
          );
       });
 

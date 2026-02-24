@@ -1,0 +1,27 @@
+{
+  "name": "k6-tests",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/k6": "^1.5.0",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@grafana/openapi-to-k6": "^0.3.2",
+    "k6": "^0.0.0"
+  },
+  "scripts": {
+    "build": "bun run clean && bun run clone-malloy-samples && bun run generate-clients",
+    "clone-malloy-samples": "bunx git clone https://github.com/credibledata/malloy-samples.git ./packages",
+    "smoke-test": "k6 run smoke-test/smoke-test.ts",
+    "load-test-crud": "bun run load-test-crud-projects && bun run load-test-crud-connections && bun run load-test-crud-packages",
+    "load-test": "k6 run load-test/load-test.ts",
+    "load-test-crud-connections": "k6 run load-test/load-test-crud-connections.ts",
+    "load-test-crud-projects": "k6 run load-test/load-test-crud-projects.ts",
+    "load-test-crud-packages": "k6 run load-test/load-test-crud-packages.ts",
+    "generate-clients": "openapi-to-k6 ../../../api-doc.yaml ./clients --mode tags --disable-analytics --verbose",
+    "clean": "rm -rf ./clients && rm -rf ./packages && rm -rf ./results"
+  }
+}

@@ -4,7 +4,26 @@ import winston from "winston";
 
 const isTelemetryEnabled = Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT);
 
+// Determine log level from environment variable
+// Valid levels: error, warn, info, verbose, debug, silly
+// Default: 'debug'
+const VALID_LOG_LEVELS = ["error", "warn", "info", "verbose", "debug", "silly"];
+const getLogLevel = (): string => {
+   if (process.env.LOG_LEVEL) {
+      const logLevel = process.env.LOG_LEVEL.toLowerCase();
+      if (VALID_LOG_LEVELS.includes(logLevel)) {
+         return logLevel;
+      } else {
+         console.error(
+            `Invalid log level: ${process.env.LOG_LEVEL}. Valid log levels are: ${VALID_LOG_LEVELS.join(", ")}. Defaulting to "debug".`,
+         );
+      }
+   }
+   return "debug";
+};
+
 export const logger = winston.createLogger({
+   level: getLogLevel(),
    format: isTelemetryEnabled
       ? winston.format.combine(
            winston.format.uncolorize(),
@@ -21,6 +40,7 @@ export const logger = winston.createLogger({
    transports: [new winston.transports.Console()],
 });
 
+//-
 /**
  * Extracts the trace ID from a W3C traceparent header.
  * Format: version-trace-id-parent-id-trace-flags
@@ -48,6 +68,24 @@ function extractTraceIdFromTraceparent(
    return undefined;
 }
 
+const DISABLE_RESPONSE_LOGGING =
+   process.env.DISABLE_RESPONSE_LOGGING === "true" ||
+   process.env.DISABLE_RESPONSE_LOGGING === "1";
+
+/**
+ * Format duration in milliseconds to a human-readable string with unit
+ * @param durationMs Duration in milliseconds
+ * @returns Formatted string with 2 decimal places and unit (s or ms)
+ */
+export function formatDuration(durationMs: number): string {
+   // If duration is >= 1000ms, show in seconds, otherwise show in milliseconds
+   if (durationMs >= 1000) {
+      const seconds = durationMs / 1000;
+      return `${seconds.toFixed(2)}s`;
+   }
+   return `${durationMs.toFixed(2)}ms`;
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
    const resJson = res.json;
@@ -57,6 +95,7 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
    };
    res.on("finish", () => {
       const endTime = performance.now();
+      const durationMs = endTime - startTime;
 
       // Extract trace ID from traceparent header if present
       const traceparent = req.headers["traceparent"] as string | undefined;
@@ -64,19 +103,31 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
 
       const logMetadata: Record<string, unknown> = {
          statusCode: res.statusCode,
-         duration: endTime - startTime,
+         duration: formatDuration(durationMs),
          payload: req.body,
-         response: res.locals.body,
          params: req.params,
          query: req.query,
       };
+
+      // Only include response body if response logging is enabled
+      if (!DISABLE_RESPONSE_LOGGING) {
+         logMetadata.response = res.locals.body;
+      }
 
       // Add traceId to log metadata if present
       if (traceId) {
          logMetadata.traceId = traceId;
       }
 
-      logger.info(`${req.method} ${req.url}`, logMetadata);
+      // Skip logging for metrics and health endpoints to reduce log noise
+      if (
+         req.url !== "/metrics" &&
+         req.url !== "/health" &&
+         req.url !== "/health/liveness" &&
+         req.url !== "/health/readiness"
+      ) {
+         logger.info(`${req.method} ${req.url}`, logMetadata);
+      }
    });
    next();
 };

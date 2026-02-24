@@ -1,8 +1,8 @@
+import * as path from "path";
 import { components } from "../api";
 import { PUBLISHER_DATA_DIR } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
 import { ProjectStore } from "../service/project_store";
-import * as path from "path";
 
 type ApiPackage = components["schemas"]["Package"];
 

@@ -6,6 +6,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -14,7 +17,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Install Bun
@@ -53,21 +56,22 @@ jobs:
           NODE_ENV=production bun run build
 
       - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           cd packages/sdk
-          npm publish --access public
+          npm publish --access public --tag latest
+
           cd ../app
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          npm publish --access public --tag latest
 
       - name: Build & publish Server package
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           cd packages/server
           NODE_ENV=production bun run build
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          npm publish --access public --tag latest
 
       - name: Revert workspace dependencies
         run: |

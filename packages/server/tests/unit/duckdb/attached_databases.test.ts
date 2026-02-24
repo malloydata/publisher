@@ -12,7 +12,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import type { components } from "../../../src/api";
-import { createPackageDuckDBConnections } from "../../../src/service/connection";
+import { createProjectConnections } from "../../../src/service/connection";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -332,12 +332,12 @@ describe("DuckDB Attached Databases", () => {
    });
 });
 
-describe("createPackageDuckDBConnections", () => {
-   const PACKAGE_TEST_DIR = path.join(os.tmpdir(), "duckdb-package-tests");
+describe("createProjectConnections - DuckDB", () => {
+   const PROJECT_TEST_DIR = path.join(os.tmpdir(), "duckdb-project-tests");
    let createdConnections: Map<string, unknown> = new Map();
 
    beforeEach(async () => {
-      await fs.mkdir(PACKAGE_TEST_DIR, { recursive: true });
+      await fs.mkdir(PROJECT_TEST_DIR, { recursive: true });
    });
 
    afterEach(async () => {
@@ -351,22 +351,41 @@ describe("createPackageDuckDBConnections", () => {
       createdConnections.clear();
       await new Promise((resolve) => setTimeout(resolve, 100));
       try {
-         await fs.rm(PACKAGE_TEST_DIR, { recursive: true, force: true });
+         await fs.rm(PROJECT_TEST_DIR, { recursive: true, force: true });
       } catch {
          // Ignore
       }
    });
 
    describe("Positive Tests", () => {
-      it("should create default duckdb connection when none provided", async () => {
+      it("should create a named duckdb connection", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "my_duckdb_conn",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
+            },
+         ];
+
          const { malloyConnections, apiConnections } =
-            await createPackageDuckDBConnections([], PACKAGE_TEST_DIR);
+            await createProjectConnections(connections, PROJECT_TEST_DIR);
 
          createdConnections = malloyConnections;
 
-         expect(malloyConnections.has("duckdb")).toBe(true);
+         expect(malloyConnections.has("my_duckdb_conn")).toBe(true);
          expect(apiConnections.length).toBe(1);
-         expect(apiConnections[0].name).toBe("duckdb");
+         expect(apiConnections[0].name).toBe("my_duckdb_conn");
          expect(apiConnections[0].type).toBe("duckdb");
       });
 
@@ -376,19 +395,27 @@ describe("createPackageDuckDBConnections", () => {
                name: "my_duckdb",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
 
          const { malloyConnections, apiConnections } =
-            await createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR);
+            await createProjectConnections(connections, PROJECT_TEST_DIR);
 
          createdConnections = malloyConnections;
 
          expect(malloyConnections.has("my_duckdb")).toBe(true);
-         expect(malloyConnections.has("duckdb")).toBe(true);
-         expect(apiConnections.length).toBe(2);
+         expect(apiConnections.length).toBe(1);
       });
 
       it("should set connection attributes correctly", async () => {
@@ -397,68 +424,95 @@ describe("createPackageDuckDBConnections", () => {
                name: "attr_test",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
 
-         const { apiConnections } = await createPackageDuckDBConnections(
-            connections,
-            PACKAGE_TEST_DIR,
-         );
+         const { malloyConnections, apiConnections } =
+            await createProjectConnections(connections, PROJECT_TEST_DIR);
 
-         createdConnections = (
-            await createPackageDuckDBConnections([], PACKAGE_TEST_DIR)
-         ).malloyConnections;
+         createdConnections = malloyConnections;
 
          const conn = apiConnections.find((c) => c.name === "attr_test");
          expect(conn?.attributes).toBeDefined();
          expect(conn?.attributes?.dialectName).toBe("duckdb");
       });
 
-      it("should skip non-duckdb connection types", async () => {
+      it("should handle multiple connection types", async () => {
          const connections: ApiConnection[] = [
             {
                name: "postgres_conn",
                type: "postgres",
                postgresConnection: {
                   host: "localhost",
+                  port: 5432,
+                  userName: "test",
+                  password: "test",
+                  databaseName: "test",
                },
             },
             {
                name: "my_duck",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
 
-         const { malloyConnections } = await createPackageDuckDBConnections(
+         const { malloyConnections } = await createProjectConnections(
             connections,
-            PACKAGE_TEST_DIR,
+            PROJECT_TEST_DIR,
          );
 
          createdConnections = malloyConnections;
 
-         expect(malloyConnections.has("postgres_conn")).toBe(false);
+         expect(malloyConnections.has("postgres_conn")).toBe(true);
          expect(malloyConnections.has("my_duck")).toBe(true);
       });
 
-      it("should create database file at package path", async () => {
+      it("should create database file at project path", async () => {
          const connections: ApiConnection[] = [
             {
                name: "file_test",
                type: "duckdb",
                duckdbConnection: {
-                  attachedDatabases: [],
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
                },
             },
          ];
 
-         const { malloyConnections } = await createPackageDuckDBConnections(
+         const { malloyConnections } = await createProjectConnections(
             connections,
-            PACKAGE_TEST_DIR,
+            PROJECT_TEST_DIR,
          );
 
          createdConnections = malloyConnections;
@@ -468,7 +522,7 @@ describe("createPackageDuckDBConnections", () => {
          ) as unknown as DuckDBConnection;
          await conn.runSQL("CREATE TABLE test_table (id INT);");
 
-         const dbPath = path.join(PACKAGE_TEST_DIR, "file_test.duckdb");
+         const dbPath = path.join(PROJECT_TEST_DIR, "file_test.duckdb");
          const exists = await fs
             .access(dbPath)
             .then(() => true)
@@ -478,23 +532,52 @@ describe("createPackageDuckDBConnections", () => {
    });
 
    describe("Negative Tests", () => {
-      it("should throw on duplicate connection names", async () => {
+      it("should handle duplicate connection names by using the last one", async () => {
          const connections: ApiConnection[] = [
             {
                name: "duplicate",
                type: "duckdb",
-               duckdbConnection: { attachedDatabases: [] },
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
             },
             {
                name: "duplicate",
                type: "duckdb",
-               duckdbConnection: { attachedDatabases: [] },
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs2",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
             },
          ];
 
-         await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
-         ).rejects.toThrow("only supports one DuckDB connection per name");
+         const { malloyConnections } = await createProjectConnections(
+            connections,
+            PROJECT_TEST_DIR,
+         );
+
+         createdConnections = malloyConnections;
+
+         // Should only have one connection with that name
+         expect(malloyConnections.has("duplicate")).toBe(true);
+         expect(malloyConnections.size).toBe(1);
       });
 
       it("should throw on missing connection name", async () => {
@@ -502,12 +585,23 @@ describe("createPackageDuckDBConnections", () => {
             {
                name: "",
                type: "duckdb",
-               duckdbConnection: { attachedDatabases: [] },
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
             },
          ];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow();
       });
 
@@ -520,7 +614,7 @@ describe("createPackageDuckDBConnections", () => {
          ] as ApiConnection[];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("DuckDB connection configuration is missing");
       });
 
@@ -541,7 +635,7 @@ describe("createPackageDuckDBConnections", () => {
          ];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Unsupported database type");
       });
 
@@ -565,7 +659,7 @@ describe("createPackageDuckDBConnections", () => {
          ];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("service account key required");
       });
 
@@ -587,7 +681,7 @@ describe("createPackageDuckDBConnections", () => {
          ] as ApiConnection[];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("keyId and secret are required");
       });
 
@@ -609,7 +703,7 @@ describe("createPackageDuckDBConnections", () => {
          ] as ApiConnection[];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("accessKeyId and secretAccessKey are required");
       });
 
@@ -633,7 +727,7 @@ describe("createPackageDuckDBConnections", () => {
          ];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("username is required");
       });
 
@@ -654,8 +748,327 @@ describe("createPackageDuckDBConnections", () => {
          ];
 
          await expect(
-            createPackageDuckDBConnections(connections, PACKAGE_TEST_DIR),
+            createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("PostgreSQL connection configuration missing");
+      });
+
+      it("should throw when attached database name conflicts with connection name", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "my_duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "my_duckdb",
+                        type: "bigquery",
+                        bigqueryConnection: {
+                           defaultProjectId: "test-project",
+                           serviceAccountKeyJson: JSON.stringify({
+                              type: "service_account",
+                              project_id: "test-project",
+                              private_key: "test-key",
+                              client_email: "test@test.com",
+                           }),
+                        },
+                     },
+                  ],
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            "DuckDB attached databases names cannot conflict with connection name",
+         );
+      });
+
+      it("should throw when DuckDB connection name is 'duckdb'", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [],
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
+      });
+
+      it("should throw when DuckDB connection name is 'duckdb' with attached databases", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "my_bigquery",
+                        type: "bigquery",
+                        bigqueryConnection: {
+                           defaultProjectId: "test-project",
+                           serviceAccountKeyJson: JSON.stringify({
+                              type: "service_account",
+                              project_id: "test-project",
+                              private_key: "test-key",
+                              client_email: "test@test.com",
+                           }),
+                        },
+                     },
+                  ],
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
+      });
+
+      it("should throw when DuckDB connection has no attached databases", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "no_attached_db",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [],
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            "DuckDB connection must have at least one attached database",
+         );
+      });
+
+      it("should throw on unsupported connection type", async () => {
+         const connections = [
+            {
+               name: "unsupported",
+               type: "redis" as "duckdb",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Unsupported connection type");
+      });
+
+      it("should throw when connection name is missing", async () => {
+         const connections = [
+            {
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "test_gcs",
+                        type: "gcs",
+                        gcsConnection: {
+                           keyId: "test-key-id",
+                           secret: "test-secret",
+                        },
+                     },
+                  ],
+               },
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow();
+      });
+   });
+});
+
+describe("createProjectConnections - Other Connection Types", () => {
+   const PROJECT_TEST_DIR = path.join(
+      os.tmpdir(),
+      "connection-validation-tests",
+   );
+   let createdConnections: Map<string, unknown> = new Map();
+
+   beforeEach(async () => {
+      await fs.mkdir(PROJECT_TEST_DIR, { recursive: true });
+   });
+
+   afterEach(async () => {
+      for (const conn of createdConnections.values()) {
+         try {
+            if (
+               typeof (conn as { close?: () => Promise<void> }).close ===
+               "function"
+            ) {
+               await (conn as { close: () => Promise<void> }).close();
+            }
+         } catch {
+            // Ignore
+         }
+      }
+      createdConnections.clear();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+         await fs.rm(PROJECT_TEST_DIR, { recursive: true, force: true });
+      } catch {
+         // Ignore
+      }
+   });
+
+   describe("Snowflake Connection Validation", () => {
+      it("should throw when Snowflake config is missing", async () => {
+         const connections = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake connection configuration is missing");
+      });
+
+      it("should throw when Snowflake account is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  username: "test",
+                  password: "test",
+                  warehouse: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake account is required");
+      });
+
+      it("should throw when Snowflake username is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  account: "test-account",
+                  password: "test",
+                  warehouse: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake username is required");
+      });
+
+      it("should throw when Snowflake password and private key are both missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  account: "test-account",
+                  username: "test",
+                  warehouse: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            "Snowflake password or private key or private key path is required",
+         );
+      });
+
+      it("should throw when Snowflake warehouse is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "sf_test",
+               type: "snowflake",
+               snowflakeConnection: {
+                  account: "test-account",
+                  username: "test",
+                  password: "test",
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Snowflake warehouse is required");
+      });
+   });
+
+   describe("Trino Connection Validation", () => {
+      it("should throw when Trino config is missing", async () => {
+         const connections = [
+            {
+               name: "trino_test",
+               type: "trino",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("Trino connection configuration is missing");
+      });
+
+      it("should throw when Trino server URL is invalid (no protocol)", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "trino_test",
+               type: "trino",
+               trinoConnection: {
+                  server: "localhost:8080",
+                  port: 8080,
+               },
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            'Invalid Trino connection: expected "http://server:port" or "https://server:port"',
+         );
+      });
+   });
+
+   describe("MotherDuck Connection Validation", () => {
+      it("should throw when MotherDuck config is missing", async () => {
+         const connections = [
+            {
+               name: "md_test",
+               type: "motherduck",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("MotherDuck connection configuration is missing");
+      });
+
+      it("should throw when MotherDuck access token is missing", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "md_test",
+               type: "motherduck",
+               motherduckConnection: {},
+            },
+         ];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("MotherDuck access token is required");
       });
    });
 });

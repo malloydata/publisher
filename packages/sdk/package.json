@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/sdk",
    "description": "Malloy Publisher SDK",
-   "version": "0.0.156",
+   "version": "0.0.165",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
@@ -51,6 +51,10 @@
       "./src/index.ts",
       "./dist/index.*.js"
    ],
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/malloydata/publisher.git"
+   },
    "publishConfig": {
       "access": "public"
    },
@@ -104,6 +108,8 @@
       "eslint-plugin-react-hooks": "5.0.0",
       "eslint-plugin-storybook": "^0.11.4",
       "shiki": "^1.16.3",
+      "@shikijs/langs": "^1.16.3",
+      "@shikijs/themes": "^1.16.3",
       "vite": "^6.3.2",
       "vite-plugin-dts": "^4.5.3",
       "vite-plugin-svgr": "^4.3.0"

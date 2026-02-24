@@ -11,6 +11,7 @@ import {
    ModelMaterializer,
    NamedModelObject,
    NamedQuery,
+   QueryData,
    QueryMaterializer,
    Runtime,
    StructDef,
@@ -77,6 +78,7 @@ export class Model {
    private modelInfo: Malloy.ModelInfo | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
+   private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
    private meter = metrics.getMeter("publisher");
@@ -98,6 +100,7 @@ export class Model {
       // TODO(jjs) - remove these
       sources: ApiSource[] | undefined,
       queries: ApiQuery[] | undefined,
+      sourceInfos: Malloy.SourceInfo[] | undefined,
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
    ) {
@@ -109,6 +112,7 @@ export class Model {
       this.modelMaterializer = modelMaterializer;
       this.sources = sources;
       this.queries = queries;
+      this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
       this.modelInfo = this.modelDef
@@ -139,10 +143,56 @@ export class Model {
          let modelDef = undefined;
          let sources = undefined;
          let queries = undefined;
+         const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
             modelDef = (await modelMaterializer.getModel())._modelDef;
             sources = Model.getSources(modelPath, modelDef);
             queries = Model.getQueries(modelPath, modelDef);
+
+            // Collect sourceInfos from imported models first
+            // This follows the same pattern as notebook imports handling
+            const imports = modelDef.imports || [];
+            const importedSourceNames = new Set<string>();
+            for (const importLocation of imports) {
+               try {
+                  const modelString = await runtime.urlReader.readURL(
+                     new URL(importLocation.importURL),
+                  );
+                  const importedModelDef = (
+                     await runtime
+                        .loadModel(modelString as string, { importBaseURL })
+                        .getModel()
+                  )._modelDef;
+                  const importedModelInfo =
+                     modelDefToModelInfo(importedModelDef);
+                  const importedSources = importedModelInfo.entries.filter(
+                     (entry) => entry.kind === "source",
+                  ) as Malloy.SourceInfo[];
+                  for (const source of importedSources) {
+                     if (!importedSourceNames.has(source.name)) {
+                        sourceInfos.push(source);
+                        importedSourceNames.add(source.name);
+                     }
+                  }
+               } catch (importError) {
+                  // Log but don't fail if we can't load an import's sourceInfo
+                  logger.warn("Failed to load sourceInfo from import", {
+                     importURL: importLocation.importURL,
+                     error: importError,
+                  });
+               }
+            }
+
+            // Add locally-defined sources (not already added from imports)
+            const localModelInfo = modelDefToModelInfo(modelDef);
+            const localSources = localModelInfo.entries.filter(
+               (entry) => entry.kind === "source",
+            ) as Malloy.SourceInfo[];
+            for (const source of localSources) {
+               if (!importedSourceNames.has(source.name)) {
+                  sourceInfos.push(source);
+               }
+            }
          }
 
          return new Model(
@@ -154,19 +204,20 @@ export class Model {
             modelDef,
             sources,
             queries,
+            sourceInfos.length > 0 ? sourceInfos : undefined,
             runnableNotebookCells,
             undefined,
          );
       } catch (error) {
          let computedError = error;
          if (error instanceof Error && error.stack) {
-            console.error("Error stack", error.stack);
+            logger.error("Error stack", error.stack);
          }
 
          if (error instanceof MalloyError) {
             const problems = error.problems;
             for (const problem of problems) {
-               console.error("Problem", problem);
+               logger.error("Problem", problem);
             }
             computedError = new ModelCompilationError(error);
          }
@@ -175,6 +226,7 @@ export class Model {
             modelPath,
             dataStyles,
             modelType,
+            undefined,
             undefined,
             undefined,
             undefined,
@@ -198,11 +250,7 @@ export class Model {
    }
 
    public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.modelDef
-         ? modelDefToModelInfo(this.modelDef).entries.filter((entry) => {
-              return entry.kind === "source";
-           })
-         : undefined;
+      return this.sourceInfos;
    }
 
    public getQueries(): ApiQuery[] | undefined {
@@ -246,37 +294,74 @@ export class Model {
       query?: string,
    ): Promise<{
       result: Malloy.Result;
+      compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
-         throw this.compilationError;
+         // Re-throw MalloyError and ModelCompilationError as-is (they map to 400/424)
+         if (
+            this.compilationError instanceof MalloyError ||
+            this.compilationError instanceof ModelCompilationError
+         ) {
+            throw this.compilationError;
+         }
+         // For other compilation errors, wrap as BadRequestError (400)
+         throw new BadRequestError(
+            `Model compilation failed: ${this.compilationError.message}`,
+         );
       }
-      logger.info("queryName", { queryName, query });
       let runnable: QueryMaterializer;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
-      if (!sourceName && !queryName && query) {
-         runnable = this.modelMaterializer.loadQuery("\n" + query);
-      } else if (queryName && !query) {
-         runnable = this.modelMaterializer.loadQuery(
-            `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
-         );
-      } else {
-         const endTime = performance.now();
-         const executionTime = endTime - startTime;
-         this.queryExecutionHistogram.record(executionTime, {
-            "malloy.model.path": this.modelPath,
-            "malloy.model.query.name": queryName,
-            "malloy.model.query.source": sourceName,
-            "malloy.model.query.query": query,
-            "malloy.model.query.status": "error",
+
+      // Wrap loadQuery calls in try-catch to handle query parsing errors
+      try {
+         if (!sourceName && !queryName && query) {
+            runnable = this.modelMaterializer.loadQuery("\n" + query);
+         } else if (queryName && !query) {
+            runnable = this.modelMaterializer.loadQuery(
+               `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
+            );
+         } else {
+            const endTime = performance.now();
+            const executionTime = endTime - startTime;
+            this.queryExecutionHistogram.record(executionTime, {
+               "malloy.model.path": this.modelPath,
+               "malloy.model.query.name": queryName,
+               "malloy.model.query.source": sourceName,
+               "malloy.model.query.query": query,
+               "malloy.model.query.status": "error",
+            });
+            throw new BadRequestError(
+               "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
+            );
+         }
+      } catch (error) {
+         // Re-throw BadRequestError as-is
+         if (error instanceof BadRequestError) {
+            throw error;
+         }
+         // Re-throw MalloyError as-is (maps to 400)
+         if (error instanceof MalloyError) {
+            throw error;
+         }
+         // For other query parsing errors, wrap as BadRequestError
+         const errorMessage =
+            error instanceof Error ? error.message : String(error);
+         logger.error("Query parsing error", {
+            error,
+            errorMessage,
+            projectName: this.packageName,
+            modelPath: this.modelPath,
+            query,
+            queryName,
+            sourceName,
          });
-         throw new BadRequestError(
-            "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
-         );
+         throw new BadRequestError(`Invalid query: ${errorMessage}`);
       }
+
       const rowLimit =
          (await runnable.getPreparedResult()).resultExplore.limit || ROW_LIMIT;
       const endTime = performance.now();
@@ -329,6 +414,7 @@ export class Model {
       });
       return {
          result: API.util.wrapResult(queryResults),
+         compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
       };
@@ -358,7 +444,7 @@ export class Model {
       const notebookCells: ApiNotebookCell[] = (
          this.runnableNotebookCells as RunnableNotebookCell[]
       ).map((cell) => {
-         console.log("cell.queryInfo", cell.queryInfo);
+         logger.debug("cell.queryInfo", cell.queryInfo);
          return {
             type: cell.type,
             text: cell.text,
@@ -464,9 +550,9 @@ export class Model {
                   text: cell.text,
                };
             } else {
-               console.log("Error message: ", errorMessage);
+               logger.error("Error message: ", errorMessage);
             }
-            console.log("Cell content: ", cellIndex, cell.type, cell.text);
+            logger.debug("Cell content: ", cellIndex, cell.type, cell.text);
             throw new BadRequestError(`Cell execution failed: ${errorMessage}`);
          }
       }
@@ -518,29 +604,14 @@ export class Model {
       const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
-      const modelConnections = new Map<string, Connection>();
-      for (const [name, connection] of connections.entries()) {
-         const isDuckDB =
-            connection instanceof DuckDBConnection ||
-            connection.constructor.name === "DuckDBConnection";
-         if (isDuckDB) {
-            // Create a new DuckDB connection with the model's directory as working directory.
-            // Using :memory: for model-specific connections to avoid conflicts.
-            const modelDuckDBConnection = new DuckDBConnection(
-               name,
-               ":memory:",
-               workingDirectory,
-            );
-            modelConnections.set(name, modelDuckDBConnection);
-         } else {
-            // Keep non-DuckDB connections as it is
-            modelConnections.set(name, connection);
-         }
-      }
+      const duckdbConnection = connections.get("duckdb") as DuckDBConnection;
+      await duckdbConnection.runSQL(
+         `SET FILE_SEARCH_PATH='${workingDirectory}';`,
+      );
 
       const runtime = new Runtime({
          urlReader,
-         connections: new FixedConnectionMap(modelConnections, "duckdb"),
+         connections: new FixedConnectionMap(connections, "duckdb"),
       });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };

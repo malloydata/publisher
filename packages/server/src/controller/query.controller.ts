@@ -5,6 +5,14 @@ import { ProjectStore } from "../service/project_store";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
+// Replacer function to handle BigInt serialization
+function bigIntReplacer(_key: string, value: unknown): unknown {
+   if (typeof value === "bigint") {
+      return Number(value);
+   }
+   return value;
+}
+
 export class QueryController {
    private projectStore: ProjectStore;
 
@@ -19,6 +27,7 @@ export class QueryController {
       sourceName: string,
       queryName: string,
       query: string,
+      compactJson: boolean = false,
    ): Promise<ApiQuery> {
       const project = await this.projectStore.getProject(projectName, false);
       const p = await project.getPackage(packageName, false);
@@ -27,13 +36,15 @@ export class QueryController {
       if (!model) {
          throw new ModelNotFoundError(`${modelPath} does not exist`);
       } else {
-         const { result } = await model.getQueryResults(
+         const { result, compactResult } = await model.getQueryResults(
             sourceName,
             queryName,
             query,
          );
          return {
-            result: JSON.stringify(result),
+            result: compactJson
+               ? JSON.stringify(compactResult, bigIntReplacer)
+               : JSON.stringify(result),
             resource: `${API_PREFIX}/projects/${projectName}/packages/${packageName}/models/${modelPath}/query`,
          } as ApiQuery;
       }

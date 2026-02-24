@@ -24,7 +24,8 @@ import {
    PackageNotFoundError,
    ProjectNotFoundError,
 } from "../errors";
-import { logger } from "../logger";
+import { getOperationalState, markNotReady, markReady } from "../health";
+import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
@@ -188,11 +189,15 @@ export class ProjectStore {
          }
 
          this.isInitialized = true;
+         markReady();
+         const initializationDuration = performance.now() - initialTime;
          logger.info(
-            `Project store successfully initialized in ${performance.now() - initialTime}ms`,
+            `Project store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
       } catch (error) {
-         logger.error("Error initializing project store", { error });
+         markNotReady();
+         const errorData = this.extractErrorDataFromError(error);
+         logger.error("Error initializing project store", errorData);
          process.exit(1);
       }
    }
@@ -506,13 +511,30 @@ export class ProjectStore {
    private async cleanupAndCreatePublisherPath() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
 
+      // Ensure serverRootPath exists and is a directory
+      try {
+         const stats = await fs.promises.stat(this.serverRootPath);
+         if (!stats.isDirectory()) {
+            throw new Error(
+               `Server root path ${this.serverRootPath} exists but is not a directory`,
+            );
+         }
+      } catch (error) {
+         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            // Directory doesn't exist, create it
+            await fs.promises.mkdir(this.serverRootPath, { recursive: true });
+         } else {
+            throw error;
+         }
+      }
+
       if (reInit) {
          const uploadDocsPath = path.join(
             this.serverRootPath,
             PUBLISHER_DATA_DIR,
          );
          logger.info(
-            `Re init: Cleaning up upload documents path ${uploadDocsPath}`,
+            `Reinitialization mode: Cleaning up upload documents path ${uploadDocsPath}`,
          );
          try {
             await fs.promises.rm(uploadDocsPath, {
@@ -554,6 +576,8 @@ export class ProjectStore {
          projects: [] as Array<components["schemas"]["Project"]>,
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
+         operationalState:
+            getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
       };
 
       const projects = await this.listProjects(true);
@@ -564,7 +588,7 @@ export class ProjectStore {
                const packages = project.packages;
                const connections = project.connections;
 
-               logger.info(`Project ${project.name} status:`, {
+               logger.debug(`Project ${project.name} status:`, {
                   connectionsCount: project.connections?.length || 0,
                   packagesCount: packages?.length || 0,
                });
@@ -765,6 +789,10 @@ export class ProjectStore {
       }
 
       const projectPath = project.metadata?.location;
+
+      // Close all connections before removing the project
+      project.closeAllConnections();
+
       this.projects.delete(projectName);
       await this.deleteProjectFromDatabase(projectName);
       if (projectPath) {
@@ -998,11 +1026,10 @@ export class ProjectStore {
                }
             }
          } catch (error) {
+            const errorData = this.extractErrorDataFromError(error);
             logger.error(
                `Failed to download or mount location "${groupedLocation}"`,
-               {
-                  error,
-               },
+               errorData,
             );
             throw new PackageNotFoundError(
                `Failed to download or mount location: ${groupedLocation}`,
@@ -1048,9 +1075,11 @@ export class ProjectStore {
             );
             return;
          } catch (error) {
-            logger.error(`Failed to download GCS directory "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to download GCS directory "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to download GCS directory: ${location}`,
             );
@@ -1066,9 +1095,11 @@ export class ProjectStore {
             await this.downloadGitHubDirectory(location, targetPath);
             return;
          } catch (error) {
-            logger.error(`Failed to clone GitHub repository "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to clone GitHub repository "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to clone GitHub repository: ${location}`,
             );
@@ -1084,9 +1115,11 @@ export class ProjectStore {
             await this.downloadS3Directory(location, projectName, targetPath);
             return;
          } catch (error) {
-            logger.error(`Failed to download S3 directory "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to download S3 directory "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to download S3 directory: ${location}`,
             );
@@ -1110,9 +1143,11 @@ export class ProjectStore {
             );
             return;
          } catch (error) {
-            logger.error(`Failed to mount local directory "${packagePath}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to mount local directory "${packagePath}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to mount local directory: ${packagePath}`,
             );
@@ -1305,10 +1340,11 @@ export class ProjectStore {
       await new Promise<void>((resolve, reject) => {
          simpleGit().clone(repoUrl, absoluteDirPath, {}, (err) => {
             if (err) {
-               console.error(err);
-               logger.error(`Failed to clone GitHub repository "${repoUrl}"`, {
-                  error: err,
-               });
+               const errorData = this.extractErrorDataFromError(err);
+               logger.error(
+                  `Failed to clone GitHub repository "${repoUrl}"`,
+                  errorData,
+               );
                reject(err);
             }
             resolve();
@@ -1368,5 +1404,24 @@ export class ProjectStore {
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
 
       // https://github.com/credibledata/malloy-samples/imdb/publisher.json -> ${absoluteDirPath}/publisher.json
+   }
+
+   private extractErrorDataFromError(error: unknown): {
+      error: string;
+      stack?: string;
+      task?: unknown;
+   } {
+      const errorMessage =
+         error instanceof Error ? error.message : String(error);
+      const errorData: { error: string; stack?: string; task?: unknown } = {
+         error: errorMessage,
+      };
+      if (error instanceof Error && logger.level === "debug") {
+         errorData.stack = error.stack;
+      }
+      if (error && typeof error === "object" && "task" in error) {
+         errorData.task = (error as { task?: unknown }).task;
+      }
+      return errorData;
    }
 }

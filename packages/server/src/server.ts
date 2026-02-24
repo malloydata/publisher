@@ -1,3 +1,10 @@
+// Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
+import "./instrumentation";
+import {
+   getPrometheusMetricsHandler,
+   httpMetricsMiddleware,
+} from "./instrumentation";
+
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as bodyParser from "body-parser";
 import cors from "cors";
@@ -13,10 +20,15 @@ import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
 import { internalErrorToHttpError, NotImplementedError } from "./errors";
+import {
+   drainingGuard,
+   registerHealthEndpoints,
+   registerSignalHandlers,
+} from "./health";
 import { logger, loggerMiddleware } from "./logger";
+
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
-
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
@@ -33,6 +45,15 @@ function parseArgs() {
          i++;
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
+         i++;
+      } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
+         process.env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
+         i++;
+      } else if (
+         arg === "--shutdown_graceful_close_timeout_seconds" &&
+         args[i + 1]
+      ) {
+         process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = args[i + 1];
          i++;
       } else if (arg === "--init") {
          process.env.INITIALIZE_STORAGE = "true";
@@ -54,6 +75,15 @@ function parseArgs() {
          console.log(
             "  --mcp_port <number>    Port for MCP server (default: 4040)",
          );
+         console.log(
+            "  --shutdown_drain_duration_seconds <number>  Time in seconds to keep service in draining state before closing servers (default: 0)",
+         );
+         console.log(
+            "  --shutdown_graceful_close_timeout_seconds <number>  Time in seconds to wait after closing servers before exit (default: 0)",
+         );
+         console.log(
+            "  --init                 Initialize the storage (default: false)",
+         );
          console.log("  --help, -h             Show this help message");
          process.exit(0);
       }
@@ -67,6 +97,12 @@ const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
 const MCP_ENDPOINT = "/mcp";
+const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
+   process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
+);
+const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
+   process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
+);
 // Find the app directory - handle NPX vs local execution
 let ROOT: string;
 if (require.main) {
@@ -82,7 +118,7 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 
 const app = express();
 app.use(loggerMiddleware);
-
+app.use(httpMetricsMiddleware);
 const projectStore = new ProjectStore(SERVER_ROOT);
 const watchModeController = new WatchModeController(projectStore);
 const connectionController = new ConnectionController(projectStore);
@@ -192,7 +228,10 @@ if (!isDevelopment) {
          target: "http://localhost:5173",
          changeOrigin: true,
          ws: true,
-         pathFilter: (path) => !path.startsWith("/api/"),
+         pathFilter: (path) =>
+            !path.startsWith("/api/") &&
+            !path.startsWith("/metrics") &&
+            !path.startsWith("/health"),
       }),
    );
 }
@@ -211,6 +250,21 @@ app.use(
    }),
 );
 app.use(bodyParser.json());
+
+// Register health check endpoints
+registerHealthEndpoints(app);
+
+// Register Prometheus metrics endpoint
+try {
+   const metricsHandler = getPrometheusMetricsHandler();
+   app.get("/metrics", metricsHandler);
+   logger.info("Prometheus metrics endpoint registered at /metrics");
+} catch (error) {
+   logger.warn("Failed to register Prometheus metrics endpoint", { error });
+}
+
+// Register draining guard middleware - must be after health endpoints but before other routes
+app.use(drainingGuard);
 
 app.get(`${API_PREFIX}/status`, async (_req, res) => {
    try {
@@ -408,7 +462,6 @@ app.get(
             req.params.connectionName,
             req.params.schemaName,
          );
-         logger.info("results", { results });
          res.status(200).json(results);
       } catch (error) {
          logger.error(error);
@@ -429,7 +482,6 @@ app.get(
             req.params.schemaName,
             req.params.tablePath,
          );
-         logger.info("results", { results });
          res.status(200).json(results);
       } catch (error) {
          logger.error(error);
@@ -831,6 +883,7 @@ app.post(
                req.body.sourceName as string,
                req.body.queryName as string,
                req.body.query as string,
+               req.body.compactJson === true,
             ),
          );
       } catch (error) {
@@ -906,3 +959,10 @@ const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
 mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
+
+registerSignalHandlers(
+   mainServer,
+   mcpServer,
+   SHUTDOWN_DRAIN_DURATION_SECONDS,
+   SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS,
+);
