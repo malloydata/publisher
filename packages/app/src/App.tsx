@@ -17,13 +17,25 @@ import theme from "./theme";
  * React.lazy and dynamic import() statements for lazy loading React
  * components.
  */
-const HomePage = React.lazy(() => import("./components/pages/HomePage/HomePage"));
-const MainPage = React.lazy(() => import("./components/layout/MainPage/MainPage"));
-const ModelPage = React.lazy(() => import("./components/pages/ModelPage/ModelPage"));
-const PackagePage = React.lazy(() => import("./components/pages/PackagePage/PackagePage"));
-const ProjectPage = React.lazy(() => import("./components/pages/ProjectPage/ProjectPage"));
+const HomePage = React.lazy(
+   () => import("./components/pages/HomePage/HomePage"),
+);
+const MainPage = React.lazy(
+   () => import("./components/layout/MainPage/MainPage"),
+);
+const ModelPage = React.lazy(
+   () => import("./components/pages/ModelPage/ModelPage"),
+);
+const PackagePage = React.lazy(
+   () => import("./components/pages/PackagePage/PackagePage"),
+);
+const ProjectPage = React.lazy(
+   () => import("./components/pages/ProjectPage/ProjectPage"),
+);
 const RouteError = React.lazy(() => import("./components/RouteError"));
-const WorkbookPage = React.lazy(() => import("./components/pages/WorkbookPage/WorkbookPage"));
+const WorkbookPage = React.lazy(
+   () => import("./components/pages/WorkbookPage/WorkbookPage"),
+);
 
 // Create router configuration function
 export const createMalloyRouter = (
