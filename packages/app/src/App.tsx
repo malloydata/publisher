@@ -53,11 +53,7 @@ export const createMalloyRouter = (
                </WorkbookStorageProvider>
             </ServerProvider>
          ),
-         errorElement: (
-            <Suspense fallback={<Loading />}>
-               <RouteError />
-            </Suspense>
-         ),
+         errorElement: <RouteError />,
          children: [
             {
                index: true,
