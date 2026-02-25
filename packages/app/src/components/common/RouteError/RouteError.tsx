@@ -18,13 +18,11 @@ function RouteError() {
    const navigate = useNavigate();
 
    // Default values
-   let statusCode = 500;
    let title = "Unexpected Error";
    let message = "Something went wrong while loading this page.";
 
    // Parse error type
    if (isRouteErrorResponse(error)) {
-      statusCode = error.status;
       title = `Error ${error.status}`;
       message = error.statusText || error.data?.message || message;
 
