@@ -32,7 +32,7 @@ const PackagePage = React.lazy(
 const ProjectPage = React.lazy(
    () => import("./components/pages/ProjectPage/ProjectPage"),
 );
-const RouteError = React.lazy(() => import("./components/RouteError"));
+const RouteError = React.lazy(() => import("./components/common/RouteError/RouteError"));
 const WorkbookPage = React.lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
