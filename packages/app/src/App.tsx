@@ -110,11 +110,15 @@ export interface MalloyPublisherAppProps {
    workbookStorage: WorkbookStorage;
 }
 
-export const MalloyPublisherApp: React.FC<MalloyPublisherAppProps> = ({
-   workbookStorage,
+export const MalloyPublisherApp = ({
    basePath = "/",
+   workbookStorage,
    headerProps,
-}) => {
-   const router = createMalloyRouter(basePath, workbookStorage, headerProps);
+}: MalloyPublisherAppProps) => {
+   const router = useMemo(
+      () => createMalloyRouter(basePath, workbookStorage, headerProps),
+      [basePath, workbookStorage, headerProps],
+   );
+
    return <RouterProvider router={router} />;
 };
