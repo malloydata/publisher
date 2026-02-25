@@ -27,7 +27,9 @@ const PackagePage = lazy(
 const ProjectPage = lazy(
    () => import("./components/pages/ProjectPage/ProjectPage"),
 );
-const RouteError = lazy(() => import("./components/common/RouteError/RouteError"));
+const RouteError = lazy(
+   () => import("./components/common/RouteError/RouteError"),
+);
 const WorkbookPage = lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
