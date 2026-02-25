@@ -7,8 +7,9 @@ import "@malloy-publisher/sdk/styles.css";
 import "@malloydata/malloy-explorer/styles.css";
 import { CssBaseline } from "@mui/material";
 import { ThemeProvider } from "@mui/material/styles";
-import * as React from "react";
+import { lazy, Suspense, useMemo } from "react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { Loading } from "./components/common/Loading/Loading";
 import { HeaderProps } from "./components/layout/Header/Header";
 import theme from "./theme";
 
@@ -17,23 +18,17 @@ import theme from "./theme";
  * React.lazy and dynamic import() statements for lazy loading React
  * components.
  */
-const HomePage = React.lazy(
-   () => import("./components/pages/HomePage/HomePage"),
-);
-const MainPage = React.lazy(
-   () => import("./components/layout/MainPage/MainPage"),
-);
-const ModelPage = React.lazy(
-   () => import("./components/pages/ModelPage/ModelPage"),
-);
-const PackagePage = React.lazy(
+const HomePage = lazy(() => import("./components/pages/HomePage/HomePage"));
+const MainPage = lazy(() => import("./components/layout/MainPage/MainPage"));
+const ModelPage = lazy(() => import("./components/pages/ModelPage/ModelPage"));
+const PackagePage = lazy(
    () => import("./components/pages/PackagePage/PackagePage"),
 );
-const ProjectPage = React.lazy(
+const ProjectPage = lazy(
    () => import("./components/pages/ProjectPage/ProjectPage"),
 );
-const RouteError = React.lazy(() => import("./components/RouteError"));
-const WorkbookPage = React.lazy(
+const RouteError = lazy(() => import("./components/RouteError"));
+const WorkbookPage = lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
 
@@ -51,32 +46,58 @@ export const createMalloyRouter = (
                <WorkbookStorageProvider workbookStorage={workbookStorage}>
                   <ThemeProvider theme={theme}>
                      <CssBaseline />
-                     <MainPage headerProps={headerProps} />
+                     <Suspense fallback={<Loading />}>
+                        <MainPage headerProps={headerProps} />
+                     </Suspense>
                   </ThemeProvider>
                </WorkbookStorageProvider>
             </ServerProvider>
          ),
-         errorElement: <RouteError />,
+         errorElement: (
+            <Suspense fallback={<Loading />}>
+               <RouteError />
+            </Suspense>
+         ),
          children: [
             {
-               path: "",
-               element: <HomePage />,
+               index: true,
+               element: (
+                  <Suspense fallback={<Loading />}>
+                     <HomePage />
+                  </Suspense>
+               ),
             },
             {
                path: ":projectName",
-               element: <ProjectPage />,
+               element: (
+                  <Suspense fallback={<Loading />}>
+                     <ProjectPage />
+                  </Suspense>
+               ),
             },
             {
                path: ":projectName/:packageName",
-               element: <PackagePage />,
+               element: (
+                  <Suspense fallback={<Loading />}>
+                     <PackagePage />
+                  </Suspense>
+               ),
             },
             {
                path: ":projectName/:packageName/*",
-               element: <ModelPage />,
+               element: (
+                  <Suspense fallback={<Loading />}>
+                     <ModelPage />
+                  </Suspense>
+               ),
             },
             {
                path: ":projectName/:packageName/workbook/:workspace/:workbookPath",
-               element: <WorkbookPage />,
+               element: (
+                  <Suspense fallback={<Loading />}>
+                     <WorkbookPage />
+                  </Suspense>
+               ),
             },
          ],
       },
