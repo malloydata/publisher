@@ -9,7 +9,7 @@ import { CssBaseline } from "@mui/material";
 import { ThemeProvider } from "@mui/material/styles";
 import { lazy, Suspense, useMemo } from "react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { Loading } from "./components/common/Loading/Loading";
+import { Loading } from "./components/common/Loading";
 import { HeaderProps } from "./components/layout/Header/Header";
 import theme from "./theme";
 
