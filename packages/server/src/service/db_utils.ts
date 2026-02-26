@@ -7,9 +7,8 @@ import {
    CloudStorageCredentials,
    gcsConnectionToCredentials,
    getCloudTablesWithColumns,
-   listAllDataFilesInBucket,
-   listCloudBuckets,
-   listFilesInCloudDirectory,
+   listCloudDirectorySchemas,
+   listDataFilesInDirectory,
    parseCloudUri,
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
@@ -340,23 +339,10 @@ export async function getSchemasForConnection(
                   : s3ConnectionToCredentials(attachedDb.s3Connection!);
 
             try {
-               const buckets = await listCloudBuckets(credentials);
-               const scheme = dbType === "gcs" ? "gs" : "s3";
-
-               logger.info(
-                  `Listed ${buckets.length} ${dbType.toUpperCase()} buckets for attached database ${attachedDb.name}`,
-               );
-
-               // Just return bucket URIs as schemas - fast!
-               // Files/directories will be listed when user selects a bucket
-               return buckets.map((bucket) => ({
-                  name: `${scheme}://${bucket.name}`,
-                  isHidden: false,
-                  isDefault: false,
-               }));
+               return await listCloudDirectorySchemas(credentials);
             } catch (cloudError) {
                logger.warn(
-                  `Failed to list ${dbType.toUpperCase()} buckets for ${attachedDb.name}`,
+                  `Failed to list ${dbType.toUpperCase()} directory schemas for ${attachedDb.name}`,
                   { error: cloudError },
                );
                return [];
@@ -444,19 +430,11 @@ export async function getTablesForSchema(
          );
       }
 
-      let fileKeys: string[];
-      if (directoryPath) {
-         const fileNames = await listFilesInCloudDirectory(
-            credentials,
-            bucketName,
-            directoryPath,
-         );
-         fileKeys = fileNames.map((fileName) => `${directoryPath}/${fileName}`);
-      } else {
-         fileKeys = await listAllDataFilesInBucket(credentials, bucketName);
-      }
-
-      console.log("File keys:", fileKeys);
+      const fileKeys = await listDataFilesInDirectory(
+         credentials,
+         bucketName,
+         directoryPath,
+      );
 
       return await getCloudTablesWithColumns(
          malloyConnection,
@@ -748,15 +726,15 @@ export async function listTablesForSchema(
          }
 
          try {
-            if (directoryPath) {
-               return await listFilesInCloudDirectory(
-                  credentials,
-                  bucketName,
-                  directoryPath,
-               );
-            } else {
-               return await listAllDataFilesInBucket(credentials, bucketName);
-            }
+            const fileKeys = await listDataFilesInDirectory(
+               credentials,
+               bucketName,
+               directoryPath,
+            );
+            return fileKeys.map((key) => {
+               const lastSlash = key.lastIndexOf("/");
+               return lastSlash > 0 ? key.substring(lastSlash + 1) : key;
+            });
          } catch (error) {
             logger.error(
                `Error listing ${cloudType.toUpperCase()} objects in ${schemaName}`,
