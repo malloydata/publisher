@@ -374,7 +374,8 @@ async function listDirectorySchemas(
       if (!isDataFile(file.key)) continue;
 
       const lastSlashIndex = file.key.lastIndexOf("/");
-      const dir = lastSlashIndex > 0 ? file.key.substring(0, lastSlashIndex) : "";
+      const dir =
+         lastSlashIndex > 0 ? file.key.substring(0, lastSlashIndex) : "";
       directories.add(dir);
    }
 
