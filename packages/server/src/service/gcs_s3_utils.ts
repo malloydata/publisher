@@ -8,7 +8,6 @@ import { components } from "../api";
 import { logger } from "../logger";
 
 type ApiTable = components["schemas"]["Table"];
-
 type CloudStorageType = "gcs" | "s3";
 
 export interface CloudStorageCredentials {
@@ -29,7 +28,6 @@ interface CloudStorageObject {
    key: string;
    size?: number;
    lastModified?: Date;
-   isFolder: boolean;
 }
 
 export function gcsConnectionToCredentials(gcsConnection: {
@@ -92,7 +90,7 @@ function createCloudStorageClient(
    return client;
 }
 
-export async function listCloudBuckets(
+async function listCloudBuckets(
    credentials: CloudStorageCredentials,
 ): Promise<CloudStorageBucket[]> {
    const client = createCloudStorageClient(credentials);
@@ -143,7 +141,6 @@ async function listAllCloudFiles(
                   key: content.Key,
                   size: content.Size,
                   lastModified: content.LastModified,
-                  isFolder: false,
                });
             }
          }
@@ -182,6 +179,15 @@ function isDataFile(key: string): boolean {
    );
 }
 
+function buildCloudUri(
+   type: CloudStorageType,
+   bucket: string,
+   key: string,
+): string {
+   const scheme = type === "gcs" ? "gs" : "s3";
+   return `${scheme}://${bucket}/${key}`;
+}
+
 function getFileType(key: string): string {
    const lowerKey = key.toLowerCase();
    if (lowerKey.endsWith(".csv")) return "csv";
@@ -192,23 +198,14 @@ function getFileType(key: string): string {
    return "unknown";
 }
 
-function buildCloudUri(
-   type: CloudStorageType,
-   bucket: string,
-   key: string,
-): string {
-   const scheme = type === "gcs" ? "gs" : "s3";
-   return `${scheme}://${bucket}/${key}`;
-}
-
 function standardizeRunSQLResult(result: unknown): unknown[] {
    return Array.isArray(result)
       ? result
       : (result as { rows?: unknown[] }).rows || [];
 }
 
-// Batch size for parallel schema fetching to avoid overwhelming the connection
 const SCHEMA_FETCH_BATCH_SIZE = 10;
+const BUCKET_SCAN_BATCH_SIZE = 3;
 
 async function getTableSchema(
    malloyConnection: Connection,
@@ -268,11 +265,9 @@ export async function getCloudTablesWithColumns(
 ): Promise<ApiTable[]> {
    const allTables: ApiTable[] = [];
 
-   // Process in batches to avoid overwhelming the connection
    for (let i = 0; i < fileKeys.length; i += SCHEMA_FETCH_BATCH_SIZE) {
       const batch = fileKeys.slice(i, i + SCHEMA_FETCH_BATCH_SIZE);
 
-      // Process batch in parallel
       const batchResults = await Promise.all(
          batch.map((fileKey) =>
             getTableSchema(malloyConnection, credentials, bucketName, fileKey),
@@ -315,38 +310,117 @@ export function parseCloudUri(uri: string): {
    return null;
 }
 
-export async function listFilesInCloudDirectory(
+export async function listDataFilesInDirectory(
    credentials: CloudStorageCredentials,
    bucketName: string,
    directoryPath: string,
 ): Promise<string[]> {
-   const files = await listAllCloudFiles(credentials, bucketName);
+   const prefix = directoryPath ? `${directoryPath}/` : "";
+   const client = createCloudStorageClient(credentials);
+   const storageType = credentials.type.toUpperCase();
+   const dataFiles: string[] = [];
 
-   const filesInDirectory = files
-      .filter((obj) => {
-         if (!isDataFile(obj.key)) return false;
+   try {
+      let continuationToken: string | undefined;
 
-         const lastSlashIndex = obj.key.lastIndexOf("/");
-         const fileDir =
-            lastSlashIndex > 0 ? obj.key.substring(0, lastSlashIndex) : "";
+      do {
+         const response = await client.send(
+            new ListObjectsV2Command({
+               Bucket: bucketName,
+               Prefix: prefix,
+               Delimiter: "/",
+               ContinuationToken: continuationToken,
+            }),
+         );
 
-         return fileDir === directoryPath;
-      })
-      .map((obj) => {
-         const lastSlashIndex = obj.key.lastIndexOf("/");
-         return lastSlashIndex > 0
-            ? obj.key.substring(lastSlashIndex + 1)
-            : obj.key;
-      });
+         for (const content of response.Contents || []) {
+            if (content.Key && isDataFile(content.Key)) {
+               dataFiles.push(content.Key);
+            }
+         }
 
-   return filesInDirectory;
+         continuationToken = response.IsTruncated
+            ? response.NextContinuationToken
+            : undefined;
+      } while (continuationToken);
+
+      logger.info(
+         `Listed ${dataFiles.length} data files in ${storageType} ${bucketName}/${directoryPath}`,
+      );
+      return dataFiles;
+   } catch (error) {
+      logger.error(
+         `Failed to list files in ${storageType} ${bucketName}/${directoryPath}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to list files in ${storageType} ${bucketName}/${directoryPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
 }
 
-// List all data files in a bucket with their full relative paths
-export async function listAllDataFilesInBucket(
+/**
+ * Scans an entire bucket and returns unique directory paths that contain data files.
+ * Uses flat listing for efficiency — O(total_files / 1000) API calls.
+ */
+async function listDirectorySchemas(
    credentials: CloudStorageCredentials,
    bucketName: string,
 ): Promise<string[]> {
-   const files = await listAllCloudFiles(credentials, bucketName);
-   return files.filter((obj) => isDataFile(obj.key)).map((obj) => obj.key);
+   const allFiles = await listAllCloudFiles(credentials, bucketName);
+   const directories = new Set<string>();
+
+   for (const file of allFiles) {
+      if (!isDataFile(file.key)) continue;
+
+      const lastSlashIndex = file.key.lastIndexOf("/");
+      const dir = lastSlashIndex > 0 ? file.key.substring(0, lastSlashIndex) : "";
+      directories.add(dir);
+   }
+
+   const scheme = credentials.type === "gcs" ? "gs" : "s3";
+   const sortedDirs = Array.from(directories).sort();
+
+   logger.info(
+      `Found ${sortedDirs.length} directories with data files in ${credentials.type.toUpperCase()} bucket ${bucketName}`,
+   );
+
+   return sortedDirs.map((dir) =>
+      dir ? `${scheme}://${bucketName}/${dir}` : `${scheme}://${bucketName}`,
+   );
+}
+
+export async function listCloudDirectorySchemas(
+   credentials: CloudStorageCredentials,
+): Promise<{ name: string; isHidden: boolean; isDefault: boolean }[]> {
+   const storageType = credentials.type.toUpperCase();
+   const buckets = await listCloudBuckets(credentials);
+
+   logger.info(
+      `Listed ${buckets.length} ${storageType} buckets, scanning for directories...`,
+   );
+
+   const allDirArrays: string[][] = [];
+
+   for (let i = 0; i < buckets.length; i += BUCKET_SCAN_BATCH_SIZE) {
+      const batch = buckets.slice(i, i + BUCKET_SCAN_BATCH_SIZE);
+      const batchResults = await Promise.all(
+         batch.map((bucket) =>
+            listDirectorySchemas(credentials, bucket.name).catch((err) => {
+               logger.warn(
+                  `Failed to scan ${storageType} bucket ${bucket.name}`,
+                  { error: err },
+               );
+               return [] as string[];
+            }),
+         ),
+      );
+      allDirArrays.push(...batchResults);
+   }
+
+   return allDirArrays.flat().map((dirUri) => ({
+      name: dirUri,
+      isHidden: false,
+      isDefault: false,
+   }));
 }
