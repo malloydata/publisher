@@ -70,6 +70,9 @@ COPY --from=builder /publisher/packages/server/package.json /publisher/packages/
 COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
 COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
 
+# Copy config file
+COPY publisher.config.json /publisher/publisher.config.json
+
 # Install production-only deps
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production

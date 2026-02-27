@@ -1,0 +1,61 @@
+# This file specifies files that are *not* uploaded to Cloud Build
+# using gcloud. It follows the same syntax as .gitignore
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+**/dist/
+dist/
+**/build/
+build/
+**/.next/
+.next/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+**/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test outputs
+coverage/
+.nyc_output/
+**/k6-tests/clients/
+**/k6-tests/results/
+
+# DuckDB
+duckdb-snowflake/
+
+# Git
+.git/
+.gitignore
+
+# Other
+*.md
+!README.md
+.prettierrc
+.eslintrc*
