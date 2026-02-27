@@ -2342,6 +2342,15 @@ components:
         responseTimeoutMilliseconds:
           type: integer
           description: Query response timeout in milliseconds
+        oauthPassthrough:
+          type: boolean
+          description: >-
+            When true, the connection accepts per-request OAuth tokens via
+            the X-Database-Token HTTP header. Queries run as the authenticated
+            user's Snowflake role instead of using static credentials. The
+            static credentials (password/privateKey) are used as a fallback
+            when no token is provided.
+          default: false
 
     TrinoConnection:
       type: object

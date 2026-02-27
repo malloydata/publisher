@@ -13,7 +13,115 @@ import { v4 as uuidv4 } from "uuid";
 import { components } from "../api";
 import { TEMP_DIR_PATH } from "../constants";
 import { logAxiosError, logger } from "../logger";
+import { getDatabaseToken } from "../request_context";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
+
+/** Configuration needed to create per-request OAuth Snowflake connections. */
+export interface SnowflakeOAuthConfig {
+   name: string;
+   account: string;
+   warehouse: string;
+   database?: string;
+   schema?: string;
+   role?: string;
+   responseTimeoutMilliseconds?: number;
+}
+
+/**
+ * Creates a per-request SnowflakeConnection using an OAuth token.
+ * The caller is responsible for closing the connection after use.
+ */
+export function createOAuthSnowflakeConnection(
+   config: SnowflakeOAuthConfig,
+   token: string,
+): SnowflakeConnection {
+   return new SnowflakeConnection(config.name, {
+      connOptions: {
+         account: config.account,
+         authenticator: "OAUTH",
+         token,
+         warehouse: config.warehouse,
+         database: config.database,
+         schema: config.schema,
+         role: config.role,
+         timeout: config.responseTimeoutMilliseconds,
+      },
+   });
+}
+
+/**
+ * Metadata attached to Snowflake connections in the connection map when
+ * oauthPassthrough is enabled. Allows downstream code to create per-request
+ * OAuth connections using the same base config.
+ */
+const oauthConfigMap = new Map<string, SnowflakeOAuthConfig>();
+
+/** Store OAuth config for a named connection. */
+export function setOAuthConfig(
+   connectionName: string,
+   config: SnowflakeOAuthConfig,
+): void {
+   oauthConfigMap.set(connectionName, config);
+}
+
+/** Get OAuth config for a named connection, if oauthPassthrough is enabled. */
+export function getOAuthConfig(
+   connectionName: string,
+): SnowflakeOAuthConfig | undefined {
+   return oauthConfigMap.get(connectionName);
+}
+
+/**
+ * If the current request has a database token and any connection in the map
+ * has oauthPassthrough enabled, returns a new connection map with per-request
+ * OAuth Snowflake connections. Otherwise returns the original map unchanged.
+ *
+ * The caller must call closeOAuthConnections() on the returned connections
+ * after the query completes.
+ */
+export function getRequestConnections(connections: Map<string, Connection>): {
+   connections: Map<string, Connection>;
+   oauthConnections: Connection[];
+} {
+   const token = getDatabaseToken();
+   if (!token) {
+      return { connections, oauthConnections: [] };
+   }
+
+   const overridden = new Map(connections);
+   const oauthConnections: Connection[] = [];
+
+   for (const [name] of connections) {
+      const config = getOAuthConfig(name);
+      if (config) {
+         const oauthConn = createOAuthSnowflakeConnection(config, token);
+         overridden.set(name, oauthConn);
+         oauthConnections.push(oauthConn);
+         logger.info(
+            `[OAuth] Created per-request Snowflake connection for '${name}'`,
+         );
+      }
+   }
+
+   return { connections: overridden, oauthConnections };
+}
+
+/** Close per-request OAuth connections to prevent session leaks. */
+export async function closeOAuthConnections(
+   oauthConnections: Connection[],
+): Promise<void> {
+   for (const conn of oauthConnections) {
+      try {
+         if ("close" in conn && typeof conn.close === "function") {
+            await conn.close();
+         }
+      } catch (err) {
+         logger.warn(`[OAuth] Error closing per-request connection`, {
+            error: err,
+         });
+      }
+   }
+}
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -1052,6 +1160,23 @@ export async function createProjectConnections(
 
             if (!connection.snowflakeConnection.warehouse) {
                throw new Error("Snowflake warehouse is required.");
+            }
+
+            // Store OAuth config for per-request connection creation
+            if (connection.snowflakeConnection.oauthPassthrough) {
+               setOAuthConfig(connection.name, {
+                  name: connection.name,
+                  account: connection.snowflakeConnection.account,
+                  warehouse: connection.snowflakeConnection.warehouse,
+                  database: connection.snowflakeConnection.database,
+                  schema: connection.snowflakeConnection.schema,
+                  role: connection.snowflakeConnection.role,
+                  responseTimeoutMilliseconds:
+                     connection.snowflakeConnection.responseTimeoutMilliseconds,
+               });
+               logger.info(
+                  `[OAuth] Snowflake connection '${connection.name}' has oauthPassthrough enabled`,
+               );
             }
 
             let privateKeyPath = undefined;

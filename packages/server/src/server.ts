@@ -29,6 +29,7 @@ import {
 import { logger, loggerMiddleware } from "./logger";
 
 import { initializeMcpServer } from "./mcp/server";
+import { requestContext } from "./request_context";
 import { ProjectStore } from "./service/project_store";
 // Parse command line arguments
 function parseArgs() {
@@ -142,37 +143,55 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
 
    try {
       if (req.method === "POST") {
-         const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: undefined,
-         });
+         // Extract database token from request header for per-user OAuth pass-through.
+         // When present, downstream connections use this token instead of static credentials.
+         const databaseToken =
+            (req.headers["x-database-token"] as string) || undefined;
 
-         transport.onclose = () => {
-            logger.info(
-               `[MCP Transport Info] Stateless transport closed for a request.`,
-            );
-         };
-         transport.onerror = (err: Error) => {
-            logger.error(`[MCP Transport Error] Stateless transport error:`, {
-               error: err,
+         const handlePost = async () => {
+            const transport = new StreamableHTTPServerTransport({
+               sessionIdGenerator: undefined,
             });
-         };
 
-         const requestMcpServer = initializeMcpServer(projectStore);
-         await requestMcpServer.connect(transport);
-
-         res.on("close", () => {
-            logger.info(
-               "[MCP Transport Info] Response closed, cleaning up stateless transport.",
-            );
-            transport.close().catch((err) => {
-               logger.error(
-                  "[MCP Transport Error] Error closing stateless transport on response close:",
-                  { error: err },
+            transport.onclose = () => {
+               logger.info(
+                  `[MCP Transport Info] Stateless transport closed for a request.`,
                );
-            });
-         });
+            };
+            transport.onerror = (err: Error) => {
+               logger.error(
+                  `[MCP Transport Error] Stateless transport error:`,
+                  {
+                     error: err,
+                  },
+               );
+            };
 
-         await transport.handleRequest(req, res, req.body);
+            const requestMcpServer = initializeMcpServer(projectStore);
+            await requestMcpServer.connect(transport);
+
+            res.on("close", () => {
+               logger.info(
+                  "[MCP Transport Info] Response closed, cleaning up stateless transport.",
+               );
+               transport.close().catch((err) => {
+                  logger.error(
+                     "[MCP Transport Error] Error closing stateless transport on response close:",
+                     { error: err },
+                  );
+               });
+            });
+
+            await transport.handleRequest(req, res, req.body);
+         };
+
+         // Run the handler within request context so downstream code can
+         // access the database token via getDatabaseToken().
+         if (databaseToken) {
+            await requestContext.run({ databaseToken }, handlePost);
+         } else {
+            await handlePost();
+         }
       } else if (req.method === "GET" || req.method === "DELETE") {
          logger.warn(
             `[MCP Transport Warn] Method Not Allowed in Stateless Mode: ${req.method}`,

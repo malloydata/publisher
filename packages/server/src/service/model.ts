@@ -28,6 +28,8 @@ import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { closeOAuthConnections, getRequestConnections } from "./connection";
+import { getDatabaseToken } from "../request_context";
 import { components } from "../api";
 import {
    MODEL_FILE_SUFFIX,
@@ -70,6 +72,7 @@ interface RunnableNotebookCell {
 
 export class Model {
    private packageName: string;
+   private packagePath: string;
    private modelPath: string;
    private dataStyles: DataStyles;
    private modelType: ModelType;
@@ -81,6 +84,8 @@ export class Model {
    private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
+   /** Retained for per-request OAuth connection override. */
+   private connections: Map<string, Connection> | undefined;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -92,6 +97,7 @@ export class Model {
 
    constructor(
       packageName: string,
+      packagePath: string,
       modelPath: string,
       dataStyles: DataStyles,
       modelType: ModelType,
@@ -103,8 +109,10 @@ export class Model {
       sourceInfos: Malloy.SourceInfo[] | undefined,
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
+      connections?: Map<string, Connection>,
    ) {
       this.packageName = packageName;
+      this.packagePath = packagePath;
       this.modelPath = modelPath;
       this.dataStyles = dataStyles;
       this.modelType = modelType;
@@ -115,6 +123,7 @@ export class Model {
       this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
+      this.connections = connections;
       this.modelInfo = this.modelDef
          ? modelDefToModelInfo(this.modelDef)
          : undefined;
@@ -197,6 +206,7 @@ export class Model {
 
          return new Model(
             packageName,
+            packagePath,
             modelPath,
             dataStyles,
             modelType,
@@ -207,6 +217,7 @@ export class Model {
             sourceInfos.length > 0 ? sourceInfos : undefined,
             runnableNotebookCells,
             undefined,
+            connections,
          );
       } catch (error) {
          let computedError = error;
@@ -223,6 +234,7 @@ export class Model {
          }
          return new Model(
             packageName,
+            packagePath,
             modelPath,
             dataStyles,
             modelType,
@@ -312,112 +324,150 @@ export class Model {
             `Model compilation failed: ${this.compilationError.message}`,
          );
       }
-      let runnable: QueryMaterializer;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
-      // Wrap loadQuery calls in try-catch to handle query parsing errors
-      try {
-         if (!sourceName && !queryName && query) {
-            runnable = this.modelMaterializer.loadQuery("\n" + query);
-         } else if (queryName && !query) {
-            runnable = this.modelMaterializer.loadQuery(
-               `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
+      // When an OAuth token is present in the request context, create a new
+      // Runtime with per-request Snowflake connections so the query executes
+      // under the authenticated user's role.
+      let activeMaterializer = this.modelMaterializer;
+      let oauthConnections: Connection[] = [];
+
+      const databaseToken = getDatabaseToken();
+      if (databaseToken && this.connections) {
+         const result = getRequestConnections(this.connections);
+         if (result.oauthConnections.length > 0) {
+            oauthConnections = result.oauthConnections;
+            const oauthRuntime = new Runtime({
+               urlReader: URL_READER,
+               connections: new FixedConnectionMap(
+                  result.connections,
+                  "duckdb",
+               ),
+            });
+            // Re-materialize the model with OAuth connections using the full
+            // filesystem path so the Runtime can locate the .malloy file.
+            const fullModelPath = path.join(this.packagePath, this.modelPath);
+            activeMaterializer = oauthRuntime.loadModel(
+               new URL(`file://${fullModelPath}`),
             );
-         } else {
-            const endTime = performance.now();
-            const executionTime = endTime - startTime;
-            this.queryExecutionHistogram.record(executionTime, {
+         }
+      }
+
+      try {
+         let runnable: QueryMaterializer;
+
+         // Wrap loadQuery calls in try-catch to handle query parsing errors
+         try {
+            if (!sourceName && !queryName && query) {
+               runnable = activeMaterializer.loadQuery("\n" + query);
+            } else if (queryName && !query) {
+               runnable = activeMaterializer.loadQuery(
+                  `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
+               );
+            } else {
+               const endTime = performance.now();
+               const executionTime = endTime - startTime;
+               this.queryExecutionHistogram.record(executionTime, {
+                  "malloy.model.path": this.modelPath,
+                  "malloy.model.query.name": queryName,
+                  "malloy.model.query.source": sourceName,
+                  "malloy.model.query.query": query,
+                  "malloy.model.query.status": "error",
+               });
+               throw new BadRequestError(
+                  "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
+               );
+            }
+         } catch (error) {
+            // Re-throw BadRequestError as-is
+            if (error instanceof BadRequestError) {
+               throw error;
+            }
+            // Re-throw MalloyError as-is (maps to 400)
+            if (error instanceof MalloyError) {
+               throw error;
+            }
+            // For other query parsing errors, wrap as BadRequestError
+            const errorMessage =
+               error instanceof Error ? error.message : String(error);
+            logger.error("Query parsing error", {
+               error,
+               errorMessage,
+               projectName: this.packageName,
+               modelPath: this.modelPath,
+               query,
+               queryName,
+               sourceName,
+            });
+            throw new BadRequestError(`Invalid query: ${errorMessage}`);
+         }
+
+         const rowLimit =
+            (await runnable.getPreparedResult()).resultExplore.limit ||
+            ROW_LIMIT;
+         const endTime = performance.now();
+         const executionTime = endTime - startTime;
+
+         let queryResults;
+         try {
+            queryResults = await runnable.run({ rowLimit });
+         } catch (error) {
+            // Record error metrics
+            const errorEndTime = performance.now();
+            const errorExecutionTime = errorEndTime - startTime;
+            this.queryExecutionHistogram.record(errorExecutionTime, {
                "malloy.model.path": this.modelPath,
                "malloy.model.query.name": queryName,
                "malloy.model.query.source": sourceName,
                "malloy.model.query.query": query,
                "malloy.model.query.status": "error",
             });
+
+            // Re-throw Malloy errors as-is (they will be handled by error handler)
+            if (error instanceof MalloyError) {
+               throw error;
+            }
+
+            // For other runtime errors (like divide by zero), throw as BadRequestError
+            const errorMessage =
+               error instanceof Error ? error.message : String(error);
+            logger.error("Query execution error", {
+               error,
+               errorMessage,
+               projectName: this.packageName,
+               modelPath: this.modelPath,
+               query,
+               queryName,
+               sourceName,
+            });
             throw new BadRequestError(
-               "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
+               `Query execution failed: ${errorMessage}`,
             );
          }
-      } catch (error) {
-         // Re-throw BadRequestError as-is
-         if (error instanceof BadRequestError) {
-            throw error;
-         }
-         // Re-throw MalloyError as-is (maps to 400)
-         if (error instanceof MalloyError) {
-            throw error;
-         }
-         // For other query parsing errors, wrap as BadRequestError
-         const errorMessage =
-            error instanceof Error ? error.message : String(error);
-         logger.error("Query parsing error", {
-            error,
-            errorMessage,
-            projectName: this.packageName,
-            modelPath: this.modelPath,
-            query,
-            queryName,
-            sourceName,
-         });
-         throw new BadRequestError(`Invalid query: ${errorMessage}`);
-      }
 
-      const rowLimit =
-         (await runnable.getPreparedResult()).resultExplore.limit || ROW_LIMIT;
-      const endTime = performance.now();
-      const executionTime = endTime - startTime;
-
-      let queryResults;
-      try {
-         queryResults = await runnable.run({ rowLimit });
-      } catch (error) {
-         // Record error metrics
-         const errorEndTime = performance.now();
-         const errorExecutionTime = errorEndTime - startTime;
-         this.queryExecutionHistogram.record(errorExecutionTime, {
+         this.queryExecutionHistogram.record(executionTime, {
             "malloy.model.path": this.modelPath,
             "malloy.model.query.name": queryName,
             "malloy.model.query.source": sourceName,
             "malloy.model.query.query": query,
-            "malloy.model.query.status": "error",
+            "malloy.model.query.rows_limit": rowLimit,
+            "malloy.model.query.rows_total": queryResults.totalRows,
+            "malloy.model.query.connection": queryResults.connectionName,
+            "malloy.model.query.status": "success",
          });
-
-         // Re-throw Malloy errors as-is (they will be handled by error handler)
-         if (error instanceof MalloyError) {
-            throw error;
+         return {
+            result: API.util.wrapResult(queryResults),
+            compactResult: queryResults.data.value,
+            modelInfo: this.modelInfo,
+            dataStyles: this.dataStyles,
+         };
+      } finally {
+         // Close per-request OAuth connections to prevent Snowflake session leaks.
+         if (oauthConnections.length > 0) {
+            await closeOAuthConnections(oauthConnections);
          }
-
-         // For other runtime errors (like divide by zero), throw as BadRequestError
-         const errorMessage =
-            error instanceof Error ? error.message : String(error);
-         logger.error("Query execution error", {
-            error,
-            errorMessage,
-            projectName: this.packageName,
-            modelPath: this.modelPath,
-            query,
-            queryName,
-            sourceName,
-         });
-         throw new BadRequestError(`Query execution failed: ${errorMessage}`);
       }
-
-      this.queryExecutionHistogram.record(executionTime, {
-         "malloy.model.path": this.modelPath,
-         "malloy.model.query.name": queryName,
-         "malloy.model.query.source": sourceName,
-         "malloy.model.query.query": query,
-         "malloy.model.query.rows_limit": rowLimit,
-         "malloy.model.query.rows_total": queryResults.totalRows,
-         "malloy.model.query.connection": queryResults.connectionName,
-         "malloy.model.query.status": "success",
-      });
-      return {
-         result: API.util.wrapResult(queryResults),
-         compactResult: queryResults.data.value,
-         modelInfo: this.modelInfo,
-         dataStyles: this.dataStyles,
-      };
    }
 
    private getStandardModel(): ApiCompiledModel {
