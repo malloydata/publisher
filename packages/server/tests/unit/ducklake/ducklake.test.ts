@@ -8,7 +8,10 @@ import {
    testConnectionConfig,
 } from "../../../src/service/connection";
 import { components } from "../../../src/api";
-import { getSchemasForConnection, getTablesForSchema } from "../../../src/service/db_utils";
+import {
+   getSchemasForConnection,
+   getTablesForSchema,
+} from "../../../src/service/db_utils";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -139,9 +142,7 @@ describe("DuckLake Connection Tests", () => {
 
             // Verify DuckLake database is attached
             const databases = await connection.runSQL("SHOW DATABASES");
-            const dbNames = databases.rows.map(
-               (row) => Object.values(row)[0],
-            );
+            const dbNames = databases.rows.map((row) => Object.values(row)[0]);
             expect(dbNames).toContain("ducklake_s3_test");
 
             // Verify database file was created
@@ -207,9 +208,7 @@ describe("DuckLake Connection Tests", () => {
 
             // Verify DuckLake database is attached
             const databases = await connection.runSQL("SHOW DATABASES");
-            const dbNames = databases.rows.map(
-               (row) => Object.values(row)[0],
-            );
+            const dbNames = databases.rows.map((row) => Object.values(row)[0]);
             expect(dbNames).toContain("ducklake_gcs_test");
          },
          { timeout: 30000 },
@@ -555,9 +554,7 @@ describe("DuckLake Connection Tests", () => {
                ],
                testProjectPath,
             ),
-         ).rejects.toThrow(
-            /PostgreSQL connection configuration is required/,
-         );
+         ).rejects.toThrow(/PostgreSQL connection configuration is required/);
       });
 
       it("should throw error if DuckLake storage bucketUrl is missing", async () => {
@@ -771,7 +768,10 @@ describe("DuckLake Connection Tests", () => {
          );
 
          // Delete the file
-         await deleteDuckLakeConnectionFile("ducklake_delete_test", testProjectPath);
+         await deleteDuckLakeConnectionFile(
+            "ducklake_delete_test",
+            testProjectPath,
+         );
 
          // Verify file is deleted
          const dbPath = path.join(
@@ -789,7 +789,10 @@ describe("DuckLake Connection Tests", () => {
          // Should not throw error if file doesn't exist
          // The function catches ENOENT errors internally, so this should complete without throwing
          await expect(
-            deleteDuckLakeConnectionFile("nonexistent_connection", testProjectPath),
+            deleteDuckLakeConnectionFile(
+               "nonexistent_connection",
+               testProjectPath,
+            ),
          ).resolves.toBeUndefined();
       });
    });

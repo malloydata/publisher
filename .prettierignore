@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Generated files
+**/*.d.ts
+packages/sdk/dist/
+packages/server/dist/
+packages/app/dist/
+packages/cli/dist/
+
+# Other
+.DS_Store
+*.log
+.env
