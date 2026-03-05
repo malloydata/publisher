@@ -16,8 +16,9 @@ import { URL } from "url";
 
 // --- E2E Test Environment Setup ---
 
-// Store the original SERVER_ROOT to restore it later.
+// Store the original SERVER_ROOT and INITIALIZE_STORAGE to restore them later.
 let originalServerRoot: string | undefined;
+let originalInitializeStorage: string | undefined;
 
 export interface McpE2ETestEnvironment {
    httpServer: http.Server;
@@ -40,6 +41,14 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
    process.env.SERVER_ROOT = serverPackageDir;
    console.log(
       `[E2E Test Setup] Temporarily set SERVER_ROOT=${process.env.SERVER_ROOT}`,
+   );
+
+   // --- Set INITIALIZE_STORAGE to ensure packages are downloaded ---
+   // This ensures packages from GitHub are cloned/downloaded during initialization
+   originalInitializeStorage = process.env.INITIALIZE_STORAGE; // Store original value
+   process.env.INITIALIZE_STORAGE = "true";
+   console.log(
+      `[E2E Test Setup] Temporarily set INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
    );
 
    // --- IMPORTANT: Import server *after* setting env var ---
@@ -83,6 +92,40 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
    // Ensure serverInstance and serverUrl are assigned
    const listeningServerInstance = serverInstance!;
    const listeningServerUrl = serverUrl!;
+
+   // --- Wait for server to be ready (packages downloaded) ---
+   // Poll the readiness endpoint to ensure initialization completes before tests run
+   console.log("[E2E Test Setup] Waiting for server to be ready...");
+   const maxWaitTime = 120000; // 2 minutes max wait
+   const pollInterval = 1000; // Check every second
+   const startTime = Date.now();
+   let isReady = false;
+
+   while (!isReady && Date.now() - startTime < maxWaitTime) {
+      try {
+         const response = await fetch(`${listeningServerUrl}/health/readiness`);
+         if (response.ok) {
+            const data = await response.json();
+            if (data.status === "UP") {
+               isReady = true;
+               console.log("[E2E Test Setup] Server is ready.");
+               break;
+            }
+         }
+      } catch (error) {
+         // Server might not be ready yet, continue polling
+         console.log(
+            `[E2E Test Setup] Server not ready yet, waiting... (${Math.round((Date.now() - startTime) / 1000)}s)`,
+         );
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+   }
+
+   if (!isReady) {
+      throw new Error(
+         `Server did not become ready within ${maxWaitTime / 1000} seconds. Package downloads may have failed.`,
+      );
+   }
 
    // --- Client Setup ---
    const mcpClient = new Client<Request, Notification, Result>({
@@ -145,7 +188,7 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
 export async function cleanupE2ETestEnvironment(
    env: McpE2ETestEnvironment | null,
 ): Promise<void> {
-   // --- Restore Original SERVER_ROOT ---
+   // --- Restore Original SERVER_ROOT and INITIALIZE_STORAGE ---
    // Restore the original SERVER_ROOT value after tests are complete.
    if (originalServerRoot === undefined) {
       delete process.env.SERVER_ROOT;
@@ -154,6 +197,17 @@ export async function cleanupE2ETestEnvironment(
       process.env.SERVER_ROOT = originalServerRoot;
       console.log(
          `[E2E Test Cleanup] Restored SERVER_ROOT=${process.env.SERVER_ROOT}`,
+      );
+   }
+
+   // Restore the original INITIALIZE_STORAGE value after tests are complete.
+   if (originalInitializeStorage === undefined) {
+      delete process.env.INITIALIZE_STORAGE;
+      console.log("[E2E Test Cleanup] Restored INITIALIZE_STORAGE (deleted)");
+   } else {
+      process.env.INITIALIZE_STORAGE = originalInitializeStorage;
+      console.log(
+         `[E2E Test Cleanup] Restored INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
       );
    }
 
