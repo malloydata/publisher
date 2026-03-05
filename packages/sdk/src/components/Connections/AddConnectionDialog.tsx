@@ -231,13 +231,22 @@ export default function AddConnectionDialog({
 
          // Validate required fields based on connection type
          if (type === "postgres") {
-            const hasConnectionString = !!connectionConfig.connectionString?.trim();
+            const hasConnectionString =
+               !!connectionConfig.connectionString?.trim();
             if (!hasConnectionString) {
                // All detailed fields are required if no connection string
-               const requiredFields = ["host", "port", "databaseName", "userName", "password"];
+               const requiredFields = [
+                  "host",
+                  "port",
+                  "databaseName",
+                  "userName",
+                  "password",
+               ];
                for (const fieldName of requiredFields) {
                   if (!connectionConfig[fieldName]) {
-                     throw new Error(`${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`);
+                     throw new Error(
+                        `${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`,
+                     );
                   }
                }
             }
@@ -267,14 +276,28 @@ export default function AddConnectionDialog({
             }
             // Password is required for HTTPS unless peakaKey is used
             const server = connectionConfig.server.trim();
-            if (server.startsWith("https://") && !connectionConfig.password && !connectionConfig.peakaKey) {
-               throw new Error("Password is required for HTTPS connections (or use Peaka Key)");
+            if (
+               server.startsWith("https://") &&
+               !connectionConfig.password &&
+               !connectionConfig.peakaKey
+            ) {
+               throw new Error(
+                  "Password is required for HTTPS connections (or use Peaka Key)",
+               );
             }
          } else if (type === "mysql") {
-            const requiredFields = ["host", "port", "database", "user", "password"];
+            const requiredFields = [
+               "host",
+               "port",
+               "database",
+               "user",
+               "password",
+            ];
             for (const fieldName of requiredFields) {
                if (!connectionConfig[fieldName]) {
-                  throw new Error(`${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`);
+                  throw new Error(
+                     `${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`,
+                  );
                }
             }
          } else if (type === "motherduck") {

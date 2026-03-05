@@ -139,7 +139,8 @@ export default function EditConnectionDialog({
                }
             });
             // For updates, use existing values if not provided
-            const existingS3 = connection.ducklakeConnection?.storage?.s3Connection;
+            const existingS3 =
+               connection.ducklakeConnection?.storage?.s3Connection;
             if (existingS3) {
                if (!s3Config.accessKeyId && existingS3.accessKeyId) {
                   s3Config.accessKeyId = existingS3.accessKeyId;
@@ -169,7 +170,8 @@ export default function EditConnectionDialog({
                }
             });
             // For updates, use existing values if not provided
-            const existingGcs = connection.ducklakeConnection?.storage?.gcsConnection;
+            const existingGcs =
+               connection.ducklakeConnection?.storage?.gcsConnection;
             if (existingGcs) {
                if (!gcsConfig.keyId && existingGcs.keyId) {
                   gcsConfig.keyId = existingGcs.keyId;
@@ -259,11 +261,11 @@ export default function EditConnectionDialog({
          // Regular connection types
          const existingConfig = connection[attributesFieldName[type]] || {};
          const connectionConfig: Record<string, string> = {};
-         
+
          fields.forEach((field) => {
             const formValue = formData.get(field.name)?.toString();
             const existingValue = existingConfig[field.name];
-            
+
             // For password/secret fields, use existing value if form value is empty
             const isPasswordField =
                field.type === "password" ||
@@ -272,7 +274,7 @@ export default function EditConnectionDialog({
                field.name === "secret" ||
                field.name === "accessToken" ||
                field.name === "privateKey";
-            
+
             if (formValue) {
                connectionConfig[field.name] = formValue;
             } else if (isPasswordField && existingValue) {
@@ -287,13 +289,22 @@ export default function EditConnectionDialog({
 
          // Validate required fields based on connection type
          if (type === "postgres") {
-            const hasConnectionString = !!connectionConfig.connectionString?.trim();
+            const hasConnectionString =
+               !!connectionConfig.connectionString?.trim();
             if (!hasConnectionString) {
                // All detailed fields are required if no connection string
-               const requiredFields = ["host", "port", "databaseName", "userName", "password"];
+               const requiredFields = [
+                  "host",
+                  "port",
+                  "databaseName",
+                  "userName",
+                  "password",
+               ];
                for (const fieldName of requiredFields) {
                   if (!connectionConfig[fieldName]) {
-                     throw new Error(`${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`);
+                     throw new Error(
+                        `${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`,
+                     );
                   }
                }
             }
@@ -323,14 +334,28 @@ export default function EditConnectionDialog({
             }
             // Password is required for HTTPS unless peakaKey is used
             const server = connectionConfig.server.trim();
-            if (server.startsWith("https://") && !connectionConfig.password && !connectionConfig.peakaKey) {
-               throw new Error("Password is required for HTTPS connections (or use Peaka Key)");
+            if (
+               server.startsWith("https://") &&
+               !connectionConfig.password &&
+               !connectionConfig.peakaKey
+            ) {
+               throw new Error(
+                  "Password is required for HTTPS connections (or use Peaka Key)",
+               );
             }
          } else if (type === "mysql") {
-            const requiredFields = ["host", "port", "database", "user", "password"];
+            const requiredFields = [
+               "host",
+               "port",
+               "database",
+               "user",
+               "password",
+            ];
             for (const fieldName of requiredFields) {
                if (!connectionConfig[fieldName]) {
-                  throw new Error(`${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`);
+                  throw new Error(
+                     `${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`,
+                  );
                }
             }
          } else if (type === "motherduck") {
@@ -593,8 +618,8 @@ export default function EditConnectionDialog({
                                           field.name === "region"
                                              ? "us-east-1"
                                              : field.name === "secretAccessKey"
-                                                ? "Leave empty to keep existing"
-                                                : undefined
+                                               ? "Leave empty to keep existing"
+                                               : undefined
                                        }
                                     />
                                  ))}
