@@ -155,17 +155,37 @@ export class ConnectionController {
    public async getTable(
       projectName: string,
       connectionName: string,
-      _schemaName: string,
+      schemaName: string,
       tablePath: string,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
          projectName,
          connectionName,
       );
+      const connection = await this.getConnection(projectName, connectionName);
+
+      if (connection.type === "ducklake") {
+         if (tablePath.split(".").length === 1) {
+            // tablePath is just the table name, construct full path
+            tablePath = `${connectionName}.${schemaName}.${tablePath}`;
+         } else if (
+            tablePath.split(".").length === 2 &&
+            !tablePath.startsWith(connectionName)
+         ) {
+            // tablePath is schemaName.tableName but missing connection prefix
+            tablePath = `${connectionName}.${tablePath}`;
+         }
+         // If tablePath already has 3+ parts or starts with connection name, use as-is
+      }
+
+      const tableKey = tablePath.split(".").pop();
+      if (!tableKey) {
+         throw new Error(`Invalid tablePath: ${tablePath}`);
+      }
 
       const tableSource = await getConnectionTableSource(
          malloyConnection,
-         tablePath.split(".").pop()!, // tableKey is the table name
+         tableKey, // tableKey is the table name
          tablePath,
       );
 

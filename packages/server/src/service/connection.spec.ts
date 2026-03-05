@@ -975,6 +975,111 @@ describe("connection integration tests", () => {
       });
 
       describe("error handling", () => {
+         describe("DuckLake connection type", () => {
+            it(
+               "should create DuckLake connection",
+               async () => {
+                  if (!hasPostgresCredentials() || !hasS3Credentials()) {
+                     console.log(
+                        "Skipping: PostgreSQL and S3 credentials not configured",
+                     );
+                     return;
+                  }
+
+                  const { malloyConnections } = await createProjectConnections(
+                     [
+                        {
+                           name: "ducklake_test",
+                           type: "ducklake",
+                           ducklakeConnection: {
+                              catalog: {
+                                 postgresConnection: {
+                                    host: process.env.POSTGRES_TEST_HOST,
+                                    port: parseInt(
+                                       process.env.POSTGRES_TEST_PORT || "5432",
+                                    ),
+                                    userName: process.env.POSTGRES_TEST_USER!,
+                                    password:
+                                       process.env.POSTGRES_TEST_PASSWORD!,
+                                    databaseName:
+                                       process.env.POSTGRES_TEST_DATABASE,
+                                 },
+                              },
+                              storage: {
+                                 bucketUrl:
+                                    process.env.S3_TEST_BUCKET_URL ||
+                                    "s3://test-bucket",
+                                 s3Connection: {
+                                    accessKeyId:
+                                       process.env.S3_TEST_ACCESS_KEY_ID!,
+                                    secretAccessKey:
+                                       process.env.S3_TEST_SECRET_ACCESS_KEY!,
+                                 },
+                              },
+                           },
+                        },
+                     ],
+                     testProjectPath,
+                  );
+
+                  const connection = malloyConnections.get(
+                     "ducklake_test",
+                  ) as DuckDBConnection;
+                  createdConnections.push(connection);
+                  expect(connection).toBeDefined();
+
+                  // Verify DuckLake database is attached
+                  const databases = await connection.runSQL("SHOW DATABASES");
+                  const dbNames = databases.rows.map(
+                     (row) => Object.values(row)[0],
+                  );
+                  expect(dbNames).toContain("ducklake_test");
+               },
+               { timeout: 30000 },
+            );
+
+            it("should throw error if DuckLake catalog connection is missing", async () => {
+               await expect(
+                  createProjectConnections(
+                     [
+                        {
+                           name: "ducklake_no_catalog",
+                           type: "ducklake",
+                           ducklakeConnection: {
+                              storage: {
+                                 bucketUrl: "s3://test-bucket",
+                                 s3Connection: {
+                                    accessKeyId: "test",
+                                    secretAccessKey: "test",
+                                 },
+                              },
+                           },
+                        } as ApiConnection,
+                     ],
+                     testProjectPath,
+                  ),
+               ).rejects.toThrow(
+                  /PostgreSQL connection configuration is required/,
+               );
+            });
+
+            it("should throw error if DuckLake connection config is missing", async () => {
+               await expect(
+                  createProjectConnections(
+                     [
+                        {
+                           name: "ducklake_missing_config",
+                           type: "ducklake",
+                        },
+                     ],
+                     testProjectPath,
+                  ),
+               ).rejects.toThrow(
+                  /DuckLake connection configuration is missing/,
+               );
+            });
+         });
+
          it("should throw error if DuckDB connection name conflicts with attached database", async () => {
             await expect(
                createProjectConnections(
