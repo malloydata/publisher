@@ -1,5 +1,0 @@
-{
-  "name": "ducklake-ecommerce",
-  "version": "0.0.1",
-  "description": "Ecommerce semantic model built on ducklake_aws. Covers order items, customers, inventory, and products."
-}
