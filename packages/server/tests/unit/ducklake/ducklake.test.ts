@@ -1,13 +1,13 @@
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { components } from "../../../src/api";
 import {
    createProjectConnections,
    deleteDuckLakeConnectionFile,
    testConnectionConfig,
 } from "../../../src/service/connection";
-import { components } from "../../../src/api";
 import {
    getSchemasForConnection,
    getTablesForSchema,
@@ -49,7 +49,7 @@ describe("DuckLake Connection Tests", () => {
       }
       createdConnections = [];
 
-      // Clean up DuckLake database files
+      // Clean up DuckLake database files from testProjectPath
       try {
          const files = await fs.readdir(testProjectPath);
          for (const file of files) {
@@ -59,6 +59,23 @@ describe("DuckLake Connection Tests", () => {
          }
       } catch (error) {
          // Ignore cleanup errors
+      }
+
+      // Clean up DuckLake database files from process.cwd() (created by testConnectionConfig)
+      // testConnectionConfig creates files in process.cwd() instead of testProjectPath
+      try {
+         const cwdFiles = await fs.readdir(process.cwd());
+         for (const file of cwdFiles) {
+            if (file.endsWith("_ducklake.duckdb")) {
+               const filePath = path.join(process.cwd(), file);
+               // Only delete test files, not production files
+               if (file.includes("_test") || file.includes("invalid")) {
+                  await fs.rm(filePath, { force: true });
+               }
+            }
+         }
+      } catch (_error) {
+         // Ignore cleanup errors (file might not exist or already deleted)
       }
 
       // Clean up test directory
