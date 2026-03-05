@@ -36,7 +36,9 @@ let initializationLock: Promise<void> | null = null;
 export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> {
    // Wait for any ongoing initialization to complete (prevents concurrent DB initialization)
    if (initializationLock) {
-      console.log("[E2E Test Setup] Waiting for previous initialization to complete...");
+      console.log(
+         "[E2E Test Setup] Waiting for previous initialization to complete...",
+      );
       await initializationLock;
    }
 

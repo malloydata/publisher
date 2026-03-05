@@ -43,6 +43,8 @@
     "format:server": "cd packages/server && bun run format",
     "format": "bun run format:sdk && bun run format:app && bun run format:server",
     "format:cli": "cd packages/cli && bun run format",
+    "prettier:check": "bunx prettier './packages/**/*.{ts,tsx}' --check",
+    "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
     "install-duckdb-bindings": "node scripts/install-duckdb-bindings.js",
     "install-duckdb-snowflake": "node scripts/install-duckdb-snowflake.js"
