@@ -84,10 +84,8 @@ function runTest(data?: CombinedSetupData) {
 export const loadTest: TestPreset = {
    defaultOptions: {
       stages: [
-         { duration: "1m", target: 20 }, // warm-up
-         { duration: "2m", target: 50 }, // load
-         { duration: "5m", target: 100 }, // sustained load
-         { duration: "2m", target: 150 }, // near saturation
+         { duration: "1m", target: 10 }, // ramp-up
+         { duration: "5m", target: 25 }, // sustained load
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {

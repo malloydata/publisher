@@ -115,7 +115,7 @@ jobs:
           DISABLE_RESPONSE_LOGGING: true
 
       # CRUD test runs all three suites: Projects, Connections, Packages
-      # Stages: 1m warm-up → 2m load → 5m sustained → 2m near-saturation → 1m ramp-down
+      # Stages: 1m ramp-up to 10 VUs → 5m sustained at 25 VUs → 1m ramp-down
       - name: Run k6 CRUD tests
         run: |
           cd packages/server/k6-tests
