@@ -25,7 +25,7 @@ export function getPrometheusMetricsHandler() {
    if (!prometheusExporter) {
       // In test environments, return a no-op handler
       if (process.env.NODE_ENV === "test") {
-         return (req: Request, res: Response) => {
+         return (_req: Request, res: Response) => {
             res.status(200).json({
                message: "Metrics not available in test environment",
             });
