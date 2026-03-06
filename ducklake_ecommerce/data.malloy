@@ -1,0 +1,13 @@
+// Update James on the format:
+// catalog.schema.table_name
+
+
+
+// input: catalogName/tableName
+// when no schema is provided: defaults to main
+source: catalogName_tableName is ducklake_aws_pub.table("ducklake_aws_pub.inventory_items");
+
+source: catalogName_schemaName_tableName is ducklake_aws_pub.table("ducklake_aws_pub.main.inventory_items");
+
+
+source: schemaName_tableName is ducklake_aws_pub.table("main.inventory_items");

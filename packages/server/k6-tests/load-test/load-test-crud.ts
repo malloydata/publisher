@@ -83,8 +83,8 @@ function runTest(data?: CombinedSetupData) {
 
 export const loadTest: TestPreset = {
    defaultOptions: {
-      stages: __ENV.K6_STAGES
-         ? (JSON.parse(__ENV.K6_STAGES) as Array<{
+      stages: __ENV.K6_CUSTOM_STAGES
+         ? (JSON.parse(__ENV.K6_CUSTOM_STAGES) as Array<{
               duration: string;
               target: number;
            }>)
