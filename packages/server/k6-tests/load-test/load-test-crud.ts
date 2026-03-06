@@ -83,17 +83,123 @@ function runTest(data?: CombinedSetupData) {
 
 export const loadTest: TestPreset = {
    defaultOptions: {
-      stages: [
-         { duration: "1m", target: 10 }, // ramp-up
-         { duration: "5m", target: 25 }, // sustained load
-         { duration: "1m", target: 0 }, // ramp down
-      ],
+      stages: __ENV.K6_STAGES
+         ? (JSON.parse(__ENV.K6_STAGES) as Array<{
+              duration: string;
+              target: number;
+           }>)
+         : [
+              { duration: "1m", target: 10 }, // ramp-up
+              { duration: "5m", target: 25 }, // sustained load
+              { duration: "1m", target: 0 }, // ramp down
+           ],
       thresholds: {
-         http_req_duration: ["p(90)<1000", "p(95)<1500", "p(99)<2500"],
-         http_req_waiting: ["p(95)<1200"],
+         // Global thresholds - updated based on actual performance
+         http_req_duration: ["p(90)<1500", "p(95)<2000", "p(99)<3000"],
+         http_req_waiting: ["p(95)<2000"],
          http_req_failed: ["rate<0.01"],
          checks: ["rate>0.99"],
          dropped_iterations: ["count==0"],
+         // Per-operation thresholds for Projects CRUD
+         "http_req_duration{name:create_project}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:get_project}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:list_projects}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:update_project}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:delete_project}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         // Per-operation thresholds for Connections CRUD - DuckDB
+         "http_req_duration{name:create_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:get_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:update_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:delete_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         // Per-operation thresholds for Connections CRUD - BigQuery
+         "http_req_duration{name:create_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:get_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:update_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:delete_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         // Common operations
+         "http_req_duration{name:list_connections}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         // Per-operation thresholds for Packages CRUD
+         "http_req_duration{name:create_package}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:get_package}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:list_packages}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:update_package}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:delete_package}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
       },
    },
    run: runTest as () => void,

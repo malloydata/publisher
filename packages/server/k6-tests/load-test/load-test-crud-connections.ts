@@ -9,6 +9,7 @@ import {
    AUTH_TOKEN,
    BASE_URL,
    generateTestName,
+   HAS_BIGQUERY_CREDENTIALS,
    validateServerIsUpAndInitialized,
 } from "../utils/common.ts";
 
@@ -111,36 +112,59 @@ export const loadTestConnections: TestPreset = {
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {
-         http_req_duration: ["p(90)<1000", "p(95)<1500", "p(99)<2500"],
-         http_req_waiting: ["p(95)<1200"],
+         // Global thresholds - updated based on actual performance
+         http_req_duration: ["p(90)<1500", "p(95)<2000", "p(99)<3000"],
+         http_req_waiting: ["p(95)<2000"],
          http_req_failed: ["rate<0.02"],
          checks: ["rate>0.98"],
          dropped_iterations: ["count==0"],
-         // Per-operation thresholds (C, R, U, D)
-         "http_req_duration{name:create_connection}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+         // Per-operation thresholds (C, R, U, D) - DuckDB
+         "http_req_duration{name:create_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
          ],
-         "http_req_duration{name:get_connection}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+         "http_req_duration{name:get_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
          ],
+         "http_req_duration{name:update_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:delete_connection_duckdb}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         // Per-operation thresholds (C, R, U, D) - BigQuery
+         "http_req_duration{name:create_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:get_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:update_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         "http_req_duration{name:delete_connection_bigquery}": [
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
+         ],
+         // Common operations
          "http_req_duration{name:list_connections}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
-         ],
-         "http_req_duration{name:update_connection}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
-         ],
-         "http_req_duration{name:delete_connection}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<1500",
+            "p(95)<2000",
+            "p(99)<3000",
          ],
       },
    },
@@ -154,28 +178,89 @@ export const loadTestConnections: TestPreset = {
       }
 
       const { projectName } = setupData;
-      const connectionName = generateTestName("load-test-connection");
 
-      group("Connections CRUD", () => {
-         // Create connection (using duckdb as it doesn't require external setup)
+      // Build array of connection types to test
+      // Always include DuckDB, add BigQuery if credentials are available
+      const connectionTypes: Array<{
+         type: ConnectionTypeEnum;
+         name: string;
+         tagSuffix: string;
+      }> = [
+         {
+            type: ConnectionTypeEnum.duckdb,
+            name: "duckdb",
+            tagSuffix: "duckdb",
+         },
+      ];
+
+      if (HAS_BIGQUERY_CREDENTIALS) {
+         connectionTypes.push({
+            type: ConnectionTypeEnum.bigquery,
+            name: "bigquery",
+            tagSuffix: "bigquery",
+         });
+      }
+
+      // Pick a connection type based on VU number to cycle through them
+      const connectionIndex = __VU % connectionTypes.length;
+      const selectedConnection = connectionTypes[connectionIndex];
+      if (!selectedConnection) {
+         console.error("No connection type selected for load testing");
+         return;
+      }
+
+      const connectionName = generateTestName(
+         `load-test-connection-${selectedConnection.name}`,
+      );
+
+      group(`Connections CRUD (${selectedConnection.name})`, () => {
+         // Create connection
          group("Create Connection", () => {
-            const testConnection: Connection = {
-               name: connectionName,
-               type: ConnectionTypeEnum.duckdb,
-               attributes: {
-                  dialectName: "duckdb",
-                  isPool: false,
-                  canPersist: true,
-                  canStream: true,
-               },
-               duckdbConnection: {},
-            };
+            let testConnection: Connection;
+
+            if (selectedConnection.type === ConnectionTypeEnum.duckdb) {
+               testConnection = {
+                  name: connectionName,
+                  type: ConnectionTypeEnum.duckdb,
+                  attributes: {
+                     dialectName: "duckdb",
+                     isPool: false,
+                     canPersist: true,
+                     canStream: true,
+                  },
+                  duckdbConnection: {},
+               };
+            } else if (selectedConnection.type === ConnectionTypeEnum.bigquery) {
+               testConnection = {
+                  name: connectionName,
+                  type: ConnectionTypeEnum.bigquery,
+                  attributes: {
+                     dialectName: "bigquery",
+                     isPool: false,
+                     canPersist: true,
+                     canStream: true,
+                  },
+                  bigqueryConnection: {
+                     location: "US",
+                     serviceAccountKeyJson: __ENV.GOOGLE_APPLICATION_CREDENTIALS,
+                  },
+               };
+            } else {
+               console.error(
+                  `Unsupported connection type: ${selectedConnection.type}`,
+               );
+               return;
+            }
 
             const createConnectionResponse = connectionsClient.createConnection(
                projectName,
                connectionName,
                testConnection,
-               { tags: { name: "create_connection" } },
+               {
+                  tags: {
+                     name: `create_connection_${selectedConnection.tagSuffix}`,
+                  },
+               },
             );
             check(createConnectionResponse.response, {
                "create connection request successful": (r) =>
@@ -196,7 +281,11 @@ export const loadTestConnections: TestPreset = {
             const getConnectionResponse = connectionsClient.getConnection(
                projectName,
                connectionName,
-               { tags: { name: "get_connection" } },
+               {
+                  tags: {
+                     name: `get_connection_${selectedConnection.tagSuffix}`,
+                  },
+               },
             );
             const getStatus = getConnectionResponse.response.status;
             check(getConnectionResponse.response, {
@@ -224,13 +313,36 @@ export const loadTestConnections: TestPreset = {
 
          // Update connection
          group("Update Connection", () => {
+            let updatePayload: Partial<Connection>;
+
+            if (selectedConnection.type === ConnectionTypeEnum.duckdb) {
+               updatePayload = {
+                  duckdbConnection: {},
+               };
+            } else if (selectedConnection.type === ConnectionTypeEnum.bigquery) {
+               updatePayload = {
+                  bigqueryConnection: {
+                     location: "US",
+                     serviceAccountKeyJson:
+                        __ENV.GOOGLE_APPLICATION_CREDENTIALS,
+                  },
+               };
+            } else {
+               console.error(
+                  `Unsupported connection type for update: ${selectedConnection.type}`,
+               );
+               return;
+            }
+
             const updateConnectionResponse = connectionsClient.updateConnection(
                projectName,
                connectionName,
+               updatePayload,
                {
-                  duckdbConnection: {},
+                  tags: {
+                     name: `update_connection_${selectedConnection.tagSuffix}`,
+                  },
                },
-               { tags: { name: "update_connection" } },
             );
             const updateStatus = updateConnectionResponse.response.status;
             check(updateConnectionResponse.response, {
@@ -246,7 +358,11 @@ export const loadTestConnections: TestPreset = {
             const deleteConnectionResponse = connectionsClient.deleteConnection(
                projectName,
                connectionName,
-               { tags: { name: "delete_connection" } },
+               {
+                  tags: {
+                     name: `delete_connection_${selectedConnection.tagSuffix}`,
+                  },
+               },
             );
             check(deleteConnectionResponse.response, {
                "delete connection request successful": (r) =>

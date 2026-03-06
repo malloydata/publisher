@@ -1,11 +1,11 @@
 import { check, group, sleep } from "k6";
+import type { Connection } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
+import { ConnectionType as ConnectionTypeEnum } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 import {
    getConnectionsClient,
    getPackagesClient,
    getProjectsClient,
 } from "../utils/client_factory.ts";
-import type { Connection } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
-import { ConnectionType as ConnectionTypeEnum } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 import {
    AUTH_TOKEN,
    BASE_URL,
