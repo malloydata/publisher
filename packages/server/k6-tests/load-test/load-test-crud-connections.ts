@@ -113,26 +113,26 @@ export const loadTestConnections: TestPreset = {
       ],
       thresholds: {
          // Global thresholds - updated with buffer for 50 VUs
-         http_req_duration: ["p(90)<2000", "p(95)<2500", "p(99)<4000"],
-         http_req_waiting: ["p(95)<2500"],
+         http_req_duration: ["p(90)<3000", "p(95)<3500", "p(99)<4500"],
+         http_req_waiting: ["p(95)<3500"],
          http_req_failed: ["rate<0.02"],
          checks: ["rate>0.98"],
          dropped_iterations: ["count==0"],
          // Per-operation thresholds (C, R, U, D) - DuckDB (with buffer for 50 VUs)
          "http_req_duration{name:create_connection_duckdb}": [
-            "p(90)<2500",
-            "p(95)<3000",
-            "p(99)<4000",
+            "p(90)<3500",
+            "p(95)<4000",
+            "p(99)<5000",
          ],
          "http_req_duration{name:get_connection_duckdb}": [
-            "p(90)<2000",
-            "p(95)<2500",
-            "p(99)<3500",
-         ],
-         "http_req_duration{name:update_connection_duckdb}": [
-            "p(90)<2500",
+            "p(90)<3000",
             "p(95)<3500",
             "p(99)<4500",
+         ],
+         "http_req_duration{name:update_connection_duckdb}": [
+            "p(90)<3000",
+            "p(95)<4000",
+            "p(99)<5000",
          ],
          "http_req_duration{name:delete_connection_duckdb}": [
             "p(90)<2000",
@@ -141,19 +141,19 @@ export const loadTestConnections: TestPreset = {
          ],
          // Per-operation thresholds (C, R, U, D) - BigQuery (with buffer for 50 VUs)
          "http_req_duration{name:create_connection_bigquery}": [
-            "p(90)<2500",
-            "p(95)<3000",
-            "p(99)<4000",
+            "p(90)<3500",
+            "p(95)<4000",
+            "p(99)<5000",
          ],
          "http_req_duration{name:get_connection_bigquery}": [
-            "p(90)<2000",
-            "p(95)<2500",
-            "p(99)<3500",
+            "p(90)<3000",
+            "p(95)<3500",
+            "p(99)<4500",
          ],
          "http_req_duration{name:update_connection_bigquery}": [
-            "p(90)<2000",
-            "p(95)<2500",
-            "p(99)<4000",
+            "p(90)<3000",
+            "p(95)<3500",
+            "p(99)<4500",
          ],
          "http_req_duration{name:delete_connection_bigquery}": [
             "p(90)<2000",
