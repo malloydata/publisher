@@ -369,7 +369,7 @@ export const loadTestPackages: TestPreset = {
                   );
                } else {
                   console.warn(
-                     `Package ${selectedPackage} creation failed with status ${createStatus} in project ${projectName}. Server should have cleaned up the directory.`,
+                     `Package ${selectedPackage} creation failed with status ${createStatus} in project ${projectName}. Location: ${packageLocation}. Error: ${errorBody}`,
                   );
                }
                return; // Skip remaining tests if create failed, but continue with same project/connection
