@@ -124,5 +124,5 @@ jobs:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
           K6_WHITELISTED_PACKAGES: '["ecommerce", "faa", "imdb"]'
-          K6_CUSTOM_STAGES: '[{"duration":"1m","target":10},{"duration":"5m","target":25},{"duration":"1m","target":0}]'
+          K6_CUSTOM_STAGES: '[{"duration":"1m","target":25},{"duration":"5m","target":25},{"duration":"1m","target":0}]'
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}

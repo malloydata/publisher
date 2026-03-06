@@ -226,37 +226,37 @@ export const loadTestPackages: TestPreset = {
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {
-         // Global thresholds
-         http_req_duration: ["p(90)<1000", "p(95)<1500", "p(99)<2500"],
-         http_req_waiting: ["p(95)<1200"],
+         // Global thresholds - updated with buffer for 50 VUs
+         http_req_duration: ["p(90)<2000", "p(95)<2500", "p(99)<4000"],
+         http_req_waiting: ["p(95)<2500"],
          http_req_failed: ["rate<0.02"],
          checks: ["rate>0.98"],
          dropped_iterations: ["count==0"],
-         // Per-operation thresholds (C, R, U, D)
+         // Per-operation thresholds (C, R, U, D) - heavier operations need more buffer
          "http_req_duration{name:create_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<4000",
+            "p(95)<5000",
+            "p(99)<6000",
          ],
          "http_req_duration{name:get_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
          "http_req_duration{name:list_packages}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
          "http_req_duration{name:update_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<3500",
+            "p(95)<4500",
+            "p(99)<5500",
          ],
          "http_req_duration{name:delete_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
       },
    },

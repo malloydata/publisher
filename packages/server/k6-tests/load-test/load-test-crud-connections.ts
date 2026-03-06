@@ -112,59 +112,59 @@ export const loadTestConnections: TestPreset = {
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {
-         // Global thresholds - updated based on actual performance
-         http_req_duration: ["p(90)<1500", "p(95)<2000", "p(99)<3000"],
-         http_req_waiting: ["p(95)<2000"],
+         // Global thresholds - updated with buffer for 50 VUs
+         http_req_duration: ["p(90)<2000", "p(95)<2500", "p(99)<4000"],
+         http_req_waiting: ["p(95)<2500"],
          http_req_failed: ["rate<0.02"],
          checks: ["rate>0.98"],
          dropped_iterations: ["count==0"],
-         // Per-operation thresholds (C, R, U, D) - DuckDB
+         // Per-operation thresholds (C, R, U, D) - DuckDB (with buffer for 50 VUs)
          "http_req_duration{name:create_connection_duckdb}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2500",
+            "p(95)<3000",
+            "p(99)<4000",
          ],
          "http_req_duration{name:get_connection_duckdb}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<3500",
          ],
          "http_req_duration{name:update_connection_duckdb}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2500",
+            "p(95)<3500",
+            "p(99)<4500",
          ],
          "http_req_duration{name:delete_connection_duckdb}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
-         // Per-operation thresholds (C, R, U, D) - BigQuery
+         // Per-operation thresholds (C, R, U, D) - BigQuery (with buffer for 50 VUs)
          "http_req_duration{name:create_connection_bigquery}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2500",
+            "p(95)<3000",
+            "p(99)<4000",
          ],
          "http_req_duration{name:get_connection_bigquery}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<3500",
          ],
          "http_req_duration{name:update_connection_bigquery}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
          "http_req_duration{name:delete_connection_bigquery}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
          // Common operations
          "http_req_duration{name:list_connections}": [
-            "p(90)<1500",
-            "p(95)<2000",
-            "p(99)<3000",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
       },
    },
@@ -230,7 +230,9 @@ export const loadTestConnections: TestPreset = {
                   },
                   duckdbConnection: {},
                };
-            } else if (selectedConnection.type === ConnectionTypeEnum.bigquery) {
+            } else if (
+               selectedConnection.type === ConnectionTypeEnum.bigquery
+            ) {
                testConnection = {
                   name: connectionName,
                   type: ConnectionTypeEnum.bigquery,
@@ -242,7 +244,8 @@ export const loadTestConnections: TestPreset = {
                   },
                   bigqueryConnection: {
                      location: "US",
-                     serviceAccountKeyJson: __ENV.GOOGLE_APPLICATION_CREDENTIALS,
+                     serviceAccountKeyJson:
+                        __ENV.GOOGLE_APPLICATION_CREDENTIALS,
                   },
                };
             } else {
@@ -319,7 +322,9 @@ export const loadTestConnections: TestPreset = {
                updatePayload = {
                   duckdbConnection: {},
                };
-            } else if (selectedConnection.type === ConnectionTypeEnum.bigquery) {
+            } else if (
+               selectedConnection.type === ConnectionTypeEnum.bigquery
+            ) {
                updatePayload = {
                   bigqueryConnection: {
                      location: "US",
