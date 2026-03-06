@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: "true"
+          submodules: "true" # Fetch submodules
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -24,7 +24,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.10
+          bun-version: 1.2.23
 
       - name: Cache Bun dependencies
         id: bun-cache
@@ -65,6 +65,42 @@ jobs:
       - name: Setup k6
         uses: grafana/setup-k6-action@v1
 
+      - name: Setup BigQuery credentials
+        run: |
+          if [ -z "$BQ_PRESTO_TRINO_KEY" ]; then
+            echo "BQ_PRESTO_TRINO_KEY is not set"
+            exit 1
+          fi
+
+          # Detect base64 vs JSON
+          if echo "$BQ_PRESTO_TRINO_KEY" | grep -qE '^\s*eyJ'; then
+            echo "Detected Base64 credentials. Decoding..."
+            echo "$BQ_PRESTO_TRINO_KEY" | base64 --decode > /tmp/bq-credentials.json
+          else
+            echo "Detected raw JSON credentials."
+            echo "$BQ_PRESTO_TRINO_KEY" > /tmp/bq-credentials.json
+          fi
+
+          # Validate JSON
+          jq . /tmp/bq-credentials.json > /dev/null
+
+          # Export for rest of job
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/bq-credentials.json" >> $GITHUB_ENV
+
+          echo "BigQuery credentials file created at /tmp/bq-credentials.json"
+        env:
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+
+      - name: Strip bigquery-hackernews package and bigquery connection from publisher config
+        run: |
+          cd packages/server
+          jq '
+            .projects[].packages |= map(select(.name != "bigquery-hackernews")) |
+            .projects[].connections |= map(select(.name != "bigquery"))
+          ' publisher.config.json > tmp.json && mv tmp.json publisher.config.json
+          echo "Updated publisher.config.json:"
+          cat publisher.config.json
+
       - name: Start npx server
         run: |
           cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
@@ -78,28 +114,16 @@ jobs:
           echo "Response Data: $response"
           echo "Server is running on port 4002"
         env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
           DISABLE_RESPONSE_LOGGING: true
 
-      - name: Run k6 CRUD Projects test
-        uses: grafana/run-k6-action@v1
-        with:
-          path: packages/server/k6-tests/load-test/load-test-crud-projects.ts
+      # CRUD test runs all three suites: Projects, Connections, Packages
+      # Stages: 1m warm-up → 2m load → 5m sustained → 2m near-saturation → 1m ramp-down
+      - name: Run k6 CRUD tests
+        run: |
+          cd packages/server/k6-tests
+          k6 run --verbose load-test/load-test-crud.ts
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
-
-      - name: Run k6 CRUD Connections test
-        uses: grafana/run-k6-action@v1
-        with:
-          path: packages/server/k6-tests/load-test/load-test-crud-connections.ts
-        env:
-          K6_PUBLISHER_URL: "http://localhost:4002"
-          K6_PROJECT_NAME: "malloy-samples"
-
-      - name: Run k6 CRUD Packages test
-        uses: grafana/run-k6-action@v1
-        with:
-          path: packages/server/k6-tests/load-test/load-test-crud-packages.ts
-        env:
-          K6_PUBLISHER_URL: "http://localhost:4002"
-          K6_PROJECT_NAME: "malloy-samples"
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
