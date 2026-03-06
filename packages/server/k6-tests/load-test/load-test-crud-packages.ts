@@ -298,13 +298,6 @@ export const loadTestPackages: TestPreset = {
          availablePackages = availablePackages.filter(
             (pkg) => !pkg.startsWith("bigquery-"),
          );
-         console.log(
-            `No BigQuery connection available. Filtered out BigQuery packages. Using project: ${projectName}`,
-         );
-      } else {
-         console.log(
-            `Using project: ${projectName} with BigQuery connection: ${bigqueryConnectionName}`,
-         );
       }
 
       if (availablePackages.length === 0) {

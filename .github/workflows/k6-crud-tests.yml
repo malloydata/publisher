@@ -91,13 +91,10 @@ jobs:
         env:
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
 
-      - name: Strip bigquery-hackernews package and bigquery connection from publisher config
+      - name: Strip bigquery-hackernews package from publisher config
         run: |
           cd packages/server
-          jq '
-            .projects[].packages |= map(select(.name != "bigquery-hackernews")) |
-            .projects[].connections |= map(select(.name != "bigquery"))
-          ' publisher.config.json > tmp.json && mv tmp.json publisher.config.json
+          jq '.projects[].packages |= map(select(.name != "bigquery-hackernews"))' publisher.config.json > tmp.json && mv tmp.json publisher.config.json
           echo "Updated publisher.config.json:"
           cat publisher.config.json
 
