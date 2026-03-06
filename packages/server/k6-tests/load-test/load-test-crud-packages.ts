@@ -221,8 +221,8 @@ export function teardown(data: SetupData) {
 export const loadTestPackages: TestPreset = {
    defaultOptions: {
       stages: [
-         { duration: "1m", target: 10 }, // warm-up
-         { duration: "5m", target: 25 }, // sustained load
+         { duration: "1m", target: 50 }, // ramp-up
+         { duration: "5m", target: 50 }, // sustained load
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {
