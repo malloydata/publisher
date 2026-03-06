@@ -308,30 +308,34 @@ export const loadTestPackages: TestPreset = {
       }
 
       // Pick a package from available whitelisted packages (cycle through them)
-      // Use VU iteration number to cycle through packages
+      // Use VU number to select the source package directory
       const packageIndex = __VU % availablePackages.length;
-      const selectedPackage = availablePackages[packageIndex];
-      if (!selectedPackage) {
+      const sourcePackage = availablePackages[packageIndex];
+      if (!sourcePackage) {
          console.error("No package selected for load testing");
          return;
       }
 
-      // Construct absolute path to the selected package
+      // Create a unique package name per VU+iteration to avoid directory collisions
+      // when multiple VUs try to create packages concurrently
+      const uniquePackageName = `${sourcePackage}-vu${__VU}-${Date.now()}`;
+
+      // Construct absolute path to the source package directory
       const basePath = __ENV.PWD || "";
       const packageLocation = basePath
-         ? `${basePath}/packages/${selectedPackage}`
-         : `./packages/${selectedPackage}`;
+         ? `${basePath}/packages/${sourcePackage}`
+         : `./packages/${sourcePackage}`;
 
       // Delay before package creation to avoid rapid-fire requests
       sleep(0.2);
 
       group("Packages CRUD", () => {
-         // Create package with real location
+         // Create package with real location but unique name
          group("Create Package", () => {
             const createPackageResponse = packagesClient.createPackage(
                projectName,
                {
-                  name: selectedPackage,
+                  name: uniquePackageName,
                   description: `Test package for load testing`,
                   location: packageLocation,
                },
@@ -360,16 +364,13 @@ export const loadTestPackages: TestPreset = {
                   errorBody.includes("Connection") ||
                   errorBody.includes("compiling model") ||
                   errorBody.includes("Error(s) compiling");
-               if (
-                  isConnectionError &&
-                  selectedPackage.startsWith("bigquery-")
-               ) {
+               if (isConnectionError && sourcePackage.startsWith("bigquery-")) {
                   console.warn(
-                     `Package ${selectedPackage} failed due to connection/compilation error (status ${createStatus}) in project ${projectName}. This may indicate the BigQuery connection ${bigqueryConnectionName || "N/A"} is not properly configured.`,
+                     `Package ${uniquePackageName} failed due to connection/compilation error (status ${createStatus}) in project ${projectName}. This may indicate the BigQuery connection ${bigqueryConnectionName || "N/A"} is not properly configured.`,
                   );
                } else {
                   console.warn(
-                     `Package ${selectedPackage} creation failed with status ${createStatus} in project ${projectName}. Location: ${packageLocation}. Error: ${errorBody}`,
+                     `Package ${uniquePackageName} creation failed with status ${createStatus} in project ${projectName}. Location: ${packageLocation}. Error: ${errorBody}`,
                   );
                }
                return; // Skip remaining tests if create failed, but continue with same project/connection
@@ -382,7 +383,7 @@ export const loadTestPackages: TestPreset = {
          group("Get Package", () => {
             const getPackageResponse = packagesClient.getPackage(
                projectName,
-               selectedPackage,
+               uniquePackageName,
                undefined,
                { tags: { name: "get_package" } },
             );
@@ -416,9 +417,9 @@ export const loadTestPackages: TestPreset = {
          group("Update Package", () => {
             const updatePackageResponse = packagesClient.updatePackage(
                projectName,
-               selectedPackage,
+               uniquePackageName,
                {
-                  name: selectedPackage,
+                  name: uniquePackageName,
                   description: "Updated description for load testing",
                },
                { tags: { name: "update_package" } },
@@ -437,7 +438,7 @@ export const loadTestPackages: TestPreset = {
          group("Delete Package", () => {
             const deletePackageResponse = packagesClient.deletePackage(
                projectName,
-               selectedPackage,
+               uniquePackageName,
                { tags: { name: "delete_package" } },
             );
             check(deletePackageResponse.response, {

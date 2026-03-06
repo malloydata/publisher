@@ -123,4 +123,5 @@ jobs:
         env:
           K6_PUBLISHER_URL: "http://localhost:4002"
           K6_PROJECT_NAME: "malloy-samples"
+          K6_WHITELISTED_PACKAGES: '["ecommerce", "faa", "imdb"]'
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
