@@ -13,7 +13,11 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { URL_READER } from "../utils";
-import { createProjectConnections, InternalConnection } from "./connection";
+import {
+   createProjectConnections,
+   deleteDuckLakeConnectionFile,
+   InternalConnection,
+} from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 
@@ -86,12 +90,13 @@ export class Project {
          logger.info(
             `Updating ${payload.connections.length} connections for project ${this.projectName}`,
          );
-
+         const isUpdateConnectionRequest = true;
          // Reload connections with full config
          const { malloyConnections, apiConnections } =
             await createProjectConnections(
                payload.connections,
                this.projectPath,
+               isUpdateConnectionRequest,
             );
 
          // Update the project's connection maps
@@ -536,8 +541,11 @@ export class Project {
          (conn) => conn.name === connectionName,
       );
 
-      if (this.apiConnections[index]?.type === "duckdb") {
+      const connectionType = this.apiConnections[index]?.type;
+      if (connectionType === "duckdb") {
          await this.deleteDuckDBConnection(connectionName);
+      } else if (connectionType === "ducklake") {
+         await this.deleteDuckLakeConnection(connectionName);
       }
 
       if (index !== -1) {
@@ -614,6 +622,15 @@ export class Project {
                { error },
             );
          });
+   }
+
+   public async deleteDuckLakeConnection(
+      connectionName: string,
+   ): Promise<void> {
+      await deleteDuckLakeConnectionFile(connectionName, this.projectPath);
+      logger.info(
+         `Removed DuckLake connection ${connectionName} from project ${this.projectName}`,
+      );
    }
 }
 

@@ -7,9 +7,8 @@ import {
    CloudStorageCredentials,
    gcsConnectionToCredentials,
    getCloudTablesWithColumns,
-   listAllDataFilesInBucket,
-   listCloudBuckets,
-   listFilesInCloudDirectory,
+   listCloudDirectorySchemas,
+   listDataFilesInDirectory,
    parseCloudUri,
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
@@ -340,23 +339,10 @@ export async function getSchemasForConnection(
                   : s3ConnectionToCredentials(attachedDb.s3Connection!);
 
             try {
-               const buckets = await listCloudBuckets(credentials);
-               const scheme = dbType === "gcs" ? "gs" : "s3";
-
-               logger.info(
-                  `Listed ${buckets.length} ${dbType.toUpperCase()} buckets for attached database ${attachedDb.name}`,
-               );
-
-               // Just return bucket URIs as schemas - fast!
-               // Files/directories will be listed when user selects a bucket
-               return buckets.map((bucket) => ({
-                  name: `${scheme}://${bucket.name}`,
-                  isHidden: false,
-                  isDefault: false,
-               }));
+               return await listCloudDirectorySchemas(credentials);
             } catch (cloudError) {
                logger.warn(
-                  `Failed to list ${dbType.toUpperCase()} buckets for ${attachedDb.name}`,
+                  `Failed to list ${dbType.toUpperCase()} directory schemas for ${attachedDb.name}`,
                   { error: cloudError },
                );
                return [];
@@ -411,6 +397,38 @@ export async function getSchemasForConnection(
             `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
          );
       }
+   } else if (connection.type === "ducklake") {
+      try {
+         // Filter by catalog_name to only get schemas from the attached DuckLake catalog
+         // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
+         const catalogName = connection.name;
+         const result = await malloyConnection.runSQL(
+            `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${catalogName}' ORDER BY schema_name`,
+            { rowLimit: 1000 },
+         );
+         const rows = standardizeRunSQLResult(result);
+
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = typedRow.schema_name as string;
+
+            const shouldShow = schemaName === "main" || schemaName === "public";
+
+            return {
+               name: schemaName,
+               isHidden: !shouldShow,
+               isDefault: false,
+            };
+         });
+      } catch (error) {
+         logger.error(
+            `Error getting schemas for DuckLake connection ${connection.name}`,
+            { error },
+         );
+         throw new Error(
+            `Failed to get schemas for DuckLake connection ${connection.name}: ${(error as Error).message}`,
+         );
+      }
    } else {
       throw new Error(`Unsupported connection type: ${connection.type}`);
    }
@@ -444,19 +462,11 @@ export async function getTablesForSchema(
          );
       }
 
-      let fileKeys: string[];
-      if (directoryPath) {
-         const fileNames = await listFilesInCloudDirectory(
-            credentials,
-            bucketName,
-            directoryPath,
-         );
-         fileKeys = fileNames.map((fileName) => `${directoryPath}/${fileName}`);
-      } else {
-         fileKeys = await listAllDataFilesInBucket(credentials, bucketName);
-      }
-
-      console.log("File keys:", fileKeys);
+      const fileKeys = await listDataFilesInDirectory(
+         credentials,
+         bucketName,
+         directoryPath,
+      );
 
       return await getCloudTablesWithColumns(
          malloyConnection,
@@ -464,8 +474,13 @@ export async function getTablesForSchema(
          bucketName,
          fileKeys,
       );
+   } else if (connection.type === "ducklake") {
+      if (schemaName.split(".").length == 2) {
+         schemaName = `${connection.name}.${schemaName}`;
+      } else if (schemaName.split(".").length === 1) {
+         schemaName = `${connection.name}.${schemaName}`;
+      }
    }
-
    const tableNames = await listTablesForSchema(
       connection,
       schemaName,
@@ -476,7 +491,6 @@ export async function getTablesForSchema(
    const tableSourcePromises = tableNames.map(async (tableName) => {
       try {
          let tablePath: string;
-
          if (connection.type === "trino") {
             if (connection.trinoConnection?.catalog) {
                tablePath = `${connection.trinoConnection?.catalog}.${schemaName}.${tableName}`;
@@ -484,6 +498,10 @@ export async function getTablesForSchema(
                // Catalog name is included in the schema name
                tablePath = `${schemaName}.${tableName}`;
             }
+         } else if (connection.type === "ducklake") {
+            // For ducklake, schemaName already includes connection name prefix from above
+            // So tablePath should be schemaName.tableName (which is connectionName.schemaName.tableName)
+            tablePath = `${schemaName}.${tableName}`;
          } else {
             tablePath = `${schemaName}.${tableName}`;
          }
@@ -497,14 +515,13 @@ export async function getTablesForSchema(
             tableName,
             tablePath,
          );
-
          return {
             resource: tablePath,
             columns: tableSource.columns,
          };
       } catch (error) {
          logger.warn(`Failed to get schema for table ${tableName}`, {
-            error,
+            error: extractErrorDataFromError(error),
             schemaName,
             tableName,
          });
@@ -748,15 +765,15 @@ export async function listTablesForSchema(
          }
 
          try {
-            if (directoryPath) {
-               return await listFilesInCloudDirectory(
-                  credentials,
-                  bucketName,
-                  directoryPath,
-               );
-            } else {
-               return await listAllDataFilesInBucket(credentials, bucketName);
-            }
+            const fileKeys = await listDataFilesInDirectory(
+               credentials,
+               bucketName,
+               directoryPath,
+            );
+            return fileKeys.map((key) => {
+               const lastSlash = key.lastIndexOf("/");
+               return lastSlash > 0 ? key.substring(lastSlash + 1) : key;
+            });
          } catch (error) {
             logger.error(
                `Error listing ${cloudType.toUpperCase()} objects in ${schemaName}`,
@@ -817,7 +834,49 @@ export async function listTablesForSchema(
             `Failed to get tables for MotherDuck schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
          );
       }
+   } else if (connection.type === "ducklake") {
+      const catalogName = schemaName.split(".")[0];
+      const actualSchemaName = schemaName.split(".")[1];
+      console.error("catalogName", catalogName);
+      console.error("actualSchemaName", actualSchemaName);
+      try {
+         const result = await malloyConnection.runSQL(
+            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ORDER BY table_name`,
+            { rowLimit: 1000 },
+         );
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            return typedRow.table_name as string;
+         });
+      } catch (error) {
+         logger.error(
+            `Error getting tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
+            { error },
+         );
+         throw new Error(
+            `Failed to get tables for DuckLake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         );
+      }
    } else {
       throw new Error(`Unsupported connection type: ${connection.type}`);
    }
+}
+
+export function extractErrorDataFromError(error: unknown): {
+   error: string;
+   stack?: string;
+   task?: unknown;
+} {
+   const errorMessage = error instanceof Error ? error.message : String(error);
+   const errorData: { error: string; stack?: string; task?: unknown } = {
+      error: errorMessage,
+   };
+   if (error instanceof Error && logger.level === "debug") {
+      errorData.stack = error.stack;
+   }
+   if (error && typeof error === "object" && "task" in error) {
+      errorData.task = (error as { task?: unknown }).task;
+   }
+   return errorData;
 }

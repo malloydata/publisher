@@ -131,6 +131,9 @@ const compileController = new CompileController(projectStore);
 
 export const mcpApp = express();
 
+// Register health endpoints on mcpApp (for E2E tests)
+registerHealthEndpoints(mcpApp);
+
 mcpApp.use(MCP_ENDPOINT, express.json());
 mcpApp.use(MCP_ENDPOINT, cors());
 
@@ -253,7 +256,8 @@ app.use(
 );
 app.use(bodyParser.json());
 
-// Register health check endpoints
+// Register health check endpoints on main app:
+// - Required for production/Kubernetes monitoring (main server on PUBLISHER_PORT)
 registerHealthEndpoints(app);
 
 // Register Prometheus metrics endpoint
