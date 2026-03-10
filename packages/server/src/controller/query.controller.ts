@@ -41,11 +41,18 @@ export class QueryController {
             queryName,
             query,
          );
+         // Lazy import since this creates a FakeDOM global which
+         // can confuse other imports.
+         const { validateRenderTags } = await import(
+            "@malloydata/render-validator"
+         );
+         const renderLogs = validateRenderTags(result);
          return {
             result: compactJson
                ? JSON.stringify(compactResult, bigIntReplacer)
                : JSON.stringify(result),
             resource: `${API_PREFIX}/projects/${projectName}/packages/${packageName}/models/${modelPath}/query`,
+            renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
          } as ApiQuery;
       }
    }

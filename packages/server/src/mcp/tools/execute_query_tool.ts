@@ -121,8 +121,11 @@ export function registerExecuteQueryTool(
                   undefined,
                   query,
                );
+               const { validateRenderTags } = await import(
+                  "@malloydata/render-validator"
+               );
+               const renderLogs = validateRenderTags(result);
 
-               // --- Format Success Response (Duplicated for now, could refactor) ---
                const baseUriComponents = {
                   project: projectName,
                   package: packageName,
@@ -131,29 +134,43 @@ export function registerExecuteQueryTool(
                };
                const resultUri = buildMalloyUri(baseUriComponents, "result");
                const resultString = JSON.stringify(result, null, 2);
-               return {
-                  isError: false,
-                  content: [
-                     {
-                        type: "resource",
-                        resource: {
-                           type: "application/json",
-                           uri: resultUri,
-                           text: resultString,
-                        },
+
+               const content = [
+                  {
+                     type: "resource" as const,
+                     resource: {
+                        type: "application/json",
+                        uri: resultUri,
+                        text: resultString,
                      },
-                  ],
-               };
+                  },
+               ];
+
+               if (renderLogs.length > 0) {
+                  return {
+                     isError: false,
+                     content: [
+                        ...content,
+                        {
+                           type: "text" as const,
+                           text: `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`,
+                        },
+                     ],
+                  };
+               }
+
+               return { isError: false, content };
             } else if (queryName) {
-               // Otherwise, use sourceName/queryName in 1st/2nd args
                const { result } = await model.getQueryResults(
                   sourceName,
                   queryName,
                   undefined,
                );
+               const { validateRenderTags } = await import(
+                  "@malloydata/render-validator"
+               );
+               const renderLogs = validateRenderTags(result);
 
-               // --- Format Success Response ---
-               // Use the helper function to build valid URIs
                const baseUriComponents = {
                   project: projectName,
                   package: packageName,
@@ -161,22 +178,33 @@ export function registerExecuteQueryTool(
                   resourceName: modelPath,
                };
                const resultUri = buildMalloyUri(baseUriComponents, "result");
-
                const resultString = JSON.stringify(result, null, 2);
 
-               return {
-                  isError: false,
-                  content: [
-                     {
-                        type: "resource",
-                        resource: {
-                           type: "application/json",
-                           uri: resultUri,
-                           text: resultString,
-                        },
+               const content = [
+                  {
+                     type: "resource" as const,
+                     resource: {
+                        type: "application/json",
+                        uri: resultUri,
+                        text: resultString,
                      },
-                  ],
-               };
+                  },
+               ];
+
+               if (renderLogs.length > 0) {
+                  return {
+                     isError: false,
+                     content: [
+                        ...content,
+                        {
+                           type: "text" as const,
+                           text: `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`,
+                        },
+                     ],
+                  };
+               }
+
+               return { isError: false, content };
             }
 
             // If execution reaches this point, something has gone wrong with
