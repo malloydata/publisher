@@ -1,3 +1,4 @@
+import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
@@ -40,11 +41,6 @@ export class QueryController {
             sourceName,
             queryName,
             query,
-         );
-         // Lazy import since this creates a FakeDOM global which
-         // can confuse other imports.
-         const { validateRenderTags } = await import(
-            "@malloydata/render-validator"
          );
          const renderLogs = validateRenderTags(result);
          return {
