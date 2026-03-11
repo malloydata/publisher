@@ -1,5 +1,4 @@
 #!/bin/bash
-#!/bin/bash
 
 if [ $# -ne 1 ]; then
   echo "Usage: $0 NEW_VERSION"
@@ -17,8 +16,12 @@ if [ -z "$OLD_VERSION" ]; then
     exit 1
 fi
 
-# Replace version in all package.json files
+# Replace version in all packages/*/package.json files
 for package in packages/*/package.json; do
-  echo editing $package
+  echo "editing $package"
   sed -i '' '/"@malloydata\// s/"\'${OLD_VERSION//./\\.}'"/"\^'${NEW_VERSION//./\\.}'\"/' $package
 done
+
+# Update @malloydata resolutions in root package.json
+echo "editing package.json (resolutions)"
+sed -i '' '/"@malloydata\// s/"\^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"/"\^'"${NEW_VERSION//./\\.}"'"/' package.json
