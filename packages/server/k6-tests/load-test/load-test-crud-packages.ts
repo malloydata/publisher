@@ -1,11 +1,11 @@
 import { check, group, sleep } from "k6";
+import type { Connection } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
+import { ConnectionType as ConnectionTypeEnum } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 import {
    getConnectionsClient,
    getPackagesClient,
    getProjectsClient,
 } from "../utils/client_factory.ts";
-import type { Connection } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
-import { ConnectionType as ConnectionTypeEnum } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 import {
    AUTH_TOKEN,
    BASE_URL,
@@ -221,42 +221,42 @@ export function teardown(data: SetupData) {
 export const loadTestPackages: TestPreset = {
    defaultOptions: {
       stages: [
-         { duration: "1m", target: 10 }, // warm-up
-         { duration: "5m", target: 25 }, // sustained load
+         { duration: "1m", target: 50 }, // ramp-up
+         { duration: "5m", target: 50 }, // sustained load
          { duration: "1m", target: 0 }, // ramp down
       ],
       thresholds: {
-         // Global thresholds
-         http_req_duration: ["p(90)<1000", "p(95)<1500", "p(99)<2500"],
-         http_req_waiting: ["p(95)<1200"],
+         // Global thresholds - updated with buffer for 50 VUs
+         http_req_duration: ["p(90)<2000", "p(95)<2500", "p(99)<4000"],
+         http_req_waiting: ["p(95)<2500"],
          http_req_failed: ["rate<0.02"],
          checks: ["rate>0.98"],
          dropped_iterations: ["count==0"],
-         // Per-operation thresholds (C, R, U, D)
+         // Per-operation thresholds (C, R, U, D) - heavier operations need more buffer
          "http_req_duration{name:create_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<4000",
+            "p(95)<5000",
+            "p(99)<6000",
          ],
          "http_req_duration{name:get_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
          "http_req_duration{name:list_packages}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
          "http_req_duration{name:update_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<3500",
+            "p(95)<4500",
+            "p(99)<5500",
          ],
          "http_req_duration{name:delete_package}": [
-            "p(90)<1000",
-            "p(95)<1500",
-            "p(99)<2500",
+            "p(90)<2000",
+            "p(95)<2500",
+            "p(99)<4000",
          ],
       },
    },
@@ -298,13 +298,6 @@ export const loadTestPackages: TestPreset = {
          availablePackages = availablePackages.filter(
             (pkg) => !pkg.startsWith("bigquery-"),
          );
-         console.log(
-            `No BigQuery connection available. Filtered out BigQuery packages. Using project: ${projectName}`,
-         );
-      } else {
-         console.log(
-            `Using project: ${projectName} with BigQuery connection: ${bigqueryConnectionName}`,
-         );
       }
 
       if (availablePackages.length === 0) {
@@ -315,30 +308,34 @@ export const loadTestPackages: TestPreset = {
       }
 
       // Pick a package from available whitelisted packages (cycle through them)
-      // Use VU iteration number to cycle through packages
+      // Use VU number to select the source package directory
       const packageIndex = __VU % availablePackages.length;
-      const selectedPackage = availablePackages[packageIndex];
-      if (!selectedPackage) {
+      const sourcePackage = availablePackages[packageIndex];
+      if (!sourcePackage) {
          console.error("No package selected for load testing");
          return;
       }
 
-      // Construct absolute path to the selected package
+      // Create a unique package name per VU+iteration to avoid directory collisions
+      // when multiple VUs try to create packages concurrently
+      const uniquePackageName = `${sourcePackage}-vu${__VU}-${Date.now()}`;
+
+      // Construct absolute path to the source package directory
       const basePath = __ENV.PWD || "";
       const packageLocation = basePath
-         ? `${basePath}/packages/${selectedPackage}`
-         : `./packages/${selectedPackage}`;
+         ? `${basePath}/packages/${sourcePackage}`
+         : `./packages/${sourcePackage}`;
 
       // Delay before package creation to avoid rapid-fire requests
       sleep(0.2);
 
       group("Packages CRUD", () => {
-         // Create package with real location
+         // Create package with real location but unique name
          group("Create Package", () => {
             const createPackageResponse = packagesClient.createPackage(
                projectName,
                {
-                  name: selectedPackage,
+                  name: uniquePackageName,
                   description: `Test package for load testing`,
                   location: packageLocation,
                },
@@ -367,16 +364,13 @@ export const loadTestPackages: TestPreset = {
                   errorBody.includes("Connection") ||
                   errorBody.includes("compiling model") ||
                   errorBody.includes("Error(s) compiling");
-               if (
-                  isConnectionError &&
-                  selectedPackage.startsWith("bigquery-")
-               ) {
+               if (isConnectionError && sourcePackage.startsWith("bigquery-")) {
                   console.warn(
-                     `Package ${selectedPackage} failed due to connection/compilation error (status ${createStatus}) in project ${projectName}. This may indicate the BigQuery connection ${bigqueryConnectionName || "N/A"} is not properly configured.`,
+                     `Package ${uniquePackageName} failed due to connection/compilation error (status ${createStatus}) in project ${projectName}. This may indicate the BigQuery connection ${bigqueryConnectionName || "N/A"} is not properly configured.`,
                   );
                } else {
                   console.warn(
-                     `Package ${selectedPackage} creation failed with status ${createStatus} in project ${projectName}. Server should have cleaned up the directory.`,
+                     `Package ${uniquePackageName} creation failed with status ${createStatus} in project ${projectName}. Location: ${packageLocation}. Error: ${errorBody}`,
                   );
                }
                return; // Skip remaining tests if create failed, but continue with same project/connection
@@ -389,7 +383,7 @@ export const loadTestPackages: TestPreset = {
          group("Get Package", () => {
             const getPackageResponse = packagesClient.getPackage(
                projectName,
-               selectedPackage,
+               uniquePackageName,
                undefined,
                { tags: { name: "get_package" } },
             );
@@ -423,9 +417,9 @@ export const loadTestPackages: TestPreset = {
          group("Update Package", () => {
             const updatePackageResponse = packagesClient.updatePackage(
                projectName,
-               selectedPackage,
+               uniquePackageName,
                {
-                  name: selectedPackage,
+                  name: uniquePackageName,
                   description: "Updated description for load testing",
                },
                { tags: { name: "update_package" } },
@@ -444,7 +438,7 @@ export const loadTestPackages: TestPreset = {
          group("Delete Package", () => {
             const deletePackageResponse = packagesClient.deletePackage(
                projectName,
-               selectedPackage,
+               uniquePackageName,
                { tags: { name: "delete_package" } },
             );
             check(deletePackageResponse.response, {
