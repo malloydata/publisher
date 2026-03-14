@@ -7,7 +7,7 @@ import type {
    Result,
 } from "@modelcontextprotocol/sdk/types.js"; // Keep these base types
 import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import { afterAll, beforeAll, describe, expect, fail, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { URL } from "url";
 import { MCP_ERROR_MESSAGES } from "../../../src/mcp/mcp_constants"; // Keep for error message checks
 
@@ -381,7 +381,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
             // Await the promise - it should reject due to the closure
             await toolPromise;
 
-            fail("Promise should have rejected due to cancellation");
+            throw new Error("Promise should have rejected due to cancellation");
          } catch (error) {
             // Check that the error is an Error instance and the message indicates closure/cancellation
             expect(error).toBeInstanceOf(Error);

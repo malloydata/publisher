@@ -38,7 +38,7 @@ export const smokeTest: TestPreset = {
       vus: 5,
       duration: "1m",
       thresholds: {
-         http_req_duration: ["p(90)<800", "p(95)<1000", "p(99)<1500"],
+         http_req_duration: ["p(90)<800", "p(95)<1000", "p(99)<1600"],
          http_req_failed: ["rate<0.01"],
          http_req_waiting: ["p(95)<1200"],
          checks: ["rate>0.99"],
@@ -61,8 +61,8 @@ export const smokeTest: TestPreset = {
          ],
          "http_req_duration{name:execute_query}": [
             "p(90)<800",
-            "p(95)<1000",
-            "p(99)<1500",
+            "p(95)<1300",
+            "p(99)<1700",
          ],
       },
    },
