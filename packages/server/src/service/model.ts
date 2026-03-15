@@ -10,7 +10,7 @@ import {
    modelDefToModelInfo,
    ModelMaterializer,
    NamedModelObject,
-   NamedQuery,
+   NamedQueryDef,
    QueryData,
    QueryMaterializer,
    Runtime,
@@ -532,7 +532,7 @@ export class Model {
                ROW_LIMIT;
             const result = await cell.runnable.run({ rowLimit });
             const query = (await cell.runnable.getPreparedQuery())._query;
-            queryName = (query as NamedQuery).as || query.name;
+            queryName = (query as NamedQueryDef).as || query.name;
             queryResult =
                result?._queryResult &&
                this.modelInfo &&
@@ -621,11 +621,12 @@ export class Model {
       modelPath: string,
       modelDef: ModelDef,
    ): ApiQuery[] {
-      const isNamedQuery = (object: NamedModelObject): object is NamedQuery =>
-         object.type === "query";
+      const isNamedQuery = (
+         object: NamedModelObject,
+      ): object is NamedQueryDef => object.type === "query";
       return Object.values(modelDef.contents)
          .filter(isNamedQuery)
-         .map((queryObj: NamedQuery) => ({
+         .map((queryObj: NamedQueryDef) => ({
             name: queryObj.as || queryObj.name,
             // What to do when the source is not a string?
             sourceName:
@@ -633,8 +634,10 @@ export class Model {
                   ? queryObj.structRef
                   : undefined,
             annotations: queryObj?.annotation?.blockNotes
-               ?.filter((note) => note.at.url.includes(modelPath))
-               .map((note) => note.text),
+               ?.filter((note: { at: { url: string } }) =>
+                  note.at.url.includes(modelPath),
+               )
+               .map((note: { text: string }) => note.text),
          }));
    }
 
@@ -828,7 +831,7 @@ export class Model {
                   let queryInfo: Malloy.QueryInfo | undefined = undefined;
                   try {
                      const preparedQuery = await runnable.getPreparedQuery();
-                     const query = preparedQuery._query as NamedQuery;
+                     const query = preparedQuery._query as NamedQueryDef;
                      const queryName = query.as || query.name;
                      const anonymousQuery =
                         currentModelInfo.anonymous_queries[

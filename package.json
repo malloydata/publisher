@@ -14,7 +14,7 @@
     "build:app": "cd packages/app && bun run build ",
     "build:app:server": "cd packages/app && bun run build:server",
     "build:server": "cd packages/server && bun run build",
-    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server && bun run install-duckdb-snowflake",
+    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server && bun run install-duckdb-bindings && bun run install-duckdb-snowflake",
     "build:cli": "cd packages/cli && bun run build",
     "build:server-deploy": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:app:server && NODE_ENV=production bun run build:server",
     "start": "cd packages/server && bun run start",
@@ -43,7 +43,10 @@
     "format:server": "cd packages/server && bun run format",
     "format": "bun run format:sdk && bun run format:app && bun run format:server",
     "format:cli": "cd packages/cli && bun run format",
+    "prettier:check": "bunx prettier './packages/**/*.{ts,tsx}' --check",
+    "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
+    "install-duckdb-bindings": "node scripts/install-duckdb-bindings.js",
     "install-duckdb-snowflake": "node scripts/install-duckdb-snowflake.js"
   },
   "devDependencies": {
@@ -70,6 +73,6 @@
   "resolutions": {
     "duckdb": "1.4.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.333"
+    "@malloydata/malloy-interfaces": "^0.0.358"
   }
 }

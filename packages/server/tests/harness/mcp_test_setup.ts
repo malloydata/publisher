@@ -16,22 +16,51 @@ import { URL } from "url";
 
 // --- E2E Test Environment Setup ---
 
-// Store the original SERVER_ROOT to restore it later.
-let originalServerRoot: string | undefined;
-
 export interface McpE2ETestEnvironment {
    httpServer: http.Server;
    serverUrl: string;
    mcpClient: Client<Request, Notification, Result>;
+   originalServerRoot: string | undefined;
+   originalInitializeStorage: string | undefined;
 }
+
+// Counter for unique port assignment per test suite
+let portCounter = 0;
+
+// Mutex to prevent concurrent initialization (since all tests share the same database)
+let initializationLock: Promise<void> | null = null;
 
 /**
  * Starts the real application server and connects a real MCP client.
  */
 export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> {
+   // Wait for any ongoing initialization to complete (prevents concurrent DB initialization)
+   if (initializationLock) {
+      console.log(
+         "[E2E Test Setup] Waiting for previous initialization to complete...",
+      );
+      await initializationLock;
+   }
+
+   // Create a new lock for this initialization
+   let resolveLock: () => void;
+   initializationLock = new Promise((resolve) => {
+      resolveLock = resolve;
+   });
+
+   try {
+      return await setupE2ETestEnvironmentInternal();
+   } finally {
+      // Release the lock
+      resolveLock!();
+      initializationLock = null;
+   }
+}
+
+async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment> {
    // --- Store and Set SERVER_ROOT Env Var ---
    // The ProjectStore relies on SERVER_ROOT to find publisher.config.json.
-   originalServerRoot = process.env.SERVER_ROOT; // Store original value
+   const originalServerRoot = process.env.SERVER_ROOT; // Store original value
    // Resolve the path to 'packages/server' based on the location of this file
    // Use import.meta.url for cross-platform compatibility (works on Windows)
    const __filename = fileURLToPath(import.meta.url);
@@ -42,6 +71,14 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
       `[E2E Test Setup] Temporarily set SERVER_ROOT=${process.env.SERVER_ROOT}`,
    );
 
+   // --- Set INITIALIZE_STORAGE to ensure packages are downloaded ---
+   // This ensures packages from GitHub are cloned/downloaded during initialization
+   const originalInitializeStorage = process.env.INITIALIZE_STORAGE; // Store original value
+   process.env.INITIALIZE_STORAGE = "true";
+   console.log(
+      `[E2E Test Setup] Temporarily set INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
+   );
+
    // --- IMPORTANT: Import server *after* setting env var ---
    // Dynamically import the actual app instance
    const { mcpApp } = await import("../../src/server");
@@ -49,8 +86,10 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
    let serverInstance: http.Server;
    let serverUrl: string;
 
-   // Define an explicit port for the test server to avoid conflicts
-   const TEST_MCP_PORT = Number(process.env.MCP_PORT || 4040) + 2; // e.g., 4042
+   // Use unique port per test suite to avoid conflicts when running in parallel
+   // Increment port counter and use it to create unique ports: 4042, 4043, 4044, etc.
+   const portOffset = portCounter++;
+   const TEST_MCP_PORT = Number(process.env.MCP_PORT || 4040) + 2 + portOffset;
 
    await new Promise<void>((resolve, reject) => {
       const server = http
@@ -83,6 +122,72 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
    // Ensure serverInstance and serverUrl are assigned
    const listeningServerInstance = serverInstance!;
    const listeningServerUrl = serverUrl!;
+
+   // --- Wait a moment for server to start accepting connections ---
+   console.log("[E2E Test Setup] Waiting for server to accept connections...");
+   await new Promise((resolve) => setTimeout(resolve, 1000));
+
+   // --- Wait for server to be ready (packages downloaded) ---
+   // Poll the readiness endpoint to ensure initialization completes before tests run
+   // Note: Reduced timeout to 90s to be under the 100s test timeout
+   console.log("[E2E Test Setup] Waiting for server to be ready...");
+   const maxWaitTime = 90000; // 90 seconds max wait (under 100s test timeout)
+   const pollInterval = 1000; // Check every second
+   const startTime = Date.now();
+   let isReady = false;
+
+   while (!isReady && Date.now() - startTime < maxWaitTime) {
+      try {
+         // Use Promise.race to add timeout to fetch
+         const fetchPromise = fetch(`${listeningServerUrl}/health/readiness`);
+         const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Fetch timeout")), 5000),
+         );
+         const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+         if (response.ok) {
+            const data = await response.json();
+            if (data.status === "UP") {
+               isReady = true;
+               console.log("[E2E Test Setup] Server is ready.");
+               break;
+            } else {
+               console.log(
+                  `[E2E Test Setup] Server not ready yet (status: ${data.status}), waiting... (${Math.round((Date.now() - startTime) / 1000)}s)`,
+               );
+            }
+         } else {
+            console.log(
+               `[E2E Test Setup] Readiness check returned ${response.status}, waiting... (${Math.round((Date.now() - startTime) / 1000)}s)`,
+            );
+         }
+      } catch (error) {
+         // Server might not be ready yet, continue polling
+         const errorMsg =
+            error instanceof Error ? error.message : String(error);
+         // Only log every 5 seconds to reduce noise
+         const elapsed = Math.round((Date.now() - startTime) / 1000);
+         if (elapsed % 5 === 0) {
+            console.log(
+               `[E2E Test Setup] Readiness check failed (${errorMsg}), waiting... (${elapsed}s)`,
+            );
+         }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+   }
+
+   if (!isReady) {
+      // Cleanup before throwing
+      if (listeningServerInstance?.listening) {
+         listeningServerInstance.closeAllConnections?.();
+         await new Promise<void>((res) =>
+            listeningServerInstance.close(() => res()),
+         );
+      }
+      throw new Error(
+         `Server did not become ready within ${maxWaitTime / 1000} seconds. Package downloads may have failed.`,
+      );
+   }
 
    // --- Client Setup ---
    const mcpClient = new Client<Request, Notification, Result>({
@@ -136,6 +241,8 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
       httpServer: listeningServerInstance,
       serverUrl: listeningServerUrl,
       mcpClient,
+      originalServerRoot,
+      originalInitializeStorage,
    };
 }
 
@@ -145,8 +252,14 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
 export async function cleanupE2ETestEnvironment(
    env: McpE2ETestEnvironment | null,
 ): Promise<void> {
-   // --- Restore Original SERVER_ROOT ---
+   if (!env) {
+      // Attempt cleanup even if env is null (e.g., setup failed after config creation)
+      return;
+   }
+
+   // --- Restore Original SERVER_ROOT and INITIALIZE_STORAGE ---
    // Restore the original SERVER_ROOT value after tests are complete.
+   const { originalServerRoot, originalInitializeStorage } = env;
    if (originalServerRoot === undefined) {
       delete process.env.SERVER_ROOT;
       console.log("[E2E Test Cleanup] Restored SERVER_ROOT (deleted)");
@@ -157,44 +270,71 @@ export async function cleanupE2ETestEnvironment(
       );
    }
 
-   if (!env) {
-      // Attempt cleanup even if env is null (e.g., setup failed after config creation)
-      return;
+   // Restore the original INITIALIZE_STORAGE value after tests are complete.
+   if (originalInitializeStorage === undefined) {
+      delete process.env.INITIALIZE_STORAGE;
+      console.log("[E2E Test Cleanup] Restored INITIALIZE_STORAGE (deleted)");
+   } else {
+      process.env.INITIALIZE_STORAGE = originalInitializeStorage;
+      console.log(
+         `[E2E Test Cleanup] Restored INITIALIZE_STORAGE=${process.env.INITIALIZE_STORAGE}`,
+      );
    }
 
    const { mcpClient, httpServer } = env;
 
-   // 1. Close client first
+   // 1. Close client first (with timeout)
    if (mcpClient) {
       try {
-         await mcpClient.close();
-      } catch {
+         const closePromise = mcpClient.close();
+         const timeoutPromise = new Promise<void>((_, reject) => {
+            setTimeout(() => reject(new Error("Client close timeout")), 5000);
+         });
+         await Promise.race([closePromise, timeoutPromise]);
+      } catch (error) {
          // Ignore client close errors during cleanup potentially
          console.warn(
             "[E2E Test Cleanup] Error closing MCP client (ignoring):",
+            error instanceof Error ? error.message : String(error),
          );
       }
    }
 
-   // 2. Close HTTP server connections and then the server itself
+   // 2. Close HTTP server connections and then the server itself (with timeout)
    if (httpServer) {
       // Force close any remaining connections immediately
       httpServer.closeAllConnections?.();
 
       if (httpServer.listening) {
-         await new Promise<void>((resolve) => {
-            httpServer.close((err: NodeJS.ErrnoException | undefined) => {
-               if (err && err.code !== "ERR_SERVER_NOT_RUNNING") {
-                  console.error(
-                     "[E2E Test Cleanup] Error closing HTTP server (after closing connections):",
-                     err,
-                  );
-               } else if (!err) {
-                  console.log("[E2E Test Cleanup] HTTP server closed.");
-               }
-               resolve();
+         try {
+            const closePromise = new Promise<void>((resolve, reject) => {
+               const timeout = setTimeout(() => {
+                  reject(new Error("Server close timeout"));
+               }, 5000);
+               httpServer.close((err: NodeJS.ErrnoException | undefined) => {
+                  clearTimeout(timeout);
+                  if (err && err.code !== "ERR_SERVER_NOT_RUNNING") {
+                     console.error(
+                        "[E2E Test Cleanup] Error closing HTTP server (after closing connections):",
+                        err,
+                     );
+                  } else if (!err) {
+                     console.log("[E2E Test Cleanup] HTTP server closed.");
+                  }
+                  resolve();
+               });
             });
-         });
+            await closePromise;
+         } catch (error) {
+            console.warn(
+               "[E2E Test Cleanup] Server close timeout or error (forcing close):",
+               error instanceof Error ? error.message : String(error),
+            );
+            // Force destroy if close times out
+            if (httpServer.listening) {
+               httpServer.closeAllConnections?.();
+            }
+         }
       } else {
          console.log(
             "[E2E Test Cleanup] HTTP server was not listening or already closed.",

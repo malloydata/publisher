@@ -399,6 +399,8 @@ paths:
                   $ref: "#/components/schemas/MotherDuckConnection"
                 trinoConnection:
                   $ref: "#/components/schemas/TrinoConnection"
+                ducklakeConnection:
+                  $ref: "#/components/schemas/DucklakeConnection"
       responses:
         "200":
           description: Connection updated successfully
@@ -2008,6 +2010,44 @@ components:
         resource:
           type: string
           description: Resource path to the query result
+        renderLogs:
+          type: array
+          description: Render tag validation messages (errors, warnings) detected during query preparation
+          items:
+            $ref: "#/components/schemas/LogMessage"
+
+    LogMessage:
+      type: object
+      description: A log message from render tag validation
+      properties:
+        url:
+          type: string
+          description: URL of the source file related to this message
+        range:
+          type: object
+          description: Source location range for this message
+          properties:
+            start:
+              type: object
+              properties:
+                line:
+                  type: integer
+                character:
+                  type: integer
+            end:
+              type: object
+              properties:
+                line:
+                  type: integer
+                character:
+                  type: integer
+        severity:
+          type: string
+          description: Severity level of the log message
+          enum: ["debug", "info", "warn", "error"]
+        message:
+          type: string
+          description: Human-readable log message
 
     Database:
       type: object
@@ -2057,7 +2097,7 @@ components:
           type: string
           description: Type of database connection
           enum:
-            [postgres, bigquery, snowflake, trino, mysql, duckdb, motherduck]
+            [postgres, bigquery, snowflake, trino, mysql, duckdb, motherduck, ducklake]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:
@@ -2074,6 +2114,8 @@ components:
           $ref: "#/components/schemas/DuckdbConnection"
         motherduckConnection:
           $ref: "#/components/schemas/MotherDuckConnection"
+        ducklakeConnection:
+          $ref: "#/components/schemas/DucklakeConnection"
 
     ConnectionAttributes:
       type: object
@@ -2173,6 +2215,37 @@ components:
         - accessKeyId
         - secretAccessKey
 
+    DucklakeConnection:
+      type: object
+      description: DuckLake lakehouse connection configuration
+      properties:
+        storage:
+          type: object
+          description: Data storage connection configuration (S3 or GCS)
+          properties:
+            bucketUrl:
+              type: string
+              description: URL of the storage bucket (e.g. s3://my-bucket/path or gs://my-bucket/path)
+            s3Connection:
+              $ref: "#/components/schemas/S3Connection"
+              description: AWS S3 connection configuration for data storage
+            gcsConnection:
+              $ref: "#/components/schemas/GCSConnection"
+              description: Google Cloud Storage connection configuration for data storage
+          required:
+            - bucketUrl
+        catalog:
+          type: object
+          description: Catalog metadata connection configuration
+          properties:
+            postgresConnection:
+              $ref: "#/components/schemas/PostgresConnection"
+              description: PostgreSQL connection for DuckLake metadata catalog
+          required:
+            - postgresConnection
+      required:
+        - storage
+        - catalog
     BigqueryConnection:
       type: object
       description: Google BigQuery database connection configuration
