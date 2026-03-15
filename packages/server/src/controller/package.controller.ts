@@ -113,6 +113,7 @@ export class PackageController {
             packageLocation,
             projectName,
             absoluteTargetPath,
+            isCompressedFile,
          );
       }
 

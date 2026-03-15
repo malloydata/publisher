@@ -1112,7 +1112,12 @@ export class ProjectStore {
             logger.info(
                `Downloading S3 directory from "${location}" to "${targetPath}"`,
             );
-            await this.downloadS3Directory(location, projectName, targetPath);
+            await this.downloadS3Directory(
+               location,
+               projectName,
+               targetPath,
+               isCompressedFile,
+            );
             return;
          } catch (error) {
             const errorData = this.extractErrorDataFromError(error);
@@ -1242,10 +1247,43 @@ export class ProjectStore {
       s3Path: string,
       projectName: string,
       absoluteDirPath: string,
+      isCompressedFile: boolean = false,
    ) {
       const trimmedPath = s3Path.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
+
+      if (isCompressedFile) {
+         // Download the single zip file
+         const zipFilePath = `${absoluteDirPath}.zip`;
+         await fs.promises.mkdir(path.dirname(zipFilePath), {
+            recursive: true,
+         });
+
+         const command = new GetObjectCommand({
+            Bucket: bucketName,
+            Key: prefix,
+         });
+         const item = await this.s3Client.send(command);
+         if (!item.Body) {
+            throw new ProjectNotFoundError(
+               `Project ${projectName} not found in ${s3Path}`,
+            );
+         }
+         const file = fs.createWriteStream(zipFilePath);
+         item.Body.transformToWebStream().pipeTo(Writable.toWeb(file));
+         await new Promise<void>((resolve, reject) => {
+            file.on("error", reject);
+            file.on("finish", resolve);
+         });
+
+         // Extract the zip file
+         await this.unzipProject(zipFilePath);
+         logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
+         return;
+      }
+
+      // Original behavior: download directory contents
       const objects = await this.s3Client.listObjectsV2({
          Bucket: bucketName,
          Prefix: prefix,
@@ -1291,6 +1329,7 @@ export class ProjectStore {
             });
          }),
       );
+      logger.info(`Downloaded S3 directory ${s3Path} to ${absoluteDirPath}`);
    }
 
    private parseGitHubUrl(

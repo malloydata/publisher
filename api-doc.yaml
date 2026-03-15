@@ -2010,6 +2010,44 @@ components:
         resource:
           type: string
           description: Resource path to the query result
+        renderLogs:
+          type: array
+          description: Render tag validation messages (errors, warnings) detected during query preparation
+          items:
+            $ref: "#/components/schemas/LogMessage"
+
+    LogMessage:
+      type: object
+      description: A log message from render tag validation
+      properties:
+        url:
+          type: string
+          description: URL of the source file related to this message
+        range:
+          type: object
+          description: Source location range for this message
+          properties:
+            start:
+              type: object
+              properties:
+                line:
+                  type: integer
+                character:
+                  type: integer
+            end:
+              type: object
+              properties:
+                line:
+                  type: integer
+                character:
+                  type: integer
+        severity:
+          type: string
+          description: Severity level of the log message
+          enum: ["debug", "info", "warn", "error"]
+        message:
+          type: string
+          description: Human-readable log message
 
     Database:
       type: object
