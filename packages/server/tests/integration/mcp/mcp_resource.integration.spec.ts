@@ -98,28 +98,22 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
                expect(typeof firstResource.mimeType).toBe("string");
             }
          },
-         { timeout: 120000 }, // Increased to 120s to accommodate package loading
+         { timeout: 30000 },
       );
 
-      it(
-         "should resolve even if called with a specific URI (behavior might vary)",
-         async () => {
-            console.log("[TEST LOG] Starting: listResources - with URI");
-            if (!env) throw new Error("Test environment not initialized");
-            const result = await mcpClient.listResources({
-               uri: homeProjectUri,
-            });
-            console.log(
-               "[TEST LOG] listResources (with URI) result received (count):",
-               result?.resources?.length ?? 0,
-            );
-            expect(result).toBeDefined();
-            expect(result.resources).toBeDefined();
-            expect(Array.isArray(result.resources)).toBe(true);
-            expect(result.resources.length).toBeGreaterThan(0);
-         },
-         { timeout: 120000 }, // Increased to 120s to accommodate package loading
-      );
+      it("should resolve even if called with a specific URI (behavior might vary)", async () => {
+         console.log("[TEST LOG] Starting: listResources - with URI");
+         if (!env) throw new Error("Test environment not initialized");
+         const result = await mcpClient.listResources({ uri: homeProjectUri });
+         console.log(
+            "[TEST LOG] listResources (with URI) result received (count):",
+            result?.resources?.length ?? 0,
+         );
+         expect(result).toBeDefined();
+         expect(result.resources).toBeDefined();
+         expect(Array.isArray(result.resources)).toBe(true);
+         expect(result.resources.length).toBeGreaterThan(0);
+      });
    });
 
    describe("client.readResource (Basic Types)", () => {

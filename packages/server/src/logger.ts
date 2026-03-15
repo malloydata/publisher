@@ -120,20 +120,11 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
       }
 
       // Skip logging for metrics and health endpoints to reduce log noise
-      // Also skip proxied requests in development mode (non-API paths proxied to Vite)
-      const isDevelopment = process.env["NODE_ENV"] === "development";
-      const isProxiedPath =
-         isDevelopment &&
-         !req.url?.startsWith("/api/") &&
-         !req.url?.startsWith("/metrics") &&
-         !req.url?.startsWith("/health");
-
       if (
          req.url !== "/metrics" &&
          req.url !== "/health" &&
          req.url !== "/health/liveness" &&
-         req.url !== "/health/readiness" &&
-         !isProxiedPath
+         req.url !== "/health/readiness"
       ) {
          logger.info(`${req.method} ${req.url}`, logMetadata);
       }
