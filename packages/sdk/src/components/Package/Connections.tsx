@@ -14,7 +14,10 @@ import {
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Connection as ApiConnection } from "../../client/api";
+import {
+   Connection as ApiConnection,
+   ConnectionStatus,
+} from "../../client/api";
 import {
    useMutationWithApiError,
    useQueryWithApiError,
@@ -37,6 +40,9 @@ type ConnectionProps = {
    onClick: () => void;
    onEdit: (connection: ApiConnection) => Promise<unknown>;
    onDelete: (connection: ApiConnection) => Promise<unknown> | void;
+   onTestConnection: (
+      connection: ApiConnection,
+   ) => Promise<{ data: ConnectionStatus }>;
    isMutating: boolean;
    mutable: boolean;
 };
@@ -47,6 +53,7 @@ function Connection({
    onClick,
    onEdit,
    onDelete,
+   onTestConnection,
    isMutating,
    mutable,
 }: ConnectionProps) {
@@ -92,6 +99,7 @@ function Connection({
                   connection={connection}
                   onSubmit={onEdit}
                   isSubmitting={isMutating}
+                  onTestConnection={onTestConnection}
                />
                <DeleteConnectionDialog
                   connection={connection}
@@ -275,6 +283,11 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                  onEdit={(payload) =>
                                     updateConnection.mutateAsync(payload)
                                  }
+                                 onTestConnection={(connection) =>
+                                    apiClients.connectionsTest.testConnectionConfiguration(
+                                       connection,
+                                    )
+                                 }
                                  onDelete={(payload) => {
                                     if (!conn.resource) {
                                        deleteConnection.mutateAsync(payload);
@@ -311,6 +324,11 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                            addConnection.mutateAsync(payload)
                         }
                         isSubmitting={addConnection.isPending}
+                        onTestConnection={(connection) =>
+                           apiClients.connectionsTest.testConnectionConfiguration(
+                              connection,
+                           )
+                        }
                      />
                   </Box>
                )}
