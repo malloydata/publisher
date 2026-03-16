@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { ConnectionRuntime, EmptyURLReader } from "@malloydata/malloy";
 import { Stats } from "fs";
 import fs from "fs/promises";
 import { join } from "path";
@@ -216,11 +218,18 @@ describe("service/package", () => {
          it("should return the size of the database file", async () => {
             sinon.stub(fs, "stat").resolves({ size: 13 } as Stats);
 
+            const sharedConnection = new DuckDBConnection("duckdb");
+            const sharedRuntime = new ConnectionRuntime({
+               urlReader: new EmptyURLReader(),
+               connections: [sharedConnection],
+            });
             // @ts-expect-error Accessing private static method for testing
-            const info = await Package.getDatabaseInfo(
+            const info = await Package.getDatabaseInfoWithRuntime(
                testPackageDirectory,
                "database.csv",
+               sharedRuntime,
             );
+            await sharedConnection.close();
 
             expect(info).toEqual({
                name: "database.csv",
