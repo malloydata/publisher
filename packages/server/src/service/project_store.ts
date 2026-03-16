@@ -196,8 +196,17 @@ export class ProjectStore {
          );
       } catch (error) {
          markNotReady();
-         const errorData = this.extractErrorDataFromError(error);
-         logger.error("Error initializing project store", errorData);
+         const errorMessage =
+            error instanceof Error ? error.message : String(error);
+         logger.error(
+            `Failed to initialize project store: ${errorMessage}. Please check your publisher.config.json for invalid package locations or connections.`,
+         );
+         // Close storage connections before exiting to avoid native NAPI crashes
+         try {
+            await this.storageManager.close();
+         } catch {
+            // Ignore cleanup errors
+         }
          process.exit(1);
       }
    }
@@ -1026,14 +1035,11 @@ export class ProjectStore {
                }
             }
          } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to download or mount location "${groupedLocation}"`,
-               errorData,
-            );
-            throw new PackageNotFoundError(
-               `Failed to download or mount location: ${groupedLocation}`,
-            );
+            throw error instanceof PackageNotFoundError
+               ? error
+               : new PackageNotFoundError(
+                    `Failed to download or mount location: ${groupedLocation}`,
+                 );
          }
          try {
             // Clean up temporary download directory
@@ -1074,12 +1080,7 @@ export class ProjectStore {
                isCompressedFile,
             );
             return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to download GCS directory "${location}"`,
-               errorData,
-            );
+         } catch {
             throw new PackageNotFoundError(
                `Failed to download GCS directory: ${location}`,
             );
@@ -1094,12 +1095,7 @@ export class ProjectStore {
             );
             await this.downloadGitHubDirectory(location, targetPath);
             return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to clone GitHub repository "${location}"`,
-               errorData,
-            );
+         } catch {
             throw new PackageNotFoundError(
                `Failed to clone GitHub repository: ${location}`,
             );
@@ -1119,12 +1115,7 @@ export class ProjectStore {
                isCompressedFile,
             );
             return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to download S3 directory "${location}"`,
-               errorData,
-            );
+         } catch {
             throw new PackageNotFoundError(
                `Failed to download S3 directory: ${location}`,
             );
@@ -1147,12 +1138,7 @@ export class ProjectStore {
                packageName,
             );
             return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to mount local directory "${packagePath}"`,
-               errorData,
-            );
+         } catch {
             throw new PackageNotFoundError(
                `Failed to mount local directory: ${packagePath}`,
             );
@@ -1377,17 +1363,22 @@ export class ProjectStore {
 
       // We'll clone the repo into absoluteDirPath
       await new Promise<void>((resolve, reject) => {
-         simpleGit().clone(repoUrl, absoluteDirPath, {}, (err) => {
-            if (err) {
-               const errorData = this.extractErrorDataFromError(err);
-               logger.error(
-                  `Failed to clone GitHub repository "${repoUrl}"`,
-                  errorData,
-               );
-               reject(err);
-            }
-            resolve();
-         });
+         simpleGit().clone(
+            repoUrl,
+            absoluteDirPath,
+            ["--depth", "1"],
+            (err) => {
+               if (err) {
+                  const errorData = this.extractErrorDataFromError(err);
+                  logger.error(
+                     `Failed to clone GitHub repository "${repoUrl}"`,
+                     errorData,
+                  );
+                  reject(err);
+               }
+               resolve();
+            },
+         );
       });
 
       // If there's no specific package path, we're done (for grouped downloads)

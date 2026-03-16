@@ -106,6 +106,12 @@ export class Package {
          );
          connections.set("duckdb", duckdbConnection);
 
+         // Set FILE_SEARCH_PATH once for the entire package instead of per-model.
+         // This avoids redundant SQL calls and race conditions when models load in parallel.
+         await duckdbConnection.runSQL(
+            `SET FILE_SEARCH_PATH='${packagePath}';`,
+         );
+
          const models = await Package.loadModels(
             packageName,
             packagePath,
@@ -334,12 +340,23 @@ export class Package {
    private static async readDatabases(
       packagePath: string,
    ): Promise<ApiDatabase[]> {
-      return await Promise.all(
-         (await Package.getDatabasePaths(packagePath)).map(
-            async (databasePath) => {
-               const databaseInfo = await Package.getDatabaseInfo(
+      const databasePaths = await Package.getDatabasePaths(packagePath);
+      if (databasePaths.length === 0) return [];
+
+      // Reuse a single DuckDB connection for all database files
+      const sharedConnection = new DuckDBConnection("duckdb");
+      const sharedRuntime = new ConnectionRuntime({
+         urlReader: new EmptyURLReader(),
+         connections: [sharedConnection],
+      });
+
+      try {
+         return await Promise.all(
+            databasePaths.map(async (databasePath) => {
+               const databaseInfo = await Package.getDatabaseInfoWithRuntime(
                   packagePath,
                   databasePath,
+                  sharedRuntime,
                );
 
                return {
@@ -347,9 +364,11 @@ export class Package {
                   info: databaseInfo,
                   type: "embedded",
                };
-            },
-         ),
-      );
+            }),
+         );
+      } finally {
+         await sharedConnection.close();
+      }
    }
 
    private static async getDatabasePaths(
@@ -367,19 +386,13 @@ export class Package {
          );
    }
 
-   private static async getDatabaseInfo(
+   private static async getDatabaseInfoWithRuntime(
       packagePath: string,
       databasePath: string,
+      runtime: ConnectionRuntime,
    ): Promise<ApiTableDescription> {
       const fullPath = path.join(packagePath, databasePath);
 
-      // Create a DuckDB source then:
-      // 1. Load the model and get the table schema from model
-      // 2. Run a query to get the row count from the table
-      const runtime = new ConnectionRuntime({
-         urlReader: new EmptyURLReader(),
-         connections: [new DuckDBConnection("duckdb")],
-      });
       // Normalize path to use forward slashes for cross-platform compatibility
       // DuckDB on Windows supports forward slashes, and this avoids escaping issues
       const normalizedPath = fullPath.replace(/\\/g, "/");
