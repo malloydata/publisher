@@ -18,6 +18,7 @@ import {
    Typography,
 } from "@mui/material";
 import React, { useState } from "react";
+import { Connection as ApiConnection } from "../../client/api";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -28,12 +29,38 @@ interface ConnectionExplorerProps {
    connectionName: string;
    schema?: string;
    resourceUri: string;
+   connection?: ApiConnection;
+}
+
+/** Check if a schema name corresponds to an Azure attached database */
+function isAzureSchema(
+   connection: ApiConnection | undefined,
+   schemaName: string,
+): boolean {
+   if (!connection || connection.type !== "duckdb") return false;
+   const attachedDbs =
+      connection.duckdbConnection?.attachedDatabases || [];
+   return attachedDbs.some(
+      (db) => db.type === "azure" && db.name === schemaName,
+   );
+}
+
+/** Check if a schema name corresponds to a cloud storage path */
+function isCloudStorageSchema(schemaName: string): boolean {
+   return (
+      schemaName.startsWith("gs://") ||
+      schemaName.startsWith("s3://") ||
+      schemaName.startsWith("https://") ||
+      schemaName.startsWith("abfss://") ||
+      schemaName.startsWith("az://")
+   );
 }
 
 export default function ConnectionExplorer({
    connectionName,
    resourceUri,
    schema,
+   connection,
 }: ConnectionExplorerProps) {
    const { apiClients } = useServer();
    const { projectName: projectName } = parseResourceUri(resourceUri);
@@ -150,6 +177,7 @@ export default function ConnectionExplorer({
                         setSelectedTable(table);
                      }}
                      resourceUri={resourceUri}
+                     connection={connection}
                   />
                </Paper>
             )}
@@ -180,7 +208,11 @@ function TableSchemaViewer({ table }: TableSchemaViewerProps) {
                wordBreak: "break-all",
             }}
          >
-            Schema: {table.resource}
+            {table.resource.includes("://") ||
+            /\.(parquet|csv|json|tsv|ndjson)$/i.test(table.resource)
+               ? "File"
+               : "Table"}
+            : {table.resource}
          </Typography>
          <Divider />
          <Box sx={{ mt: "10px", maxHeight: "600px", overflowY: "auto" }}>
@@ -222,6 +254,7 @@ interface TablesInSchemaProps {
       columns: Array<{ name: string; type: string }>;
    }) => void;
    resourceUri: string;
+   connection?: ApiConnection;
 }
 
 function TablesInSchema({
@@ -229,6 +262,7 @@ function TablesInSchema({
    schemaName,
    onTableClick,
    resourceUri,
+   connection,
 }: TablesInSchemaProps) {
    const { projectName: projectName } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -243,26 +277,31 @@ function TablesInSchema({
          ),
    });
 
+   const isAzure = isAzureSchema(connection, schemaName);
+   const getDisplayName = (resource: string) =>
+      isAzure ? resource : resource.split(".").pop() || resource;
+
    const filteredTables =
       isSuccess && data?.data
          ? data.data
               .filter((table: { resource: string }) => {
-                 const tableName =
-                    table.resource.split(".").pop()?.toLowerCase() || "";
-                 return tableName.includes(searchTerm.toLowerCase());
+                 return getDisplayName(table.resource)
+                    .toLowerCase()
+                    .includes(searchTerm.toLowerCase());
               })
               .sort((a: { resource: string }, b: { resource: string }) => {
-                 const tableNameA = a.resource.split(".").pop() || a.resource;
-                 const tableNameB = b.resource.split(".").pop() || b.resource;
-                 return tableNameA.localeCompare(tableNameB);
+                 return getDisplayName(a.resource).localeCompare(
+                    getDisplayName(b.resource),
+                 );
               })
          : [];
 
    return (
       <>
          <Typography variant="overline" fontWeight="bold">
-            {schemaName.includes("gs") || schemaName.includes("s3")
-               ? `Table Files in ${schemaName}`
+            {isCloudStorageSchema(schemaName) ||
+            isAzureSchema(connection, schemaName)
+               ? `Files in ${schemaName}`
                : `Tables in ${schemaName}`}
          </Typography>
          <Divider />
@@ -295,17 +334,13 @@ function TablesInSchema({
                         resource: string;
                         columns: Array<{ name: string; type: string }>;
                      }) => {
-                        let tableName = "";
+                        let tableName = getDisplayName(table.resource);
                         if (
-                           table.resource.includes("gs://") ||
-                           table.resource.includes("s3://")
+                           !isAzure &&
+                           table.resource.includes("://")
                         ) {
                            tableName =
                               table.resource.split("/").pop() || table.resource;
-                        } else {
-                           // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
-                           tableName =
-                              table.resource.split(".").pop() || table.resource;
                         }
                         return (
                            <ListItemButton

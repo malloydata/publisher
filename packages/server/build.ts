@@ -21,6 +21,8 @@ await build({
       "@malloydata/db-snowflake",
       "@malloydata/db-trino",
       "@google-cloud/storage",
+      "@azure/identity",
+      "@azure/storage-blob",
    ],
 });
 
