@@ -1327,8 +1327,10 @@ paths:
       operationId: compile-model-source
       summary: Compile Malloy source code
       description: |
-        Compiles Malloy source code in the context of a specific model's directory,
-        allowing relative imports to resolve correctly against sibling model files.
+        Compiles Malloy source code in the context of a specific model file.
+        The submitted source is appended to the full model content, giving it
+        access to all sources, imports, and queries defined in the model.
+        Relative imports resolve correctly against sibling model files.
         Returns compilation status and any problems (errors or warnings) found.
       parameters:
         - name: projectName
