@@ -38,8 +38,7 @@ function isAzureSchema(
    schemaName: string,
 ): boolean {
    if (!connection || connection.type !== "duckdb") return false;
-   const attachedDbs =
-      connection.duckdbConnection?.attachedDatabases || [];
+   const attachedDbs = connection.duckdbConnection?.attachedDatabases || [];
    return attachedDbs.some(
       (db) => db.type === "azure" && db.name === schemaName,
    );
@@ -335,10 +334,7 @@ function TablesInSchema({
                         columns: Array<{ name: string; type: string }>;
                      }) => {
                         let tableName = getDisplayName(table.resource);
-                        if (
-                           !isAzure &&
-                           table.resource.includes("://")
-                        ) {
+                        if (!isAzure && table.resource.includes("://")) {
                            tableName =
                               table.resource.split("/").pop() || table.resource;
                         }

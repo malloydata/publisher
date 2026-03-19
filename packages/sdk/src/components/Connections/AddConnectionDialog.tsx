@@ -640,13 +640,11 @@ export default function AddConnectionDialog({
                                        if (!field.visibleWhen) return true;
                                        const currentValue =
                                           db[field.visibleWhen.field] ||
-                                          dbFields
-                                             .find(
-                                                (f) =>
-                                                   f.name ===
-                                                   field.visibleWhen?.field,
-                                             )
-                                             ?.selectOptions?.[0]?.value;
+                                          dbFields.find(
+                                             (f) =>
+                                                f.name ===
+                                                field.visibleWhen?.field,
+                                          )?.selectOptions?.[0]?.value;
                                        return (
                                           currentValue ===
                                           field.visibleWhen.value
