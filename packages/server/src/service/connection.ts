@@ -589,6 +589,78 @@ async function attachCloudStorage(
    logger.info(`${storageType} connection configured for: ${attachedDb.name}`);
 }
 
+async function attachAzureStorage(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.azureConnection) {
+      throw new Error(
+         `Azure connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const config = attachedDb.azureConnection;
+
+   // Extensions are loaded once in attachDatabasesToDuckDB before the loop
+   const secretName = sanitizeSecretName(`azure_${attachedDb.name}`);
+
+   let createSecretCommand: string;
+
+   if (config.authType === "service_principal") {
+      if (
+         !config.tenantId ||
+         !config.clientId ||
+         !config.clientSecret ||
+         !config.accountName
+      ) {
+         throw new Error(
+            `Azure SPN auth requires tenantId, clientId, clientSecret, and accountName for: ${attachedDb.name}`,
+         );
+      }
+
+      const escapedTenantId = escapeSQL(config.tenantId);
+      const escapedClientId = escapeSQL(config.clientId);
+      const escapedClientSecret = escapeSQL(config.clientSecret);
+      const escapedAccountName = escapeSQL(config.accountName);
+
+      createSecretCommand = `
+         CREATE OR REPLACE SECRET ${secretName} (
+            TYPE azure,
+            PROVIDER service_principal,
+            TENANT_ID '${escapedTenantId}',
+            CLIENT_ID '${escapedClientId}',
+            CLIENT_SECRET '${escapedClientSecret}',
+            ACCOUNT_NAME '${escapedAccountName}'
+         );
+      `;
+   } else if (config.authType === "sas_token") {
+      if (!config.sasUrl) {
+         throw new Error(
+            `Azure SAS token auth requires sasUrl for: ${attachedDb.name}`,
+         );
+      }
+
+      // For SAS token auth, DuckDB can read the HTTPS SAS URL directly via httpfs.
+      // No Azure secret is needed — just ensure httpfs is loaded.
+      logger.info(
+         `Azure SAS token configured for: ${attachedDb.name} (no secret needed, using direct URL)`,
+      );
+      return;
+   } else {
+      throw new Error(
+         `Unsupported Azure auth type: ${config.authType} for: ${attachedDb.name}`,
+      );
+   }
+
+   if (await doesSecretExistInDuckDB(connection, secretName)) {
+      await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
+   }
+   await connection.runSQL(createSecretCommand);
+
+   logger.info(`Created Azure secret: ${secretName}`);
+   logger.info(`Azure ADLS connection configured for: ${attachedDb.name}`);
+}
+
 async function doesSecretExistInDuckDB(
    connection: DuckDBConnection,
    secretName: string,
@@ -614,7 +686,15 @@ async function attachDatabasesToDuckDB(
       postgres: attachPostgres,
       gcs: attachCloudStorage,
       s3: attachCloudStorage,
+      azure: attachAzureStorage,
    };
+
+   // Pre-load extensions needed by any attached database type, once per connection
+   const hasAzure = attachedDatabases.some((db) => db.type === "azure");
+   if (hasAzure) {
+      await installAndLoadExtension(duckdbConnection, "azure");
+      await installAndLoadExtension(duckdbConnection, "httpfs");
+   }
 
    for (const attachedDb of attachedDatabases) {
       try {
@@ -647,6 +727,106 @@ async function attachDatabasesToDuckDB(
             `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
          );
       }
+   }
+}
+
+type ApiAzureConnection = components["schemas"]["AzureConnection"];
+
+/**
+ * Builds the actual Azure URL for a blob given an AzureConnection config.
+ * Strips any glob pattern from the base URL and appends the blob name.
+ */
+function buildAzureFileUrl(
+   azureConn: ApiAzureConnection,
+   blobName: string,
+): string {
+   if (azureConn.authType === "sas_token" && azureConn.sasUrl) {
+      const qIdx = azureConn.sasUrl.indexOf("?");
+      const baseUrl =
+         qIdx >= 0 ? azureConn.sasUrl.substring(0, qIdx) : azureConn.sasUrl;
+      const token = qIdx >= 0 ? azureConn.sasUrl.substring(qIdx) : "";
+      // Single file URL — replace the filename portion so we don't double-append
+      if (/\.(parquet|csv|json|jsonl|ndjson)$/i.test(baseUrl)) {
+         const dir = baseUrl.replace(/\/[^/]+$/, "");
+         return `${dir}/${blobName}${token}`;
+      }
+      // Glob or directory — strip trailing glob/slash and append blobName
+      const cleanBase = baseUrl.replace(/\/\*[^/]*$/, "").replace(/\/+$/, "");
+      return `${cleanBase}/${blobName}${token}`;
+   } else if (azureConn.authType === "service_principal" && azureConn.fileUrl) {
+      const url = azureConn.fileUrl;
+      // Single file URL (ends with a data file extension) — replace the
+      // filename with blobName so we don't double-append
+      if (/\.(parquet|csv|json|jsonl|ndjson)$/i.test(url)) {
+         return url.replace(/\/[^/]+$/, `/${blobName}`);
+      }
+      // Glob or directory — strip glob pattern and trailing slash, append blobName
+      const base = url.replace(/\*[^/]*$/, "").replace(/\/+$/, "");
+      return `${base}/${blobName}`;
+   }
+   throw new Error(
+      `Cannot build Azure file URL: missing sasUrl or fileUrl in config`,
+   );
+}
+
+/**
+ * Extends DuckDBConnection to resolve Azure attached-database table paths.
+ * When Malloy compiles di.table('azure_schema.blob_name'), the path
+ * 'azure_schema.blob_name' is passed to fetchTableSchema.  This override
+ * detects that prefix, constructs the real Azure URL, and forwards it to
+ * DuckDB so the azure/httpfs extension can read the file.
+ */
+class AzureDuckDBConnection extends DuckDBConnection {
+   private azureDatabases: AttachedDatabase[];
+
+   constructor(
+      connectionName: string,
+      databasePath: string,
+      workingDirectory: string,
+      azureDatabases: AttachedDatabase[],
+   ) {
+      super(connectionName, databasePath, workingDirectory);
+      this.azureDatabases = azureDatabases;
+   }
+
+   async fetchTableSchema(
+      tableKey: string,
+      tablePath: string,
+   ): Promise<TableSourceDef> {
+      const dotIdx = tablePath.indexOf(".");
+      if (dotIdx > 0) {
+         const schemaName = tablePath.substring(0, dotIdx);
+         const blobName = tablePath.substring(dotIdx + 1);
+
+         const azureDb = this.azureDatabases.find(
+            (db) =>
+               db.type === "azure" &&
+               db.name === schemaName &&
+               db.azureConnection,
+         );
+
+         if (azureDb) {
+            const azureUrl = buildAzureFileUrl(
+               azureDb.azureConnection!,
+               blobName,
+            );
+            logger.debug("Resolved Azure table path", {
+               original: tablePath,
+               resolved: azureUrl,
+            });
+            const result = await super.fetchTableSchema(tableKey, azureUrl);
+            if (!result) {
+               throw new Error(`Azure file not found: ${azureUrl}`);
+            }
+            return result;
+         }
+      }
+
+      const result = await super.fetchTableSchema(tableKey, tablePath);
+      if (!result) {
+         throw new Error(`Table ${tablePath} not found`);
+      }
+      return result;
    }
 }
 
@@ -968,21 +1148,29 @@ export async function createProjectConnections(
             // Create DuckDB connection with project basePath as working directory
             // This ensures relative paths in the project are resolved correctly
             // Use unique memory database path to prevent sharing across connections
-            const duckdbConnection = new DuckDBConnection(
-               connection.name,
-               path.join(projectPath, `${connection.name}.duckdb`),
-               projectPath,
+            const attachedDatabases =
+               connection.duckdbConnection.attachedDatabases ?? [];
+            const hasAzureAttached = attachedDatabases.some(
+               (db) => db.type === "azure",
             );
+            const duckdbConnection = hasAzureAttached
+               ? new AzureDuckDBConnection(
+                    connection.name,
+                    path.join(projectPath, `${connection.name}.duckdb`),
+                    projectPath,
+                    attachedDatabases,
+                 )
+               : new DuckDBConnection(
+                    connection.name,
+                    path.join(projectPath, `${connection.name}.duckdb`),
+                    projectPath,
+                 );
 
             // Attach databases if configured
-            if (
-               connection.duckdbConnection.attachedDatabases &&
-               Array.isArray(connection.duckdbConnection.attachedDatabases) &&
-               connection.duckdbConnection.attachedDatabases.length > 0
-            ) {
+            if (attachedDatabases.length > 0) {
                await attachDatabasesToDuckDB(
                   duckdbConnection,
-                  connection.duckdbConnection.attachedDatabases,
+                  attachedDatabases,
                );
             }
 
@@ -1088,6 +1276,7 @@ function getConnectionAttributes(
    };
 }
 
+// TODO: Re-write these tests to validate based on credentials provided in the connection config
 async function testDuckDBConnection(
    duckdbConnection: DuckDBConnection,
    connectionConfig: InternalConnection,
@@ -1153,16 +1342,44 @@ async function testDuckDBConnection(
                );
                break;
             }
-            case "gcs":
-            case "s3": {
-               // For cloud storage, verify the secret was created
-               // Cloud storage doesn't attach as a database, it uses secrets for auth
+            case "gcs": {
                await duckdbConnection.runSQL(
                   `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
                );
                logger.info(
                   `Cloud storage credentials test passed: ${attachedDb.name}`,
                );
+               break;
+            }
+            case "s3": {
+               await duckdbConnection.runSQL(
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+               );
+               logger.info(
+                  `Cloud storage credentials test passed: ${attachedDb.name}`,
+               );
+               break;
+            }
+            case "azure": {
+               const azureConfig = attachedDb.azureConnection;
+               if (azureConfig?.authType === "sas_token") {
+                  // SAS token is embedded in the URL — no DuckDB secret is created.
+                  if (!azureConfig.sasUrl) {
+                     throw new Error(
+                        `Azure SAS token URL is missing for: ${attachedDb.name}`,
+                     );
+                  }
+                  logger.info(
+                     `Azure SAS token URL present for: ${attachedDb.name}`,
+                  );
+               } else {
+                  await duckdbConnection.runSQL(
+                     `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                  );
+                  logger.info(
+                     `Azure SPN credentials test passed: ${attachedDb.name}`,
+                  );
+               }
                break;
             }
             default: {

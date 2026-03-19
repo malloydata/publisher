@@ -10,7 +10,7 @@ permissions: {}
 # There is no solution for this yet (but a couple of active issues), so we need to use this workaround for faster CI runs.
 
 env:
-  WINDOWS_USERPROFILE: 'D:'
+  WINDOWS_USERPROFILE: 'D:\'
   WINDOWS_BUN_CACHE_DIR: 'D:\.bun\install\cache'
 
 jobs:

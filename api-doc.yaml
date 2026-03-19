@@ -2215,6 +2215,43 @@ components:
         - accessKeyId
         - secretAccessKey
 
+    AzureConnection:
+      type: object
+      description: >
+        Azure Data Lake Storage (ADLS Gen2) / Blob Storage connection configuration
+        Supports https://, http://, abfss://, and az:// URL schemes.
+      properties:
+        authType:
+          type: string
+          enum: [service_principal, sas_token]
+          description: Authentication method for Azure Storage
+        sasUrl:
+          type: string
+          description: >
+            Full SAS URL including token; required for sas_token auth.
+            Supports single file, directory glob (*.ext), or recursive (**) patterns.
+            Example: https://account.blob.core.windows.net/container/path/*.parquet?sp=rl&st=...
+        tenantId:
+          type: string
+          description: Azure AD tenant ID (required for service_principal)
+        clientId:
+          type: string
+          description: Azure AD application (client) ID (required for service_principal)
+        clientSecret:
+          type: string
+          description: Azure AD client secret (required for service_principal)
+        accountName:
+          type: string
+          description: Azure Storage account name (required for service_principal)
+        fileUrl:
+          type: string
+          description: >
+            Azure file URL to query; required for service_principal auth.
+            Supports single file, directory glob (*.ext), or recursive (**) patterns.
+            Example: https://account.blob.core.windows.net/container/path/**
+      required:
+        - authType
+
     DucklakeConnection:
       type: object
       description: DuckLake lakehouse connection configuration
@@ -2361,7 +2398,7 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum: [bigquery, snowflake, postgres, gcs, s3]
+          enum: [bigquery, snowflake, postgres, gcs, s3, azure]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         bigqueryConnection:
@@ -2374,6 +2411,8 @@ components:
           $ref: "#/components/schemas/GCSConnection"
         s3Connection:
           $ref: "#/components/schemas/S3Connection"
+        azureConnection:
+          $ref: "#/components/schemas/AzureConnection"
     # TODO: What is this?  Can we remove it?
     SqlSource:
       type: object
@@ -2490,8 +2529,11 @@ components:
           description: Name of the project being watched for file changes
         watchingPath:
           type: string
-          nullable: true
           description: The file system path being monitored for changes, null if not watching
+      required:
+        - enabled
+        - projectName
+        - watchingPath
 
     StartWatchRequest:
       type: object
