@@ -1,4 +1,3 @@
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    Annotation,
    API,
@@ -27,7 +26,6 @@ import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
 import * as path from "path";
-import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    MODEL_FILE_SUFFIX,
@@ -79,6 +77,9 @@ export class Model {
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
+   private sourceInfosResolved: boolean = false;
+   private sourceInfosRuntime: Runtime | undefined;
+   private sourceInfosImportBaseURL: URL | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
    private meter = metrics.getMeter("publisher");
@@ -103,6 +104,8 @@ export class Model {
       sourceInfos: Malloy.SourceInfo[] | undefined,
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
+      runtime?: Runtime,
+      importBaseURL?: URL,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -113,6 +116,9 @@ export class Model {
       this.sources = sources;
       this.queries = queries;
       this.sourceInfos = sourceInfos;
+      this.sourceInfosResolved = sourceInfos !== undefined;
+      this.sourceInfosRuntime = runtime;
+      this.sourceInfosImportBaseURL = importBaseURL;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
       this.modelInfo = this.modelDef
@@ -143,58 +149,14 @@ export class Model {
          let modelDef = undefined;
          let sources = undefined;
          let queries = undefined;
-         const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
             modelDef = (await modelMaterializer.getModel())._modelDef;
             sources = Model.getSources(modelPath, modelDef);
             queries = Model.getQueries(modelPath, modelDef);
-
-            // Collect sourceInfos from imported models first
-            // This follows the same pattern as notebook imports handling
-            const imports = modelDef.imports || [];
-            const importedSourceNames = new Set<string>();
-            for (const importLocation of imports) {
-               try {
-                  const modelString = await runtime.urlReader.readURL(
-                     new URL(importLocation.importURL),
-                  );
-                  const importedModelDef = (
-                     await runtime
-                        .loadModel(modelString as string, { importBaseURL })
-                        .getModel()
-                  )._modelDef;
-                  const importedModelInfo =
-                     modelDefToModelInfo(importedModelDef);
-                  const importedSources = importedModelInfo.entries.filter(
-                     (entry) => entry.kind === "source",
-                  ) as Malloy.SourceInfo[];
-                  for (const source of importedSources) {
-                     if (!importedSourceNames.has(source.name)) {
-                        sourceInfos.push(source);
-                        importedSourceNames.add(source.name);
-                     }
-                  }
-               } catch (importError) {
-                  // Log but don't fail if we can't load an import's sourceInfo
-                  logger.warn("Failed to load sourceInfo from import", {
-                     importURL: importLocation.importURL,
-                     error: importError,
-                  });
-               }
-            }
-
-            // Add locally-defined sources (not already added from imports)
-            const localModelInfo = modelDefToModelInfo(modelDef);
-            const localSources = localModelInfo.entries.filter(
-               (entry) => entry.kind === "source",
-            ) as Malloy.SourceInfo[];
-            for (const source of localSources) {
-               if (!importedSourceNames.has(source.name)) {
-                  sourceInfos.push(source);
-               }
-            }
          }
 
+         // Defer sourceInfo extraction to on-demand (resolveSourceInfos)
+         // by passing runtime and importBaseURL to the Model constructor
          return new Model(
             packageName,
             modelPath,
@@ -204,9 +166,11 @@ export class Model {
             modelDef,
             sources,
             queries,
-            sourceInfos.length > 0 ? sourceInfos : undefined,
+            undefined,
             runnableNotebookCells,
             undefined,
+            runtime,
+            importBaseURL,
          );
       } catch (error) {
          let computedError = error;
@@ -247,6 +211,74 @@ export class Model {
 
    public getSources(): ApiSource[] | undefined {
       return this.sources;
+   }
+
+   public async resolveSourceInfos(): Promise<Malloy.SourceInfo[] | undefined> {
+      if (this.sourceInfosResolved) {
+         return this.sourceInfos;
+      }
+      this.sourceInfosResolved = true;
+
+      if (
+         !this.modelDef ||
+         !this.sourceInfosRuntime ||
+         !this.sourceInfosImportBaseURL
+      ) {
+         return this.sourceInfos;
+      }
+
+      const runtime = this.sourceInfosRuntime;
+      const importBaseURL = this.sourceInfosImportBaseURL;
+      const sourceInfos: Malloy.SourceInfo[] = [];
+
+      // Collect sourceInfos from imported models first
+      const imports = this.modelDef.imports || [];
+      const importedSourceNames = new Set<string>();
+      for (const importLocation of imports) {
+         try {
+            const modelString = await runtime.urlReader.readURL(
+               new URL(importLocation.importURL),
+            );
+            const importedModelDef = (
+               await runtime
+                  .loadModel(modelString as string, { importBaseURL })
+                  .getModel()
+            )._modelDef;
+            const importedModelInfo = modelDefToModelInfo(importedModelDef);
+            const importedSources = importedModelInfo.entries.filter(
+               (entry) => entry.kind === "source",
+            ) as Malloy.SourceInfo[];
+            for (const source of importedSources) {
+               if (!importedSourceNames.has(source.name)) {
+                  sourceInfos.push(source);
+                  importedSourceNames.add(source.name);
+               }
+            }
+         } catch (importError) {
+            // Log but don't fail if we can't load an import's sourceInfo
+            logger.warn("Failed to load sourceInfo from import", {
+               importURL: importLocation.importURL,
+               error: importError,
+            });
+         }
+      }
+
+      // Add locally-defined sources (not already added from imports)
+      const localModelInfo = modelDefToModelInfo(this.modelDef);
+      const localSources = localModelInfo.entries.filter(
+         (entry) => entry.kind === "source",
+      ) as Malloy.SourceInfo[];
+      for (const source of localSources) {
+         if (!importedSourceNames.has(source.name)) {
+            sourceInfos.push(source);
+         }
+      }
+
+      this.sourceInfos = sourceInfos.length > 0 ? sourceInfos : undefined;
+      // Release references after resolution
+      this.sourceInfosRuntime = undefined;
+      this.sourceInfosImportBaseURL = undefined;
+      return this.sourceInfos;
    }
 
    public getSourceInfos(): Malloy.SourceInfo[] | undefined {
@@ -420,7 +452,9 @@ export class Model {
       };
    }
 
-   private getStandardModel(): ApiCompiledModel {
+   private async getStandardModel(): Promise<ApiCompiledModel> {
+      // Resolve sourceInfos lazily on first access
+      const sourceInfos = await this.resolveSourceInfos();
       return {
          type: "source",
          packageName: this.packageName,
@@ -431,7 +465,7 @@ export class Model {
          modelInfo: JSON.stringify(
             this.modelDef ? modelDefToModelInfo(this.modelDef) : {},
          ),
-         sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
+         sourceInfos: sourceInfos?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
          sources: this.sources,
@@ -599,15 +633,11 @@ export class Model {
 
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
-      const fileUrl = new URL(baseUrl.pathname, "file:");
-      const workingDirectory = fileURLToPath(fileUrl);
       const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
-      const duckdbConnection = connections.get("duckdb") as DuckDBConnection;
-      await duckdbConnection.runSQL(
-         `SET FILE_SEARCH_PATH='${workingDirectory}';`,
-      );
+      // FILE_SEARCH_PATH is set once at the package level in Package.create()
+      // to avoid redundant SQL calls and race conditions during parallel model loading.
 
       const runtime = new Runtime({
          urlReader,

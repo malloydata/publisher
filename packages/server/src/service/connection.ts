@@ -1412,55 +1412,61 @@ export async function testConnectionConfig(
          throw new Error("Connection name is required");
       }
 
-      // Use createProjectConnections to create the connection, then test it
-      const result = await createProjectConnections(
-         [connectionConfig], // Pass the single connection config
-      );
-      malloyConnections = result.malloyConnections;
-
-      // Get the created connection
-      const connection = malloyConnections.get(connectionConfig.name);
-      if (!connection) {
-         throw new Error(
-            `Failed to create connection: ${connectionConfig.name}`,
-         );
-      }
-
-      // Handle DuckDB connections specially since they have attached databases
-      if (connectionConfig.type === "duckdb") {
-         await testDuckDBConnection(
-            connection as DuckDBConnection,
-            connectionConfig as InternalConnection,
-         );
-      } else if (connectionConfig.type === "ducklake") {
-         // DuckLake uses DuckDB internally — verify the database is attached
-         const duckConn = connection as DuckDBConnection;
-         const attached = await isDatabaseAttached(
-            duckConn,
+      if (connectionConfig.type === "ducklake") {
+         // DuckLake test: use an in-memory DuckDB to verify the attach succeeds
+         // without creating a persistent file on disk
+         if (!connectionConfig.ducklakeConnection) {
+            throw new Error("DuckLake connection configuration is missing.");
+         }
+         const inMemoryConn = new DuckDBConnection(
             connectionConfig.name as string,
+            ":memory:",
          );
-         if (!attached) {
+         try {
+            await attachDuckLake(
+               inMemoryConn,
+               connectionConfig.name as string,
+               connectionConfig.ducklakeConnection,
+            );
+            await inMemoryConn.runSQL(
+               `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${connectionConfig.name}' LIMIT 1`,
+            );
+            logger.info(
+               `DuckLake connection test passed: ${connectionConfig.name}`,
+            );
+         } finally {
+            await inMemoryConn.close();
+         }
+      } else {
+         // Use createProjectConnections to create the connection, then test it
+         const result = await createProjectConnections([connectionConfig]);
+         malloyConnections = result.malloyConnections;
+
+         // Get the created connection
+         const connection = malloyConnections.get(connectionConfig.name);
+         if (!connection) {
             throw new Error(
-               `DuckLake connection test failed: Error attaching database '${connectionConfig.name}'`,
+               `Failed to create connection: ${connectionConfig.name}`,
             );
          }
-         await duckConn.runSQL(
-            `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${connectionConfig.name}' LIMIT 1`,
-         );
 
-         logger.info(
-            `DuckLake connection test passed: ${connectionConfig.name}`,
-         );
-      } else {
-         // Test other connection types using their test() method
-         await (
-            connection as
-               | PostgresConnection
-               | BigQueryConnection
-               | SnowflakeConnection
-               | TrinoConnection
-               | MySQLConnection
-         ).test();
+         // Handle DuckDB connections specially since they have attached databases
+         if (connectionConfig.type === "duckdb") {
+            await testDuckDBConnection(
+               connection as DuckDBConnection,
+               connectionConfig as InternalConnection,
+            );
+         } else {
+            // Test other connection types using their test() method
+            await (
+               connection as
+                  | PostgresConnection
+                  | BigQueryConnection
+                  | SnowflakeConnection
+                  | TrinoConnection
+                  | MySQLConnection
+            ).test();
+         }
       }
 
       return {
@@ -1479,11 +1485,10 @@ export async function testConnectionConfig(
          errorMessage: (error as Error).message,
       };
    } finally {
-      // Cleanup: close all connections and remove ducklake files created during testing
+      // Cleanup: close all connections created during testing
       if (malloyConnections) {
          for (const [connName, conn] of malloyConnections) {
             try {
-               // Close the connection
                if (
                   conn &&
                   typeof (conn as DuckDBConnection).close === "function"
@@ -1495,11 +1500,6 @@ export async function testConnectionConfig(
                   `Error closing connection ${connName} during test cleanup`,
                   { error: closeError },
                );
-            } finally {
-               // Remove ducklake files created during testing (only for ducklake connections)
-               if (connectionConfig.type === "ducklake") {
-                  await deleteDuckLakeConnectionFile(connName, process.cwd());
-               }
             }
          }
       }
