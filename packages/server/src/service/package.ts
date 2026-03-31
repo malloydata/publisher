@@ -275,12 +275,19 @@ export class Package {
       connections: Map<string, Connection>,
    ): Promise<Map<string, Model>> {
       const modelPaths = await Package.getModelPaths(packagePath);
-      const models = await Promise.all(
-         modelPaths.map((modelPath) =>
-            Model.create(packageName, packagePath, modelPath, connections),
-         ),
-      );
-      return new Map(models.map((model) => [model.getPath(), model]));
+      // Serialize compilation: each package uses one shared in-memory DuckDB; Model.getModelRuntime
+      // runs SET FILE_SEARCH_PATH on that connection, which must not interleave across concurrent compiles.
+      const models = new Map<string, Model>();
+      for (const modelPath of modelPaths) {
+         const model = await Model.create(
+            packageName,
+            packagePath,
+            modelPath,
+            connections,
+         );
+         models.set(model.getPath(), model);
+      }
+      return models;
    }
 
    private static async getModelPaths(packagePath: string): Promise<string[]> {

@@ -58,6 +58,50 @@ export type TrinoConnection = components["schemas"]["TrinoConnection"];
 
 const MALLOY_VERSION = malloyPackage.version;
 
+/**
+ * DuckDB resolves relative table paths using FILE_SEARCH_PATH. The entry model's
+ * directory must be searched first (colocated CSVs). When the entry file lives in a
+ * sibling folder (e.g. models/) but data files sit under data/, include immediate
+ * subdirectories of the package root so names like auto_recalls.csv still resolve.
+ */
+async function buildDuckdbFileSearchPath(
+   packagePath: string,
+   modelDirectory: string,
+): Promise<string> {
+   const orderedDirs: string[] = [];
+   const seen = new Set<string>();
+   const add = (dir: string) => {
+      const norm = path.resolve(dir);
+      if (!seen.has(norm)) {
+         seen.add(norm);
+         orderedDirs.push(norm);
+      }
+   };
+
+   add(modelDirectory);
+   try {
+      const entries = await fs.readdir(packagePath, { withFileTypes: true });
+      const subdirs = entries
+         .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+         .map((e) => path.join(packagePath, e.name))
+         .sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
+      for (const d of subdirs) {
+         add(d);
+      }
+   } catch {
+      // Unreadable package path — still use model dir and package root below.
+   }
+   add(packagePath);
+
+   // DuckDB uses comma-separated paths (no spaces after commas). Do not use
+   // path.delimiter — on Unix ':' breaks and is ambiguous with Windows drive letters.
+   return orderedDirs.join(",");
+}
+
+function escapeSqlSingleQuotedLiteral(value: string): string {
+   return value.replace(/'/g, "''");
+}
+
 export type ModelType = "model" | "notebook";
 
 interface RunnableNotebookCell {
@@ -600,13 +644,20 @@ export class Model {
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
       const fileUrl = new URL(baseUrl.pathname, "file:");
-      const workingDirectory = fileURLToPath(fileUrl);
-      const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
+      const modelDirectory = fileURLToPath(fileUrl);
+      // Use baseUrl as-is: baseUrl.pathname already ends with "/". Appending
+      // another "/" produced ".../models//" and broke "../" imports (resolved to
+      // models/data/... instead of package data/).
+      const importBaseURL = baseUrl;
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
       const duckdbConnection = connections.get("duckdb") as DuckDBConnection;
+      const fileSearchPath = await buildDuckdbFileSearchPath(
+         packagePath,
+         modelDirectory,
+      );
       await duckdbConnection.runSQL(
-         `SET FILE_SEARCH_PATH='${workingDirectory}';`,
+         `SET FILE_SEARCH_PATH='${escapeSqlSingleQuotedLiteral(fileSearchPath)}';`,
       );
 
       const runtime = new Runtime({
