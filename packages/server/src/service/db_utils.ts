@@ -984,11 +984,19 @@ export async function listTablesForSchema(
          throw new Error("Snowflake connection is required");
       }
       try {
-         const result = await malloyConnection.runSQL(
-            `SHOW TABLES IN SCHEMA ${schemaName}`,
+         // TODO: Switch to INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.VIEWS, with pagination support implemented in both backend and the frontend.
+         // Note: LIMIT 1000 is a temporary workaround to avoid pagination.
+         const tablesResult = await malloyConnection.runSQL(
+            `SHOW TABLES IN SCHEMA ${schemaName} LIMIT 1000`,
          );
-         const rows = standardizeRunSQLResult(result);
-         logger.debug("Snowflake Tables Listed", { rows });
+         const viewsResult = await malloyConnection.runSQL(
+            `SHOW VIEWS IN SCHEMA ${schemaName} LIMIT 1000`,
+         );
+         const tableRows = standardizeRunSQLResult(tablesResult);
+         const viewRows = standardizeRunSQLResult(viewsResult);
+         logger.debug("Snowflake Tables Listed", { tableRows });
+         logger.debug("Snowflake Views Listed", { viewRows });
+         const rows = [...tableRows, ...viewRows];
          return rows
             .map((row: unknown) => {
                const typedRow = row as Record<string, unknown>;
