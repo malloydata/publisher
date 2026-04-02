@@ -228,7 +228,6 @@ function SelectedTableDetailPanel({
             connectionName,
             schemaName,
             tableResource,
-            false,
          ),
       enabled: Boolean(schemaName) && Boolean(tableResource),
    });
@@ -268,7 +267,7 @@ function TableSchemaViewer({ table, loading }: TableSchemaViewerProps) {
             }}
          >
             {table.resource.includes("://") ||
-               /\.(parquet|csv|json|tsv|ndjson)$/i.test(table.resource)
+            /\.(parquet|csv|json|tsv|ndjson)$/i.test(table.resource)
                ? "File"
                : "Table"}
             : {table.resource}
@@ -341,23 +340,23 @@ function TablesInSchema({
    const filteredTables =
       isSuccess && data?.data
          ? data.data
-            .filter((table: { resource: string }) => {
-               return getDisplayName(table.resource)
-                  .toLowerCase()
-                  .includes(searchTerm.toLowerCase());
-            })
-            .sort((a: { resource: string }, b: { resource: string }) => {
-               return getDisplayName(a.resource).localeCompare(
-                  getDisplayName(b.resource),
-               );
-            })
+              .filter((table: { resource: string }) => {
+                 return getDisplayName(table.resource)
+                    .toLowerCase()
+                    .includes(searchTerm.toLowerCase());
+              })
+              .sort((a: { resource: string }, b: { resource: string }) => {
+                 return getDisplayName(a.resource).localeCompare(
+                    getDisplayName(b.resource),
+                 );
+              })
          : [];
 
    return (
       <>
          <Typography variant="overline" fontWeight="bold">
             {isCloudStorageSchema(schemaName) ||
-               isAzureSchema(connection, schemaName)
+            isAzureSchema(connection, schemaName)
                ? `Files in ${schemaName}`
                : `Tables in ${schemaName}`}
          </Typography>
