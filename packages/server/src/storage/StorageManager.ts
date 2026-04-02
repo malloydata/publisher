@@ -1,6 +1,11 @@
 import { logger } from "../logger";
-import { DatabaseConnection, ResourceRepository } from "./DatabaseInterface";
+import {
+    DatabaseConnection,
+    ManifestStore,
+    ResourceRepository,
+} from "./DatabaseInterface";
 import { DuckDBConnection } from "./duckdb/DuckDBConnection";
+import { DuckDBManifestStore } from "./duckdb/DuckDBManifestStore";
 import { DuckDBRepository } from "./duckdb/DuckDBRepository";
 import { initializeSchema } from "./duckdb/schema";
 
@@ -30,6 +35,7 @@ export interface StorageConfig {
 export class StorageManager {
    private connection: DatabaseConnection | null = null;
    private repository: ResourceRepository | null = null;
+   private manifestStore: ManifestStore | null = null;
    private config: StorageConfig;
 
    constructor(config: StorageConfig) {
@@ -69,6 +75,7 @@ export class StorageManager {
 
       this.connection = connection;
       this.repository = new DuckDBRepository(connection);
+      this.manifestStore = new DuckDBManifestStore(this.repository);
    }
 
    getRepository(): ResourceRepository {
@@ -78,11 +85,19 @@ export class StorageManager {
       return this.repository;
    }
 
+   getManifestStore(): ManifestStore {
+      if (!this.manifestStore) {
+         throw new Error("Storage not initialized. Call initialize() first.");
+      }
+      return this.manifestStore;
+   }
+
    async close(): Promise<void> {
       if (this.connection) {
          await this.connection.close();
          this.connection = null;
          this.repository = null;
+         this.manifestStore = null;
       }
    }
 

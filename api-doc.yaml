@@ -51,6 +51,10 @@ tags:
     description: Embedded database management and access
   - name: watch-mode
     description: Real-time file watching for development workflows
+  - name: tasks
+    description: Materialization task management for building and caching persisted sources
+  - name: manifests
+    description: Build manifest management for tracking materialized source tables
 
 paths:
   /status:
@@ -1687,6 +1691,270 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /projects/{projectName}/tasks:
+    get:
+      tags:
+        - tasks
+      operationId: list-tasks
+      summary: List tasks for a project
+      description: Returns all materialization tasks defined for the specified project.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+      responses:
+        "200":
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags:
+        - tasks
+      operationId: create-task
+      summary: Create a materialization task
+      description: Creates a new materialization task for the specified project.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/tasks/{taskId}:
+    get:
+      tags:
+        - tasks
+      operationId: get-task
+      summary: Get a task by ID
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200":
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags:
+        - tasks
+      operationId: update-task
+      summary: Update a task
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags:
+        - tasks
+      operationId: delete-task
+      summary: Delete a task
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "204":
+          description: Task deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/tasks/{taskId}/start:
+    post:
+      tags:
+        - tasks
+      operationId: start-task
+      summary: Start a materialization build
+      description: |
+        Starts the materialization build for the specified task. Loads the model,
+        computes a build plan, and executes SQL to create materialized tables.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartTaskRequest"
+      responses:
+        "200":
+          description: Build execution result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskExecution"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Task already has an active execution
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /projects/{projectName}/tasks/{taskId}/stop:
+    post:
+      tags:
+        - tasks
+      operationId: stop-task
+      summary: Stop an in-progress build
+      description: Cancels the currently running build execution for the task.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200":
+          description: Execution being cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskExecution"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/tasks/{taskId}/status:
+    get:
+      tags:
+        - tasks
+      operationId: get-task-status
+      summary: Get current task status
+      description: Returns the task and its latest execution state.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200":
+          description: Task status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskStatus"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/tasks/{taskId}/executions:
+    get:
+      tags:
+        - tasks
+      operationId: list-task-executions
+      summary: List execution history
+      description: Returns the execution history for the specified task, ordered by most recent first.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200":
+          description: List of executions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskExecution"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/tasks/{taskId}/executions/{executionId}:
+    get:
+      tags:
+        - tasks
+      operationId: get-task-execution
+      summary: Get a specific execution
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/taskId"
+        - name: executionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Execution details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskExecution"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/packages/{packageName}/manifest:
+    get:
+      tags:
+        - manifests
+      operationId: get-manifest
+      summary: Get the build manifest for a package
+      description: |
+        Returns the current build manifest containing buildId-to-tableName mappings
+        for all materialized sources in the package.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+      responses:
+        "200":
+          description: Build manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildManifest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/packages/{packageName}/manifest/load:
+    post:
+      tags:
+        - manifests
+      operationId: load-manifest
+      summary: Load manifest into the Malloy Runtime
+      description: |
+        Reloads the build manifest from storage into the in-memory Malloy Runtime.
+        Subsequent queries will resolve persisted sources using the loaded manifest.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+      responses:
+        "200":
+          description: Manifest loaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildManifest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   responses:
     BadRequest:
@@ -2614,3 +2882,172 @@ components:
             range:
               type: object
               description: Character range within the source file
+
+    TaskConfig:
+      type: object
+      description: Configuration for a materialization task
+      required:
+        - package
+        - modelPath
+      properties:
+        package:
+          type: string
+          description: Name of the package containing the model
+        modelPath:
+          type: string
+          description: Path to the Malloy model file within the package
+        select:
+          type: array
+          items:
+            type: string
+          description: Optional list of source names to materialize. If empty, all persist sources are built.
+        includeDependencies:
+          type: boolean
+          description: Whether to include dependent sources in the build
+
+    Task:
+      type: object
+      description: A materialization task definition
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          default: materialize
+        config:
+          $ref: "#/components/schemas/TaskConfig"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateTaskRequest:
+      type: object
+      description: Request body for creating a new task
+      required:
+        - name
+        - config
+      properties:
+        name:
+          type: string
+          description: Unique name for the task within the project
+        type:
+          type: string
+          default: materialize
+        config:
+          $ref: "#/components/schemas/TaskConfig"
+
+    UpdateTaskRequest:
+      type: object
+      description: Request body for updating a task
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        config:
+          $ref: "#/components/schemas/TaskConfig"
+
+    StartTaskRequest:
+      type: object
+      description: Options for starting a task execution
+      properties:
+        autoLoadManifest:
+          type: boolean
+          default: false
+          description: If true, automatically loads the manifest into the Malloy Runtime after a successful build
+        refresh:
+          type: boolean
+          default: false
+          description: If true, forces rebuild of all sources even if their BuildID is unchanged
+
+    TaskExecution:
+      type: object
+      description: A record of a task execution
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        status:
+          type: string
+          enum: ["PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELLED"]
+        startedAt:
+          type: ["string", "null"]
+          format: date-time
+        completedAt:
+          type: ["string", "null"]
+          format: date-time
+        error:
+          type: ["string", "null"]
+          description: Error message if the execution failed
+        metadata:
+          type: ["object", "null"]
+          description: Build metadata including source counts and durations
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TaskStatus:
+      type: object
+      description: Combined task and latest execution state
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+        latestExecution:
+          oneOf:
+            - $ref: "#/components/schemas/TaskExecution"
+            - type: "null"
+
+    BuildManifest:
+      type: object
+      description: Manifest mapping BuildIDs to materialized table names
+      properties:
+        entries:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ManifestEntry"
+          description: Map of BuildID to manifest entry
+        strict:
+          type: boolean
+          description: Whether the manifest is in strict mode
+
+    ManifestEntry:
+      type: object
+      description: A single entry in the build manifest
+      properties:
+        tableName:
+          type: string
+          description: Name of the materialized table
+
+  parameters:
+    projectName:
+      name: projectName
+      in: path
+      required: true
+      description: Name of the project
+      schema:
+        type: string
+    packageName:
+      name: packageName
+      in: path
+      required: true
+      description: Name of the package
+      schema:
+        type: string
+    taskId:
+      name: taskId
+      in: path
+      required: true
+      description: ID of the task
+      schema:
+        type: string

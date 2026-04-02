@@ -28,8 +28,12 @@ import {
 } from "./health";
 import { logger, loggerMiddleware } from "./logger";
 
+import { ManifestController } from "./controller/manifest.controller";
+import { TaskController } from "./controller/task.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { ManifestService } from "./service/manifest_service";
 import { ProjectStore } from "./service/project_store";
+import { TaskService } from "./service/task_service";
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
@@ -128,6 +132,10 @@ const packageController = new PackageController(projectStore);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
 const compileController = new CompileController(projectStore);
+const manifestService = new ManifestService(projectStore);
+const taskService = new TaskService(projectStore, manifestService);
+const taskController = new TaskController(taskService);
+const manifestController = new ManifestController(projectStore, manifestService);
 
 export const mcpApp = express();
 
@@ -937,6 +945,206 @@ app.post(
          res.status(200).json(result);
       } catch (error) {
          logger.error("Compilation error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// ==================== TASK ROUTES ====================
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/tasks`,
+   async (req, res) => {
+      try {
+         const tasks = await taskController.listTasks(req.params.projectName);
+         res.status(200).json(tasks);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/tasks`,
+   async (req, res) => {
+      try {
+         const task = await taskController.createTask(
+            req.params.projectName,
+            req.body,
+         );
+         res.status(201).json(task);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId`,
+   async (req, res) => {
+      try {
+         const task = await taskController.getTask(
+            req.params.projectName,
+            req.params.taskId,
+         );
+         res.status(200).json(task);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.put(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId`,
+   async (req, res) => {
+      try {
+         const task = await taskController.updateTask(
+            req.params.projectName,
+            req.params.taskId,
+            req.body,
+         );
+         res.status(200).json(task);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.delete(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId`,
+   async (req, res) => {
+      try {
+         await taskController.deleteTask(
+            req.params.projectName,
+            req.params.taskId,
+         );
+         res.status(204).send();
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId/start`,
+   async (req, res) => {
+      try {
+         const execution = await taskController.startTask(
+            req.params.projectName,
+            req.params.taskId,
+            req.body || {},
+         );
+         res.status(202).json(execution);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId/stop`,
+   async (req, res) => {
+      try {
+         const execution = await taskController.stopTask(
+            req.params.projectName,
+            req.params.taskId,
+         );
+         if (execution) {
+            res.status(200).json(execution);
+         } else {
+            res.status(404).json({ message: "No active execution found" });
+         }
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId/status`,
+   async (req, res) => {
+      try {
+         const status = await taskController.getTaskStatus(
+            req.params.projectName,
+            req.params.taskId,
+         );
+         res.status(200).json(status);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId/executions`,
+   async (req, res) => {
+      try {
+         const executions = await taskController.listExecutions(
+            req.params.projectName,
+            req.params.taskId,
+         );
+         res.status(200).json(executions);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/tasks/:taskId/executions/:executionId`,
+   async (req, res) => {
+      try {
+         const execution = await taskController.getExecution(
+            req.params.projectName,
+            req.params.taskId,
+            req.params.executionId,
+         );
+         res.status(200).json(execution);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// ==================== MANIFEST ROUTES ====================
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   async (req, res) => {
+      try {
+         const manifest = await manifestController.getManifest(
+            req.params.projectName,
+            req.params.packageName,
+         );
+         res.status(200).json(manifest);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest/load`,
+   async (req, res) => {
+      try {
+         const manifest = await manifestController.loadManifest(
+            req.params.projectName,
+            req.params.packageName,
+         );
+         res.status(200).json(manifest);
+      } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

@@ -125,11 +125,12 @@ export class Model {
       packagePath: string,
       modelPath: string,
       connections: Map<string, Connection>,
+      options?: { buildManifest?: Record<string, { tableName: string }> },
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
       const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(packagePath, modelPath, connections);
+         await Model.getModelRuntime(packagePath, modelPath, connections, options);
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -570,6 +571,7 @@ export class Model {
       packagePath: string,
       modelPath: string,
       connections: Map<string, Connection>,
+      options?: { buildManifest?: Record<string, { tableName: string }> },
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -609,10 +611,23 @@ export class Model {
          `SET FILE_SEARCH_PATH='${workingDirectory}';`,
       );
 
-      const runtime = new Runtime({
+      const runtimeOptions: {
+         urlReader: typeof urlReader;
+         connections: FixedConnectionMap;
+         buildManifest?: { entries: Record<string, { tableName: string }>; strict?: boolean };
+      } = {
          urlReader,
          connections: new FixedConnectionMap(connections, "duckdb"),
-      });
+      };
+
+      if (options?.buildManifest) {
+         runtimeOptions.buildManifest = {
+            entries: options.buildManifest,
+            strict: true,
+         };
+      }
+
+      const runtime = new Runtime(runtimeOptions);
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
    }
