@@ -203,10 +203,14 @@ export async function getSchemasForConnection(
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
+            const name = String(typedRow.name ?? typedRow.NAME ?? "");
+            const owner = String(typedRow.owner ?? typedRow.OWNER ?? "");
+            const isDefaultVal =
+               typedRow.is_default ?? typedRow.isDefault ?? typedRow.IS_DEFAULT;
             return {
-               name: typedRow.name as string,
-               isHidden: ["SNOWFLAKE", ""].includes(typedRow.owner as string),
-               isDefault: typedRow.isDefault === "Y",
+               name,
+               isHidden: ["SNOWFLAKE", ""].includes(owner),
+               isDefault: isDefaultVal === "Y",
             };
          });
       } catch (error) {
@@ -693,6 +697,7 @@ export async function getTablesForSchema(
    connection: ApiConnection,
    schemaName: string,
    malloyConnection: Connection,
+   fetchTableSchema = true,
 ): Promise<ApiTable[]> {
    // Check if schemaName matches an Azure attached database name
    if (connection.type === "duckdb") {
@@ -798,14 +803,17 @@ export async function getTablesForSchema(
             `Processing table: ${tableName} in schema: ${schemaName}`,
             { tablePath, connectionType: connection.type },
          );
-         const tableSource = await getConnectionTableSource(
-            malloyConnection,
-            tableName,
-            tablePath,
-         );
+         let tableSource: ApiTableSource | undefined;
+         if (fetchTableSchema) {
+            tableSource = await getConnectionTableSource(
+               malloyConnection,
+               tableName,
+               tablePath,
+            );
+         }
          return {
             resource: tablePath,
-            columns: tableSource.columns,
+            columns: tableSource?.columns || [],
          };
       } catch (error) {
          logger.warn(`Failed to get schema for table ${tableName}`, {

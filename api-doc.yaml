@@ -530,6 +530,15 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: fetchTableSchema
+          in: query
+          description: |
+            When `false`, returns tables with `resource` set but does not load per-table column metadata (no Malloy `fetchTableSchema`).
+            Omitted or `null` is treated as `true`. Use `false` for fast explorer listing; call get-table with `fetchTableSchema=true` for details.
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: A list of table names available in the specified schema
@@ -2099,7 +2108,16 @@ components:
           type: string
           description: Type of database connection
           enum:
-            [postgres, bigquery, snowflake, trino, mysql, duckdb, motherduck, ducklake]
+            [
+              postgres,
+              bigquery,
+              snowflake,
+              trino,
+              mysql,
+              duckdb,
+              motherduck,
+              ducklake,
+            ]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:

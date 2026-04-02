@@ -30,6 +30,28 @@ const AZURE_DATA_EXTENSIONS = [
 ];
 
 /**
+ * `fetchTableSchema` query param: default true when omitted, null, or empty.
+ * Only explicit false/0 disables schema fetch.
+ */
+export function parseFetchTableSchemaQueryParam(raw: unknown): boolean {
+   if (raw === undefined || raw === null) {
+      return true;
+   }
+   const v = Array.isArray(raw) ? raw[0] : raw;
+   if (v === "" || v === undefined) {
+      return true;
+   }
+   if (typeof v === "boolean") {
+      return v;
+   }
+   const s = String(v).trim().toLowerCase();
+   if (s === "false" || s === "0") {
+      return false;
+   }
+   return true;
+}
+
+/**
  * Validates an Azure URL against the three supported patterns:
  *   1. Single file:         path/file.parquet
  *   2. Directory glob:      path/*.ext   (direct children only, no sub-dirs)
@@ -161,6 +183,7 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
       schemaName: string,
+      fetchTableSchema = true,
    ): Promise<ApiTable[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
@@ -169,7 +192,12 @@ export class ConnectionController {
          connectionName,
       );
 
-      return getTablesForSchema(connection, schemaName, malloyConnection);
+      return getTablesForSchema(
+         connection,
+         schemaName,
+         malloyConnection,
+         fetchTableSchema,
+      );
    }
 
    public async getConnectionSqlSource(
