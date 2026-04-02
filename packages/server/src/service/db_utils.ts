@@ -199,16 +199,18 @@ export async function getSchemasForConnection(
       try {
          // Use the connection's runSQL method to query schemas
          const result = await malloyConnection.runSQL("SHOW SCHEMAS");
-
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
+            const databaseName = String(
+               typedRow.database_name ?? typedRow.DATABASE_NAME ?? "",
+            );
             const name = String(typedRow.name ?? typedRow.NAME ?? "");
             const owner = String(typedRow.owner ?? typedRow.OWNER ?? "");
             const isDefaultVal =
                typedRow.is_default ?? typedRow.isDefault ?? typedRow.IS_DEFAULT;
             return {
-               name,
+               name: `${databaseName}.${name}`,
                isHidden: ["SNOWFLAKE", ""].includes(owner),
                isDefault: isDefaultVal === "Y",
             };
