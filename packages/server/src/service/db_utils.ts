@@ -203,10 +203,14 @@ export async function getSchemasForConnection(
          const rows = standardizeRunSQLResult(result);
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
+            const name = String(typedRow.name ?? typedRow.NAME ?? "");
+            const owner = String(typedRow.owner ?? typedRow.OWNER ?? "");
+            const isDefaultVal =
+               typedRow.is_default ?? typedRow.isDefault ?? typedRow.IS_DEFAULT;
             return {
-               name: typedRow.name as string,
-               isHidden: ["SNOWFLAKE", ""].includes(typedRow.owner as string),
-               isDefault: typedRow.isDefault === "Y",
+               name,
+               isHidden: ["SNOWFLAKE", ""].includes(owner),
+               isDefault: isDefaultVal === "Y",
             };
          });
       } catch (error) {
@@ -693,6 +697,7 @@ export async function getTablesForSchema(
    connection: ApiConnection,
    schemaName: string,
    malloyConnection: Connection,
+   fetchTableSchema = true,
 ): Promise<ApiTable[]> {
    // Check if schemaName matches an Azure attached database name
    if (connection.type === "duckdb") {
@@ -798,14 +803,17 @@ export async function getTablesForSchema(
             `Processing table: ${tableName} in schema: ${schemaName}`,
             { tablePath, connectionType: connection.type },
          );
-         const tableSource = await getConnectionTableSource(
-            malloyConnection,
-            tableName,
-            tablePath,
-         );
+         let tableSource: ApiTableSource | undefined;
+         if (fetchTableSchema) {
+            tableSource = await getConnectionTableSource(
+               malloyConnection,
+               tableName,
+               tablePath,
+            );
+         }
          return {
             resource: tablePath,
-            columns: tableSource.columns,
+            columns: tableSource?.columns || [],
          };
       } catch (error) {
          logger.warn(`Failed to get schema for table ${tableName}`, {
@@ -976,14 +984,26 @@ export async function listTablesForSchema(
          throw new Error("Snowflake connection is required");
       }
       try {
-         const result = await malloyConnection.runSQL(
-            `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${schemaName}' AND TABLE_TYPE = 'BASE TABLE'`,
+         // TODO: Switch to INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.VIEWS, with pagination support implemented in both backend and the frontend.
+         // Note: LIMIT 1000 is a temporary workaround to avoid pagination.
+         const tablesResult = await malloyConnection.runSQL(
+            `SHOW TABLES IN SCHEMA ${schemaName} LIMIT 1000`,
          );
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.TABLE_NAME as string;
-         });
+         const viewsResult = await malloyConnection.runSQL(
+            `SHOW VIEWS IN SCHEMA ${schemaName} LIMIT 1000`,
+         );
+         const tableRows = standardizeRunSQLResult(tablesResult);
+         const viewRows = standardizeRunSQLResult(viewsResult);
+         logger.debug("Snowflake Tables Listed", { tableRows });
+         logger.debug("Snowflake Views Listed", { viewRows });
+         const rows = [...tableRows, ...viewRows];
+         return rows
+            .map((row: unknown) => {
+               const typedRow = row as Record<string, unknown>;
+               const name = typedRow.name ?? typedRow.NAME;
+               return typeof name === "string" ? name : String(name);
+            })
+            .filter((id) => id.length > 0);
       } catch (error) {
          logger.error(
             `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,

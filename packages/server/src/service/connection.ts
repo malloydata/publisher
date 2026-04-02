@@ -1091,6 +1091,10 @@ export async function createProjectConnections(
                   timeout:
                      connection.snowflakeConnection.responseTimeoutMilliseconds,
                },
+               poolOptions: {
+                  min: 1,
+                  max: 5,
+               },
             };
             const snowflakeConnection = new SnowflakeConnection(
                connection.name,

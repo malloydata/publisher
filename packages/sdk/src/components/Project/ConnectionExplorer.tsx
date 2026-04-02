@@ -18,7 +18,7 @@ import {
    Typography,
 } from "@mui/material";
 import React, { useState } from "react";
-import { Connection as ApiConnection } from "../../client/api";
+import { Connection as ApiConnection, Column } from "../../client/api";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -63,10 +63,9 @@ export default function ConnectionExplorer({
 }: ConnectionExplorerProps) {
    const { apiClients } = useServer();
    const { projectName: projectName } = parseResourceUri(resourceUri);
-   const [selectedTable, setSelectedTable] = React.useState<
-      | { resource: string; columns: Array<{ name: string; type: string }> }
-      | undefined
-   >(undefined);
+   const [selectedTableResource, setSelectedTableResource] = React.useState<
+      string | null
+   >(null);
    const [selectedSchema, setSelectedSchema] = React.useState<string | null>(
       schema || null,
    );
@@ -149,10 +148,8 @@ export default function ConnectionExplorer({
                                           key={schemaName}
                                           selected={isSelected}
                                           onClick={() => {
-                                             {
-                                                setSelectedSchema(schemaName);
-                                                setSelectedTable(undefined);
-                                             }
+                                             setSelectedSchema(schemaName);
+                                             setSelectedTableResource(null);
                                           }}
                                        >
                                           <ListItemText primary={schemaName} />
@@ -172,8 +169,8 @@ export default function ConnectionExplorer({
                   <TablesInSchema
                      connectionName={connectionName}
                      schemaName={selectedSchema}
-                     onTableClick={(table) => {
-                        setSelectedTable(table);
+                     onTableSelect={(resource) => {
+                        setSelectedTableResource(resource);
                      }}
                      resourceUri={resourceUri}
                      connection={connection}
@@ -182,10 +179,13 @@ export default function ConnectionExplorer({
             )}
          </Grid>
          <Grid size={{ xs: 12, md: schema ? 6 : 4 }}>
-            {selectedTable && (
-               <Paper sx={{ p: 1, m: 0 }}>
-                  <TableSchemaViewer table={selectedTable} />
-               </Paper>
+            {selectedSchema && selectedTableResource && (
+               <SelectedTableDetailPanel
+                  projectName={projectName}
+                  connectionName={connectionName}
+                  schemaName={selectedSchema}
+                  tableResource={selectedTableResource}
+               />
             )}
          </Grid>
       </Grid>
@@ -193,10 +193,69 @@ export default function ConnectionExplorer({
 }
 
 type TableSchemaViewerProps = {
-   table: { resource: string; columns: Array<{ name: string; type: string }> };
+   table: { resource: string; columns: Column[] };
+   loading?: boolean;
 };
 
-function TableSchemaViewer({ table }: TableSchemaViewerProps) {
+function SelectedTableDetailPanel({
+   projectName,
+   connectionName,
+   schemaName,
+   tableResource,
+}: {
+   projectName: string;
+   connectionName: string;
+   schemaName: string;
+   tableResource: string;
+}) {
+   const { apiClients } = useServer();
+   const {
+      data: tableDetailRes,
+      isLoading: tableDetailLoading,
+      isError: tableDetailError,
+      error: tableDetailErrorObj,
+   } = useQueryWithApiError({
+      queryKey: [
+         "connectionTableDetail",
+         projectName,
+         connectionName,
+         schemaName,
+         tableResource,
+      ],
+      queryFn: () =>
+         apiClients.connections.getTable(
+            projectName,
+            connectionName,
+            schemaName,
+            tableResource,
+         ),
+      enabled: Boolean(schemaName) && Boolean(tableResource),
+   });
+
+   const table = {
+      resource: tableDetailRes?.data?.resource ?? tableResource,
+      columns: tableDetailRes?.data?.columns ?? [],
+   };
+
+   return (
+      <Paper sx={{ p: 1, m: 0 }}>
+         {tableDetailError && (
+            <ApiErrorDisplay
+               error={tableDetailErrorObj}
+               context={`${projectName} > ${connectionName} > ${schemaName} > ${tableResource}`}
+            />
+         )}
+         {!tableDetailError && (
+            <TableSchemaViewer table={table} loading={tableDetailLoading} />
+         )}
+      </Paper>
+   );
+}
+
+function TableSchemaViewer({ table, loading }: TableSchemaViewerProps) {
+   if (loading) {
+      return <Loading text="Loading columns..." />;
+   }
    return (
       <>
          <Typography
@@ -248,10 +307,7 @@ function TableSchemaViewer({ table }: TableSchemaViewerProps) {
 interface TablesInSchemaProps {
    connectionName: string;
    schemaName: string;
-   onTableClick: (table: {
-      resource: string;
-      columns: Array<{ name: string; type: string }>;
-   }) => void;
+   onTableSelect: (tableResource: string) => void;
    resourceUri: string;
    connection?: ApiConnection;
 }
@@ -259,7 +315,7 @@ interface TablesInSchemaProps {
 function TablesInSchema({
    connectionName,
    schemaName,
-   onTableClick,
+   onTableSelect,
    resourceUri,
    connection,
 }: TablesInSchemaProps) {
@@ -273,6 +329,7 @@ function TablesInSchema({
             projectName,
             connectionName,
             schemaName,
+            false,
          ),
    });
 
@@ -341,11 +398,15 @@ function TablesInSchema({
                         return (
                            <ListItemButton
                               key={table.resource}
-                              onClick={() => onTableClick(table)}
+                              onClick={() => onTableSelect(table.resource)}
                            >
                               <ListItemText
                                  primary={tableName}
-                                 secondary={`${table.columns.length} columns`}
+                                 secondary={
+                                    table.columns.length > 0
+                                       ? `${table.columns.length} columns`
+                                       : undefined
+                                 }
                               />
                            </ListItemButton>
                         );

@@ -14,7 +14,10 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
 import { CompileController } from "./controller/compile.controller";
-import { ConnectionController } from "./controller/connection.controller";
+import {
+   ConnectionController,
+   parseFetchTableSchemaQueryParam,
+} from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -467,6 +470,7 @@ app.get(
             req.params.projectName,
             req.params.connectionName,
             req.params.schemaName,
+            parseFetchTableSchemaQueryParam(req.query.fetchTableSchema),
          );
          res.status(200).json(results);
       } catch (error) {
