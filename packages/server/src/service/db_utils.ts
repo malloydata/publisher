@@ -985,13 +985,17 @@ export async function listTablesForSchema(
       }
       try {
          const result = await malloyConnection.runSQL(
-            `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${schemaName}' AND TABLE_TYPE = 'BASE TABLE'`,
+            `SHOW TABLES IN SCHEMA ${schemaName}`,
          );
          const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.TABLE_NAME as string;
-         });
+         logger.debug("Snowflake Tables Listed", { rows });
+         return rows
+            .map((row: unknown) => {
+               const typedRow = row as Record<string, unknown>;
+               const name = typedRow.name ?? typedRow.NAME;
+               return typeof name === "string" ? name : String(name);
+            })
+            .filter((id) => id.length > 0);
       } catch (error) {
          logger.error(
             `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
