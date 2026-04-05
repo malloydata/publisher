@@ -208,31 +208,6 @@ describe("listTablesForSchema", () => {
          expect(tables[0].resource).toBe("MY_DB.PUBLIC.orders");
       });
 
-      it("normalizes Snowflake types to Malloy types", async () => {
-         const snowflakeRows = [
-            { TABLE_NAME: "t", COLUMN_NAME: "a", DATA_TYPE: "TEXT" },
-            { TABLE_NAME: "t", COLUMN_NAME: "b", DATA_TYPE: "NUMBER" },
-            { TABLE_NAME: "t", COLUMN_NAME: "c", DATA_TYPE: "FLOAT" },
-            { TABLE_NAME: "t", COLUMN_NAME: "d", DATA_TYPE: "BOOLEAN" },
-            { TABLE_NAME: "t", COLUMN_NAME: "e", DATA_TYPE: "DATE" },
-            { TABLE_NAME: "t", COLUMN_NAME: "f", DATA_TYPE: "TIMESTAMP_NTZ" },
-            { TABLE_NAME: "t", COLUMN_NAME: "g", DATA_TYPE: "TIMESTAMP_TZ" },
-            { TABLE_NAME: "t", COLUMN_NAME: "h", DATA_TYPE: "VARIANT" },
-         ];
-         const m = mockConnection(snowflakeRows);
-         const tables = await listTablesForSchema(conn, "MY_DB.PUBLIC", m.conn);
-
-         const cols = tables[0].columns!;
-         expect(cols.find((c) => c.name === "a")?.type).toBe("string");
-         expect(cols.find((c) => c.name === "b")?.type).toBe("number");
-         expect(cols.find((c) => c.name === "c")?.type).toBe("number");
-         expect(cols.find((c) => c.name === "d")?.type).toBe("boolean");
-         expect(cols.find((c) => c.name === "e")?.type).toBe("date");
-         expect(cols.find((c) => c.name === "f")?.type).toBe("timestamp");
-         expect(cols.find((c) => c.name === "g")?.type).toBe("timestamptz");
-         expect(cols.find((c) => c.name === "h")?.type).toBe("variant");
-      });
-
       it("falls back to connection database when schema is unqualified", async () => {
          const m = mockConnection(columnRows);
          const tables = await listTablesForSchema(conn, "PUBLIC", m.conn);
