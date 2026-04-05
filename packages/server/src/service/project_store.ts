@@ -569,22 +569,10 @@ export class ProjectStore {
    private async cleanupAndCreatePublisherPath() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
 
-      // Ensure serverRootPath exists and is a directory
-      try {
-         const stats = await fs.promises.stat(this.serverRootPath);
-         if (!stats.isDirectory()) {
-            throw new Error(
-               `Server root path ${this.serverRootPath} exists but is not a directory`,
-            );
-         }
-      } catch (error) {
-         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            // Directory doesn't exist, create it
-            await fs.promises.mkdir(this.serverRootPath, { recursive: true });
-         } else {
-            throw error;
-         }
-      }
+      // Ensure serverRootPath exists as a directory (mkdir recursive is a
+      // no-op when the directory already exists and avoids a Bun-on-Windows
+      // bug where fs.promises.stat resolves to undefined instead of throwing)
+      await fs.promises.mkdir(this.serverRootPath, { recursive: true });
 
       if (reInit) {
          const uploadDocsPath = path.join(
@@ -1233,9 +1221,8 @@ export class ProjectStore {
       if (projectPath.endsWith(".zip")) {
          projectPath = await this.unzipProject(projectPath);
       }
-      const projectDirExists = (
-         await fs.promises.stat(projectPath)
-      ).isDirectory();
+      const projectDirExists =
+         (await fs.promises.stat(projectPath))?.isDirectory() ?? false;
       if (projectDirExists) {
          await fs.promises.rm(absoluteTargetPath, {
             recursive: true,
