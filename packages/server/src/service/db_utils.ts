@@ -36,13 +36,15 @@ export function sqlInFilter(columnName: string, values?: string[]): string {
 function groupColumnRowsIntoTables(
    rows: unknown[],
    buildResource: (tableName: string) => string,
+   normalizeType?: (rawType: string) => string,
 ): ApiTable[] {
    const tableMap = new Map<string, { name: string; type: string }[]>();
    for (const row of rows) {
       const r = row as Record<string, unknown>;
       const tableName = String(r.TABLE_NAME ?? r.table_name ?? "");
       const columnName = String(r.COLUMN_NAME ?? r.column_name ?? "");
-      const dataType = String(r.DATA_TYPE ?? r.data_type ?? "").toLowerCase();
+      const rawType = String(r.DATA_TYPE ?? r.data_type ?? "").toLowerCase();
+      const dataType = normalizeType ? normalizeType(rawType) : rawType;
       if (!tableName) continue;
       if (!tableMap.has(tableName)) tableMap.set(tableName, []);
       tableMap.get(tableName)!.push({ name: columnName, type: dataType });
@@ -966,6 +968,57 @@ async function listTablesForPostgres(
    }
 }
 
+/**
+ * Map raw Snowflake SQL types to Malloy type names so that column types
+ * returned by listTables match those returned by Malloy's fetchTableSchema.
+ * Mirrors the snowflakeToMalloyTypes map in @malloydata/malloy's Snowflake dialect.
+ */
+const snowflakeTypeToMalloy: Record<string, string> = {
+   // string
+   varchar: "string",
+   text: "string",
+   string: "string",
+   char: "string",
+   character: "string",
+   nvarchar: "string",
+   nvarchar2: "string",
+   "char varying": "string",
+   "nchar varying": "string",
+   // integer
+   integer: "number",
+   int: "number",
+   bigint: "number",
+   smallint: "number",
+   tinyint: "number",
+   byteint: "number",
+   number: "number",
+   numeric: "number",
+   decimal: "number",
+   dec: "number",
+   // float
+   float: "number",
+   float4: "number",
+   float8: "number",
+   double: "number",
+   "double precision": "number",
+   real: "number",
+   // boolean
+   boolean: "boolean",
+   // date/time
+   date: "date",
+   timestamp: "timestamp",
+   timestampntz: "timestamp",
+   timestamp_ntz: "timestamp",
+   "timestamp without time zone": "timestamp",
+   timestamptz: "timestamptz",
+   timestamp_tz: "timestamptz",
+   "timestamp with time zone": "timestamptz",
+};
+
+function normalizeSnowflakeType(rawType: string): string {
+   return snowflakeTypeToMalloy[rawType] ?? rawType;
+}
+
 async function listTablesForSnowflake(
    connection: ApiConnection,
    schemaName: string,
@@ -999,7 +1052,11 @@ async function listTablesForSnowflake(
          `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${schemaOnly}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${qualifiedSchema}.${t}`);
+      return groupColumnRowsIntoTables(
+         rows,
+         (t) => `${qualifiedSchema}.${t}`,
+         normalizeSnowflakeType,
+      );
    } catch (error) {
       logger.error(
          `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
