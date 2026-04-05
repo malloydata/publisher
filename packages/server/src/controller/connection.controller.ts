@@ -131,10 +131,6 @@ export class ConnectionController {
       tablePath: string,
    ): Promise<ApiTable> {
       try {
-         logger.info(`Attempting to fetch table schema for: ${tablePath}`, {
-            tableKey,
-            tablePath,
-         });
          const source = await (
             malloyConnection as Connection & {
                fetchTableSchema: (
@@ -147,24 +143,13 @@ export class ConnectionController {
             throw new ConnectionError(`Table ${tablePath} not found`);
          }
 
-         const malloyFields = source.fields;
-         if (!Array.isArray(malloyFields) || malloyFields.length === 0) {
-            throw new ConnectionError(
-               `Table ${tablePath} has no fields or was not found`,
-            );
-         }
-
-         const columns = malloyFields.map((field) => ({
-            name: field.name,
-            type: field.type,
-         }));
-         logger.debug(`Successfully fetched schema for ${tablePath}`, {
-            fieldCount: columns.length,
-         });
          return {
             source: JSON.stringify(source),
             resource: tablePath,
-            columns,
+            columns: (source.fields || []).map((f) => ({
+               name: f.name,
+               type: f.type,
+            })),
          };
       } catch (error) {
          const errorMessage =
