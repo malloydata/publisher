@@ -530,15 +530,16 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: fetchTableSchema
+        - name: tableNames
           in: query
           description: |
-            When `false`, returns tables with `resource` set but does not load per-table column metadata (no Malloy `fetchTableSchema`).
-            Omitted or `null` is treated as `true`. Use `false` for fast explorer listing; call get-table with `fetchTableSchema=true` for details.
+            List of table names to filter results. When provided, only returns metadata
+            for the specified tables. When omitted, returns all tables in the schema.
           required: false
           schema:
-            type: boolean
-            default: true
+            type: array
+            items:
+              type: string
       responses:
         "200":
           description: A list of table names available in the specified schema
@@ -758,6 +759,7 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+          
   /projects/{projectName}/connections/{connectionName}/sqlTemporaryTable:
     post:
       tags:
@@ -846,59 +848,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TemporaryTable"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  # TODO: Remove this endpoint. This is deprecated and replaced by /projects/{projectName}/connections/{connectionName}/table resource.
-  /projects/{projectName}/connections/{connectionName}/tableSource:
-    get:
-      tags:
-        - connections
-      operationId: get-tablesource
-      summary: Get table source information
-      deprecated: true
-      description: |
-        Retrieves information about a specific table or view from the database connection.
-        This includes table schema, column definitions, and metadata. The table can be specified
-        by either tableKey or tablePath parameters, depending on the database type.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: tableKey
-          in: query
-          description: Table key
-          required: false
-          schema:
-            type: string
-        - name: tablePath
-          in: query
-          description: Table path
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Table source information
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TableSource"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
