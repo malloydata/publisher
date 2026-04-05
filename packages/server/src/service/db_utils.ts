@@ -175,8 +175,10 @@ async function getSchemasForPostgres(
       throw new Error("Postgres connection is required");
    }
    try {
+      // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+      // de-JSONs each row via row.row (matching Malloy-generated queries).
       const result = await malloyConnection.runSQL(
-         "SELECT schema_name FROM information_schema.schemata ORDER BY schema_name",
+         "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t",
       );
       const rows = standardizeRunSQLResult(result);
       return rows.map((row: unknown) => {
@@ -946,8 +948,10 @@ async function listTablesForPostgres(
       throw new Error("Postgres connection is required");
    }
    try {
+      // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+      // de-JSONs each row via row.row (matching Malloy-generated queries).
       const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position) t`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
