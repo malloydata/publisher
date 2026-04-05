@@ -199,11 +199,7 @@ describe("listTablesForSchema", () => {
 
       it("queries DATABASE.INFORMATION_SCHEMA.COLUMNS", async () => {
          const m = mockConnection(columnRows);
-         const tables = await listTablesForSchema(
-            conn,
-            "MY_DB.PUBLIC",
-            m.conn,
-         );
+         const tables = await listTablesForSchema(conn, "MY_DB.PUBLIC", m.conn);
 
          expect(m.lastSQL).toContain("MY_DB.INFORMATION_SCHEMA.COLUMNS");
          expect(m.lastSQL).toContain("TABLE_SCHEMA = 'PUBLIC'");
@@ -245,9 +241,7 @@ describe("listTablesForSchema", () => {
          const m = mockConnection(columnRows);
          const tables = await listTablesForSchema(conn, "default", m.conn);
 
-         expect(m.lastSQL).toContain(
-            "hive.information_schema.columns",
-         );
+         expect(m.lastSQL).toContain("hive.information_schema.columns");
          expect(m.lastSQL).toContain("table_schema = 'default'");
          expect(tables[0].resource).toBe("hive.default.orders");
       });
@@ -259,11 +253,7 @@ describe("listTablesForSchema", () => {
             trinoConnection: { server: "localhost", port: 8080 },
          };
          const m = mockConnection(columnRows);
-         const tables = await listTablesForSchema(
-            conn,
-            "hive.default",
-            m.conn,
-         );
+         const tables = await listTablesForSchema(conn, "hive.default", m.conn);
 
          expect(m.lastSQL).toContain("hive.information_schema.columns");
          expect(m.lastSQL).toContain("table_schema = 'default'");
@@ -285,11 +275,7 @@ describe("listTablesForSchema", () => {
             data_type: r.DATA_TYPE,
          }));
          const m = mockConnection(rows);
-         const tables = await listTablesForSchema(
-            conn,
-            "memory.main",
-            m.conn,
-         );
+         const tables = await listTablesForSchema(conn, "memory.main", m.conn);
 
          expect(m.lastSQL).toContain("information_schema.columns");
          expect(m.lastSQL).toContain("table_schema = 'main'");
@@ -496,9 +482,7 @@ describe("getSchemasForConnection", () => {
 
          expect(m.lastSQL).toContain("information_schema.schemata");
          expect(schemas).toHaveLength(4);
-         expect(schemas.find((s) => s.name === "public")?.isDefault).toBe(
-            true,
-         );
+         expect(schemas.find((s) => s.name === "public")?.isDefault).toBe(true);
          expect(
             schemas.find((s) => s.name === "information_schema")?.isHidden,
          ).toBe(true);
@@ -594,9 +578,9 @@ describe("getSchemasForConnection", () => {
          expect(
             schemas.find((s) => s.name === "main.information_schema")?.isHidden,
          ).toBe(true);
-         expect(
-            schemas.find((s) => s.name === "system.main")?.isHidden,
-         ).toBe(true);
+         expect(schemas.find((s) => s.name === "system.main")?.isHidden).toBe(
+            true,
+         );
       });
    });
 
@@ -652,9 +636,7 @@ describe("getSchemasForConnection", () => {
          expect(m.lastSQL).toContain("catalog_name = 'myconn'");
          expect(schemas).toHaveLength(3);
          expect(schemas.find((s) => s.name === "main")?.isHidden).toBe(false);
-         expect(schemas.find((s) => s.name === "public")?.isHidden).toBe(
-            false,
-         );
+         expect(schemas.find((s) => s.name === "public")?.isHidden).toBe(false);
          expect(schemas.find((s) => s.name === "internal")?.isHidden).toBe(
             true,
          );
@@ -679,9 +661,7 @@ describe("getSchemasForConnection", () => {
          const m = mockConnection(rows);
          const schemas = await getSchemasForConnection(conn, m.conn);
 
-         expect(m.lastSQL).toContain(
-            "hive.information_schema.schemata",
-         );
+         expect(m.lastSQL).toContain("hive.information_schema.schemata");
          expect(schemas).toHaveLength(2);
          expect(schemas.find((s) => s.name === "default")?.isHidden).toBe(
             false,
@@ -698,9 +678,9 @@ describe("getSchemasForConnection", () => {
          type: "unsupported",
       } as unknown as ApiConnection;
       const m = mockConnection();
-      await expect(
-         getSchemasForConnection(conn, m.conn),
-      ).rejects.toThrow("Unsupported connection type");
+      await expect(getSchemasForConnection(conn, m.conn)).rejects.toThrow(
+         "Unsupported connection type",
+      );
    });
 });
 

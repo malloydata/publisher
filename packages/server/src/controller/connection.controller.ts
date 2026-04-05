@@ -27,7 +27,6 @@ const AZURE_DATA_EXTENSIONS = [
    ".ndjson",
 ];
 
-
 /**
  * Validates an Azure URL against the three supported patterns:
  *   1. Single file:         path/file.parquet
@@ -60,10 +59,10 @@ function validateAzureUrl(url: string, fieldName: string): void {
       if (stars !== 1 || !lastSegment.startsWith("*")) {
          throw new BadRequestError(
             `Azure ${fieldName}: only three URL patterns are supported:\n` +
-            `  • Single file:      path/file.parquet\n` +
-            `  • Directory glob:   path/*.ext  (direct children only)\n` +
-            `  • Recursive:        path/**     (all data files in subtree)\n` +
-            `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
+               `  • Single file:      path/file.parquet\n` +
+               `  • Directory glob:   path/*.ext  (direct children only)\n` +
+               `  • Recursive:        path/**     (all data files in subtree)\n` +
+               `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
          );
       }
    }
@@ -268,6 +267,8 @@ export class ConnectionController {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
 
+      // TODO: Move this database connection logic to the db_utils.ts file -- and
+      // ultimately into a connection-specific class.
       if (connection.type === "ducklake") {
          if (tablePath.split(".").length === 1) {
             // tablePath is just the table name, construct full path
@@ -395,7 +396,7 @@ export class ConnectionController {
          connectionConfig &&
          "config" in connectionConfig &&
          typeof (connectionConfig as Record<string, unknown>).config ===
-         "object"
+            "object"
       ) {
          connectionConfig = (connectionConfig as Record<string, unknown>)
             .config as ApiConnection;

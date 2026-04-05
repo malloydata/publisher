@@ -32,9 +32,7 @@ import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
 
 /** Normalize an Express query param into a string[] or undefined. */
-export function normalizeQueryArray(
-   value: unknown,
-): string[] | undefined {
+export function normalizeQueryArray(value: unknown): string[] | undefined {
    if (value === undefined || value === null) return undefined;
    if (Array.isArray(value)) return value.map(String);
    return [String(value)];
@@ -218,8 +216,8 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
             error: { code: -32603, message: "Internal server error" },
             id:
                typeof req.body === "object" &&
-                  req.body !== null &&
-                  "id" in req.body
+               req.body !== null &&
+               "id" in req.body
                   ? req.body.id
                   : null,
          });

@@ -186,11 +186,9 @@ async function getSchemasForPostgres(
          );
          return {
             name: schemaName,
-            isHidden: [
-               "information_schema",
-               "pg_catalog",
-               "pg_toast",
-            ].includes(schemaName),
+            isHidden: ["information_schema", "pg_catalog", "pg_toast"].includes(
+               schemaName,
+            ),
             isDefault: schemaName === "public",
          };
       });
@@ -300,8 +298,7 @@ async function getSchemasForTrino(
             };
          });
       } else {
-         const catalogsResult =
-            await malloyConnection.runSQL(`SHOW CATALOGS`);
+         const catalogsResult = await malloyConnection.runSQL(`SHOW CATALOGS`);
          const catalogNames = standardizeRunSQLResult(catalogsResult).map(
             (row: unknown) => {
                const r = row as Record<string, unknown>;
@@ -456,9 +453,7 @@ async function getSchemasForMotherDuck(
    }
    try {
       const database = connection.motherduckConnection.database;
-      const whereClause = database
-         ? `WHERE catalog_name = '${database}'`
-         : "";
+      const whereClause = database ? `WHERE catalog_name = '${database}'` : "";
       const result = await malloyConnection.runSQL(
          `SELECT DISTINCT schema_name FROM information_schema.schemata ${whereClause} ORDER BY schema_name`,
       );
@@ -470,11 +465,9 @@ async function getSchemasForMotherDuck(
          );
          return {
             name: schemaName,
-            isHidden: [
-               "information_schema",
-               "performance_schema",
-               "",
-            ].includes(schemaName),
+            isHidden: ["information_schema", "performance_schema", ""].includes(
+               schemaName,
+            ),
             isDefault: schemaName === "main",
          };
       });
@@ -1002,10 +995,7 @@ async function listTablesForSnowflake(
          `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${schemaOnly}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(
-         rows,
-         (t) => `${qualifiedSchema}.${t}`,
-      );
+      return groupColumnRowsIntoTables(rows, (t) => `${qualifiedSchema}.${t}`);
    } catch (error) {
       logger.error(
          `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
@@ -1051,10 +1041,7 @@ async function listTablesForTrino(
          `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${schemaOnly}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(
-         rows,
-         (t) => `${resourcePrefix}.${t}`,
-      );
+      return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
    } catch (error) {
       logger.error(
          `Error getting tables for Trino schema ${schemaName} in connection ${connection.name}`,
