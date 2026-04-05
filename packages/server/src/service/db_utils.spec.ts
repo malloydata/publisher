@@ -167,10 +167,11 @@ describe("listTablesForSchema", () => {
          },
       };
 
-      it("queries information_schema.columns with correct schema", async () => {
+      it("queries information_schema.columns wrapped in row_to_json", async () => {
          const m = mockConnection(columnRows);
          const tables = await listTablesForSchema(conn, "public", m.conn);
 
+         expect(m.lastSQL).toContain("row_to_json");
          expect(m.lastSQL).toContain("information_schema.columns");
          expect(m.lastSQL).toContain("table_schema = 'public'");
          expect(tables).toHaveLength(2);
@@ -470,7 +471,7 @@ describe("getSchemasForConnection", () => {
          },
       };
 
-      it("queries information_schema.schemata", async () => {
+      it("queries information_schema.schemata wrapped in row_to_json", async () => {
          const rows = [
             { schema_name: "public" },
             { schema_name: "information_schema" },
@@ -480,6 +481,7 @@ describe("getSchemasForConnection", () => {
          const m = mockConnection(rows);
          const schemas = await getSchemasForConnection(conn, m.conn);
 
+         expect(m.lastSQL).toContain("row_to_json");
          expect(m.lastSQL).toContain("information_schema.schemata");
          expect(schemas).toHaveLength(4);
          expect(schemas.find((s) => s.name === "public")?.isDefault).toBe(true);
