@@ -1,4 +1,4 @@
-import { Connection, RunSQLOptions } from "@malloydata/malloy";
+import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
@@ -6,16 +6,14 @@ import { logger } from "../logger";
 import { testConnectionConfig } from "../service/connection";
 import { ConnectionService } from "../service/connection_service";
 import {
-   getConnectionTableSource,
    getSchemasForConnection,
-   getTablesForSchema,
+   listTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
 type ApiSqlSource = components["schemas"]["SqlSource"];
-type ApiTableSource = components["schemas"]["TableSource"];
 type ApiTable = components["schemas"]["Table"];
 type ApiQueryData = components["schemas"]["QueryData"];
 type ApiTemporaryTable = components["schemas"]["TemporaryTable"];
@@ -29,27 +27,6 @@ const AZURE_DATA_EXTENSIONS = [
    ".ndjson",
 ];
 
-/**
- * `fetchTableSchema` query param: default true when omitted, null, or empty.
- * Only explicit false/0 disables schema fetch.
- */
-export function parseFetchTableSchemaQueryParam(raw: unknown): boolean {
-   if (raw === undefined || raw === null) {
-      return true;
-   }
-   const v = Array.isArray(raw) ? raw[0] : raw;
-   if (v === "" || v === undefined) {
-      return true;
-   }
-   if (typeof v === "boolean") {
-      return v;
-   }
-   const s = String(v).trim().toLowerCase();
-   if (s === "false" || s === "0") {
-      return false;
-   }
-   return true;
-}
 
 /**
  * Validates an Azure URL against the three supported patterns:
@@ -83,10 +60,10 @@ function validateAzureUrl(url: string, fieldName: string): void {
       if (stars !== 1 || !lastSegment.startsWith("*")) {
          throw new BadRequestError(
             `Azure ${fieldName}: only three URL patterns are supported:\n` +
-               `  • Single file:      path/file.parquet\n` +
-               `  • Directory glob:   path/*.ext  (direct children only)\n` +
-               `  • Recursive:        path/**     (all data files in subtree)\n` +
-               `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
+            `  • Single file:      path/file.parquet\n` +
+            `  • Directory glob:   path/*.ext  (direct children only)\n` +
+            `  • Recursive:        path/**     (all data files in subtree)\n` +
+            `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
          );
       }
    }
@@ -144,6 +121,67 @@ export class ConnectionController {
       }
    }
 
+   /**
+    * Fetches a table's schema via the Malloy connection's fetchTableSchema,
+    * returning an ApiTable with columns and the raw source JSON.
+    */
+   private async fetchTable(
+      malloyConnection: Connection,
+      tableKey: string,
+      tablePath: string,
+   ): Promise<ApiTable> {
+      try {
+         logger.info(`Attempting to fetch table schema for: ${tablePath}`, {
+            tableKey,
+            tablePath,
+         });
+         const source = await (
+            malloyConnection as Connection & {
+               fetchTableSchema: (
+                  tableKey: string,
+                  tablePath: string,
+               ) => Promise<TableSourceDef | undefined>;
+            }
+         ).fetchTableSchema(tableKey, tablePath);
+         if (!source) {
+            throw new ConnectionError(`Table ${tablePath} not found`);
+         }
+
+         const malloyFields = source.fields;
+         if (!Array.isArray(malloyFields) || malloyFields.length === 0) {
+            throw new ConnectionError(
+               `Table ${tablePath} has no fields or was not found`,
+            );
+         }
+
+         const columns = malloyFields.map((field) => ({
+            name: field.name,
+            type: field.type,
+         }));
+         logger.debug(`Successfully fetched schema for ${tablePath}`, {
+            fieldCount: columns.length,
+         });
+         return {
+            source: JSON.stringify(source),
+            resource: tablePath,
+            columns,
+         };
+      } catch (error) {
+         const errorMessage =
+            error instanceof Error
+               ? error.message
+               : typeof error === "string"
+                 ? error
+                 : JSON.stringify(error);
+         logger.error("fetchTableSchema error", {
+            error,
+            tableKey,
+            tablePath,
+         });
+         throw new ConnectionError(errorMessage);
+      }
+   }
+
    public async getConnection(
       projectName: string,
       connectionName: string,
@@ -183,7 +221,7 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
       schemaName: string,
-      fetchTableSchema = true,
+      tableNames?: string[],
    ): Promise<ApiTable[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
@@ -192,11 +230,11 @@ export class ConnectionController {
          connectionName,
       );
 
-      return getTablesForSchema(
+      return listTablesForSchema(
          connection,
          schemaName,
          malloyConnection,
-         fetchTableSchema,
+         tableNames,
       );
    }
 
@@ -229,20 +267,6 @@ export class ConnectionController {
       } catch (error) {
          throw new ConnectionError((error as Error).message);
       }
-   }
-
-   public async getConnectionTableSource(
-      projectName: string,
-      connectionName: string,
-      tableKey: string,
-      tablePath: string,
-   ): Promise<ApiTableSource> {
-      const malloyConnection = await this.getMalloyConnection(
-         projectName,
-         connectionName,
-      );
-
-      return getConnectionTableSource(malloyConnection, tableKey, tablePath);
    }
 
    public async getTable(
@@ -306,16 +330,12 @@ export class ConnectionController {
                );
                const fullFileUrl = `${dirPath}${fileName}${queryString}`;
 
-               const tableSource = await getConnectionTableSource(
+               const table = await this.fetchTable(
                   malloyConnection,
                   fileName,
                   fullFileUrl,
                );
-               return {
-                  resource: tablePath,
-                  columns: tableSource.columns,
-                  source: tableSource.source,
-               };
+               return { ...table, resource: tablePath };
             }
          }
       }
@@ -325,17 +345,7 @@ export class ConnectionController {
          throw new Error(`Invalid tablePath: ${tablePath}`);
       }
 
-      const tableSource = await getConnectionTableSource(
-         malloyConnection,
-         tableKey, // tableKey is the table name
-         tablePath,
-      );
-
-      return {
-         resource: tablePath,
-         columns: tableSource.columns,
-         source: tableSource.source,
-      };
+      return this.fetchTable(malloyConnection, tableKey, tablePath);
    }
 
    public async getConnectionQueryData(
@@ -400,7 +410,7 @@ export class ConnectionController {
          connectionConfig &&
          "config" in connectionConfig &&
          typeof (connectionConfig as Record<string, unknown>).config ===
-            "object"
+         "object"
       ) {
          connectionConfig = (connectionConfig as Record<string, unknown>)
             .config as ApiConnection;

@@ -14,10 +14,7 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
 import { CompileController } from "./controller/compile.controller";
-import {
-   ConnectionController,
-   parseFetchTableSchemaQueryParam,
-} from "./controller/connection.controller";
+import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -33,6 +30,16 @@ import { logger, loggerMiddleware } from "./logger";
 
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
+
+/** Normalize an Express query param into a string[] or undefined. */
+export function normalizeQueryArray(
+   value: unknown,
+): string[] | undefined {
+   if (value === undefined || value === null) return undefined;
+   if (Array.isArray(value)) return value.map(String);
+   return [String(value)];
+}
+
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
@@ -211,8 +218,8 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
             error: { code: -32603, message: "Internal server error" },
             id:
                typeof req.body === "object" &&
-               req.body !== null &&
-               "id" in req.body
+                  req.body !== null &&
+                  "id" in req.body
                   ? req.body.id
                   : null,
          });
@@ -470,7 +477,7 @@ app.get(
             req.params.projectName,
             req.params.connectionName,
             req.params.schemaName,
-            parseFetchTableSchemaQueryParam(req.query.fetchTableSchema),
+            normalizeQueryArray(req.query.tableNames),
          );
          res.status(200).json(results);
       } catch (error) {
@@ -532,26 +539,6 @@ app.post(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/tableSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTableSource(
-               req.params.projectName,
-               req.params.connectionName,
-               req.query.tableKey as string,
-               req.query.tablePath as string,
             ),
          );
       } catch (error) {

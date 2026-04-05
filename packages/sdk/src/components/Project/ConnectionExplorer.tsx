@@ -329,7 +329,6 @@ function TablesInSchema({
             projectName,
             connectionName,
             schemaName,
-            false,
          ),
    });
 
