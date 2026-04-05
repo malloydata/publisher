@@ -1094,6 +1094,9 @@ export async function createProjectConnections(
                poolOptions: {
                   min: 1,
                   max: 5,
+                  testOnBorrow: false,
+                  testOnReturn: false,
+                  testWhileIdle: true,
                },
             };
             const snowflakeConnection = new SnowflakeConnection(
