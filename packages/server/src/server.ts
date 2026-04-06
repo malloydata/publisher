@@ -143,7 +143,10 @@ const compileController = new CompileController(projectStore);
 const manifestService = new ManifestService(projectStore);
 const taskService = new TaskService(projectStore, manifestService);
 const taskController = new TaskController(taskService);
-const manifestController = new ManifestController(projectStore, manifestService);
+const manifestController = new ManifestController(
+   projectStore,
+   manifestService,
+);
 
 export const mcpApp = express();
 
@@ -942,34 +945,28 @@ app.post(
 
 // ==================== TASK ROUTES ====================
 
-app.get(
-   `${API_PREFIX}/projects/:projectName/tasks`,
-   async (req, res) => {
-      try {
-         const tasks = await taskController.listTasks(req.params.projectName);
-         res.status(200).json(tasks);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
+app.get(`${API_PREFIX}/projects/:projectName/tasks`, async (req, res) => {
+   try {
+      const tasks = await taskController.listTasks(req.params.projectName);
+      res.status(200).json(tasks);
+   } catch (error) {
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
 
-app.post(
-   `${API_PREFIX}/projects/:projectName/tasks`,
-   async (req, res) => {
-      try {
-         const task = await taskController.createTask(
-            req.params.projectName,
-            req.body,
-         );
-         res.status(201).json(task);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
+app.post(`${API_PREFIX}/projects/:projectName/tasks`, async (req, res) => {
+   try {
+      const task = await taskController.createTask(
+         req.params.projectName,
+         req.body,
+      );
+      res.status(201).json(task);
+   } catch (error) {
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
 
 app.get(
    `${API_PREFIX}/projects/:projectName/tasks/:taskId`,

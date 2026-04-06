@@ -135,10 +135,9 @@ export class ManifestRepository {
 
    /** Removes all manifest entries belonging to a project (used on project deletion). */
    async deleteEntriesByProjectId(projectId: string): Promise<void> {
-      await this.db.run(
-         "DELETE FROM build_manifests WHERE project_id = ?",
-         [projectId],
-      );
+      await this.db.run("DELETE FROM build_manifests WHERE project_id = ?", [
+         projectId,
+      ]);
    }
 
    /** Maps a raw DB row (snake_case columns) to a {@link ManifestEntry}. */

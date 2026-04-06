@@ -81,9 +81,7 @@ export class TaskService {
    ): Promise<TaskExecution> {
       const execution = await this.repository.getExecutionById(executionId);
       if (!execution) {
-         throw new TaskNotFoundError(
-            `Execution ${executionId} not found`,
-         );
+         throw new TaskNotFoundError(`Execution ${executionId} not found`);
       }
       this.validateTransition(execution.status, newStatus);
       return this.repository.updateExecution(executionId, {
@@ -104,10 +102,7 @@ export class TaskService {
       return this.resolveTask(projectId, taskId);
    }
 
-   private async resolveTask(
-      projectId: string,
-      taskId: string,
-   ): Promise<Task> {
+   private async resolveTask(projectId: string, taskId: string): Promise<Task> {
       const task = await this.repository.getTaskById(taskId);
       if (!task || task.projectId !== projectId) {
          throw new TaskNotFoundError(`Task ${taskId} not found`);
@@ -382,13 +377,14 @@ export class TaskService {
          config.package,
       );
 
-      const { runtime, modelURL, importBaseURL } =
-         await (await import("./model")).Model.getModelRuntime(
-            pkg.getPackagePath(),
-            config.modelPath,
-            pkg.getConnections(),
-            { buildManifest: existingManifest.entries },
-         );
+      const { runtime, modelURL, importBaseURL } = await (
+         await import("./model")
+      ).Model.getModelRuntime(
+         pkg.getPackagePath(),
+         config.modelPath,
+         pkg.getConnections(),
+         { buildManifest: existingManifest.entries },
+      );
 
       const modelMaterializer = runtime.loadModel(modelURL, { importBaseURL });
       const malloyModel = await modelMaterializer.getModel();
@@ -448,12 +444,11 @@ export class TaskService {
          const digest = await connection.getDigest();
          const buildId = persistSource.makeBuildId(digest, sql);
 
-         const existingEntry =
-            await this.repository.getManifestEntryByBuildId(
-               projectId,
-               config.package,
-               buildId,
-            );
+         const existingEntry = await this.repository.getManifestEntryByBuildId(
+            projectId,
+            config.package,
+            buildId,
+         );
 
          if (existingEntry && !forceRefresh) {
             logger.info(`Source ${persistSource.name} up to date, skipping`, {
@@ -472,9 +467,8 @@ export class TaskService {
          // falls back to the source name. Must use #@ prefix to match
          // the persist annotation format.
          const tableName =
-            persistSource
-               .tagParse({ prefix: /^#@ / })
-               .tag.text("name") || persistSource.name;
+            persistSource.tagParse({ prefix: /^#@ / }).tag.text("name") ||
+            persistSource.name;
          const lastDot = tableName.lastIndexOf(".");
          const stagingTableName =
             lastDot >= 0
@@ -526,12 +520,11 @@ export class TaskService {
 
          // Clean up stale manifest entry for this source (different buildId)
          // so rows don't accumulate across rebuilds.
-         const oldEntry =
-            await this.repository.getManifestEntryBySourceName(
-               projectId,
-               config.package,
-               persistSource.name,
-            );
+         const oldEntry = await this.repository.getManifestEntryBySourceName(
+            projectId,
+            config.package,
+            persistSource.name,
+         );
          if (oldEntry && oldEntry.buildId !== buildId) {
             await this.repository.deleteManifestEntry(oldEntry.id);
          }

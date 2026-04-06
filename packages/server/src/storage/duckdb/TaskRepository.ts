@@ -4,8 +4,8 @@ import { DuckDBConnection } from "./DuckDBConnection";
 /**
  * DuckDB-backed repository for materialization tasks and their executions.
  *
- * A Task defines what to materialize and is scoped to a project. 
- * A TaskExecution tracks a single run of a task through its lifecycle: 
+ * A Task defines what to materialize and is scoped to a project.
+ * A TaskExecution tracks a single run of a task through its lifecycle:
  * PENDING -> RUNNING -> SUCCESS | FAILED | CANCELLED.
  */
 export class TaskRepository {
@@ -116,10 +116,7 @@ export class TaskRepository {
 
    /** Cascade-deletes child executions before removing the task itself. */
    async deleteTask(id: string): Promise<void> {
-      await this.db.run(
-         "DELETE FROM task_executions WHERE task_id = ?",
-         [id],
-      );
+      await this.db.run("DELETE FROM task_executions WHERE task_id = ?", [id]);
       await this.db.run("DELETE FROM tasks WHERE id = ?", [id]);
    }
 
@@ -130,10 +127,9 @@ export class TaskRepository {
    async deleteTasksByProjectId(projectId: string): Promise<void> {
       const tasks = await this.listTasks(projectId);
       for (const task of tasks) {
-         await this.db.run(
-            "DELETE FROM task_executions WHERE task_id = ?",
-            [task.id],
-         );
+         await this.db.run("DELETE FROM task_executions WHERE task_id = ?", [
+            task.id,
+         ]);
       }
       await this.db.run("DELETE FROM tasks WHERE project_id = ?", [projectId]);
    }

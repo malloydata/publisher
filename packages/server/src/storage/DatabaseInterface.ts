@@ -190,10 +190,7 @@ export interface BuildManifest {
  * orchestrated mode will swap in a DuckLakeManifestStore.
  */
 export interface ManifestStore {
-   getManifest(
-      projectId: string,
-      packageName: string,
-   ): Promise<BuildManifest>;
+   getManifest(projectId: string, packageName: string): Promise<BuildManifest>;
    writeEntry(
       projectId: string,
       packageName: string,

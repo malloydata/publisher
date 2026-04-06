@@ -130,7 +130,12 @@ export class Model {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
       const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(packagePath, modelPath, connections, options);
+         await Model.getModelRuntime(
+            packagePath,
+            modelPath,
+            connections,
+            options,
+         );
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -614,7 +619,10 @@ export class Model {
       const runtimeOptions: {
          urlReader: typeof urlReader;
          connections: FixedConnectionMap;
-         buildManifest?: { entries: Record<string, { tableName: string }>; strict?: boolean };
+         buildManifest?: {
+            entries: Record<string, { tableName: string }>;
+            strict?: boolean;
+         };
       } = {
          urlReader,
          connections: new FixedConnectionMap(connections, "duckdb"),

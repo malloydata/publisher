@@ -86,9 +86,9 @@ describe("ManifestService", () => {
          const result = await ctx.service.getManifest("proj-1", "pkg");
 
          expect(result).toEqual(manifest);
-         expect(
-            ctx.manifestStore.getManifest.calledWith("proj-1", "pkg"),
-         ).toBe(true);
+         expect(ctx.manifestStore.getManifest.calledWith("proj-1", "pkg")).toBe(
+            true,
+         );
       });
    });
 
@@ -137,9 +137,7 @@ describe("ManifestService", () => {
             ),
          ).toBe(true);
          expect(ctx.project.getPackage.calledWith("pkg", false)).toBe(true);
-         expect(
-            ctx.reloadAllModels.calledWith(manifest.entries),
-         ).toBe(true);
+         expect(ctx.reloadAllModels.calledWith(manifest.entries)).toBe(true);
       });
 
       it("should return an empty manifest when no entries exist", async () => {

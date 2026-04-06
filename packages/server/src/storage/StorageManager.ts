@@ -1,8 +1,8 @@
 import { logger } from "../logger";
 import {
-    DatabaseConnection,
-    ManifestStore,
-    ResourceRepository,
+   DatabaseConnection,
+   ManifestStore,
+   ResourceRepository,
 } from "./DatabaseInterface";
 import { DuckDBConnection } from "./duckdb/DuckDBConnection";
 import { DuckDBManifestStore } from "./duckdb/DuckDBManifestStore";

@@ -151,10 +151,7 @@ export class DuckDBRepository implements ResourceRepository {
       return this.taskRepo.getTaskById(id);
    }
 
-   async getTaskByName(
-      projectId: string,
-      name: string,
-   ): Promise<Task | null> {
+   async getTaskByName(projectId: string, name: string): Promise<Task | null> {
       return this.taskRepo.getTaskByName(projectId, name);
    }
 

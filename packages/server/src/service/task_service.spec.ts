@@ -207,9 +207,7 @@ describe("TaskService", () => {
 
       it("should use custom type when provided", async () => {
          ctx.repository.getTaskByName.resolves(null);
-         ctx.repository.createTask.resolves(
-            makeTask({ type: "custom-type" }),
-         );
+         ctx.repository.createTask.resolves(makeTask({ type: "custom-type" }));
 
          await ctx.service.createTask("my-project", {
             name: "my-task",
@@ -267,11 +265,9 @@ describe("TaskService", () => {
          ctx.repository.getTaskById.resolves(task);
          ctx.repository.updateTask.resolves({ ...task, name: "renamed" });
 
-         const result = await ctx.service.updateTask(
-            "my-project",
-            "task-1",
-            { name: "renamed" },
-         );
+         const result = await ctx.service.updateTask("my-project", "task-1", {
+            name: "renamed",
+         });
 
          expect(result.name).toBe("renamed");
          expect(ctx.repository.updateTask.calledOnce).toBe(true);
@@ -314,10 +310,7 @@ describe("TaskService", () => {
          ctx.repository.getTaskById.resolves(task);
          ctx.repository.listExecutions.resolves([exec]);
 
-         const result = await ctx.service.getTaskStatus(
-            "my-project",
-            "task-1",
-         );
+         const result = await ctx.service.getTaskStatus("my-project", "task-1");
 
          expect(result.task).toEqual(task);
          expect(result.latestExecution).toEqual(exec);
@@ -327,10 +320,7 @@ describe("TaskService", () => {
          ctx.repository.getTaskById.resolves(makeTask());
          ctx.repository.listExecutions.resolves([]);
 
-         const result = await ctx.service.getTaskStatus(
-            "my-project",
-            "task-1",
-         );
+         const result = await ctx.service.getTaskStatus("my-project", "task-1");
 
          expect(result.latestExecution).toBeNull();
       });
@@ -338,10 +328,7 @@ describe("TaskService", () => {
 
    describe("listExecutions", () => {
       it("should list executions for a task", async () => {
-         const executions = [
-            makeExecution(),
-            makeExecution({ id: "exec-2" }),
-         ];
+         const executions = [makeExecution(), makeExecution({ id: "exec-2" })];
          ctx.repository.getTaskById.resolves(makeTask());
          ctx.repository.listExecutions.resolves(executions);
 
