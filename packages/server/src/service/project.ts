@@ -121,7 +121,7 @@ export class Project {
       projectPath: string,
       connections: ApiConnection[],
    ): Promise<Project> {
-      if (!(await fs.promises.stat(projectPath)).isDirectory()) {
+      if (!(await fs.promises.stat(projectPath))?.isDirectory()) {
          throw new ProjectNotFoundError(
             `Project path ${projectPath} not found`,
          );
@@ -383,7 +383,7 @@ export class Project {
             .access(packagePath)
             .then(() => true)
             .catch(() => false)) ||
-         !(await fs.promises.stat(packagePath)).isDirectory()
+         !(await fs.promises.stat(packagePath))?.isDirectory()
       ) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
