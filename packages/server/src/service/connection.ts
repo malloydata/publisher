@@ -1091,9 +1091,11 @@ export async function createProjectConnections(
                   timeout:
                      connection.snowflakeConnection.responseTimeoutMilliseconds,
                },
+               // min must stay low: generic-pool eagerly opens `min` Snowflake sessions at startup.
+               // min: 12 = twelve concurrent logins + session setup (ALTER SESSION x4 each) → stalls and flakiness.
                poolOptions: {
                   min: 1,
-                  max: 5,
+                  max: 10,
                   testOnBorrow: false,
                   testOnReturn: false,
                   testWhileIdle: true,

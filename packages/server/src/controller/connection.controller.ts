@@ -1,4 +1,4 @@
-import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
+import { Connection, RunSQLOptions } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
@@ -10,6 +10,10 @@ import {
    listTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
+
+const SCHEMA_CACHE_TTL_MS = process.env.SCHEMA_CACHE_TTL_MS
+   ? parseInt(process.env.SCHEMA_CACHE_TTL_MS)
+   : 0;
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -130,14 +134,18 @@ export class ConnectionController {
       tablePath: string,
    ): Promise<ApiTable> {
       try {
-         const source = await (
-            malloyConnection as Connection & {
-               fetchTableSchema: (
-                  tableKey: string,
-                  tablePath: string,
-               ) => Promise<TableSourceDef | undefined>;
-            }
-         ).fetchTableSchema(tableKey, tablePath);
+         const refreshTimestamp = Date.now() - SCHEMA_CACHE_TTL_MS;
+         const { schemas, errors } =
+            await malloyConnection.fetchSchemaForTables(
+               { [tableKey]: tablePath },
+               { refreshTimestamp },
+            );
+
+         if (errors[tableKey]) {
+            throw new ConnectionError(errors[tableKey]);
+         }
+
+         const source = schemas[tableKey];
          if (!source) {
             throw new ConnectionError(`Table ${tablePath} not found`);
          }
@@ -151,6 +159,9 @@ export class ConnectionController {
             })),
          };
       } catch (error) {
+         if (error instanceof ConnectionError) {
+            throw error;
+         }
          const errorMessage =
             error instanceof Error
                ? error.message
@@ -233,22 +244,23 @@ export class ConnectionController {
       );
 
       try {
+         const refreshTimestamp = Date.now() - SCHEMA_CACHE_TTL_MS;
+         const result = await malloyConnection.fetchSchemaForSQLStruct(
+            { connection: connectionName, selectStr: sqlStatement },
+            { refreshTimestamp },
+         );
+
+         if ("error" in result && result.error) {
+            throw new ConnectionError(result.error);
+         }
+
          return {
-            source: JSON.stringify(
-               await (
-                  malloyConnection as Connection & {
-                     fetchSelectSchema: (params: {
-                        connection: string;
-                        selectStr: string;
-                     }) => Promise<unknown>;
-                  }
-               ).fetchSelectSchema({
-                  connection: connectionName,
-                  selectStr: sqlStatement,
-               }),
-            ),
+            source: JSON.stringify(result.structDef),
          };
       } catch (error) {
+         if (error instanceof ConnectionError) {
+            throw error;
+         }
          throw new ConnectionError((error as Error).message);
       }
    }
