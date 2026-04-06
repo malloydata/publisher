@@ -6,8 +6,6 @@ type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
-export type ListModelsFilterEnum =
-   components["parameters"]["ListModelsFilterEnum"];
 export class ModelController {
    private projectStore: ProjectStore;
 
