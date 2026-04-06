@@ -430,6 +430,7 @@ describe("TaskService", () => {
             // Access private method via bracket notation to test the
             // transition logic directly without spinning up a full build.
             await expect(
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
                (ctx.service as any).transitionExecution(exec.id, to),
             ).rejects.toThrow(InvalidStateTransitionError);
          });
