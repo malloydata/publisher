@@ -28,7 +28,11 @@ import {
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
-import { StorageConfig, StorageManager } from "../storage/StorageManager";
+import {
+   DuckLakeManifestConfig,
+   StorageConfig,
+   StorageManager,
+} from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
 
@@ -89,6 +93,22 @@ function validateProjectAzureUrls(project: ApiProject): void {
    }
 }
 
+/**
+ * Builds DuckLake manifest config from environment variables.
+ * Returns undefined when DUCKLAKE_CATALOG_URL is not set (standalone mode).
+ */
+function buildDuckLakeManifestConfig(): DuckLakeManifestConfig | undefined {
+   const catalogUrl = process.env.DUCKLAKE_CATALOG_URL;
+   const dataPath = process.env.DUCKLAKE_DATA_PATH;
+   if (!catalogUrl || !dataPath) {
+      return undefined;
+   }
+
+   logger.info("DuckLake manifest storage enabled", { catalogUrl, dataPath });
+
+   return { catalogUrl, dataPath };
+}
+
 export class ProjectStore {
    public serverRootPath: string;
    private projects: Map<string, Project> = new Map();
@@ -111,6 +131,7 @@ export class ProjectStore {
          duckdb: {
             path: path.join(serverRootPath, "publisher.db"),
          },
+         ducklakeManifest: buildDuckLakeManifestConfig(),
       };
       this.storageManager = new StorageManager(storageConfig);
 

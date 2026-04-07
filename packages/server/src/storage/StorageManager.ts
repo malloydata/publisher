@@ -8,8 +8,14 @@ import { DuckDBConnection } from "./duckdb/DuckDBConnection";
 import { DuckDBManifestStore } from "./duckdb/DuckDBManifestStore";
 import { DuckDBRepository } from "./duckdb/DuckDBRepository";
 import { initializeSchema } from "./duckdb/schema";
+import { DuckLakeManifestStore } from "./ducklake/DuckLakeManifestStore";
 
 export type StorageType = "duckdb" | "postgres" | "mysql";
+
+export interface DuckLakeManifestConfig {
+   catalogUrl: string;
+   dataPath: string;
+}
 
 export interface StorageConfig {
    type: StorageType;
@@ -30,6 +36,13 @@ export interface StorageConfig {
       user: string;
       password: string;
    };
+   ducklakeManifest?: DuckLakeManifestConfig;
+}
+
+const DUCKLAKE_CATALOG_NAME = "manifest_lake";
+
+function escapeSQL(value: string): string {
+   return value.replace(/'/g, "''");
 }
 
 export class StorageManager {
@@ -75,7 +88,49 @@ export class StorageManager {
 
       this.connection = connection;
       this.repository = new DuckDBRepository(connection);
-      this.manifestStore = new DuckDBManifestStore(this.repository);
+
+      if (this.config.ducklakeManifest) {
+         this.manifestStore = await this.initializeDuckLakeManifest(connection);
+      } else {
+         this.manifestStore = new DuckDBManifestStore(this.repository);
+      }
+   }
+
+   private async initializeDuckLakeManifest(
+      connection: DuckDBConnection,
+   ): Promise<ManifestStore> {
+      const config = this.config.ducklakeManifest!;
+
+      await connection.run("INSTALL ducklake; LOAD ducklake;");
+
+      const isPostgres = config.catalogUrl.startsWith("postgres:");
+      if (isPostgres) {
+         await connection.run("INSTALL postgres; LOAD postgres;");
+      }
+
+      const escapedCatalogUrl = escapeSQL(config.catalogUrl);
+      const escapedDataPath = escapeSQL(config.dataPath);
+      const isCloudStorage =
+         config.dataPath.startsWith("gs://") ||
+         config.dataPath.startsWith("s3://");
+
+      let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${DUCKLAKE_CATALOG_NAME}`;
+      const attachOpts: string[] = [`DATA_PATH '${escapedDataPath}'`];
+      if (isCloudStorage) {
+         attachOpts.push("OVERRIDE_DATA_PATH true");
+      }
+      attachCmd += ` (${attachOpts.join(", ")});`;
+
+      logger.info(`Attaching DuckLake manifest catalog: ${attachCmd}`);
+      await connection.run(attachCmd);
+
+      const store = new DuckLakeManifestStore(
+         connection,
+         DUCKLAKE_CATALOG_NAME,
+      );
+      await store.bootstrapSchema();
+      logger.info("DuckLake manifest store initialized");
+      return store;
    }
 
    getRepository(): ResourceRepository {

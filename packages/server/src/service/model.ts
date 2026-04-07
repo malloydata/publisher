@@ -631,7 +631,7 @@ export class Model {
       if (options?.buildManifest) {
          runtimeOptions.buildManifest = {
             entries: options.buildManifest,
-            strict: true,
+            strict: false,
          };
       }
 

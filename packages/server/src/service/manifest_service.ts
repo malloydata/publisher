@@ -18,6 +18,9 @@ import { ProjectStore } from "./project_store";
  *  2. **Load** – `loadManifest` reads the manifest from the DB and recompiles
  *     all models in the package so the Malloy Runtime resolves persist
  *     references to the materialized tables.
+ *
+ * All manifest operations delegate to the active {@link ManifestStore}, which
+ * is either the local DuckDB store (standalone) or DuckLake (orchestrated).
  */
 export class ManifestService {
    constructor(private projectStore: ProjectStore) {}
@@ -53,6 +56,22 @@ export class ManifestService {
          buildId,
          entry,
       );
+   }
+
+   async getEntryBySourceName(
+      projectId: string,
+      packageName: string,
+      sourceName: string,
+   ): Promise<ManifestEntry | null> {
+      return this.manifestStore.getEntryBySourceName(
+         projectId,
+         packageName,
+         sourceName,
+      );
+   }
+
+   async deleteEntry(id: string): Promise<void> {
+      await this.manifestStore.deleteEntry(id);
    }
 
    /**

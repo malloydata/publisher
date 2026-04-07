@@ -30,6 +30,8 @@ function createMocks() {
    const manifestStore: sinon.SinonStubbedInstance<ManifestStore> = {
       getManifest: sandbox.stub(),
       writeEntry: sandbox.stub(),
+      getEntryBySourceName: sandbox.stub(),
+      deleteEntry: sandbox.stub(),
    };
 
    const repository = {
@@ -79,7 +81,7 @@ describe("ManifestService", () => {
       it("should delegate to the manifest store", async () => {
          const manifest: BuildManifest = {
             entries: { "build-abc": { tableName: "tbl" } },
-            strict: true,
+            strict: false,
          };
          ctx.manifestStore.getManifest.resolves(manifest);
 
@@ -119,7 +121,7 @@ describe("ManifestService", () => {
       it("should get manifest, reload models, and return the manifest", async () => {
          const manifest: BuildManifest = {
             entries: { "build-abc": { tableName: "tbl" } },
-            strict: true,
+            strict: false,
          };
          ctx.manifestStore.getManifest.resolves(manifest);
 
@@ -143,7 +145,7 @@ describe("ManifestService", () => {
       it("should return an empty manifest when no entries exist", async () => {
          const emptyManifest: BuildManifest = {
             entries: {},
-            strict: true,
+            strict: false,
          };
          ctx.manifestStore.getManifest.resolves(emptyManifest);
 

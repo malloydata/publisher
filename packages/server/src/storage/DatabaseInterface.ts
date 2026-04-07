@@ -187,7 +187,7 @@ export interface BuildManifest {
 
 /**
  * Abstraction for manifest storage. Standalone mode uses DuckDB;
- * orchestrated mode will swap in a DuckLakeManifestStore.
+ * orchestrated mode swaps in a DuckLakeManifestStore.
  */
 export interface ManifestStore {
    getManifest(projectId: string, packageName: string): Promise<BuildManifest>;
@@ -201,4 +201,10 @@ export interface ManifestStore {
          connectionName?: string;
       },
    ): Promise<void>;
+   getEntryBySourceName(
+      projectId: string,
+      packageName: string,
+      sourceName: string,
+   ): Promise<ManifestEntry | null>;
+   deleteEntry(id: string): Promise<void>;
 }

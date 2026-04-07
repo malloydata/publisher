@@ -22,10 +22,18 @@ function createMocks() {
    const sandbox = sinon.createSandbox();
 
    const repository: sinon.SinonStubbedInstance<
-      Pick<ResourceRepository, "listManifestEntries" | "upsertManifestEntry">
+      Pick<
+         ResourceRepository,
+         | "listManifestEntries"
+         | "upsertManifestEntry"
+         | "getManifestEntryBySourceName"
+         | "deleteManifestEntry"
+      >
    > = {
       listManifestEntries: sandbox.stub(),
       upsertManifestEntry: sandbox.stub(),
+      getManifestEntryBySourceName: sandbox.stub(),
+      deleteManifestEntry: sandbox.stub(),
    };
 
    const store = new DuckDBManifestStore(
@@ -51,7 +59,7 @@ describe("DuckDBManifestStore", () => {
 
          const manifest = await ctx.store.getManifest("proj-1", "pkg");
 
-         expect(manifest.strict).toBe(true);
+         expect(manifest.strict).toBe(false);
          expect(manifest.entries).toEqual({
             b1: { tableName: "tbl_a" },
             b2: { tableName: "tbl_b" },
@@ -63,7 +71,7 @@ describe("DuckDBManifestStore", () => {
 
          const manifest = await ctx.store.getManifest("proj-1", "pkg");
 
-         expect(manifest.strict).toBe(true);
+         expect(manifest.strict).toBe(false);
          expect(manifest.entries).toEqual({});
       });
    });
@@ -100,6 +108,49 @@ describe("DuckDBManifestStore", () => {
          const arg = ctx.repository.upsertManifestEntry.firstCall.args[0];
          expect(arg.sourceName).toBeNull();
          expect(arg.connectionName).toBeNull();
+      });
+   });
+
+   describe("getEntryBySourceName", () => {
+      it("should delegate to repository", async () => {
+         const entry = makeEntry();
+         ctx.repository.getManifestEntryBySourceName.resolves(entry);
+
+         const result = await ctx.store.getEntryBySourceName(
+            "proj-1",
+            "pkg",
+            "my_source",
+         );
+
+         expect(result).toEqual(entry);
+         expect(ctx.repository.getManifestEntryBySourceName.calledOnce).toBe(
+            true,
+         );
+      });
+
+      it("should return null when no entry exists", async () => {
+         ctx.repository.getManifestEntryBySourceName.resolves(null);
+
+         const result = await ctx.store.getEntryBySourceName(
+            "proj-1",
+            "pkg",
+            "missing",
+         );
+
+         expect(result).toBeNull();
+      });
+   });
+
+   describe("deleteEntry", () => {
+      it("should delegate to repository", async () => {
+         ctx.repository.deleteManifestEntry.resolves();
+
+         await ctx.store.deleteEntry("entry-1");
+
+         expect(ctx.repository.deleteManifestEntry.calledOnce).toBe(true);
+         expect(ctx.repository.deleteManifestEntry.firstCall.args[0]).toBe(
+            "entry-1",
+         );
       });
    });
 });

@@ -98,9 +98,11 @@ function createMocks() {
    } as unknown as ProjectStore;
 
    const manifestService = {
-      getManifest: sandbox.stub().resolves({ entries: {}, strict: true }),
+      getManifest: sandbox.stub().resolves({ entries: {}, strict: false }),
       writeEntry: sandbox.stub().resolves(),
-      loadManifest: sandbox.stub().resolves({ entries: {}, strict: true }),
+      getEntryBySourceName: sandbox.stub().resolves(null),
+      deleteEntry: sandbox.stub().resolves(),
+      loadManifest: sandbox.stub().resolves({ entries: {}, strict: false }),
       listEntries: sandbox.stub().resolves([]),
    } as unknown as sinon.SinonStubbedInstance<ManifestService>;
 
