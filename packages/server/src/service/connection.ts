@@ -1095,7 +1095,9 @@ export async function createProjectConnections(
                // min: 12 = twelve concurrent logins + session setup (ALTER SESSION x4 each) → stalls and flakiness.
                poolOptions: {
                   min: 1,
-                  max: 10,
+                  max: process.env.SNOWFLAKE_MAX_CONNECTION_POOL
+                     ? parseInt(process.env.SNOWFLAKE_MAX_CONNECTION_POOL)
+                     : 10,
                   testOnBorrow: false,
                   testOnReturn: false,
                   testWhileIdle: true,

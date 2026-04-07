@@ -952,9 +952,9 @@ app.use(
 
 const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 
-mainServer.timeout = 600000;
-mainServer.keepAliveTimeout = 600000;
-mainServer.headersTimeout = 600000;
+mainServer.timeout = 1800000;
+mainServer.keepAliveTimeout = 1800000;
+mainServer.headersTimeout = 1800000;
 
 mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
    const address = mainServer.address() as AddressInfo;
