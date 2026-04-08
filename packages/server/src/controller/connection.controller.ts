@@ -1,4 +1,4 @@
-import { Connection, RunSQLOptions } from "@malloydata/malloy";
+import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
@@ -6,16 +6,14 @@ import { logger } from "../logger";
 import { testConnectionConfig } from "../service/connection";
 import { ConnectionService } from "../service/connection_service";
 import {
-   getConnectionTableSource,
    getSchemasForConnection,
-   getTablesForSchema,
+   listTablesForSchema,
 } from "../service/db_utils";
 import { ProjectStore } from "../service/project_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
 type ApiSqlSource = components["schemas"]["SqlSource"];
-type ApiTableSource = components["schemas"]["TableSource"];
 type ApiTable = components["schemas"]["Table"];
 type ApiQueryData = components["schemas"]["QueryData"];
 type ApiTemporaryTable = components["schemas"]["TemporaryTable"];
@@ -122,6 +120,52 @@ export class ConnectionController {
       }
    }
 
+   /**
+    * Fetches a table's schema via the Malloy connection's fetchTableSchema,
+    * returning an ApiTable with columns and the raw source JSON.
+    */
+   private async fetchTable(
+      malloyConnection: Connection,
+      tableKey: string,
+      tablePath: string,
+   ): Promise<ApiTable> {
+      try {
+         const source = await (
+            malloyConnection as Connection & {
+               fetchTableSchema: (
+                  tableKey: string,
+                  tablePath: string,
+               ) => Promise<TableSourceDef | undefined>;
+            }
+         ).fetchTableSchema(tableKey, tablePath);
+         if (!source) {
+            throw new ConnectionError(`Table ${tablePath} not found`);
+         }
+
+         return {
+            source: JSON.stringify(source),
+            resource: tablePath,
+            columns: (source.fields || []).map((f) => ({
+               name: f.name,
+               type: f.type,
+            })),
+         };
+      } catch (error) {
+         const errorMessage =
+            error instanceof Error
+               ? error.message
+               : typeof error === "string"
+                 ? error
+                 : JSON.stringify(error);
+         logger.error("fetchTableSchema error", {
+            error,
+            tableKey,
+            tablePath,
+         });
+         throw new ConnectionError(errorMessage);
+      }
+   }
+
    public async getConnection(
       projectName: string,
       connectionName: string,
@@ -161,6 +205,7 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
       schemaName: string,
+      tableNames?: string[],
    ): Promise<ApiTable[]> {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
@@ -169,7 +214,12 @@ export class ConnectionController {
          connectionName,
       );
 
-      return getTablesForSchema(connection, schemaName, malloyConnection);
+      return listTablesForSchema(
+         connection,
+         schemaName,
+         malloyConnection,
+         tableNames,
+      );
    }
 
    public async getConnectionSqlSource(
@@ -203,20 +253,6 @@ export class ConnectionController {
       }
    }
 
-   public async getConnectionTableSource(
-      projectName: string,
-      connectionName: string,
-      tableKey: string,
-      tablePath: string,
-   ): Promise<ApiTableSource> {
-      const malloyConnection = await this.getMalloyConnection(
-         projectName,
-         connectionName,
-      );
-
-      return getConnectionTableSource(malloyConnection, tableKey, tablePath);
-   }
-
    public async getTable(
       projectName: string,
       connectionName: string,
@@ -231,6 +267,8 @@ export class ConnectionController {
       const project = await this.projectStore.getProject(projectName, false);
       const connection = project.getApiConnection(connectionName);
 
+      // TODO: Move this database connection logic to the db_utils.ts file -- and
+      // ultimately into a connection-specific class.
       if (connection.type === "ducklake") {
          if (tablePath.split(".").length === 1) {
             // tablePath is just the table name, construct full path
@@ -278,16 +316,12 @@ export class ConnectionController {
                );
                const fullFileUrl = `${dirPath}${fileName}${queryString}`;
 
-               const tableSource = await getConnectionTableSource(
+               const table = await this.fetchTable(
                   malloyConnection,
                   fileName,
                   fullFileUrl,
                );
-               return {
-                  resource: tablePath,
-                  columns: tableSource.columns,
-                  source: tableSource.source,
-               };
+               return { ...table, resource: tablePath };
             }
          }
       }
@@ -297,17 +331,7 @@ export class ConnectionController {
          throw new Error(`Invalid tablePath: ${tablePath}`);
       }
 
-      const tableSource = await getConnectionTableSource(
-         malloyConnection,
-         tableKey, // tableKey is the table name
-         tablePath,
-      );
-
-      return {
-         resource: tablePath,
-         columns: tableSource.columns,
-         source: tableSource.source,
-      };
+      return this.fetchTable(malloyConnection, tableKey, tablePath);
    }
 
    public async getConnectionQueryData(
