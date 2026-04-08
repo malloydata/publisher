@@ -436,6 +436,23 @@ app.delete(
    },
 );
 
+app.post(
+   `${API_PREFIX}/projects/:projectName/connections/:connectionName/drain`,
+   async (req, res) => {
+      try {
+         const result = await connectionController.drainConnection(
+            req.params.projectName,
+            req.params.connectionName,
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         logger.error("Error draining connection", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.post(`${API_PREFIX}/connections/test`, async (req, res) => {
    try {
       const connectionStatus =

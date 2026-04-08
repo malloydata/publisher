@@ -185,6 +185,14 @@ export class ConnectionController {
       return project.listApiConnections();
    }
 
+   public async drainConnection(
+      projectName: string,
+      connectionName: string,
+   ): Promise<{ message: string; pooled: boolean }> {
+      const project = await this.projectStore.getProject(projectName, false);
+      return project.drainMalloyConnection(connectionName);
+   }
+
    // Lists schemas (namespaces) available in a connection
    public async listSchemas(
       projectName: string,

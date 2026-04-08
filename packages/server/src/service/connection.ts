@@ -4,7 +4,7 @@ import { MySQLConnection } from "@malloydata/db-mysql";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { SnowflakeConnection } from "@malloydata/db-snowflake";
 import { TrinoConnection } from "@malloydata/db-trino";
-import { Connection, TableSourceDef } from "@malloydata/malloy";
+import { TableSourceDef } from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
@@ -14,6 +14,7 @@ import { components } from "../api";
 import { TEMP_DIR_PATH } from "../constants";
 import { logAxiosError, logger } from "../logger";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
+import { PublisherSnowflakeConnection } from "./publisher_snowflake_connection";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -1099,10 +1100,11 @@ export async function createProjectConnections(
                   testWhileIdle: true,
                },
             };
-            const snowflakeConnection = new SnowflakeConnection(
+            const snowflakeConnection = new PublisherSnowflakeConnection(
                connection.name,
                snowflakeConnectionOptions,
-            );
+            ) as unknown as BaseConnection;
+
             connectionMap.set(connection.name, snowflakeConnection);
             connection.attributes =
                getConnectionAttributes(snowflakeConnection);
@@ -1267,7 +1269,7 @@ export async function createProjectConnections(
 }
 
 function getConnectionAttributes(
-   connection: Connection,
+   connection: BaseConnection,
 ): ApiConnectionAttributes {
    let canStream = false;
    try {
@@ -1465,6 +1467,7 @@ export async function testConnectionConfig(
                | PostgresConnection
                | BigQueryConnection
                | SnowflakeConnection
+               | PublisherSnowflakeConnection
                | TrinoConnection
                | MySQLConnection
          ).test();

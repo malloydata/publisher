@@ -38,6 +38,7 @@
       "generate-api-types": ""
    },
    "dependencies": {
+      "@malloydata/malloy-tag": "^0.0.370",
       "@malloy-publisher/sdk": "workspace:*",
       "@mui/icons-material": "^7.0.2",
       "@mui/material": "^7.0.2",

@@ -1,4 +1,4 @@
-import type { LogMessage } from "@malloydata/malloy";
+import type { LogMessage, PooledConnection } from "@malloydata/malloy";
 import { FixedConnectionMap, MalloyError, Runtime } from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
 import { Mutex } from "async-mutex";
@@ -98,6 +98,8 @@ export class Project {
                this.projectPath,
                isUpdateConnectionRequest,
             );
+
+         // await this.disposeMalloyConnections(this.malloyConnections);
 
          // Update the project's connection maps
          this.malloyConnections = malloyConnections;
@@ -537,6 +539,68 @@ export class Project {
    ): void {
       this.malloyConnections = malloyConnections;
       this.apiConnections = apiConnections;
+   }
+
+   /**
+    * Drain pooled connections (e.g. Snowflake) or close others, then replace this
+    * connection with a new instance from stored {@link apiConnections} config.
+    */
+   public async drainMalloyConnection(
+      connectionName: string,
+   ): Promise<{ message: string; pooled: boolean }> {
+      const oldConn = this.malloyConnections.get(connectionName);
+      if (!oldConn) {
+         throw new ConnectionNotFoundError(
+            `Connection ${connectionName} not found`,
+         );
+      }
+      const internal = this.apiConnections.find(
+         (c) => c.name === connectionName,
+      ) as InternalConnection | undefined;
+      if (!internal?.name) {
+         throw new ConnectionNotFoundError(
+            `Connection ${connectionName} not found in project configuration`,
+         );
+      }
+
+      let pooled = false;
+      try {
+         if (oldConn.isPool()) {
+            pooled = true;
+            await (oldConn as PooledConnection).drain();
+         } else {
+            await oldConn.close();
+         }
+      } catch (error) {
+         logger.warn(
+            `Error while draining or closing connection ${connectionName} on project ${this.projectName}; continuing with recreate`,
+            { error },
+         );
+      }
+
+      const { malloyConnections: freshMap } = await createProjectConnections(
+         [internal],
+         this.projectPath,
+      );
+      const fresh = freshMap.get(connectionName);
+      if (!fresh) {
+         throw new Error(
+            `Failed to recreate Malloy connection "${connectionName}" after drain`,
+         );
+      }
+      this.malloyConnections.set(connectionName, fresh);
+
+      logger.info(
+         `Drained and refreshed connection ${connectionName} for project ${this.projectName}`,
+         { pooled },
+      );
+
+      return {
+         pooled,
+         message: pooled
+            ? "Connection pool drained and a new connection was created."
+            : "Connection was closed and a new client was created.",
+      };
    }
 
    public async deleteConnection(connectionName: string): Promise<void> {
