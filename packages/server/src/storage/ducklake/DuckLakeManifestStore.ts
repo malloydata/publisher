@@ -35,7 +35,7 @@ export class DuckLakeManifestStore implements ManifestStore {
    async bootstrapSchema(): Promise<void> {
       await this.db.run(`
          CREATE TABLE IF NOT EXISTS ${this.table} (
-            id VARCHAR PRIMARY KEY,
+            id VARCHAR,
             project_id VARCHAR NOT NULL,
             package_name VARCHAR NOT NULL,
             build_id VARCHAR NOT NULL,
@@ -43,13 +43,9 @@ export class DuckLakeManifestStore implements ManifestStore {
             source_name VARCHAR,
             connection_name VARCHAR,
             created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP NOT NULL,
-            UNIQUE (project_id, package_name, build_id)
+            updated_at TIMESTAMP NOT NULL
          )
       `);
-      await this.db.run(
-         `CREATE INDEX IF NOT EXISTS idx_build_manifests_project_package ON ${this.table}(project_id, package_name)`,
-      );
       logger.info(`DuckLake manifest table bootstrapped: ${this.table}`);
    }
 
@@ -63,13 +59,28 @@ export class DuckLakeManifestStore implements ManifestStore {
       );
       const manifest: BuildManifest = { entries: {}, strict: false };
       for (const row of rows) {
-         manifest.entries[row.build_id as string] = {
-            tableName: row.table_name as string,
-         };
+         const buildId = row.build_id as string;
+         // Rows are ordered newest-first; keep only the latest per build_id
+         // to handle rare duplicates from cross-worker races.
+         if (!manifest.entries[buildId]) {
+            manifest.entries[buildId] = {
+               tableName: row.table_name as string,
+            };
+         }
       }
       return manifest;
    }
 
+   /**
+    * Upsert a manifest entry using DELETE + INSERT to avoid the TOCTOU
+    * race inherent in a SELECT-then-UPDATE/INSERT pattern. Since the
+    * DuckLake catalog has no UNIQUE constraints, this is the safest
+    * approach across multiple workers sharing the same catalog.
+    *
+    * Within a single publisher process the DuckDBConnection mutex
+    * serializes these calls; across workers a rare duplicate INSERT is
+    * harmless because {@link getManifest} deduplicates by build_id.
+    */
    async writeEntry(
       projectId: string,
       packageName: string,
@@ -80,42 +91,29 @@ export class DuckLakeManifestStore implements ManifestStore {
          connectionName?: string;
       },
    ): Promise<void> {
-      const existing = await this.db.get<Record<string, unknown>>(
-         `SELECT id FROM ${this.table} WHERE project_id = ? AND package_name = ? AND build_id = ?`,
+      const now = new Date().toISOString();
+      const id = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+
+      await this.db.run(
+         `DELETE FROM ${this.table} WHERE project_id = ? AND package_name = ? AND build_id = ?`,
          [projectId, packageName, buildId],
       );
 
-      const now = new Date().toISOString();
-
-      if (existing) {
-         await this.db.run(
-            `UPDATE ${this.table} SET table_name = ?, source_name = ?, connection_name = ?, updated_at = ? WHERE id = ?`,
-            [
-               entry.tableName,
-               entry.sourceName || null,
-               entry.connectionName || null,
-               now,
-               existing.id as string,
-            ],
-         );
-      } else {
-         const id = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-         await this.db.run(
-            `INSERT INTO ${this.table} (id, project_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-               id,
-               projectId,
-               packageName,
-               buildId,
-               entry.tableName,
-               entry.sourceName || null,
-               entry.connectionName || null,
-               now,
-               now,
-            ],
-         );
-      }
+      await this.db.run(
+         `INSERT INTO ${this.table} (id, project_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         [
+            id,
+            projectId,
+            packageName,
+            buildId,
+            entry.tableName,
+            entry.sourceName || null,
+            entry.connectionName || null,
+            now,
+            now,
+         ],
+      );
    }
 
    async getEntryBySourceName(
@@ -132,6 +130,17 @@ export class DuckLakeManifestStore implements ManifestStore {
 
    async deleteEntry(id: string): Promise<void> {
       await this.db.run(`DELETE FROM ${this.table} WHERE id = ?`, [id]);
+   }
+
+   async listEntries(
+      projectId: string,
+      packageName: string,
+   ): Promise<ManifestEntry[]> {
+      const rows = await this.db.all<Record<string, unknown>>(
+         `SELECT * FROM ${this.table} WHERE project_id = ? AND package_name = ? ORDER BY created_at DESC`,
+         [projectId, packageName],
+      );
+      return rows.map(this.mapToEntry);
    }
 
    private mapToEntry(row: Record<string, unknown>): ManifestEntry {

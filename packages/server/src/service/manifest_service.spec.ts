@@ -32,6 +32,7 @@ function createMocks() {
       writeEntry: sandbox.stub(),
       getEntryBySourceName: sandbox.stub(),
       deleteEntry: sandbox.stub(),
+      listEntries: sandbox.stub(),
    };
 
    const repository = {
@@ -161,23 +162,23 @@ describe("ManifestService", () => {
    });
 
    describe("listEntries", () => {
-      it("should return entries from the repository", async () => {
+      it("should return entries from the manifest store", async () => {
          const entries = [
             makeEntry(),
             makeEntry({ id: "entry-2", buildId: "build-def" }),
          ];
-         ctx.repository.listManifestEntries.resolves(entries);
+         ctx.manifestStore.listEntries.resolves(entries);
 
          const result = await ctx.service.listEntries("proj-1", "pkg");
 
          expect(result).toEqual(entries);
-         expect(
-            ctx.repository.listManifestEntries.calledWith("proj-1", "pkg"),
-         ).toBe(true);
+         expect(ctx.manifestStore.listEntries.calledWith("proj-1", "pkg")).toBe(
+            true,
+         );
       });
 
       it("should return empty array when no entries exist", async () => {
-         ctx.repository.listManifestEntries.resolves([]);
+         ctx.manifestStore.listEntries.resolves([]);
 
          const result = await ctx.service.listEntries("proj-1", "pkg");
 

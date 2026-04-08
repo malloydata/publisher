@@ -74,4 +74,11 @@ export class DuckDBManifestStore implements ManifestStore {
    async deleteEntry(id: string): Promise<void> {
       await this.repository.deleteManifestEntry(id);
    }
+
+   async listEntries(
+      projectId: string,
+      packageName: string,
+   ): Promise<ManifestEntry[]> {
+      return this.repository.listManifestEntries(projectId, packageName);
+   }
 }

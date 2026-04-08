@@ -207,4 +207,8 @@ export interface ManifestStore {
       sourceName: string,
    ): Promise<ManifestEntry | null>;
    deleteEntry(id: string): Promise<void>;
+   listEntries(
+      projectId: string,
+      packageName: string,
+   ): Promise<ManifestEntry[]>;
 }

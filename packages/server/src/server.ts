@@ -133,14 +133,14 @@ const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
 const projectStore = new ProjectStore(SERVER_ROOT);
+const manifestService = new ManifestService(projectStore);
 const watchModeController = new WatchModeController(projectStore);
 const connectionController = new ConnectionController(projectStore);
 const modelController = new ModelController(projectStore);
-const packageController = new PackageController(projectStore);
+const packageController = new PackageController(projectStore, manifestService);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
 const compileController = new CompileController(projectStore);
-const manifestService = new ManifestService(projectStore);
 const taskService = new TaskService(projectStore, manifestService);
 const taskController = new TaskController(taskService);
 const manifestController = new ManifestController(

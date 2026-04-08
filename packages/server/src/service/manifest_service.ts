@@ -29,10 +29,6 @@ export class ManifestService {
       return this.projectStore.storageManager.getManifestStore();
    }
 
-   private get repository() {
-      return this.projectStore.storageManager.getRepository();
-   }
-
    async getManifest(
       projectId: string,
       packageName: string,
@@ -100,12 +96,14 @@ export class ManifestService {
    }
 
    /**
-    * Get the manifest entries from the DB for inspection.
+    * Get the manifest entries from the active store for inspection.
+    * Routes through ManifestStore so DuckLake mode reads the shared
+    * catalog instead of the (empty) local DuckDB table.
     */
    async listEntries(
       projectId: string,
       packageName: string,
    ): Promise<ManifestEntry[]> {
-      return this.repository.listManifestEntries(projectId, packageName);
+      return this.manifestStore.listEntries(projectId, packageName);
    }
 }

@@ -90,8 +90,7 @@ export async function initializeSchema(
       error TEXT,
       metadata JSON,
       created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      FOREIGN KEY (task_id) REFERENCES tasks(id)
+      updated_at TIMESTAMP NOT NULL
     )
   `);
 
