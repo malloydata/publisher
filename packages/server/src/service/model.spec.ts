@@ -1,9 +1,10 @@
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import sinon from "sinon";
 
 import { BadRequestError, ModelNotFoundError } from "../errors";
+// requestContext import not needed — tests exercise the no-token (default) path
 import { Model, ModelType } from "./model";
 
 describe("service/model", () => {
@@ -11,6 +12,10 @@ describe("service/model", () => {
    const mockPackageName = "mockPackage";
    const mockPackagePath = "mockPackagePath";
    const mockModelPath = "mockModel.malloy";
+
+   afterEach(() => {
+      sinon.restore();
+   });
 
    it("should create a Model instance", async () => {
       sinon.stub(Model, "getModelRuntime").resolves({
@@ -34,8 +39,6 @@ describe("service/model", () => {
       );
       expect(model).toBeInstanceOf(Model);
       expect(model.getPath()).toBe(mockModelPath);
-
-      sinon.restore();
    });
 
    it("should handle ModelNotFoundError correctly", async () => {
@@ -47,8 +50,6 @@ describe("service/model", () => {
             new Map(),
          );
       }).toThrowError(`${mockModelPath} does not exist.`);
-
-      sinon.restore();
    });
 
    describe("instance methods", () => {
@@ -56,6 +57,7 @@ describe("service/model", () => {
          it("should return the correct modelPath", async () => {
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                "model",
@@ -69,8 +71,6 @@ describe("service/model", () => {
             );
 
             expect(model.getPath()).toBe(mockModelPath);
-
-            sinon.restore();
          });
       });
 
@@ -79,6 +79,7 @@ describe("service/model", () => {
             const modelType = "model";
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                modelType,
@@ -92,8 +93,6 @@ describe("service/model", () => {
             );
 
             expect(model.getType()).toBe(modelType);
-
-            sinon.restore();
          });
       });
 
@@ -101,6 +100,7 @@ describe("service/model", () => {
          it("should throw ModelCompilationError if a compilation error exists", async () => {
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                "model",
@@ -116,13 +116,12 @@ describe("service/model", () => {
             await expect(async () => {
                await model.getModel();
             }).toThrowError(MalloyError);
-
-            sinon.restore();
          });
 
          it("should throw ModelNotFoundError for invalid modelType", async () => {
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                "notebook" as ModelType,
@@ -138,8 +137,6 @@ describe("service/model", () => {
             await expect(async () => {
                await model.getModel();
             }).toThrowError(ModelNotFoundError);
-
-            sinon.restore();
          });
       });
 
@@ -147,6 +144,7 @@ describe("service/model", () => {
          it("should throw ModelCompilationError if a compilation error exists", async () => {
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                "notebook",
@@ -162,13 +160,12 @@ describe("service/model", () => {
             await expect(async () => {
                await model.getNotebook();
             }).toThrowError(Error);
-
-            sinon.restore();
          });
 
          it("should throw ModelNotFoundError for invalid modelType", async () => {
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                "model" as ModelType,
@@ -184,8 +181,6 @@ describe("service/model", () => {
             await expect(async () => {
                await model.getNotebook();
             }).toThrowError(ModelNotFoundError);
-
-            sinon.restore();
          });
       });
 
@@ -194,6 +189,7 @@ describe("service/model", () => {
             const error = new Error("Compilation error");
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                "model",
@@ -209,13 +205,12 @@ describe("service/model", () => {
             await expect(async () => {
                await model.getQueryResults();
             }).toThrowError(BadRequestError);
-
-            sinon.restore();
          });
 
          it("should throw BadRequestError if no queryable entities exist", async () => {
             const model = new Model(
                packageName,
+               mockPackagePath,
                mockModelPath,
                {},
                "model",
@@ -231,8 +226,29 @@ describe("service/model", () => {
             await expect(async () => {
                await model.getQueryResults();
             }).toThrowError(BadRequestError);
+         });
 
-            sinon.restore();
+         it("should not create OAuth runtime when no token present", async () => {
+            // No requestContext.run() — getDatabaseToken() returns undefined
+            // so the OAuth path is skipped entirely.
+            const model = new Model(
+               packageName,
+               mockPackagePath,
+               mockModelPath,
+               {},
+               "model",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+            );
+
+            await expect(async () => {
+               await model.getQueryResults();
+            }).toThrowError(BadRequestError);
          });
       });
    });
@@ -249,8 +265,6 @@ describe("service/model", () => {
                   new Map(),
                );
             }).toThrowError(ModelNotFoundError);
-
-            sinon.restore();
          });
       });
    });
