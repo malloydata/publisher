@@ -308,7 +308,7 @@ export class Model {
       sourceName?: string,
       queryName?: string,
       query?: string,
-      sourceParameters?: Record<string, string>,
+      sourceParameters?: Record<string, unknown>,
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
@@ -518,7 +518,7 @@ export class Model {
 
    public async executeNotebookCell(
       cellIndex: number,
-      sourceParameters?: Record<string, string>,
+      sourceParameters?: Record<string, unknown>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -620,7 +620,7 @@ export class Model {
     */
    private async executeNotebookCellWithParams(
       cell: RunnableNotebookCell,
-      sourceParameters: Record<string, string>,
+      sourceParameters: Record<string, unknown>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;

@@ -1474,9 +1474,10 @@ paths:
         - name: sourceParameters
           in: query
           description: >-
-            JSON-encoded object of source parameter key-value string pairs.
+            JSON-encoded object of source parameter key-value pairs.
             Keys must match parameter names declared on sources in the notebook's
-            Malloy model. Values are parsed according to declared parameter types.
+            Malloy model. Values can be strings, numbers, or booleans and are
+            converted to the correct Malloy literal based on declared parameter types.
           required: false
           schema:
             type: string
@@ -1927,15 +1928,14 @@ components:
           description: 'If true, returns a simple JSON array of row objects in the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.'
         sourceParameters:
           type: object
-          additionalProperties:
-            type: string
+          additionalProperties: true
           description: |
-            Source parameter values as key-value string pairs. Keys must match parameter
-            names declared on the source in the Malloy model. Values are strings that are
-            parsed according to the parameter's declared type (string, number, boolean,
-            date, timestamp, or filter expression). Required parameters (those without a
-            default value in the model) must be provided or the request will fail with a
-            400 error.
+            Source parameter values as key-value pairs. Keys must match parameter
+            names declared on the source in the Malloy model. Values can be strings,
+            numbers, or booleans — they are converted to the correct Malloy literal
+            based on the parameter's declared type. Required parameters (those without
+            a default value in the model) must be provided or the request will fail
+            with a 400 error.
         versionId:
           type: string
           description: Version ID

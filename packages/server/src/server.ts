@@ -821,7 +821,7 @@ app.get(
             typeof req.query.sourceParameters === "string"
                ? (JSON.parse(req.query.sourceParameters) as Record<
                     string,
-                    string
+                    unknown
                  >)
                : undefined;
 
@@ -880,7 +880,7 @@ app.post(
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
          const sourceParameters = req.body.sourceParameters as
-            | Record<string, string>
+            | Record<string, unknown>
             | undefined;
          res.status(200).json(
             await queryController.getQuery(

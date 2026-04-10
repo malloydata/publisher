@@ -2,48 +2,58 @@ import type * as Malloy from "@malloydata/malloy-interfaces";
 import { BadRequestError } from "../errors";
 
 /**
- * Parses a raw string value into a Malloy literal expression based on
- * the declared parameter type from the SourceInfo.
+ * Converts a raw value (string, number, boolean, etc.) into a Malloy
+ * literal expression based on the declared parameter type.
  */
 export function paramValueToMalloyLiteral(
-   rawValue: string,
+   rawValue: unknown,
    paramInfo: Malloy.ParameterInfo,
 ): string {
    const kind = paramInfo.type.kind;
+   const str = String(rawValue);
 
    switch (kind) {
       case "number_type": {
-         const num = Number(rawValue);
+         if (typeof rawValue === "number") {
+            if (isNaN(rawValue)) {
+               throw new BadRequestError(
+                  `Parameter "${paramInfo.name}" expects a number, got NaN`,
+               );
+            }
+            return String(rawValue);
+         }
+         const num = Number(str);
          if (isNaN(num)) {
             throw new BadRequestError(
-               `Parameter "${paramInfo.name}" expects a number, got "${rawValue}"`,
+               `Parameter "${paramInfo.name}" expects a number, got "${str}"`,
             );
          }
-         return rawValue;
+         return str;
       }
 
       case "boolean_type": {
-         const lower = rawValue.toLowerCase();
+         if (typeof rawValue === "boolean") return String(rawValue);
+         const lower = str.toLowerCase();
          if (lower === "true" || lower === "1") return "true";
          if (lower === "false" || lower === "0") return "false";
          throw new BadRequestError(
-            `Parameter "${paramInfo.name}" expects a boolean (true/false), got "${rawValue}"`,
+            `Parameter "${paramInfo.name}" expects a boolean (true/false), got "${str}"`,
          );
       }
 
       case "date_type":
-         return `@${rawValue}`;
+         return `@${str}`;
 
       case "timestamp_type":
       case "timestamptz_type":
-         return `@${rawValue}`;
+         return `@${str}`;
 
       case "filter_expression_type":
-         return `f'${rawValue}'`;
+         return `f'${str}'`;
 
       case "string_type":
       default:
-         return `"${rawValue.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+         return `"${str.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
    }
 }
 
@@ -54,7 +64,7 @@ export function paramValueToMalloyLiteral(
  */
 export function validateRequiredParams(
    declaredParams: Malloy.ParameterInfo[],
-   providedParams: Record<string, string>,
+   providedParams: Record<string, unknown>,
 ): void {
    const missing: string[] = [];
    for (const param of declaredParams) {
@@ -80,7 +90,7 @@ export function validateRequiredParams(
  * string if no params are provided.
  */
 export function buildMalloyParamClause(
-   providedParams: Record<string, string>,
+   providedParams: Record<string, unknown>,
    declaredParams: Malloy.ParameterInfo[],
 ): string {
    const paramsByName = new Map(declaredParams.map((p) => [p.name, p]));

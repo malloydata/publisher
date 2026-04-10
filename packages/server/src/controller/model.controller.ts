@@ -84,7 +84,7 @@ export class ModelController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
-      sourceParameters?: Record<string, string>,
+      sourceParameters?: Record<string, unknown>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;

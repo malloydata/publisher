@@ -25,12 +25,12 @@ const executeQueryShape = {
    sourceName: z.string().optional().describe("Source name for a view"),
    queryName: z.string().optional().describe("Named query or view"),
    sourceParameters: z
-      .record(z.string())
+      .record(z.unknown())
       .optional()
       .describe(
-         "Source parameter values as key-value string pairs. " +
-            "Values are parsed according to the parameter's declared type in the model " +
-            "(e.g. numbers, booleans, dates). " +
+         "Source parameter values as key-value pairs. " +
+            "Values can be strings, numbers, or booleans — they are converted " +
+            "to the correct Malloy literal based on the parameter's declared type. " +
             "Required parameters that lack a default value must be provided.",
       ),
 };

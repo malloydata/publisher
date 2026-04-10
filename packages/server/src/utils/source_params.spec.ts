@@ -136,6 +136,28 @@ describe("paramValueToMalloyLiteral", () => {
       );
    });
 
+   // --- Native (non-string) value tests ---
+
+   it("should accept native number values directly", () => {
+      const param = makeNumberParam("n");
+      expect(paramValueToMalloyLiteral(42, param)).toBe("42");
+      expect(paramValueToMalloyLiteral(3.14, param)).toBe("3.14");
+      expect(paramValueToMalloyLiteral(-100, param)).toBe("-100");
+   });
+
+   it("should throw for NaN native number", () => {
+      const param = makeNumberParam("n");
+      expect(() => paramValueToMalloyLiteral(NaN, param)).toThrow(
+         /expects a number, got NaN/,
+      );
+   });
+
+   it("should accept native boolean values directly", () => {
+      const param = makeBooleanParam("b");
+      expect(paramValueToMalloyLiteral(true, param)).toBe("true");
+      expect(paramValueToMalloyLiteral(false, param)).toBe("false");
+   });
+
    it("should convert date values to @-prefixed literals", () => {
       const param = makeParam("d", "date_type");
       expect(paramValueToMalloyLiteral("2024-01-15", param)).toBe(
@@ -283,6 +305,19 @@ describe("buildMalloyParamClause", () => {
       expect(() =>
          buildMalloyParamClause({ x: "1" }, []),
       ).toThrow(/Available parameters: \(none\)/);
+   });
+
+   it("should handle native number and boolean values", () => {
+      const declared = [
+         makeNumberParam("limit"),
+         makeBooleanParam("active"),
+         makeStringParam("label"),
+      ];
+      const result = buildMalloyParamClause(
+         { limit: 100, active: true, label: "test" },
+         declared,
+      );
+      expect(result).toBe('(limit is 100, active is true, label is "test")');
    });
 });
 
