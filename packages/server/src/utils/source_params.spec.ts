@@ -181,16 +181,14 @@ describe("paramValueToMalloyLiteral", () => {
 
    it("should convert filter expression values to f'' literals", () => {
       const param = makeParam("f", "filter_expression_type");
-      expect(
-         paramValueToMalloyLiteral("last week for two days", param),
-      ).toBe("f'last week for two days'");
+      expect(paramValueToMalloyLiteral("last week for two days", param)).toBe(
+         "f'last week for two days'",
+      );
    });
 
    it("should default to quoted string for unknown type kinds", () => {
       const param = makeParam("x", "json_type");
-      expect(paramValueToMalloyLiteral('{"a":1}', param)).toBe(
-         '"{\\\"a\\\":1}"',
-      );
+      expect(paramValueToMalloyLiteral('{"a":1}', param)).toBe('"{\\"a\\":1}"');
    });
 });
 
@@ -207,12 +205,11 @@ describe("validateRequiredParams", () => {
    });
 
    it("should not throw when params with defaults are missing", () => {
-      const declared = [
-         makeStringParam("a"),
-         makeNumberParam("b", 10),
-      ];
+      const declared = [makeStringParam("a"), makeNumberParam("b", 10)];
       // Only 'a' is required (no default); 'b' has a default
-      expect(() => validateRequiredParams(declared, { a: "val" })).not.toThrow();
+      expect(() =>
+         validateRequiredParams(declared, { a: "val" }),
+      ).not.toThrow();
    });
 
    it("should not throw when there are no declared params", () => {
@@ -244,10 +241,7 @@ describe("validateRequiredParams", () => {
    });
 
    it("should throw only for the params not provided", () => {
-      const declared = [
-         makeStringParam("a"),
-         makeNumberParam("b"),
-      ];
+      const declared = [makeStringParam("a"), makeNumberParam("b")];
       expect(() => validateRequiredParams(declared, { a: "val" })).toThrow(
          'Parameter "b" is required',
       );
@@ -296,15 +290,15 @@ describe("buildMalloyParamClause", () => {
 
    it("should list available params in unknown-param error", () => {
       const declared = [makeStringParam("alpha"), makeNumberParam("beta")];
-      expect(() =>
-         buildMalloyParamClause({ gamma: "val" }, declared),
-      ).toThrow(/Available parameters: alpha, beta/);
+      expect(() => buildMalloyParamClause({ gamma: "val" }, declared)).toThrow(
+         /Available parameters: alpha, beta/,
+      );
    });
 
    it("should throw for unknown param when declared list is empty", () => {
-      expect(() =>
-         buildMalloyParamClause({ x: "1" }, []),
-      ).toThrow(/Available parameters: \(none\)/);
+      expect(() => buildMalloyParamClause({ x: "1" }, [])).toThrow(
+         /Available parameters: \(none\)/,
+      );
    });
 
    it("should handle native number and boolean values", () => {

@@ -73,9 +73,7 @@ export function validateRequiredParams(
       }
    }
    if (missing.length === 1) {
-      throw new BadRequestError(
-         `Parameter "${missing[0]}" is required`,
-      );
+      throw new BadRequestError(`Parameter "${missing[0]}" is required`);
    }
    if (missing.length > 1) {
       throw new BadRequestError(
