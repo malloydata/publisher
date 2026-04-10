@@ -96,11 +96,7 @@ export function buildMalloyParamClause(
 
    for (const [name, rawValue] of Object.entries(providedParams)) {
       const paramInfo = paramsByName.get(name);
-      if (!paramInfo) {
-         throw new BadRequestError(
-            `Unknown source parameter "${name}". Available parameters: ${declaredParams.map((p) => p.name).join(", ") || "(none)"}`,
-         );
-      }
+      if (!paramInfo) continue;
       const literal = paramValueToMalloyLiteral(rawValue, paramInfo);
       assignments.push(`${name} is ${literal}`);
    }

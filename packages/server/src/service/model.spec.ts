@@ -354,8 +354,10 @@ describe("service/model", () => {
          sinon.restore();
       });
 
-      it("should throw BadRequestError for unknown source parameter", async () => {
-         const loadQueryStub = sinon.stub();
+      it("should silently ignore unknown source parameters", async () => {
+         const loadQueryStub = sinon.stub().returns({
+            getPreparedResult: sinon.stub().rejects(new Error("stop")),
+         });
          const model = new Model(
             packageName,
             mockModelPath,
@@ -370,12 +372,18 @@ describe("service/model", () => {
             undefined,
          );
 
-         await expect(
-            model.getQueryResults("flights", "by_carrier", undefined, {
+         try {
+            await model.getQueryResults("flights", "by_carrier", undefined, {
                nonexistent: "val",
-            }),
-         ).rejects.toThrow(/Unknown source parameter "nonexistent"/);
+            });
+         } catch {
+            // expected — getPreparedResult throws
+         }
 
+         expect(loadQueryStub.calledOnce).toBe(true);
+         expect(loadQueryStub.firstCall.args[0]).toBe(
+            "\nrun: flights->by_carrier",
+         );
          sinon.restore();
       });
 

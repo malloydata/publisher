@@ -278,27 +278,20 @@ describe("buildMalloyParamClause", () => {
       expect(result).toBe('(label is "test", count is 5, active is true)');
    });
 
-   it("should throw for an unknown parameter name", () => {
+   it("should silently ignore unknown parameter names", () => {
       const declared = [makeStringParam("known")];
-      expect(() =>
-         buildMalloyParamClause({ unknown: "val" }, declared),
-      ).toThrow(BadRequestError);
-      expect(() =>
-         buildMalloyParamClause({ unknown: "val" }, declared),
-      ).toThrow(/Unknown source parameter "unknown"/);
+      expect(buildMalloyParamClause({ unknown: "val" }, declared)).toBe("");
    });
 
-   it("should list available params in unknown-param error", () => {
-      const declared = [makeStringParam("alpha"), makeNumberParam("beta")];
-      expect(() => buildMalloyParamClause({ gamma: "val" }, declared)).toThrow(
-         /Available parameters: alpha, beta/,
-      );
+   it("should include only matching params and skip unknown ones", () => {
+      const declared = [makeStringParam("name")];
+      expect(
+         buildMalloyParamClause({ name: "Alice", extra: "ignored" }, declared),
+      ).toBe('(name is "Alice")');
    });
 
-   it("should throw for unknown param when declared list is empty", () => {
-      expect(() => buildMalloyParamClause({ x: "1" }, [])).toThrow(
-         /Available parameters: \(none\)/,
-      );
+   it("should return empty string when no declared params exist", () => {
+      expect(buildMalloyParamClause({ x: "1" }, [])).toBe("");
    });
 
    it("should handle native number and boolean values", () => {
