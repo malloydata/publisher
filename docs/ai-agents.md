@@ -28,6 +28,43 @@ The primary way clients interact with the server is through tool calls. These ar
 * **Query Execution Tool**: Used by the AI to get data.
     * `malloy_executeQuery`: Executes a Malloy query and returns the results in JSON format.
 
+#### Source Parameters
+
+Malloy sources can declare **parameters** that must (or may) be provided at query time. The `malloy_executeQuery` tool accepts an optional `sourceParameters` field — a JSON object of key-value string pairs — that supplies values for these parameters.
+
+```json
+{
+  "projectName": "my_project",
+  "packageName": "my_package",
+  "modelPath": "model.malloy",
+  "sourceName": "flights",
+  "queryName": "by_carrier",
+  "sourceParameters": {
+    "min_distance": "2000",
+    "carrier_filter": "UA"
+  }
+}
+```
+
+**Type parsing:** Values are always passed as strings and the publisher parses them according to the parameter's declared type in the Malloy model:
+
+| Malloy Type | Example Value | Notes |
+|-------------|---------------|-------|
+| `string` | `"UA"` | |
+| `number` | `"2000"` | Integer or decimal |
+| `boolean` | `"true"` | Accepts `true`/`false` or `1`/`0` |
+| `date` | `"2024-01-15"` | ISO date format |
+| `timestamp` | `"2024-01-15 10:30:00"` | ISO datetime format |
+| `filter` | `"last week for two days"` | Malloy filter expression |
+
+**Required parameters:** If a source declares a parameter without a default value, it must be provided in `sourceParameters` or the request will fail with a `400` error listing the missing parameter(s).
+
+The same `sourceParameters` mechanism is available on the REST API's query execution endpoint (`POST .../models/{path}/query`) as a field in the JSON request body.
+
+##### Implicit Parameters
+
+Some models use parameters that are set by the system rather than by users or agents. By convention, these parameters are named with an `implicit_` prefix (e.g., `implicit_dataset_id`, `implicit_acl_token`). Agents should **not** set parameters whose names start with `implicit_` — they are managed by the deployment environment and injected by infrastructure (e.g., derived from authentication tokens or deployment configuration).
+
 #### Prompts & Resources
 
 The MCP server can also provide clients with **prompts** (e.g., suggested questions to start a conversation) and **resources** (e.g., links to documentation or data dictionaries). However, these are nascent capabilities of the MCP standard, and many current MCP clients do not yet utilize them.
