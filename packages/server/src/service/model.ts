@@ -388,10 +388,37 @@ export class Model {
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
          if (!sourceName && !queryName && query) {
-            runnable = this.modelMaterializer.loadQuery("\n" + query);
+            // For raw queries, inject source parameters into any
+            // `run: source ->` references found in the query text.
+            let queryText = query;
+            if (Object.keys(params).length > 0 && this.sourceInfos) {
+               const clauses = new Map<string, string>();
+               for (const source of this.sourceInfos) {
+                  if (!source.parameters || source.parameters.length === 0)
+                     continue;
+                  const clause = buildMalloyParamClause(
+                     params,
+                     source.parameters,
+                  );
+                  if (clause) clauses.set(source.name, clause);
+               }
+               if (clauses.size > 0) {
+                  const injected = injectParamClauseIntoText(
+                     queryText,
+                     clauses,
+                  );
+                  if (injected.modified) {
+                     queryText =
+                        "##! experimental.parameters\n" + injected.text;
+                  }
+               }
+            }
+            runnable = this.modelMaterializer.loadQuery("\n" + queryText);
          } else if (queryName && !query) {
+            const prefix = paramClause ? "##! experimental.parameters\n" : "";
+            const arrow = sourceName ? "->" : "";
             runnable = this.modelMaterializer.loadQuery(
-               `\nrun: ${sourceName ? sourceName + paramClause + "->" : ""}${queryName}`,
+               `${prefix}\nrun: ${sourceName ? sourceName + paramClause : ""}${arrow}${queryName}`,
             );
          } else {
             const endTime = performance.now();

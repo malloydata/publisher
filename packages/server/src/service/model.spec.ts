@@ -415,7 +415,7 @@ describe("service/model", () => {
 
          expect(loadQueryStub.calledOnce).toBe(true);
          expect(loadQueryStub.firstCall.args[0]).toBe(
-            '\nrun: flights(carrier is "AA")->by_carrier',
+            '##! experimental.parameters\n\nrun: flights(carrier is "AA")->by_carrier',
          );
          sinon.restore();
       });
@@ -514,7 +514,7 @@ describe("service/model", () => {
          }
 
          expect(loadQueryStub.firstCall.args[0]).toBe(
-            "\nrun: flights(min_distance is 500)->query1",
+            "##! experimental.parameters\n\nrun: flights(min_distance is 500)->query1",
          );
          sinon.restore();
       });
@@ -546,7 +546,7 @@ describe("service/model", () => {
          }
 
          expect(loadQueryStub.firstCall.args[0]).toBe(
-            "\nrun: flights(active is true)->query1",
+            "##! experimental.parameters\n\nrun: flights(active is true)->query1",
          );
          sinon.restore();
       });
