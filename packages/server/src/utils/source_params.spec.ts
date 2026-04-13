@@ -73,7 +73,7 @@ function makeBooleanParam(
 describe("paramValueToMalloyLiteral", () => {
    it("should convert a string value to a quoted Malloy literal", () => {
       const param = makeStringParam("s");
-      expect(paramValueToMalloyLiteral("hello2", param)).toBe('"hello2"');
+      expect(paramValueToMalloyLiteral("hello", param)).toBe('"hello"');
    });
 
    it("should escape quotes and backslashes in string values", () => {
