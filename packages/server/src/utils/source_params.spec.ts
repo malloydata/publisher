@@ -3,8 +3,11 @@ import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import {
    buildMalloyParamClause,
+   buildStubParamClause,
    getSourceParams,
+   injectParamClauseIntoText,
    paramValueToMalloyLiteral,
+   stubValueForParam,
    validateRequiredParams,
 } from "./source_params";
 
@@ -350,5 +353,134 @@ describe("getSourceParams", () => {
 
    it("should return empty array when sourceName is undefined", () => {
       expect(getSourceParams(sources, undefined)).toEqual([]);
+   });
+});
+
+// ---------------------------------------------------------------------------
+// stubValueForParam
+// ---------------------------------------------------------------------------
+
+describe("stubValueForParam", () => {
+   it("should return 0 for number_type", () => {
+      expect(stubValueForParam(makeNumberParam("x"))).toBe("0");
+   });
+
+   it("should return true for boolean_type", () => {
+      expect(stubValueForParam(makeBooleanParam("x"))).toBe("true");
+   });
+
+   it('should return "" for string_type', () => {
+      expect(stubValueForParam(makeStringParam("x"))).toBe('""');
+   });
+
+   it("should return @2000-01-01 for date_type", () => {
+      expect(stubValueForParam(makeParam("x", "date_type"))).toBe(
+         "@2000-01-01",
+      );
+   });
+
+   it("should return @2000-01-01 00:00:00 for timestamp_type", () => {
+      expect(stubValueForParam(makeParam("x", "timestamp_type"))).toBe(
+         "@2000-01-01 00:00:00",
+      );
+   });
+
+   it("should return f'true' for filter_expression_type", () => {
+      expect(stubValueForParam(makeParam("x", "filter_expression_type"))).toBe(
+         "f'true'",
+      );
+   });
+});
+
+// ---------------------------------------------------------------------------
+// buildStubParamClause
+// ---------------------------------------------------------------------------
+
+describe("buildStubParamClause", () => {
+   it("should generate stubs only for required params (no default)", () => {
+      const declared = [
+         makeNumberParam("limit"),
+         makeStringParam("label", "default_label"),
+      ];
+      expect(buildStubParamClause(declared)).toBe("(limit is 0)");
+   });
+
+   it("should return empty string when all params have defaults", () => {
+      const declared = [
+         makeNumberParam("limit", 10),
+         makeStringParam("label", "x"),
+      ];
+      expect(buildStubParamClause(declared)).toBe("");
+   });
+
+   it("should generate stubs for multiple required params", () => {
+      const declared = [
+         makeNumberParam("a"),
+         makeBooleanParam("b"),
+         makeStringParam("c"),
+      ];
+      expect(buildStubParamClause(declared)).toBe(
+         '(a is 0, b is true, c is "")',
+      );
+   });
+
+   it("should return empty string for empty param list", () => {
+      expect(buildStubParamClause([])).toBe("");
+   });
+});
+
+// ---------------------------------------------------------------------------
+// injectParamClauseIntoText
+// ---------------------------------------------------------------------------
+
+describe("injectParamClauseIntoText", () => {
+   it("should inject clause into run: source ->", () => {
+      const clauses = new Map([["flights", "(carrier is 42)"]]);
+      const result = injectParamClauseIntoText(
+         "run: flights -> { aggregate: c is count() }",
+         clauses,
+      );
+      expect(result.modified).toBe(true);
+      expect(result.text).toBe(
+         "run: flights(carrier is 42) -> { aggregate: c is count() }",
+      );
+   });
+
+   it("should not modify text when source is not referenced", () => {
+      const clauses = new Map([["airports", "(code is 0)"]]);
+      const result = injectParamClauseIntoText(
+         "run: flights -> { aggregate: c is count() }",
+         clauses,
+      );
+      expect(result.modified).toBe(false);
+      expect(result.text).toBe("run: flights -> { aggregate: c is count() }");
+   });
+
+   it("should handle run: source at end of line (no ->)", () => {
+      const clauses = new Map([["flights", "(x is 1)"]]);
+      const result = injectParamClauseIntoText("run: flights", clauses);
+      expect(result.modified).toBe(true);
+      expect(result.text).toBe("run: flights(x is 1) ");
+   });
+
+   it("should handle multiple sources in one text", () => {
+      const clauses = new Map([
+         ["src_a", "(p is 1)"],
+         ["src_b", '(q is "x")'],
+      ]);
+      const text = "run: src_a -> { select: * }\nrun: src_b -> { select: * }";
+      const result = injectParamClauseIntoText(text, clauses);
+      expect(result.modified).toBe(true);
+      expect(result.text).toContain("src_a(p is 1)");
+      expect(result.text).toContain('src_b(q is "x")');
+   });
+
+   it("should skip empty clauses", () => {
+      const clauses = new Map([["flights", ""]]);
+      const result = injectParamClauseIntoText(
+         "run: flights -> { select: * }",
+         clauses,
+      );
+      expect(result.modified).toBe(false);
    });
 });

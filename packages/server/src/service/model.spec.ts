@@ -634,7 +634,7 @@ describe("service/model", () => {
          sinon.restore();
       });
 
-      it("should suggest providing sourceParameters when cell has compilation error", async () => {
+      it("should throw compilation error message when cell has compilation error (not parameter-related)", async () => {
          const model = new Model(
             packageName,
             "test.malloynb",
@@ -656,7 +656,35 @@ describe("service/model", () => {
          );
 
          await expect(model.executeNotebookCell(0)).rejects.toThrow(
-            /provide sourceParameters/,
+            /failed to compile.*some error/,
+         );
+
+         sinon.restore();
+      });
+
+      it("should require sourceParameters when cell was compiled with stubs", async () => {
+         const model = new Model(
+            packageName,
+            "test.malloynb",
+            {},
+            "notebook",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            [
+               {
+                  type: "code",
+                  text: "run: flights -> { }",
+                  requiresSourceParameters: true,
+               },
+            ],
+            undefined,
+         );
+
+         await expect(model.executeNotebookCell(0)).rejects.toThrow(
+            /parameterized source/,
          );
 
          sinon.restore();

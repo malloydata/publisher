@@ -44,7 +44,9 @@ import { logger } from "../logger";
 import { URL_READER } from "../utils";
 import {
    buildMalloyParamClause,
+   buildStubParamClause,
    getSourceParams,
+   injectParamClauseIntoText,
    validateRequiredParams,
 } from "../utils/source_params";
 
@@ -74,6 +76,9 @@ interface RunnableNotebookCell {
    /** MM from *before* this cell — used to recompile with params */
    priorModelMaterializer?: ModelMaterializer;
    cellCompilationError?: Error;
+   /** True when stub values were injected during compilation — execution
+    *  must supply real sourceParameters. */
+   requiresSourceParameters?: boolean;
 }
 
 export class Model {
@@ -228,10 +233,13 @@ export class Model {
                }
             }
 
-            // For notebooks without a modelDef (model-level compilation
-            // failed), collect sourceInfos from successfully compiled cells.
-            if (!modelDef && runnableNotebookCells) {
-               const seenNames = new Set<string>();
+            // For notebooks, always collect sourceInfos from compiled cells.
+            // The model-level modelDef.imports doesn't carry forward
+            // imports from earlier extendModel stages, so the import-based
+            // collection above may miss sources.  Cell newSources are the
+            // authoritative source of truth for notebooks.
+            if (runnableNotebookCells) {
+               const seenNames = new Set(sourceInfos.map((s) => s.name));
                for (const cell of runnableNotebookCells) {
                   if (cell.newSources) {
                      for (const source of cell.newSources) {
@@ -585,16 +593,24 @@ export class Model {
          };
       }
 
-      // If the cell failed initial compilation (e.g. missing required source
-      // params) and sourceParameters were provided, try to recompile with
-      // the params injected into the cell text.
+      // Cell was compiled with stub values — real params must be provided.
+      if (cell.requiresSourceParameters) {
+         if (sourceParameters && Object.keys(sourceParameters).length > 0) {
+            return this.executeNotebookCellWithParams(cell, sourceParameters);
+         }
+         throw new BadRequestError(
+            `Cell ${cellIndex} uses a parameterized source. ` +
+               `Provide sourceParameters to execute it.`,
+         );
+      }
+
+      // Cell failed compilation for a non-parameter reason.
       if (cell.cellCompilationError) {
          if (sourceParameters && Object.keys(sourceParameters).length > 0) {
             return this.executeNotebookCellWithParams(cell, sourceParameters);
          }
          throw new BadRequestError(
-            `Cell ${cellIndex} failed to compile: ${cell.cellCompilationError.message}. ` +
-               `If this cell uses a parameterized source, provide sourceParameters.`,
+            `Cell ${cellIndex} failed to compile: ${cell.cellCompilationError.message}`,
          );
       }
 
@@ -670,27 +686,28 @@ export class Model {
          );
       }
 
-      // Inject parameter values into source invocations in the cell text.
-      // For each known parameterized source, replace bare source references
-      // in `run:` statements with parameterized invocations.
+      // Build real parameter clauses for each parameterized source and
+      // inject them into the cell text.
       const allSourceInfos = this.sourceInfos ?? [];
-      const sourcesByName = new Map(allSourceInfos.map((s) => [s.name, s]));
-
-      let modifiedText = cell.text;
-      for (const [sourceName, sourceInfo] of sourcesByName) {
-         if (!sourceInfo.parameters || sourceInfo.parameters.length === 0)
-            continue;
-
-         const paramClause = buildMalloyParamClause(
+      const realClauses = new Map<string, string>();
+      for (const source of allSourceInfos) {
+         if (!source.parameters || source.parameters.length === 0) continue;
+         const clause = buildMalloyParamClause(
             sourceParameters,
-            sourceInfo.parameters,
+            source.parameters,
          );
-         if (!paramClause) continue;
+         if (clause) realClauses.set(source.name, clause);
+      }
 
-         // Match `run: sourceName ->` or `run: sourceName` at end of line,
-         // and inject the param clause after the source name.
-         const pattern = new RegExp(`(run:\\s+${sourceName})\\s*(->|$)`, "gm");
-         modifiedText = modifiedText.replace(pattern, `$1${paramClause} $2`);
+      let { text: modifiedText } = injectParamClauseIntoText(
+         cell.text,
+         realClauses,
+      );
+
+      // The (param is value) invocation syntax requires the
+      // experimental.parameters flag in the compiling context.
+      if (modifiedText !== cell.text) {
+         modifiedText = "##! experimental.parameters\n" + modifiedText;
       }
 
       // Rebuild: extend the prior model (before this cell) with modified text
@@ -926,76 +943,100 @@ export class Model {
          throw new Error("Could not parse model: " + modelPath);
       }
 
+      // Process cells sequentially so we can discover parameterized
+      // sources from earlier cells and inject stub values into later
+      // cells that reference them.  This validates the notebook's
+      // structure at load time without requiring real parameter values.
       let mm: ModelMaterializer | undefined = undefined;
       const oldImports: string[] = [];
       const oldSources: Record<string, Malloy.SourceInfo> = {};
-      // First generate the sequence of ModelMaterializers (lazy — no
-      // compilation happens here).  Track the MM *before* each statement
-      // so failed cells can be recompiled with different text later.
-      const priorMMs: (ModelMaterializer | undefined)[] = [];
-      const mms = parse.statements.map((stmt) => {
-         priorMMs.push(mm);
-         if (stmt.type === MalloySQLStatementType.MALLOY) {
-            if (!mm) {
-               mm = runtime.loadModel(stmt.text, { importBaseURL });
-            } else {
-               mm = mm.extendModel(stmt.text, { importBaseURL });
-            }
-         }
-         return mm;
-      });
-      const runnableNotebookCells: RunnableNotebookCell[] = (
-         await Promise.all(
-            parse.statements.map(async (stmt, index) => {
-               if (stmt.type === MalloySQLStatementType.MALLOY) {
-                  // Get the Materializer for the current cell/statement.
-                  const localMM = mms[index];
-                  if (!localMM) {
-                     throw new Error("Model materializer is undefined");
-                  }
 
-                  // Compilation is wrapped per-cell so that a single cell
-                  // with missing source parameters (or other errors) does not
-                  // prevent the rest of the notebook from loading.
-                  try {
-                     return await Model.compileNotebookCell(
-                        stmt.text,
-                        localMM,
-                        runtime,
-                        importBaseURL,
-                        oldImports,
-                        oldSources,
-                     );
-                  } catch (cellError) {
-                     logger.warn(
-                        `Notebook cell ${index} compilation failed, deferring to execution time`,
-                        { error: cellError },
-                     );
-                     return {
-                        type: "code",
-                        text: stmt.text,
-                        priorModelMaterializer: priorMMs[index],
-                        cellCompilationError:
-                           cellError instanceof Error
-                              ? cellError
-                              : new Error(String(cellError)),
-                     } as RunnableNotebookCell;
+      // source name → stub param clause for sources with required params
+      const stubClauses = new Map<string, string>();
+      const runnableNotebookCells: RunnableNotebookCell[] = [];
+
+      for (let index = 0; index < parse.statements.length; index++) {
+         const stmt = parse.statements[index];
+
+         if (stmt.type === MalloySQLStatementType.MARKDOWN) {
+            runnableNotebookCells.push({
+               type: "markdown",
+               text: stmt.text,
+            });
+            continue;
+         }
+
+         if (stmt.type !== MalloySQLStatementType.MALLOY) continue;
+
+         // Check if this cell references known parameterized sources
+         // and inject stub values for required parameters.
+         const injected = injectParamClauseIntoText(stmt.text, stubClauses);
+         const needsRealParams = injected.modified;
+
+         // The (param is value) invocation syntax requires the
+         // experimental.parameters flag in the compiling context.
+         const compilationText = needsRealParams
+            ? "##! experimental.parameters\n" + injected.text
+            : injected.text;
+
+         const priorMM = mm;
+
+         // Build materializer with (possibly stub-injected) text
+         if (!mm) {
+            mm = runtime.loadModel(compilationText, { importBaseURL });
+         } else {
+            mm = mm.extendModel(compilationText, { importBaseURL });
+         }
+
+         try {
+            const cell = await Model.compileNotebookCell(
+               stmt.text,
+               mm,
+               runtime,
+               importBaseURL,
+               oldImports,
+               oldSources,
+            );
+
+            if (needsRealParams) {
+               cell.requiresSourceParameters = true;
+               cell.priorModelMaterializer = priorMM;
+            }
+
+            runnableNotebookCells.push(cell);
+
+            // Discover newly compiled parameterized sources so we can
+            // inject stubs in subsequent cells that reference them.
+            if (cell.newSources) {
+               for (const source of cell.newSources) {
+                  if (source.parameters && source.parameters.length > 0) {
+                     const clause = buildStubParamClause(source.parameters);
+                     if (clause) {
+                        stubClauses.set(source.name, clause);
+                     }
                   }
-               } else if (stmt.type === MalloySQLStatementType.MARKDOWN) {
-                  return {
-                     type: "markdown",
-                     text: stmt.text,
-                  } as RunnableNotebookCell;
-               } else {
-                  return undefined;
                }
-            }),
-         )
-      ).filter((cell) => cell !== undefined);
+            }
+         } catch (cellError) {
+            logger.warn(
+               `Notebook cell ${index} compilation failed, deferring to execution time`,
+               { error: cellError },
+            );
+            runnableNotebookCells.push({
+               type: "code",
+               text: stmt.text,
+               priorModelMaterializer: priorMM,
+               cellCompilationError:
+                  cellError instanceof Error
+                     ? cellError
+                     : new Error(String(cellError)),
+            });
+         }
+      }
 
       return {
          modelMaterializer: mm,
-         runnableNotebookCells: runnableNotebookCells,
+         runnableNotebookCells,
       };
    }
 

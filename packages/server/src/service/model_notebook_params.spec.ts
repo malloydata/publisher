@@ -8,8 +8,8 @@ import { Model } from "./model";
 /**
  * Integration test: loading a notebook that uses a parameterized source
  * without providing the required parameter values.  The publisher should
- * load the notebook successfully (deferring the compilation error to
- * execution time) rather than failing the entire load.
+ * compile the notebook with stub values at load time (validating
+ * structure) and require real sourceParameters at execution time.
  */
 describe("notebook with parameterized source (integration)", () => {
    const tmpDir = path.join(
@@ -21,7 +21,6 @@ describe("notebook with parameterized source (integration)", () => {
    beforeEach(async () => {
       await fs.mkdir(tmpDir, { recursive: true });
 
-      // Model file: declares a parameterized source with a required param
       await fs.writeFile(
          path.join(tmpDir, "model.malloy"),
          [
@@ -36,9 +35,6 @@ describe("notebook with parameterized source (integration)", () => {
          ].join("\n"),
       );
 
-      // Notebook file: imports the model and runs a query WITHOUT
-      // providing the required parameter — this cell should fail to
-      // compile, but the notebook should still load.
       await fs.writeFile(
          path.join(tmpDir, "notebook.malloynb"),
          [
@@ -78,7 +74,7 @@ describe("notebook with parameterized source (integration)", () => {
    );
 
    it(
-      "should expose notebook cells from the loaded model",
+      "should expose notebook cells with queryInfo from stub compilation",
       async () => {
          const model = await Model.create(
             "test-pkg",
@@ -90,12 +86,44 @@ describe("notebook with parameterized source (integration)", () => {
          const notebook = await model.getNotebook();
          expect(notebook.notebookCells).toBeDefined();
          expect(notebook.notebookCells!.length).toBeGreaterThanOrEqual(2);
+
+         // The parameterized cell should have queryInfo from the
+         // stub-compiled query — proves structural validation worked.
+         const paramCell = notebook.notebookCells!.find(
+            (c) => c.type === "code" && c.text.includes("param_source"),
+         );
+         expect(paramCell).toBeDefined();
+         expect(paramCell!.queryInfo).toBeDefined();
       },
       { timeout: 30000 },
    );
 
    it(
-      "should report an error when executing the parameterized cell without sourceParameters",
+      "should expose sourceInfos with parameter metadata",
+      async () => {
+         const model = await Model.create(
+            "test-pkg",
+            tmpDir,
+            "notebook.malloynb",
+            connections,
+         );
+
+         const sourceInfos = model.getSourceInfos();
+         expect(sourceInfos).toBeDefined();
+
+         const paramSource = sourceInfos!.find(
+            (s) => s.name === "param_source",
+         );
+         expect(paramSource).toBeDefined();
+         expect(paramSource!.parameters).toBeDefined();
+         expect(paramSource!.parameters!.length).toBe(1);
+         expect(paramSource!.parameters![0].name).toBe("min_val");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "should throw when executing the parameterized cell without sourceParameters",
       async () => {
          const model = await Model.create(
             "test-pkg",
@@ -105,15 +133,39 @@ describe("notebook with parameterized source (integration)", () => {
          );
 
          const notebook = await model.getNotebook();
-         // Find the code cell that runs the parameterized query
          const codeCellIndex = notebook.notebookCells!.findIndex(
             (c) => c.type === "code" && c.text.includes("param_source"),
          );
          expect(codeCellIndex).toBeGreaterThanOrEqual(0);
 
-         await expect(
-            model.executeNotebookCell(codeCellIndex),
-         ).rejects.toThrow();
+         await expect(model.executeNotebookCell(codeCellIndex)).rejects.toThrow(
+            /parameterized source/,
+         );
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "should execute the parameterized cell when sourceParameters are provided",
+      async () => {
+         const model = await Model.create(
+            "test-pkg",
+            tmpDir,
+            "notebook.malloynb",
+            connections,
+         );
+
+         const notebook = await model.getNotebook();
+         const codeCellIndex = notebook.notebookCells!.findIndex(
+            (c) => c.type === "code" && c.text.includes("param_source"),
+         );
+
+         const result = await model.executeNotebookCell(codeCellIndex, {
+            min_val: 50,
+         });
+
+         expect(result.type).toBe("code");
+         expect(result.result).toBeDefined();
       },
       { timeout: 30000 },
    );

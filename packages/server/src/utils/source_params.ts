@@ -106,6 +106,72 @@ export function buildMalloyParamClause(
 }
 
 /**
+ * Returns a Malloy literal stub value for a parameter based on its type.
+ * Used during notebook loading to fill in required parameters so the
+ * notebook compiles (validating structure) without real values.
+ */
+export function stubValueForParam(paramInfo: Malloy.ParameterInfo): string {
+   switch (paramInfo.type.kind) {
+      case "number_type":
+         return "0";
+      case "boolean_type":
+         return "true";
+      case "date_type":
+         return "@2000-01-01";
+      case "timestamp_type":
+      case "timestamptz_type":
+         return "@2000-01-01 00:00:00";
+      case "filter_expression_type":
+         return "f'true'";
+      case "string_type":
+      default:
+         return '""';
+   }
+}
+
+/**
+ * Builds a Malloy parameter clause containing stub values for every
+ * *required* parameter (those without a default value).  Returns an
+ * empty string when no stubs are needed.
+ */
+export function buildStubParamClause(
+   declaredParams: Malloy.ParameterInfo[],
+): string {
+   const assignments: string[] = [];
+   for (const param of declaredParams) {
+      if (!param.default_value) {
+         assignments.push(`${param.name} is ${stubValueForParam(param)}`);
+      }
+   }
+   if (assignments.length === 0) return "";
+   return `(${assignments.join(", ")})`;
+}
+
+/**
+ * Scans cell text for `run: <sourceName>` patterns that reference known
+ * parameterized sources and injects the given parameter clause after the
+ * source name.  Returns the modified text and whether any injection
+ * occurred.
+ */
+export function injectParamClauseIntoText(
+   cellText: string,
+   parameterizedSources: Map<string, string>,
+): { text: string; modified: boolean } {
+   let text = cellText;
+   let modified = false;
+   for (const [sourceName, clause] of parameterizedSources) {
+      if (!clause) continue;
+      const pattern = new RegExp(`(run:\\s+${sourceName})\\s*(->|$)`, "gm");
+      const replaced = text.replace(pattern, `$1${clause} $2`);
+      if (replaced !== text) {
+         text = replaced;
+         modified = true;
+      }
+   }
+   return { text, modified };
+}
+
+/**
  * Finds the ParameterInfo array for a source by name.  Returns an empty
  * array when the source has no parameters or is not found.
  */
