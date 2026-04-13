@@ -12,10 +12,7 @@ import { Model } from "./model";
  * structure) and require real sourceParameters at execution time.
  */
 describe("notebook with parameterized source (integration)", () => {
-   const tmpDir = path.join(
-      import.meta.dir,
-      "__test_notebook_params_" + process.pid,
-   );
+   const tmpDir = path.join(__dirname, "__test_notebook_params_" + process.pid);
    let connections: Map<string, Connection>;
 
    beforeEach(async () => {
@@ -90,7 +87,7 @@ describe("notebook with parameterized source (integration)", () => {
          // The parameterized cell should have queryInfo from the
          // stub-compiled query — proves structural validation worked.
          const paramCell = notebook.notebookCells!.find(
-            (c) => c.type === "code" && c.text.includes("param_source"),
+            (c) => c.type === "code" && c.text?.includes("param_source"),
          );
          expect(paramCell).toBeDefined();
          expect(paramCell!.queryInfo).toBeDefined();
@@ -134,7 +131,7 @@ describe("notebook with parameterized source (integration)", () => {
 
          const notebook = await model.getNotebook();
          const codeCellIndex = notebook.notebookCells!.findIndex(
-            (c) => c.type === "code" && c.text.includes("param_source"),
+            (c) => c.type === "code" && c.text?.includes("param_source"),
          );
          expect(codeCellIndex).toBeGreaterThanOrEqual(0);
 
@@ -157,7 +154,7 @@ describe("notebook with parameterized source (integration)", () => {
 
          const notebook = await model.getNotebook();
          const codeCellIndex = notebook.notebookCells!.findIndex(
-            (c) => c.type === "code" && c.text.includes("param_source"),
+            (c) => c.type === "code" && c.text?.includes("param_source"),
          );
 
          const result = await model.executeNotebookCell(codeCellIndex, {
