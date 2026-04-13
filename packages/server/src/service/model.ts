@@ -159,52 +159,88 @@ export class Model {
          let queries = undefined;
          const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
-            modelDef = (await modelMaterializer.getModel())._modelDef;
-            sources = Model.getSources(modelPath, modelDef);
-            queries = Model.getQueries(modelPath, modelDef);
-
-            // Collect sourceInfos from imported models first
-            // This follows the same pattern as notebook imports handling
-            const imports = modelDef.imports || [];
-            const importedSourceNames = new Set<string>();
-            for (const importLocation of imports) {
-               try {
-                  const modelString = await runtime.urlReader.readURL(
-                     new URL(importLocation.importURL),
+            try {
+               modelDef = (await modelMaterializer.getModel())._modelDef;
+            } catch (modelError) {
+               // For notebooks, some cells may have failed compilation
+               // (e.g. missing required source parameters). The
+               // materializer includes those broken cells so getModel()
+               // fails, but we still have per-cell results and can
+               // collect sourceInfos from successfully compiled cells.
+               if (runnableNotebookCells) {
+                  logger.warn(
+                     "Notebook model-level compilation failed; " +
+                        "using per-cell results",
+                     { error: modelError },
                   );
-                  const importedModelDef = (
-                     await runtime
-                        .loadModel(modelString as string, { importBaseURL })
-                        .getModel()
-                  )._modelDef;
-                  const importedModelInfo =
-                     modelDefToModelInfo(importedModelDef);
-                  const importedSources = importedModelInfo.entries.filter(
-                     (entry) => entry.kind === "source",
-                  ) as Malloy.SourceInfo[];
-                  for (const source of importedSources) {
-                     if (!importedSourceNames.has(source.name)) {
-                        sourceInfos.push(source);
-                        importedSourceNames.add(source.name);
-                     }
-                  }
-               } catch (importError) {
-                  // Log but don't fail if we can't load an import's sourceInfo
-                  logger.warn("Failed to load sourceInfo from import", {
-                     importURL: importLocation.importURL,
-                     error: importError,
-                  });
+               } else {
+                  throw modelError;
                }
             }
 
-            // Add locally-defined sources (not already added from imports)
-            const localModelInfo = modelDefToModelInfo(modelDef);
-            const localSources = localModelInfo.entries.filter(
-               (entry) => entry.kind === "source",
-            ) as Malloy.SourceInfo[];
-            for (const source of localSources) {
-               if (!importedSourceNames.has(source.name)) {
-                  sourceInfos.push(source);
+            if (modelDef) {
+               sources = Model.getSources(modelPath, modelDef);
+               queries = Model.getQueries(modelPath, modelDef);
+
+               // Collect sourceInfos from imported models first
+               const imports = modelDef.imports || [];
+               const importedSourceNames = new Set<string>();
+               for (const importLocation of imports) {
+                  try {
+                     const modelString = await runtime.urlReader.readURL(
+                        new URL(importLocation.importURL),
+                     );
+                     const importedModelDef = (
+                        await runtime
+                           .loadModel(modelString as string, {
+                              importBaseURL,
+                           })
+                           .getModel()
+                     )._modelDef;
+                     const importedModelInfo =
+                        modelDefToModelInfo(importedModelDef);
+                     const importedSources = importedModelInfo.entries.filter(
+                        (entry) => entry.kind === "source",
+                     ) as Malloy.SourceInfo[];
+                     for (const source of importedSources) {
+                        if (!importedSourceNames.has(source.name)) {
+                           sourceInfos.push(source);
+                           importedSourceNames.add(source.name);
+                        }
+                     }
+                  } catch (importError) {
+                     logger.warn("Failed to load sourceInfo from import", {
+                        importURL: importLocation.importURL,
+                        error: importError,
+                     });
+                  }
+               }
+
+               // Add locally-defined sources (not already added from imports)
+               const localModelInfo = modelDefToModelInfo(modelDef);
+               const localSources = localModelInfo.entries.filter(
+                  (entry) => entry.kind === "source",
+               ) as Malloy.SourceInfo[];
+               for (const source of localSources) {
+                  if (!importedSourceNames.has(source.name)) {
+                     sourceInfos.push(source);
+                  }
+               }
+            }
+
+            // For notebooks without a modelDef (model-level compilation
+            // failed), collect sourceInfos from successfully compiled cells.
+            if (!modelDef && runnableNotebookCells) {
+               const seenNames = new Set<string>();
+               for (const cell of runnableNotebookCells) {
+                  if (cell.newSources) {
+                     for (const source of cell.newSources) {
+                        if (!seenNames.has(source.name)) {
+                           sourceInfos.push(source);
+                           seenNames.add(source.name);
+                        }
+                     }
+                  }
                }
             }
          }
