@@ -1,5 +1,5 @@
-import { describe, expect, it } from "bun:test";
 import type * as Malloy from "@malloydata/malloy-interfaces";
+import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import {
    buildMalloyParamClause,
@@ -70,7 +70,7 @@ function makeBooleanParam(
 describe("paramValueToMalloyLiteral", () => {
    it("should convert a string value to a quoted Malloy literal", () => {
       const param = makeStringParam("s");
-      expect(paramValueToMalloyLiteral("hello", param)).toBe('"hello"');
+      expect(paramValueToMalloyLiteral("hello2", param)).toBe('"hello2"');
    });
 
    it("should escape quotes and backslashes in string values", () => {
