@@ -42,6 +42,13 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { URL_READER } from "../utils";
+import {
+   buildMalloyParamClause,
+   buildStubParamClause,
+   getSourceParams,
+   injectParamClauseIntoText,
+   validateRequiredParams,
+} from "../utils/source_params";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -66,6 +73,12 @@ interface RunnableNotebookCell {
    runnable?: QueryMaterializer;
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
+   /** MM from *before* this cell — used to recompile with params */
+   priorModelMaterializer?: ModelMaterializer;
+   cellCompilationError?: Error;
+   /** True when stub values were injected during compilation — execution
+    *  must supply real sourceParameters. */
+   requiresSourceParameters?: boolean;
 }
 
 export class Model {
@@ -81,6 +94,8 @@ export class Model {
    private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
+   private runtime: Runtime | undefined;
+   private importBaseURL: URL | undefined;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -103,6 +118,8 @@ export class Model {
       sourceInfos: Malloy.SourceInfo[] | undefined,
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
+      runtime?: Runtime,
+      importBaseURL?: URL,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -115,6 +132,8 @@ export class Model {
       this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
+      this.runtime = runtime;
+      this.importBaseURL = importBaseURL;
       this.modelInfo = this.modelDef
          ? modelDefToModelInfo(this.modelDef)
          : undefined;
@@ -145,52 +164,91 @@ export class Model {
          let queries = undefined;
          const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
-            modelDef = (await modelMaterializer.getModel())._modelDef;
-            sources = Model.getSources(modelPath, modelDef);
-            queries = Model.getQueries(modelPath, modelDef);
-
-            // Collect sourceInfos from imported models first
-            // This follows the same pattern as notebook imports handling
-            const imports = modelDef.imports || [];
-            const importedSourceNames = new Set<string>();
-            for (const importLocation of imports) {
-               try {
-                  const modelString = await runtime.urlReader.readURL(
-                     new URL(importLocation.importURL),
+            try {
+               modelDef = (await modelMaterializer.getModel())._modelDef;
+            } catch (modelError) {
+               // For notebooks, some cells may have failed compilation
+               // (e.g. missing required source parameters). The
+               // materializer includes those broken cells so getModel()
+               // fails, but we still have per-cell results and can
+               // collect sourceInfos from successfully compiled cells.
+               if (runnableNotebookCells) {
+                  logger.warn(
+                     "Notebook model-level compilation failed; " +
+                        "using per-cell results",
+                     { error: modelError },
                   );
-                  const importedModelDef = (
-                     await runtime
-                        .loadModel(modelString as string, { importBaseURL })
-                        .getModel()
-                  )._modelDef;
-                  const importedModelInfo =
-                     modelDefToModelInfo(importedModelDef);
-                  const importedSources = importedModelInfo.entries.filter(
-                     (entry) => entry.kind === "source",
-                  ) as Malloy.SourceInfo[];
-                  for (const source of importedSources) {
-                     if (!importedSourceNames.has(source.name)) {
-                        sourceInfos.push(source);
-                        importedSourceNames.add(source.name);
-                     }
-                  }
-               } catch (importError) {
-                  // Log but don't fail if we can't load an import's sourceInfo
-                  logger.warn("Failed to load sourceInfo from import", {
-                     importURL: importLocation.importURL,
-                     error: importError,
-                  });
+               } else {
+                  throw modelError;
                }
             }
 
-            // Add locally-defined sources (not already added from imports)
-            const localModelInfo = modelDefToModelInfo(modelDef);
-            const localSources = localModelInfo.entries.filter(
-               (entry) => entry.kind === "source",
-            ) as Malloy.SourceInfo[];
-            for (const source of localSources) {
-               if (!importedSourceNames.has(source.name)) {
-                  sourceInfos.push(source);
+            if (modelDef) {
+               sources = Model.getSources(modelPath, modelDef);
+               queries = Model.getQueries(modelPath, modelDef);
+
+               // Collect sourceInfos from imported models first
+               const imports = modelDef.imports || [];
+               const importedSourceNames = new Set<string>();
+               for (const importLocation of imports) {
+                  try {
+                     const modelString = await runtime.urlReader.readURL(
+                        new URL(importLocation.importURL),
+                     );
+                     const importedModelDef = (
+                        await runtime
+                           .loadModel(modelString as string, {
+                              importBaseURL,
+                           })
+                           .getModel()
+                     )._modelDef;
+                     const importedModelInfo =
+                        modelDefToModelInfo(importedModelDef);
+                     const importedSources = importedModelInfo.entries.filter(
+                        (entry) => entry.kind === "source",
+                     ) as Malloy.SourceInfo[];
+                     for (const source of importedSources) {
+                        if (!importedSourceNames.has(source.name)) {
+                           sourceInfos.push(source);
+                           importedSourceNames.add(source.name);
+                        }
+                     }
+                  } catch (importError) {
+                     logger.warn("Failed to load sourceInfo from import", {
+                        importURL: importLocation.importURL,
+                        error: importError,
+                     });
+                  }
+               }
+
+               // Add locally-defined sources (not already added from imports)
+               const localModelInfo = modelDefToModelInfo(modelDef);
+               const localSources = localModelInfo.entries.filter(
+                  (entry) => entry.kind === "source",
+               ) as Malloy.SourceInfo[];
+               for (const source of localSources) {
+                  if (!importedSourceNames.has(source.name)) {
+                     sourceInfos.push(source);
+                  }
+               }
+            }
+
+            // For notebooks, always collect sourceInfos from compiled cells.
+            // The model-level modelDef.imports doesn't carry forward
+            // imports from earlier extendModel stages, so the import-based
+            // collection above may miss sources.  Cell newSources are the
+            // authoritative source of truth for notebooks.
+            if (runnableNotebookCells) {
+               const seenNames = new Set(sourceInfos.map((s) => s.name));
+               for (const cell of runnableNotebookCells) {
+                  if (cell.newSources) {
+                     for (const source of cell.newSources) {
+                        if (!seenNames.has(source.name)) {
+                           sourceInfos.push(source);
+                           seenNames.add(source.name);
+                        }
+                     }
+                  }
                }
             }
          }
@@ -207,6 +265,8 @@ export class Model {
             sourceInfos.length > 0 ? sourceInfos : undefined,
             runnableNotebookCells,
             undefined,
+            runtime,
+            importBaseURL,
          );
       } catch (error) {
          let computedError = error;
@@ -292,6 +352,7 @@ export class Model {
       sourceName?: string,
       queryName?: string,
       query?: string,
+      sourceParameters?: Record<string, unknown>,
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
@@ -316,13 +377,48 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
+      // Validate and build source parameter clause if params are provided
+      const params = sourceParameters ?? {};
+      const declaredParams = getSourceParams(this.sourceInfos, sourceName);
+      if (declaredParams.length > 0 || Object.keys(params).length > 0) {
+         validateRequiredParams(declaredParams, params);
+      }
+      const paramClause = buildMalloyParamClause(params, declaredParams);
+
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
          if (!sourceName && !queryName && query) {
-            runnable = this.modelMaterializer.loadQuery("\n" + query);
+            // For raw queries, inject source parameters into any
+            // `run: source ->` references found in the query text.
+            let queryText = query;
+            if (Object.keys(params).length > 0 && this.sourceInfos) {
+               const clauses = new Map<string, string>();
+               for (const source of this.sourceInfos) {
+                  if (!source.parameters || source.parameters.length === 0)
+                     continue;
+                  const clause = buildMalloyParamClause(
+                     params,
+                     source.parameters,
+                  );
+                  if (clause) clauses.set(source.name, clause);
+               }
+               if (clauses.size > 0) {
+                  const injected = injectParamClauseIntoText(
+                     queryText,
+                     clauses,
+                  );
+                  if (injected.modified) {
+                     queryText =
+                        "##! experimental.parameters\n" + injected.text;
+                  }
+               }
+            }
+            runnable = this.modelMaterializer.loadQuery("\n" + queryText);
          } else if (queryName && !query) {
+            const prefix = paramClause ? "##! experimental.parameters\n" : "";
+            const arrow = sourceName ? "->" : "";
             runnable = this.modelMaterializer.loadQuery(
-               `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
+               `${prefix}\nrun: ${sourceName ? sourceName + paramClause : ""}${arrow}${queryName}`,
             );
          } else {
             const endTime = performance.now();
@@ -491,7 +587,10 @@ export class Model {
       } as ApiRawNotebook;
    }
 
-   public async executeNotebookCell(cellIndex: number): Promise<{
+   public async executeNotebookCell(
+      cellIndex: number,
+      sourceParameters?: Record<string, unknown>,
+   ): Promise<{
       type: "code" | "markdown";
       text: string;
       queryName?: string;
@@ -519,6 +618,27 @@ export class Model {
             type: cell.type,
             text: cell.text,
          };
+      }
+
+      // Cell was compiled with stub values — real params must be provided.
+      if (cell.requiresSourceParameters) {
+         if (sourceParameters && Object.keys(sourceParameters).length > 0) {
+            return this.executeNotebookCellWithParams(cell, sourceParameters);
+         }
+         throw new BadRequestError(
+            `Cell ${cellIndex} uses a parameterized source. ` +
+               `Provide sourceParameters to execute it.`,
+         );
+      }
+
+      // Cell failed compilation for a non-parameter reason.
+      if (cell.cellCompilationError) {
+         if (sourceParameters && Object.keys(sourceParameters).length > 0) {
+            return this.executeNotebookCellWithParams(cell, sourceParameters);
+         }
+         throw new BadRequestError(
+            `Cell ${cellIndex} failed to compile: ${cell.cellCompilationError.message}`,
+         );
       }
 
       // For code cells, execute the runnable if available
@@ -564,6 +684,102 @@ export class Model {
          result: queryResult,
          newSources: cell.newSources?.map((source) => JSON.stringify(source)),
       };
+   }
+
+   /**
+    * Recompile and execute a notebook cell that failed initial compilation,
+    * injecting source parameter values into source invocations in the cell
+    * text.  Uses the stored ModelMaterializer to rebuild the query in context.
+    */
+   /**
+    * Recompile and execute a notebook cell that failed initial compilation,
+    * injecting source parameter values into source invocations in the cell
+    * text.  Uses the stored prior ModelMaterializer to rebuild the query
+    * from the correct model context (before this cell was added).
+    */
+   private async executeNotebookCellWithParams(
+      cell: RunnableNotebookCell,
+      sourceParameters: Record<string, unknown>,
+   ): Promise<{
+      type: "code" | "markdown";
+      text: string;
+      queryName?: string;
+      result?: string;
+      newSources?: string[];
+   }> {
+      if (!this.runtime || !this.importBaseURL) {
+         throw new BadRequestError(
+            "Cannot recompile notebook cell: missing runtime context",
+         );
+      }
+
+      // Build real parameter clauses for each parameterized source and
+      // inject them into the cell text.
+      const allSourceInfos = this.sourceInfos ?? [];
+      const realClauses = new Map<string, string>();
+      for (const source of allSourceInfos) {
+         if (!source.parameters || source.parameters.length === 0) continue;
+         const clause = buildMalloyParamClause(
+            sourceParameters,
+            source.parameters,
+         );
+         if (clause) realClauses.set(source.name, clause);
+      }
+
+      let { text: modifiedText } = injectParamClauseIntoText(
+         cell.text,
+         realClauses,
+      );
+
+      // The (param is value) invocation syntax requires the
+      // experimental.parameters flag in the compiling context.
+      if (modifiedText !== cell.text) {
+         modifiedText = "##! experimental.parameters\n" + modifiedText;
+      }
+
+      // Rebuild: extend the prior model (before this cell) with modified text
+      let recompiledMM: ModelMaterializer;
+      if (cell.priorModelMaterializer) {
+         recompiledMM = cell.priorModelMaterializer.extendModel(modifiedText, {
+            importBaseURL: this.importBaseURL,
+         });
+      } else {
+         recompiledMM = this.runtime.loadModel(modifiedText, {
+            importBaseURL: this.importBaseURL,
+         });
+      }
+
+      const runnable = recompiledMM.loadFinalQuery();
+
+      try {
+         const rowLimit =
+            (await runnable.getPreparedResult()).resultExplore.limit ||
+            ROW_LIMIT;
+         const result = await runnable.run({ rowLimit });
+         const query = (await runnable.getPreparedQuery())._query;
+         const queryName = (query as NamedQueryDef).as || query.name;
+         const queryResult =
+            result?._queryResult &&
+            this.modelInfo &&
+            JSON.stringify(API.util.wrapResult(result));
+
+         return {
+            type: cell.type,
+            text: cell.text,
+            queryName,
+            result: queryResult || undefined,
+            newSources: cell.newSources?.map((source) =>
+               JSON.stringify(source),
+            ),
+         };
+      } catch (error) {
+         if (error instanceof MalloyError) throw error;
+         const errorMessage =
+            error instanceof Error ? error.message : String(error);
+         throw new BadRequestError(
+            `Cell execution with parameters failed: ${errorMessage}`,
+         );
+      }
    }
 
    static async getModelRuntime(
@@ -754,128 +970,187 @@ export class Model {
          throw new Error("Could not parse model: " + modelPath);
       }
 
+      // Process cells sequentially so we can discover parameterized
+      // sources from earlier cells and inject stub values into later
+      // cells that reference them.  This validates the notebook's
+      // structure at load time without requiring real parameter values.
       let mm: ModelMaterializer | undefined = undefined;
       const oldImports: string[] = [];
       const oldSources: Record<string, Malloy.SourceInfo> = {};
-      // First generate the sequence of ModelMaterializers.
-      // This has to happen sync, since mm.getModel() is async and
-      // may execute out-of-order.
-      const mms = parse.statements.map((stmt) => {
-         if (stmt.type === MalloySQLStatementType.MALLOY) {
-            if (!mm) {
-               mm = runtime.loadModel(stmt.text, { importBaseURL });
-            } else {
-               mm = mm.extendModel(stmt.text, { importBaseURL });
-            }
+
+      // source name → stub param clause for sources with required params
+      const stubClauses = new Map<string, string>();
+      const runnableNotebookCells: RunnableNotebookCell[] = [];
+
+      for (let index = 0; index < parse.statements.length; index++) {
+         const stmt = parse.statements[index];
+
+         if (stmt.type === MalloySQLStatementType.MARKDOWN) {
+            runnableNotebookCells.push({
+               type: "markdown",
+               text: stmt.text,
+            });
+            continue;
          }
-         return mm;
-      });
-      const runnableNotebookCells: RunnableNotebookCell[] = (
-         await Promise.all(
-            parse.statements.map(async (stmt, index) => {
-               if (stmt.type === MalloySQLStatementType.MALLOY) {
-                  // Get the Materializer for the current cell/statement.
-                  const localMM = mms[index];
-                  if (!localMM) {
-                     // This can't happen because the to be in this branch there stmt must be
-                     // MalloySQLStatementType.MALLOY and we must have a model materializer.
-                     throw new Error("Model materializer is undefined");
-                  }
-                  // Pull available sources from the current model.
-                  // Add any of then that are new into newSources and then add them to oldSources.
-                  const currentModelDef = (await localMM.getModel())._modelDef;
-                  let newSources: Malloy.SourceInfo[] = [];
-                  const newImports = currentModelDef.imports?.slice(
-                     oldImports.length,
-                  );
-                  if (newImports) {
-                     await Promise.all(
-                        newImports.map(async (importLocation) => {
-                           const modelString = await runtime.urlReader.readURL(
-                              new URL(importLocation.importURL),
-                           );
-                           const importModel = (
-                              await runtime
-                                 .loadModel(modelString as string, {
-                                    importBaseURL,
-                                 })
-                                 .getModel()
-                           )._modelDef;
-                           const importModelInfo =
-                              modelDefToModelInfo(importModel);
-                           newSources = importModelInfo.entries
-                              .filter((entry) => entry.kind === "source")
-                              .filter(
-                                 (source) => !(source.name in oldSources),
-                              ) as Malloy.SourceInfo[];
-                           oldImports.push(importLocation.importURL.toString());
-                        }),
-                     );
-                  }
-                  const currentModelInfo = modelDefToModelInfo(currentModelDef);
-                  newSources = newSources.concat(
-                     currentModelInfo.entries
-                        .filter((entry) => entry.kind === "source")
-                        .filter(
-                           (source) => !(source.name in oldSources),
-                        ) as Malloy.SourceInfo[],
-                  );
 
-                  for (const source of newSources) {
-                     oldSources[source.name] = source;
-                  }
+         if (stmt.type !== MalloySQLStatementType.MALLOY) continue;
 
-                  const runnable = localMM.loadFinalQuery();
+         // Check if this cell references known parameterized sources
+         // and inject stub values for required parameters.
+         const injected = injectParamClauseIntoText(stmt.text, stubClauses);
+         const needsRealParams = injected.modified;
 
-                  // Extract QueryInfo from the runnable
-                  let queryInfo: Malloy.QueryInfo | undefined = undefined;
-                  try {
-                     const preparedQuery = await runnable.getPreparedQuery();
-                     const query = preparedQuery._query as NamedQueryDef;
-                     const queryName = query.as || query.name;
-                     const anonymousQuery =
-                        currentModelInfo.anonymous_queries[
-                           currentModelInfo.anonymous_queries.length - 1
-                        ];
+         // The (param is value) invocation syntax requires the
+         // experimental.parameters flag in the compiling context.
+         const compilationText = needsRealParams
+            ? "##! experimental.parameters\n" + injected.text
+            : injected.text;
 
-                     if (anonymousQuery) {
-                        queryInfo = {
-                           name: queryName,
-                           schema: anonymousQuery.schema,
-                           annotations: anonymousQuery.annotations,
-                           definition: anonymousQuery.definition,
-                           code: anonymousQuery.code,
-                           location: anonymousQuery.location,
-                        } as Malloy.QueryInfo;
+         const priorMM = mm;
+
+         // Build materializer with (possibly stub-injected) text
+         if (!mm) {
+            mm = runtime.loadModel(compilationText, { importBaseURL });
+         } else {
+            mm = mm.extendModel(compilationText, { importBaseURL });
+         }
+
+         try {
+            const cell = await Model.compileNotebookCell(
+               stmt.text,
+               mm,
+               runtime,
+               importBaseURL,
+               oldImports,
+               oldSources,
+            );
+
+            if (needsRealParams) {
+               cell.requiresSourceParameters = true;
+               cell.priorModelMaterializer = priorMM;
+            }
+
+            runnableNotebookCells.push(cell);
+
+            // Discover newly compiled parameterized sources so we can
+            // inject stubs in subsequent cells that reference them.
+            if (cell.newSources) {
+               for (const source of cell.newSources) {
+                  if (source.parameters && source.parameters.length > 0) {
+                     const clause = buildStubParamClause(source.parameters);
+                     if (clause) {
+                        stubClauses.set(source.name, clause);
                      }
-                  } catch (_error) {
-                     // If we can't extract query info (e.g., no query in cell), that's okay
-                     // This can happen for cells that only define sources
                   }
-
-                  return {
-                     type: "code",
-                     text: stmt.text,
-                     runnable: runnable,
-                     newSources,
-                     queryInfo,
-                  } as RunnableNotebookCell;
-               } else if (stmt.type === MalloySQLStatementType.MARKDOWN) {
-                  return {
-                     type: "markdown",
-                     text: stmt.text,
-                  } as RunnableNotebookCell;
-               } else {
-                  return undefined;
                }
-            }),
-         )
-      ).filter((cell) => cell !== undefined);
+            }
+         } catch (cellError) {
+            logger.warn(
+               `Notebook cell ${index} compilation failed, deferring to execution time`,
+               { error: cellError },
+            );
+            runnableNotebookCells.push({
+               type: "code",
+               text: stmt.text,
+               priorModelMaterializer: priorMM,
+               cellCompilationError:
+                  cellError instanceof Error
+                     ? cellError
+                     : new Error(String(cellError)),
+            });
+         }
+      }
 
       return {
          modelMaterializer: mm,
-         runnableNotebookCells: runnableNotebookCells,
+         runnableNotebookCells,
       };
+   }
+
+   /**
+    * Compiles a single notebook cell: resolves imports, extracts new sources,
+    * builds the runnable, and extracts query info.  Throws on compilation
+    * failure (caller decides how to handle).
+    */
+   private static async compileNotebookCell(
+      cellText: string,
+      localMM: ModelMaterializer,
+      runtime: Runtime,
+      importBaseURL: URL,
+      oldImports: string[],
+      oldSources: Record<string, Malloy.SourceInfo>,
+   ): Promise<RunnableNotebookCell> {
+      const currentModelDef = (await localMM.getModel())._modelDef;
+      let newSources: Malloy.SourceInfo[] = [];
+      const newImports = currentModelDef.imports?.slice(oldImports.length);
+      if (newImports) {
+         await Promise.all(
+            newImports.map(async (importLocation) => {
+               const modelString = await runtime.urlReader.readURL(
+                  new URL(importLocation.importURL),
+               );
+               const importModel = (
+                  await runtime
+                     .loadModel(modelString as string, { importBaseURL })
+                     .getModel()
+               )._modelDef;
+               const importModelInfo = modelDefToModelInfo(importModel);
+               newSources = importModelInfo.entries
+                  .filter((entry) => entry.kind === "source")
+                  .filter(
+                     (source) => !(source.name in oldSources),
+                  ) as Malloy.SourceInfo[];
+               oldImports.push(importLocation.importURL.toString());
+            }),
+         );
+      }
+      const currentModelInfo = modelDefToModelInfo(currentModelDef);
+      newSources = newSources.concat(
+         currentModelInfo.entries
+            .filter((entry) => entry.kind === "source")
+            .filter(
+               (source) => !(source.name in oldSources),
+            ) as Malloy.SourceInfo[],
+      );
+
+      for (const source of newSources) {
+         oldSources[source.name] = source;
+      }
+
+      const runnable = localMM.loadFinalQuery();
+
+      let queryInfo: Malloy.QueryInfo | undefined = undefined;
+      try {
+         const preparedQuery = await runnable.getPreparedQuery();
+         const query = preparedQuery._query as NamedQueryDef;
+         const queryName = query.as || query.name;
+         const anonymousQuery =
+            currentModelInfo.anonymous_queries[
+               currentModelInfo.anonymous_queries.length - 1
+            ];
+
+         if (anonymousQuery) {
+            queryInfo = {
+               name: queryName,
+               schema: anonymousQuery.schema,
+               annotations: anonymousQuery.annotations,
+               definition: anonymousQuery.definition,
+               code: anonymousQuery.code,
+               location: anonymousQuery.location,
+            } as Malloy.QueryInfo;
+         }
+      } catch (_error) {
+         // No query in this cell — that's fine for source-definition-only cells
+      }
+
+      return {
+         type: "code",
+         text: cellText,
+         runnable,
+         modelMaterializer: localMM,
+         newSources,
+         queryInfo,
+      } as RunnableNotebookCell;
    }
 
    public getModelType(): ModelType {

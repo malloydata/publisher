@@ -29,6 +29,7 @@ export class QueryController {
       queryName: string,
       query: string,
       compactJson: boolean = false,
+      sourceParameters?: Record<string, unknown>,
    ): Promise<ApiQuery> {
       const project = await this.projectStore.getProject(projectName, false);
       const p = await project.getPackage(packageName, false);
@@ -41,6 +42,7 @@ export class QueryController {
             sourceName,
             queryName,
             query,
+            sourceParameters,
          );
          const renderLogs = validateRenderTags(result);
          return {

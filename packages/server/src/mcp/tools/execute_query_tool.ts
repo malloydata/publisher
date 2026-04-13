@@ -24,6 +24,15 @@ const executeQueryShape = {
    query: z.string().optional().describe("Ad-hoc Malloy query code"),
    sourceName: z.string().optional().describe("Source name for a view"),
    queryName: z.string().optional().describe("Named query or view"),
+   sourceParameters: z
+      .record(z.unknown())
+      .optional()
+      .describe(
+         "Source parameter values as key-value pairs. " +
+            "Values can be strings, numbers, or booleans — they are converted " +
+            "to the correct Malloy literal based on the parameter's declared type. " +
+            "Required parameters that lack a default value must be provided.",
+      ),
 };
 
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
@@ -49,6 +58,7 @@ export function registerExecuteQueryTool(
             query,
             sourceName,
             queryName,
+            sourceParameters,
          } = params;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
@@ -120,6 +130,7 @@ export function registerExecuteQueryTool(
                   undefined,
                   undefined,
                   query,
+                  sourceParameters,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"
@@ -165,6 +176,7 @@ export function registerExecuteQueryTool(
                   sourceName,
                   queryName,
                   undefined,
+                  sourceParameters,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"

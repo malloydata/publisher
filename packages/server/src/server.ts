@@ -817,12 +817,21 @@ app.get(
          // Express stores wildcard matches in params['0']
          const notebookPath = (req.params as Record<string, string>)["0"];
 
+         const sourceParameters =
+            typeof req.query.sourceParameters === "string"
+               ? (JSON.parse(req.query.sourceParameters) as Record<
+                    string,
+                    unknown
+                 >)
+               : undefined;
+
          res.status(200).json(
             await modelController.executeNotebookCell(
                req.params.projectName,
                req.params.packageName,
                notebookPath,
                cellIndex,
+               sourceParameters,
             ),
          );
       } catch (error) {
@@ -870,6 +879,9 @@ app.post(
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
+         const sourceParameters = req.body.sourceParameters as
+            | Record<string, unknown>
+            | undefined;
          res.status(200).json(
             await queryController.getQuery(
                req.params.projectName,
@@ -879,6 +891,7 @@ app.post(
                req.body.queryName as string,
                req.body.query as string,
                req.body.compactJson === true,
+               sourceParameters,
             ),
          );
       } catch (error) {

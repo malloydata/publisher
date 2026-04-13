@@ -84,6 +84,7 @@ export class ModelController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
+      sourceParameters?: Record<string, unknown>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -101,6 +102,6 @@ export class ModelController {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
-      return model.executeNotebookCell(cellIndex);
+      return model.executeNotebookCell(cellIndex, sourceParameters);
    }
 }
