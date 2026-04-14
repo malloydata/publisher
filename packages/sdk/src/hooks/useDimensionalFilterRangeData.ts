@@ -28,28 +28,37 @@ export interface DimensionSpec {
    model: string;
    /** Label to display in the UI (derived from # label="..." annotation) */
    label?: string;
+   /**
+    * Server-side filter identifier used as the API param key.
+    * Defaults to dimensionName when not set. Needed when the #(source_filter)
+    * annotation specifies name=X where X differs from the dimension field name.
+    */
+   filterName?: string;
    /** Minimum similarity score for Retrieval filter type (default: 0.1) */
    minSimilarityScore?: number;
    /** Optional list of static values to use for the dropdown instead of querying */
    values?: string[];
+   /** Preferred initial match type (e.g. "After" for date greater_than filters) */
+   defaultMatchType?: import("./useDimensionFilters").MatchType;
 }
 
 /**
- * Generates a unique key from source and dimension name strings.
- * This prevents collisions when the same dimension name exists in different sources.
+ * Generates a unique key from source and an identifier string.
+ * Used to prevent collisions across sources and across multiple
+ * filters that target the same dimension.
  */
-export function makeDimensionKey(
-   source: string,
-   dimensionName: string,
-): string {
-   return `${source}:${dimensionName}`;
+export function makeDimensionKey(source: string, identifier: string): string {
+   return `${source}:${identifier}`;
 }
 
 /**
- * Generates a unique key for a dimension by combining source and dimension name.
+ * Generates a unique key for a DimensionSpec.
+ * Prefers filterName (unique per filter) over dimensionName so that
+ * two filters on the same dimension (e.g. date before/after) get
+ * distinct keys.
  */
 export function getDimensionKey(spec: DimensionSpec): string {
-   return makeDimensionKey(spec.source, spec.dimensionName);
+   return makeDimensionKey(spec.source, spec.filterName ?? spec.dimensionName);
 }
 
 /**
@@ -247,10 +256,12 @@ function buildDimensionalIndexQuery(
       return "";
    }
 
-   // Build list of dimensions to index
-   const dimensionsToIndex = specsToFetch
-      .map((spec) => `\`${spec.dimensionName}\``)
-      .join(", ");
+   // Build list of dimensions to index (deduplicate when multiple filters
+   // target the same dimension, e.g. date before & after)
+   const uniqueDimensions = [
+      ...new Set(specsToFetch.map((spec) => spec.dimensionName)),
+   ];
+   const dimensionsToIndex = uniqueDimensions.map((d) => `\`${d}\``).join(", ");
 
    // Filter activeFilters to only include those for this source
    const filtersForSource =

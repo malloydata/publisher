@@ -1,6 +1,7 @@
 import { components } from "../api";
 import { ModelNotFoundError } from "../errors";
 import { ProjectStore } from "../service/project_store";
+import type { SourceFilterParams } from "../service/source_filter";
 
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
@@ -84,6 +85,8 @@ export class ModelController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
+      sourceFilters?: SourceFilterParams,
+      bypassFilters?: boolean,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -101,6 +104,6 @@ export class ModelController {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
-      return model.executeNotebookCell(cellIndex);
+      return model.executeNotebookCell(cellIndex, sourceFilters, bypassFilters);
    }
 }

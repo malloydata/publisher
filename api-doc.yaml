@@ -759,7 +759,7 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
-          
+
   /projects/{projectName}/connections/{connectionName}/sqlTemporaryTable:
     post:
       tags:
@@ -1839,6 +1839,11 @@ components:
           description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
+        sources:
+          type: array
+          description: Sources defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Source"
 
     CompiledModel:
       type: object
@@ -1869,6 +1874,11 @@ components:
           description: Array of named queries defined in the model
           items:
             $ref: "#/components/schemas/Query"
+        sources:
+          type: array
+          description: Sources defined in this model
+          items:
+            $ref: "#/components/schemas/Source"
 
     View:
       type: object
@@ -1898,6 +1908,58 @@ components:
           description: Annotations attached to the query
           items:
             type: string
+
+    SourceFilter:
+      type: object
+      description: A source filter declared via #(source_filter) annotation
+      properties:
+        name:
+          type: string
+          description: Display name of the filter
+        dimension:
+          type: string
+          description: Dimension this filter targets
+        type:
+          type: string
+          description: Comparator type
+          enum:
+            - equal
+            - in
+            - like
+            - greater_than
+            - less_than
+        implicit:
+          type: boolean
+          description: Whether this filter is hidden from users
+        required:
+          type: boolean
+          description: Whether a value must be provided
+        dimensionType:
+          type: string
+          description: Malloy data type of the dimension (e.g. string, number, boolean, date, timestamp)
+
+    Source:
+      type: object
+      description: A Malloy source defined in a model
+      properties:
+        name:
+          type: string
+          description: Name of the source
+        annotations:
+          type: array
+          description: Annotations attached to the source
+          items:
+            type: string
+        views:
+          type: array
+          description: Views defined in this source
+          items:
+            $ref: "#/components/schemas/View"
+        filters:
+          type: array
+          description: Filters declared on this source via #(source_filter) annotations
+          items:
+            $ref: "#/components/schemas/SourceFilter"
 
     QueryRequest:
       type: object

@@ -2,7 +2,7 @@ import "@malloydata/malloy-explorer/styles.css";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { Box, Paper, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RawNotebook } from "../../client";
+import { RawNotebook, Source } from "../../client";
 import {
    getDimensionKey,
    useDimensionalFilterRangeData,
@@ -16,10 +16,6 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DimensionFilter, RetrievalFunction } from "../filter/DimensionFilter";
 import {
    extractDimensionSpecs,
-   extractSourceFromQuery,
-   generateFilterClause,
-   getJoinedSources,
-   injectWhereClause,
    parseAllSourceInfos,
    parseNotebookFilterAnnotation,
 } from "../filter/utils";
@@ -81,7 +77,7 @@ export default function Notebook({
    const [isExecuting, setIsExecuting] = useState(false);
    const [executionError, setExecutionError] = useState<Error | null>(null);
 
-   // Parse filter configuration from notebook annotations
+   // Parse filter configuration from notebook annotations (legacy ##(filters) approach)
    const filterConfig = useMemo(() => {
       if (!notebook) return null;
       return parseNotebookFilterAnnotation(notebook.annotations);
@@ -99,16 +95,106 @@ export default function Notebook({
    );
    const modelPath = sourceData?.modelPath ?? null;
 
+   // Extract server-side source filter definitions from notebook sources
+   // These come from #(source_filter) annotations parsed by the server
+   const serverSourceFilters = useMemo(() => {
+      const result = new Map<string, Source["filters"]>();
+      if (!notebook?.sources) return result;
+      for (const source of notebook.sources as Source[]) {
+         if (source.name && source.filters && source.filters.length > 0) {
+            // Exclude implicit filters from the UI
+            const visibleFilters = source.filters.filter((f) => !f.implicit);
+            if (visibleFilters.length > 0) {
+               result.set(source.name, visibleFilters);
+            }
+         }
+      }
+      return result;
+   }, [notebook]);
+
+   // Determine if we're using server-driven filters (#(source_filter)) or legacy (##(filters))
+   const useServerFilters = serverSourceFilters.size > 0;
+
    // Build dimension specs from filter config and source info map
    // Each spec includes source and model for proper query routing
    const dimensionSpecs = useMemo(() => {
+      if (useServerFilters && modelPath) {
+         // Server-driven: build specs from #(source_filter) metadata
+         const specs: import("../../hooks/useDimensionalFilterRangeData").DimensionSpec[] =
+            [];
+         for (const [sourceName, filters] of serverSourceFilters) {
+            for (const filter of filters ?? []) {
+               if (!filter.dimension || !filter.type) continue;
+
+               // Choose widget type based on the dimension's data type first,
+               // then fall back to the annotation's comparator type
+               type FT =
+                  import("../../hooks/useDimensionalFilterRangeData").FilterType;
+               let filterType: FT;
+               const dimType = filter.dimensionType;
+               if (dimType === "boolean") {
+                  filterType = "Boolean";
+               } else if (
+                  dimType === "date" ||
+                  dimType === "timestamp" ||
+                  dimType === "timestamptz"
+               ) {
+                  filterType = "DateMinMax";
+               } else if (dimType === "number") {
+                  filterType =
+                     filter.type === "equal" || filter.type === "in"
+                        ? "Star"
+                        : "MinMax";
+               } else {
+                  const filterTypeMap: Record<string, FT> = {
+                     equal: "Star",
+                     in: "Star",
+                     like: "Star",
+                     greater_than: "MinMax",
+                     less_than: "MinMax",
+                  };
+                  filterType = filterTypeMap[filter.type] ?? "Star";
+               }
+
+               // Pick default match type for date range filters
+               type MT = import("../../hooks/useDimensionFilters").MatchType;
+               let defaultMatchType: MT | undefined;
+               if (filterType === "DateMinMax") {
+                  if (filter.type === "greater_than")
+                     defaultMatchType = "After";
+                  else if (filter.type === "less_than")
+                     defaultMatchType = "Before";
+               }
+
+               const filterLabel =
+                  filter.name !== filter.dimension ? filter.name : undefined;
+               specs.push({
+                  source: sourceName,
+                  model: modelPath,
+                  dimensionName: filter.dimension!,
+                  filterType,
+                  label: filterLabel,
+                  filterName: filter.name ?? filter.dimension!,
+                  defaultMatchType,
+               });
+            }
+         }
+         return specs;
+      }
+      // Legacy: use ##(filters) + #(filter) annotation approach
       if (!filterConfig || sourceInfoMap.size === 0 || !modelPath) return [];
       return extractDimensionSpecs(
          sourceInfoMap,
          filterConfig.filters,
          modelPath,
       );
-   }, [filterConfig, sourceInfoMap, modelPath]);
+   }, [
+      useServerFilters,
+      serverSourceFilters,
+      filterConfig,
+      sourceInfoMap,
+      modelPath,
+   ]);
 
    // Initialize dimension filters hook
    const { filterStates, updateFilter, getActiveFilters } = useDimensionFilters(
@@ -124,9 +210,8 @@ export default function Notebook({
       [filterStates, getActiveFilters],
    );
 
-   // Create a map of dimension key -> source name for quick lookup
-   // Using composite keys (source:dimensionName) to avoid collisions
-   const dimensionToSourceMap = useMemo(() => {
+   // Create a map of dimension key -> source name for quick lookup (used by filter UI)
+   const _dimensionToSourceMap = useMemo(() => {
       const map = new Map<string, string>();
       for (const spec of dimensionSpecs) {
          const key = getDimensionKey(spec);
@@ -134,15 +219,6 @@ export default function Notebook({
       }
       return map;
    }, [dimensionSpecs]);
-
-   // Create a map of source name -> set of joined source names
-   const sourceJoinsMap = useMemo(() => {
-      const map = new Map<string, Set<string>>();
-      for (const [sourceName, sourceInfo] of sourceInfoMap) {
-         map.set(sourceName, getJoinedSources(sourceInfo));
-      }
-      return map;
-   }, [sourceInfoMap]);
 
    // Fetch filter range data when we have dimension specs
    // The hook now handles multiple source/model combos internally
@@ -155,8 +231,42 @@ export default function Notebook({
       activeFilters,
    });
 
+   /**
+    * Convert active FilterSelections into a flat { filterName: value } map
+    * suitable for the server's sourceFilters / filter_params parameter.
+    * Uses filterName from the selection (propagated from the spec) as the
+    * API param key, falling back to dimensionName.
+    */
+   const buildFilterParams = useCallback(
+      (
+         filtersToApply: FilterSelection[],
+      ): { [key: string]: string | string[] } | undefined => {
+         if (filtersToApply.length === 0) return undefined;
+
+         const toParamString = (v: unknown): string => {
+            if (v instanceof Date) {
+               return v.toISOString().slice(0, 10);
+            }
+            return String(v);
+         };
+
+         const params: { [key: string]: string | string[] } = {};
+         for (const f of filtersToApply) {
+            const paramName = f.filterName ?? f.dimensionName;
+            const val = f.value;
+            if (Array.isArray(val)) {
+               params[paramName] = val.map(toParamString);
+            } else if (val !== undefined && val !== null) {
+               params[paramName] = toParamString(val);
+            }
+         }
+         return Object.keys(params).length > 0 ? params : undefined;
+      },
+      [],
+   );
+
    // Unified cell execution function
-   // Executes all notebook cells, optionally applying filters to query cells
+   // Executes all notebook cells, passing server-side filter params when available
    // Runs up to 4 requests in parallel for better performance
    const executeCells = useCallback(
       async (filtersToApply: FilterSelection[] = []) => {
@@ -176,6 +286,10 @@ export default function Notebook({
          setIsExecuting(true);
          setExecutionError(null);
 
+         const filterParams = useServerFilters
+            ? buildFilterParams(filtersToApply)
+            : undefined;
+
          try {
             // Build execution tasks for code cells
             const executionTasks: Array<() => Promise<void>> = [];
@@ -186,95 +300,30 @@ export default function Notebook({
                // Markdown cells don't need execution
                if (rawCell.type === "markdown") continue;
 
-               // Execute code cells
-               const cellText = rawCell.text || "";
-               const hasQuery =
-                  cellText.includes("run:") ||
-                  cellText.includes("->") ||
-                  /^\s*(run|query)\s*:/m.test(cellText);
-
                // Capture cell index for closure
                const cellIndex = i;
 
                const executeCell = async () => {
                   try {
-                     let result: string | undefined;
-                     let newSources: string[] | undefined;
+                     // Use notebook cell execution API with optional filter_params
+                     const response =
+                        await apiClients.notebooks.executeNotebookCell(
+                           projectName,
+                           packageName,
+                           notebookPath,
+                           cellIndex,
+                           versionId,
+                           filterParams,
+                        );
 
-                     if (hasQuery && modelPath && filtersToApply.length > 0) {
-                        // Query cell - use models API with optional filters
-                        let queryToExecute = cellText;
-
-                        // Apply filters if any match this query's source
-                        if (filtersToApply.length > 0) {
-                           const querySourceName =
-                              extractSourceFromQuery(cellText);
-
-                           // Get the set of joined sources for this query's source
-                           const joinedSources =
-                              (querySourceName &&
-                                 sourceJoinsMap.get(querySourceName)) ||
-                              new Set<string>();
-
-                           // Filter to only include those matching this query's source or joined sources
-                           // FilterSelection now includes source, so we can check directly
-                           const filtersForSource = querySourceName
-                              ? filtersToApply.filter((filter) => {
-                                   return (
-                                      filter.source === querySourceName ||
-                                      joinedSources.has(filter.source)
-                                   );
-                                })
-                              : [];
-
-                           if (filtersForSource.length > 0) {
-                              const filterClause = generateFilterClause(
-                                 filtersForSource,
-                                 dimensionToSourceMap,
-                                 querySourceName,
-                              );
-                              if (filterClause) {
-                                 queryToExecute = injectWhereClause(
-                                    cellText,
-                                    filterClause,
-                                 );
-                              }
-                           }
-                        }
-
-                        // Execute using models API
-                        const response =
-                           await apiClients.models.executeQueryModel(
-                              projectName,
-                              packageName,
-                              modelPath,
-                              {
-                                 query: queryToExecute,
-                                 versionId,
-                              },
-                           );
-                        result = response.data.result;
-                     } else {
-                        // Non-query code cell (or no filters applied) - use notebook cell execution API
-                        const response =
-                           await apiClients.notebooks.executeNotebookCell(
-                              projectName,
-                              packageName,
-                              notebookPath,
-                              cellIndex,
-                              versionId,
-                           );
-
-                        const executedCell = response.data;
-                        result = executedCell.result;
-                        newSources =
-                           rawCell.newSources || executedCell.newSources;
-                     }
+                     const executedCell = response.data;
+                     const result = executedCell.result;
+                     const newSources =
+                        rawCell.newSources || executedCell.newSources;
 
                      // Update state incrementally
                      setEnhancedCells((prev) => {
                         const next = [...prev];
-                        // Ensure we have a cell to update (in case state was reset externally, though unlikely)
                         if (!next[cellIndex]) {
                            next[cellIndex] = { ...rawCell };
                         }
@@ -290,7 +339,6 @@ export default function Notebook({
                         `Error executing cell ${cellIndex}:`,
                         cellError,
                      );
-                     // Don't update result on error, leave as is (undefined)
                   }
                };
 
@@ -323,14 +371,12 @@ export default function Notebook({
       [
          isSuccess,
          notebook,
-         modelPath,
-         dimensionToSourceMap,
-         sourceJoinsMap,
+         useServerFilters,
+         buildFilterParams,
          projectName,
          packageName,
          notebookPath,
          versionId,
-         apiClients.models,
          apiClients.notebooks,
       ],
    );

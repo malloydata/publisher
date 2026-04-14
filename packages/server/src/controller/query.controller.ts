@@ -3,6 +3,7 @@ import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
 import { ProjectStore } from "../service/project_store";
+import type { SourceFilterParams } from "../service/source_filter";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -29,6 +30,8 @@ export class QueryController {
       queryName: string,
       query: string,
       compactJson: boolean = false,
+      sourceFilters?: SourceFilterParams,
+      bypassFilters?: boolean,
    ): Promise<ApiQuery> {
       const project = await this.projectStore.getProject(projectName, false);
       const p = await project.getPackage(packageName, false);
@@ -41,6 +44,8 @@ export class QueryController {
             sourceName,
             queryName,
             query,
+            sourceFilters,
+            bypassFilters,
          );
          const renderLogs = validateRenderTags(result);
          return {

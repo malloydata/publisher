@@ -115,9 +115,9 @@ export function DimensionFilter({
    onChange,
    retrievalFn,
 }: DimensionFilterProps) {
-   // Default to "Between" for date filters, otherwise use first available match type
    const getDefaultMatchType = () => {
       if (selection?.matchType) return selection.matchType;
+      if (spec.defaultMatchType) return spec.defaultMatchType;
       if (spec.filterType === "DateMinMax") return "Between";
       return getAvailableMatchTypes(spec.filterType)[0] || "Equals";
    };
@@ -203,11 +203,11 @@ export function DimensionFilter({
          // Clear internal state when selection is cleared externally
          setValue1("");
          setValue2("");
-         // Reset to default match type (Between for dates, first available for others)
          setMatchType(
-            spec.filterType === "DateMinMax"
-               ? "Between"
-               : getAvailableMatchTypes(spec.filterType)[0] || "Equals",
+            spec.defaultMatchType ??
+               (spec.filterType === "DateMinMax"
+                  ? "Between"
+                  : getAvailableMatchTypes(spec.filterType)[0] || "Equals"),
          );
       } else if (selection) {
          // Update internal state when selection changes externally
@@ -216,7 +216,7 @@ export function DimensionFilter({
          setValue1(selection.value ?? "");
          setValue2(selection.value2 ?? "");
       }
-   }, [selection, spec.filterType]);
+   }, [selection, spec.filterType, spec.defaultMatchType]);
 
    const availableMatchTypes = getAvailableMatchTypes(spec.filterType);
    const isDate = isDateFilter(spec.filterType);
@@ -266,6 +266,7 @@ export function DimensionFilter({
          onChange({
             dimensionName: spec.dimensionName,
             source: spec.source,
+            filterName: spec.filterName,
             matchType: newMatchType,
             value: value1,
             ...(requiresTwoValues(newMatchType) && value2 && { value2 }),
@@ -296,6 +297,7 @@ export function DimensionFilter({
          onChange({
             dimensionName: spec.dimensionName,
             source: spec.source,
+            filterName: spec.filterName,
             matchType,
             value: newValue1,
             ...(needsTwoValues && newValue2 && { value2: newValue2 }),

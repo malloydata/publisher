@@ -817,12 +817,29 @@ app.get(
          // Express stores wildcard matches in params['0']
          const notebookPath = (req.params as Record<string, string>)["0"];
 
+         // Parse optional filter_params (JSON query string) and bypass_filters
+         let sourceFilters: Record<string, string | string[]> | undefined;
+         if (typeof req.query.filter_params === "string") {
+            try {
+               sourceFilters = JSON.parse(req.query.filter_params);
+            } catch {
+               res.status(400).json({
+                  error: "Invalid filter_params: must be valid JSON",
+               });
+               return;
+            }
+         }
+         const bypassFilters =
+            req.query.bypass_filters === "true" ? true : undefined;
+
          res.status(200).json(
             await modelController.executeNotebookCell(
                req.params.projectName,
                req.params.packageName,
                notebookPath,
                cellIndex,
+               sourceFilters,
+               bypassFilters,
             ),
          );
       } catch (error) {
@@ -879,6 +896,10 @@ app.post(
                req.body.queryName as string,
                req.body.query as string,
                req.body.compactJson === true,
+               req.body.sourceFilters as
+                  | Record<string, string | string[]>
+                  | undefined,
+               req.body.bypassFilters === true ? true : undefined,
             ),
          );
       } catch (error) {
