@@ -26,7 +26,7 @@ The primary way clients interact with the server is through tool calls. These ar
     * `malloy_packageGet`: Lists all the models contained within a specific package.
     * `malloy_modelGetText`: Gets the raw text content of a specific model file.
 * **Query Execution Tool**: Used by the AI to get data.
-    * `malloy_executeQuery`: Executes a Malloy query and returns the results in JSON format.
+    * `malloy_executeQuery`: Executes a Malloy query and returns the results in JSON format. Supports `sourceFilters` for applying [model-declared filters](source-filters.md) at query time.
 
 #### Prompts & Resources
 
