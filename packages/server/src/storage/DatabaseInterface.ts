@@ -136,8 +136,6 @@ export type TaskExecutionStatus =
 export interface TaskConfig {
    package: string;
    modelPath: string;
-   select?: string[];
-   includeDependencies?: boolean;
 }
 
 export interface Task {

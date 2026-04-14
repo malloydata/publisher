@@ -1,3 +1,4 @@
+import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
    InvalidStateTransitionError,
@@ -338,12 +339,17 @@ export class TaskService {
    // ==================== BUILD LOGIC ====================
 
    /**
-    * Core build loop: compiles the Malloy model, resolves which persist
-    * sources need materialization, and runs CREATE TABLE AS for each.
+    * Core build loop following the Malloy builder contract (5 steps):
     *
-    * Sources are deduplicated via content-addressed build IDs derived from
-    * the connection digest and generated SQL. A source is skipped when its
-    * build ID already exists in the manifest — unless `forceRefresh` is set.
+    *   1. LOAD  — Load existing manifest into an in-memory Manifest object.
+    *   2. COMPILE — Compile the model without the manifest (plain IR).
+    *   3. PLAN  — Get the dependency-ordered build plan.
+    *   4. BUILD — Walk graphs → levels → nodes in dependency order.
+    *              For each source compute a stable BuildID from the
+    *              no-substitution SQL, then execute the manifest-substituted
+    *              build SQL. Update the in-memory manifest immediately so
+    *              downstream sources reference pre-built tables.
+    *   5. WRITE — Persist only active manifest entries (GC).
     */
    private async executeBuild(
       projectName: string,
@@ -370,24 +376,33 @@ export class TaskService {
          );
       }
 
-      // Pass the existing manifest so the runtime can resolve references to
-      // previously materialized tables during compilation.
+      // ── STEP 1: LOAD — Load existing manifest ──────────────────────
+      // The in-memory Manifest maps BuildIDs to table names from prior
+      // builds. Its `buildManifest` is a stable reference — updates made
+      // during the build loop are immediately visible to subsequent
+      // `getSQL({buildManifest, ...})` calls.
+      const manifest = new Manifest();
       const existingManifest = await this.manifestService.getManifest(
          projectId,
          config.package,
       );
+      manifest.loadText(JSON.stringify(existingManifest));
 
+      // ── STEP 2: COMPILE — Compile the model (no manifest) ──────────
+      // The manifest is NOT passed to the compiler. Manifest substitution
+      // happens later in step 4 via getSQL({buildManifest, ...}).
       const { runtime, modelURL, importBaseURL } = await (
          await import("./model")
       ).Model.getModelRuntime(
          pkg.getPackagePath(),
          config.modelPath,
          pkg.getConnections(),
-         { buildManifest: existingManifest.entries },
       );
 
       const modelMaterializer = runtime.loadModel(modelURL, { importBaseURL });
       const malloyModel = await modelMaterializer.getModel();
+
+      // ── STEP 3: PLAN — Get the dependency-ordered build plan ───────
       const buildPlan = malloyModel.getBuildPlan();
 
       if (buildPlan.tagParseLog.length > 0) {
@@ -406,147 +421,186 @@ export class TaskService {
          graphCount: buildPlan.graphs.length,
       });
 
-      const sourcesToBuild = this.selectSources(buildPlan, config);
-
-      if (sourcesToBuild.length === 0) {
+      if (buildPlan.graphs.length === 0) {
          logger.info("No persist sources to build");
          return { sourcesBuilt: 0, sourcesSkipped: 0 };
       }
 
+      // Pre-compute connection digests. The digest captures connection-
+      // specific settings so two different configs produce different
+      // BuildIDs for the same Malloy source.
+      const connections = pkg.getConnections();
+      const connectionDigests: Record<string, string> = {};
+      for (const graph of buildPlan.graphs) {
+         const conn = connections.get(graph.connectionName);
+         if (conn) {
+            connectionDigests[graph.connectionName] =
+               await conn.getDigest();
+         }
+      }
+
+      // ── STEP 4: BUILD — Walk graphs in dependency order ────────────
+      // Each graph groups sources for one connection. Within a graph,
+      // nodes are organized into levels: all nodes within a level are
+      // independent (parallel-safe), levels must be processed in order.
       let sourcesBuilt = 0;
       let sourcesSkipped = 0;
       const sourceResults: Record<string, unknown>[] = [];
 
-      for (const sourceId of sourcesToBuild) {
-         if (signal.aborted) {
-            throw new Error("Build cancelled");
-         }
-
-         const persistSource = buildPlan.sources[sourceId];
-         if (!persistSource) {
-            logger.warn(`Source ${sourceId} not found in build plan, skipping`);
-            continue;
-         }
-
-         const connectionName = persistSource.connectionName;
-         const connections = pkg.getConnections();
-         const connection = connections.get(connectionName);
+      for (const graph of buildPlan.graphs) {
+         const connection = connections.get(graph.connectionName);
          if (!connection) {
             throw new BadRequestError(
-               `Connection '${connectionName}' not found for source '${persistSource.name}'`,
+               `Connection '${graph.connectionName}' not found`,
             );
          }
 
-         // Build ID is a content hash of the connection config digest and the
-         // generated SQL, so any change to the model or connection invalidates
-         // the cache automatically.
-         const sql = persistSource.getSQL();
-         const digest = await connection.getDigest();
-         const buildId = persistSource.makeBuildId(digest, sql);
+         for (const level of graph.nodes) {
+            for (const node of level) {
+               if (signal.aborted) {
+                  throw new Error("Build cancelled");
+               }
 
-         if (existingManifest.entries[buildId] && !forceRefresh) {
-            logger.info(`Source ${persistSource.name} up to date, skipping`, {
-               buildId,
-            });
-            sourcesSkipped++;
-            sourceResults.push({
-               name: persistSource.name,
-               status: "skipped",
-               buildId,
-            });
-            continue;
+               const persistSource = buildPlan.sources[node.sourceID];
+               if (!persistSource) {
+                  logger.warn(
+                     `Source ${node.sourceID} not found in build plan, skipping`,
+                  );
+                  continue;
+               }
+
+               // BuildID SQL — fully inlined, no manifest substitution.
+               // This produces a stable hash regardless of build order.
+               const buildIdSQL = persistSource.getSQL();
+               const digest =
+                  connectionDigests[persistSource.connectionName];
+               const buildId = persistSource.makeBuildId(
+                  digest,
+                  buildIdSQL,
+               );
+
+               // Already built — mark active so it survives GC.
+               if (
+                  manifest.buildManifest.entries[buildId] &&
+                  !forceRefresh
+               ) {
+                  manifest.touch(buildId);
+                  logger.info(
+                     `Source ${persistSource.name} up to date, skipping`,
+                     { buildId },
+                  );
+                  sourcesSkipped++;
+                  sourceResults.push({
+                     name: persistSource.name,
+                     status: "skipped",
+                     buildId,
+                  });
+                  continue;
+               }
+
+               // Build SQL — with manifest substitution so dependencies
+               // resolve to their pre-built table names instead of the
+               // full inline SQL.
+               const buildSQL = persistSource.getSQL({
+                  buildManifest: manifest.buildManifest,
+                  connectionDigests,
+               });
+
+               // Table name from `#@ name` annotation, falling back to
+               // source name.
+               const connectionName = persistSource.connectionName;
+               const tableName =
+                  persistSource
+                     .tagParse({ prefix: /^#@ / })
+                     .tag.text("name") || persistSource.name;
+               const lastDot = tableName.lastIndexOf(".");
+               const stagingTableName =
+                  lastDot >= 0
+                     ? `${tableName.substring(0, lastDot + 1)}${tableName.substring(lastDot + 1)}__staging`
+                     : `${tableName}__staging`;
+               const dialect = persistSource.dialect;
+               const quotePath = (p: string) =>
+                  p
+                     .split(".")
+                     .map((seg) => dialect.quoteTablePath(seg))
+                     .join(".");
+
+               logger.info(`Building source ${persistSource.name}`, {
+                  tableName,
+                  connectionName,
+               });
+
+               const startTime = performance.now();
+
+               // Build into a staging table so the live table stays
+               // queryable throughout the (potentially slow) CREATE.
+               await connection.runSQL(
+                  `DROP TABLE IF EXISTS ${quotePath(stagingTableName)}`,
+               );
+               await connection.runSQL(
+                  `CREATE TABLE ${quotePath(stagingTableName)} AS (${buildSQL})`,
+               );
+
+               // Swap: drop old, rename staging → final.
+               await connection.runSQL(
+                  `DROP TABLE IF EXISTS ${quotePath(tableName)}`,
+               );
+               const bareTableName = tableName.includes(".")
+                  ? tableName.substring(tableName.lastIndexOf(".") + 1)
+                  : tableName;
+               await connection.runSQL(
+                  `ALTER TABLE ${quotePath(stagingTableName)} RENAME TO ${dialect.quoteTablePath(bareTableName)}`,
+               );
+
+               const duration = performance.now() - startTime;
+
+               // Update the in-memory manifest IMMEDIATELY so subsequent
+               // sources in this build see the table name via
+               // getSQL({buildManifest, ...}) instead of inline SQL.
+               manifest.update(buildId, { tableName });
+
+               // Also persist to the database.
+               await this.manifestService.writeEntry(
+                  projectId,
+                  config.package,
+                  buildId,
+                  {
+                     tableName,
+                     sourceName: persistSource.name,
+                     connectionName,
+                  },
+               );
+
+               sourcesBuilt++;
+               sourceResults.push({
+                  name: persistSource.name,
+                  status: "built",
+                  buildId,
+                  tableName,
+                  durationMs: Math.round(duration),
+               });
+
+               logger.info(`Built source ${persistSource.name}`, {
+                  tableName,
+                  durationMs: Math.round(duration),
+               });
+            }
          }
+      }
 
-         // Table name can be overridden via `#@ name` tag annotation;
-         // falls back to the source name. Must use #@ prefix to match
-         // the persist annotation format.
-         const tableName =
-            persistSource.tagParse({ prefix: /^#@ / }).tag.text("name") ||
-            persistSource.name;
-         const lastDot = tableName.lastIndexOf(".");
-         const stagingTableName =
-            lastDot >= 0
-               ? `${tableName.substring(0, lastDot + 1)}${tableName.substring(lastDot + 1)}__staging`
-               : `${tableName}__staging`;
-         // Quote each segment of a dotted path individually so that
-         // e.g. `dataset.table` becomes `dataset`.`table` rather than
-         // `dataset.table` (which dialects like BigQuery treat as a
-         // single identifier).
-         const dialect = persistSource.dialect;
-         const quotePath = (path: string) =>
-            path
-               .split(".")
-               .map((seg) => dialect.quoteTablePath(seg))
-               .join(".");
-
-         logger.info(`Building source ${persistSource.name}`, {
-            tableName,
-            connectionName,
-         });
-
-         const startTime = performance.now();
-
-         // Build into a staging table so the live table stays queryable
-         // throughout the (potentially slow) CREATE TABLE AS.
-         await connection.runSQL(
-            `DROP TABLE IF EXISTS ${quotePath(stagingTableName)}`,
-         );
-         await connection.runSQL(
-            `CREATE TABLE ${quotePath(stagingTableName)} AS (${sql})`,
-         );
-
-         // Swap: drop the old table and rename staging → final.
-         // The gap here is only the metadata-only RENAME, not the full
-         // query execution.
-         await connection.runSQL(
-            `DROP TABLE IF EXISTS ${quotePath(tableName)}`,
-         );
-         // RENAME TO requires an unqualified name (just the table part,
-         // no dataset/schema prefix) — the table stays in the same dataset.
-         const bareTableName = tableName.includes(".")
-            ? tableName.substring(tableName.lastIndexOf(".") + 1)
-            : tableName;
-         await connection.runSQL(
-            `ALTER TABLE ${quotePath(stagingTableName)} RENAME TO ${dialect.quoteTablePath(bareTableName)}`,
-         );
-
-         const duration = performance.now() - startTime;
-
-         // Clean up stale manifest entry for this source (different buildId)
-         // so rows don't accumulate across rebuilds.
-         const oldEntry = await this.manifestService.getEntryBySourceName(
-            projectId,
-            config.package,
-            persistSource.name,
-         );
-         if (oldEntry && oldEntry.buildId !== buildId) {
-            await this.manifestService.deleteEntry(oldEntry.id);
+      // ── STEP 5: WRITE — GC stale manifest entries ─────────────────
+      // activeEntries contains only entries that were touch()ed or
+      // update()d this run. Delete any DB entries not in the active set
+      // so removed/renamed sources are pruned automatically.
+      const activeManifest = manifest.activeEntries;
+      const allDbEntries = await this.manifestService.listEntries(
+         projectId,
+         config.package,
+      );
+      for (const dbEntry of allDbEntries) {
+         if (!activeManifest.entries[dbEntry.buildId]) {
+            await this.manifestService.deleteEntry(dbEntry.id);
          }
-
-         await this.manifestService.writeEntry(
-            projectId,
-            config.package,
-            buildId,
-            {
-               tableName,
-               sourceName: persistSource.name,
-               connectionName,
-            },
-         );
-
-         sourcesBuilt++;
-         sourceResults.push({
-            name: persistSource.name,
-            status: "built",
-            buildId,
-            tableName,
-            durationMs: Math.round(duration),
-         });
-
-         logger.info(`Built source ${persistSource.name}`, {
-            tableName,
-            durationMs: Math.round(duration),
-         });
       }
 
       logger.info("Materialization build complete", {
@@ -555,27 +609,6 @@ export class TaskService {
       });
 
       return { sourcesBuilt, sourcesSkipped, sources: sourceResults };
-   }
-
-   /**
-    * Filters the build plan's persist sources down to those listed in
-    * `config.select` (matched by source name). When `select` is empty or
-    * omitted, all sources in the plan are included.
-    */
-   private selectSources(
-      buildPlan: { sources: Record<string, unknown>; graphs: unknown[] },
-      config: TaskConfig,
-   ): string[] {
-      const allSourceIds = Object.keys(buildPlan.sources);
-
-      if (!config.select || config.select.length === 0) {
-         return allSourceIds;
-      }
-
-      return allSourceIds.filter((sourceId) => {
-         const source = buildPlan.sources[sourceId] as { name: string };
-         return config.select!.includes(source.name);
-      });
    }
 
    // ==================== HELPERS ====================

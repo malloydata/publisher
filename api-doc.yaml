@@ -2863,14 +2863,6 @@ components:
         modelPath:
           type: string
           description: Path to the Malloy model file within the package
-        select:
-          type: array
-          items:
-            type: string
-          description: Optional list of source names to materialize. If empty, all persist sources are built.
-        includeDependencies:
-          type: boolean
-          description: Whether to include dependent sources in the build
 
     Task:
       type: object
