@@ -434,8 +434,7 @@ export class TaskService {
       for (const graph of buildPlan.graphs) {
          const conn = connections.get(graph.connectionName);
          if (conn) {
-            connectionDigests[graph.connectionName] =
-               await conn.getDigest();
+            connectionDigests[graph.connectionName] = await conn.getDigest();
          }
       }
 
@@ -472,18 +471,11 @@ export class TaskService {
                // BuildID SQL — fully inlined, no manifest substitution.
                // This produces a stable hash regardless of build order.
                const buildIdSQL = persistSource.getSQL();
-               const digest =
-                  connectionDigests[persistSource.connectionName];
-               const buildId = persistSource.makeBuildId(
-                  digest,
-                  buildIdSQL,
-               );
+               const digest = connectionDigests[persistSource.connectionName];
+               const buildId = persistSource.makeBuildId(digest, buildIdSQL);
 
                // Already built — mark active so it survives GC.
-               if (
-                  manifest.buildManifest.entries[buildId] &&
-                  !forceRefresh
-               ) {
+               if (manifest.buildManifest.entries[buildId] && !forceRefresh) {
                   manifest.touch(buildId);
                   logger.info(
                      `Source ${persistSource.name} up to date, skipping`,
@@ -510,9 +502,8 @@ export class TaskService {
                // source name.
                const connectionName = persistSource.connectionName;
                const tableName =
-                  persistSource
-                     .tagParse({ prefix: /^#@ / })
-                     .tag.text("name") || persistSource.name;
+                  persistSource.tagParse({ prefix: /^#@ / }).tag.text("name") ||
+                  persistSource.name;
                const lastDot = tableName.lastIndexOf(".");
                const stagingTableName =
                   lastDot >= 0
