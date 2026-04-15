@@ -109,7 +109,16 @@ export function registerExecuteQueryTool(
          }
 
          // --- Execute Query ---
-         const { model } = modelResult;
+         const { model, buildManifest } = modelResult;
+         const manifestOption =
+            Object.keys(buildManifest).length > 0
+               ? {
+                    buildManifest: {
+                       entries: buildManifest,
+                       strict: false as const,
+                    },
+                 }
+               : undefined;
          logger.info(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
          );
@@ -120,6 +129,7 @@ export function registerExecuteQueryTool(
                   undefined,
                   undefined,
                   query,
+                  manifestOption,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"
@@ -165,6 +175,7 @@ export function registerExecuteQueryTool(
                   sourceName,
                   queryName,
                   undefined,
+                  manifestOption,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"

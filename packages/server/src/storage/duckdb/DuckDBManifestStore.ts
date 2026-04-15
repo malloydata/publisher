@@ -43,32 +43,18 @@ export class DuckDBManifestStore implements ManifestStore {
       projectId: string,
       packageName: string,
       buildId: string,
-      entry: {
-         tableName: string;
-         sourceName?: string;
-         connectionName?: string;
-      },
+      tableName: string,
+      sourceName: string,
+      connectionName: string,
    ): Promise<void> {
       await this.repository.upsertManifestEntry({
          projectId,
          packageName,
          buildId,
-         tableName: entry.tableName,
-         sourceName: entry.sourceName || null,
-         connectionName: entry.connectionName || null,
-      });
-   }
-
-   async getEntryBySourceName(
-      projectId: string,
-      packageName: string,
-      sourceName: string,
-   ): Promise<ManifestEntry | null> {
-      return this.repository.getManifestEntryBySourceName(
-         projectId,
-         packageName,
+         tableName,
          sourceName,
-      );
+         connectionName,
+      });
    }
 
    async deleteEntry(id: string): Promise<void> {

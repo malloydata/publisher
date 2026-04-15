@@ -28,12 +28,12 @@ import {
 } from "./health";
 import { logger, loggerMiddleware } from "./logger";
 
+import { BuildController } from "./controller/build.controller";
 import { ManifestController } from "./controller/manifest.controller";
-import { TaskController } from "./controller/task.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { BuildService } from "./service/build_service";
 import { ManifestService } from "./service/manifest_service";
 import { ProjectStore } from "./service/project_store";
-import { TaskService } from "./service/task_service";
 
 /** Normalize an Express query param into a string[] or undefined. */
 export function normalizeQueryArray(value: unknown): string[] | undefined {
@@ -141,8 +141,8 @@ const packageController = new PackageController(projectStore, manifestService);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
 const compileController = new CompileController(projectStore);
-const taskService = new TaskService(projectStore, manifestService);
-const taskController = new TaskController(taskService);
+const buildService = new BuildService(projectStore, manifestService);
+const buildController = new BuildController(buildService);
 const manifestController = new ManifestController(
    projectStore,
    manifestService,
@@ -943,91 +943,20 @@ app.post(
    },
 );
 
-// ==================== TASK ROUTES ====================
-
-app.get(`${API_PREFIX}/projects/:projectName/tasks`, async (req, res) => {
-   try {
-      const tasks = await taskController.listTasks(req.params.projectName);
-      res.status(200).json(tasks);
-   } catch (error) {
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.post(`${API_PREFIX}/projects/:projectName/tasks`, async (req, res) => {
-   try {
-      const task = await taskController.createTask(
-         req.params.projectName,
-         req.body,
-      );
-      res.status(201).json(task);
-   } catch (error) {
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.get(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId`,
-   async (req, res) => {
-      try {
-         const task = await taskController.getTask(
-            req.params.projectName,
-            req.params.taskId,
-         );
-         res.status(200).json(task);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.put(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId`,
-   async (req, res) => {
-      try {
-         const task = await taskController.updateTask(
-            req.params.projectName,
-            req.params.taskId,
-            req.body,
-         );
-         res.status(200).json(task);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.delete(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId`,
-   async (req, res) => {
-      try {
-         await taskController.deleteTask(
-            req.params.projectName,
-            req.params.taskId,
-         );
-         res.status(204).send();
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
+// ==================== BUILD ROUTES ====================
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId/start`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/build`,
    async (req, res) => {
       try {
-         const execution = await taskController.startTask(
+         const execution = await buildController.startBuild(
             req.params.projectName,
-            req.params.taskId,
+            req.params.packageName,
             req.body || {},
          );
          res.status(202).json(execution);
       } catch (error) {
+         logger.error("Build start error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1035,19 +964,23 @@ app.post(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId/stop`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/stop`,
    async (req, res) => {
       try {
-         const execution = await taskController.stopTask(
+         const execution = await buildController.stopBuild(
             req.params.projectName,
-            req.params.taskId,
+            req.params.packageName,
          );
          if (execution) {
             res.status(200).json(execution);
          } else {
-            res.status(404).json({ message: "No active execution found" });
+            res.status(404).json({
+               code: 404,
+               message: "No active build found",
+            });
          }
       } catch (error) {
+         logger.error("Build stop error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1055,15 +988,16 @@ app.post(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId/status`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/status`,
    async (req, res) => {
       try {
-         const status = await taskController.getTaskStatus(
+         const result = await buildController.getBuildStatus(
             req.params.projectName,
-            req.params.taskId,
+            req.params.packageName,
          );
-         res.status(200).json(status);
+         res.status(200).json(result);
       } catch (error) {
+         logger.error("Build status error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1071,15 +1005,16 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId/executions`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/executions`,
    async (req, res) => {
       try {
-         const executions = await taskController.listExecutions(
+         const executions = await buildController.listExecutions(
             req.params.projectName,
-            req.params.taskId,
+            req.params.packageName,
          );
          res.status(200).json(executions);
       } catch (error) {
+         logger.error("List executions error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1087,16 +1022,17 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/tasks/:taskId/executions/:executionId`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/executions/:executionId`,
    async (req, res) => {
       try {
-         const execution = await taskController.getExecution(
+         const execution = await buildController.getExecution(
             req.params.projectName,
-            req.params.taskId,
+            req.params.packageName,
             req.params.executionId,
          );
          res.status(200).json(execution);
       } catch (error) {
+         logger.error("Get execution error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1115,6 +1051,7 @@ app.get(
          );
          res.status(200).json(manifest);
       } catch (error) {
+         logger.error("Get manifest error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1131,6 +1068,7 @@ app.post(
          );
          res.status(200).json(manifest);
       } catch (error) {
+         logger.error("Load manifest error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

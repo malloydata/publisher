@@ -17,7 +17,7 @@ import {
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
-import { ModelNotFoundError, PackageNotFoundError } from "../errors";
+import { PackageNotFoundError } from "../errors";
 import { formatDuration, logger } from "../logger";
 import { Model } from "./model";
 
@@ -37,6 +37,7 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private connections: Map<string, Connection> = new Map();
+   private _buildManifest: Record<string, { tableName: string }> = {};
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -205,68 +206,22 @@ export class Package {
       return this.models.get(modelPath);
    }
 
-   /**
-    * Recompile a single model with a build manifest so queries resolve
-    * persist references to the materialized tables. The new Model
-    * instance reuses the package's existing connections (including the
-    * shared DuckDB `:memory:` connection).
-    */
-   public async reloadModel(
-      modelPath: string,
-      buildManifest: Record<string, { tableName: string }>,
-   ): Promise<Model> {
-      if (!this.models.has(modelPath)) {
-         throw new ModelNotFoundError(
-            `Model ${modelPath} not found in package ${this.packageName}`,
-         );
-      }
-
-      logger.info("Reloading model with build manifest", {
-         packageName: this.packageName,
-         modelPath,
-         manifestEntryCount: Object.keys(buildManifest).length,
-      });
-
-      const model = await Model.create(
-         this.packageName,
-         this.packagePath,
-         modelPath,
-         this.connections,
-         { buildManifest },
-      );
-      this.models.set(modelPath, model);
-      return model;
+   public getModelPaths(): string[] {
+      return Array.from(this.models.keys());
    }
 
-   /**
-    * Recompile every model in the package with the given build manifest.
-    * Used by the `POST .../manifest/load` endpoint when the caller doesn't
-    * know which specific model was affected.
-    */
-   public async reloadAllModels(
-      buildManifest: Record<string, { tableName: string }>,
-   ): Promise<void> {
-      const modelPaths = Array.from(this.models.keys());
-      logger.info("Reloading all models with build manifest", {
-         packageName: this.packageName,
-         modelCount: modelPaths.length,
-         manifestEntryCount: Object.keys(buildManifest).length,
-      });
+   public get buildManifest(): Record<string, { tableName: string }> {
+      return this._buildManifest;
+   }
 
-      const reloaded = await Promise.all(
-         modelPaths.map((modelPath) =>
-            Model.create(
-               this.packageName,
-               this.packagePath,
-               modelPath,
-               this.connections,
-               { buildManifest },
-            ),
-         ),
-      );
-      for (const model of reloaded) {
-         this.models.set(model.getPath(), model);
-      }
+   public setBuildManifest(
+      manifest: Record<string, { tableName: string }>,
+   ): void {
+      this._buildManifest = manifest;
+      logger.info("Build manifest updated", {
+         packageName: this.packageName,
+         entryCount: Object.keys(manifest).length,
+      });
    }
 
    public getConnections(): Map<string, Connection> {

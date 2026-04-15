@@ -44,45 +44,25 @@ export class ManifestRepository {
 
    /**
     * Inserts a new manifest entry, or updates the existing one if a row with
-    * the same (project, package, build) triple already exists. The unique
-    * constraint on the table guarantees at most one entry per build.
+    * the same (project, package, build) triple already exists. Uses INSERT ON
+    * CONFLICT to avoid the TOCTOU race of SELECT-then-INSERT/UPDATE.
     */
    async upsertEntry(
       entry: Omit<ManifestEntry, "id" | "createdAt" | "updatedAt">,
    ): Promise<ManifestEntry> {
-      const existing = await this.getEntryByBuildId(
-         entry.projectId,
-         entry.packageName,
-         entry.buildId,
-      );
-
-      if (existing) {
-         const now = new Date();
-         await this.db.run(
-            `UPDATE build_manifests SET table_name = ?, source_name = ?, connection_name = ?, updated_at = ? WHERE id = ?`,
-            [
-               entry.tableName,
-               entry.sourceName,
-               entry.connectionName,
-               now.toISOString(),
-               existing.id,
-            ],
-         );
-         return {
-            ...existing,
-            tableName: entry.tableName,
-            sourceName: entry.sourceName,
-            connectionName: entry.connectionName,
-            updatedAt: now,
-         };
-      }
-
       const id = this.generateId();
       const now = new Date();
+      const iso = now.toISOString();
 
-      await this.db.run(
+      const rows = await this.db.all<Record<string, unknown>>(
          `INSERT INTO build_manifests (id, project_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (project_id, package_name, build_id)
+         DO UPDATE SET table_name = EXCLUDED.table_name,
+                       source_name = EXCLUDED.source_name,
+                       connection_name = EXCLUDED.connection_name,
+                       updated_at = EXCLUDED.updated_at
+         RETURNING *`,
          [
             id,
             entry.projectId,
@@ -91,30 +71,12 @@ export class ManifestRepository {
             entry.tableName,
             entry.sourceName,
             entry.connectionName,
-            now.toISOString(),
-            now.toISOString(),
+            iso,
+            iso,
          ],
       );
 
-      return {
-         id,
-         ...entry,
-         createdAt: now,
-         updatedAt: now,
-      };
-   }
-
-   /** Looks up the most recent manifest entry for a source by name. */
-   async getEntryBySourceName(
-      projectId: string,
-      packageName: string,
-      sourceName: string,
-   ): Promise<ManifestEntry | null> {
-      const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM build_manifests WHERE project_id = ? AND package_name = ? AND source_name = ? ORDER BY created_at DESC LIMIT 1",
-         [projectId, packageName, sourceName],
-      );
-      return row ? this.mapToEntry(row) : null;
+      return this.mapToEntry(rows[0]);
    }
 
    /** Deletes a single manifest entry by ID. */
@@ -122,7 +84,14 @@ export class ManifestRepository {
       await this.db.run("DELETE FROM build_manifests WHERE id = ?", [id]);
    }
 
-   /** Removes all manifest entries for a given package within a project. */
+   /** Removes all manifest entries belonging to a project (used on project deletion). */
+   async deleteEntriesByProjectId(projectId: string): Promise<void> {
+      await this.db.run("DELETE FROM build_manifests WHERE project_id = ?", [
+         projectId,
+      ]);
+   }
+
+   /** Removes all manifest entries for a specific package. */
    async deleteEntriesByPackage(
       projectId: string,
       packageName: string,
@@ -133,13 +102,6 @@ export class ManifestRepository {
       );
    }
 
-   /** Removes all manifest entries belonging to a project (used on project deletion). */
-   async deleteEntriesByProjectId(projectId: string): Promise<void> {
-      await this.db.run("DELETE FROM build_manifests WHERE project_id = ?", [
-         projectId,
-      ]);
-   }
-
    /** Maps a raw DB row (snake_case columns) to a {@link ManifestEntry}. */
    private mapToEntry(row: Record<string, unknown>): ManifestEntry {
       return {
@@ -148,8 +110,8 @@ export class ManifestRepository {
          packageName: row.package_name as string,
          buildId: row.build_id as string,
          tableName: row.table_name as string,
-         sourceName: (row.source_name as string) || null,
-         connectionName: (row.connection_name as string) || null,
+         sourceName: row.source_name as string,
+         connectionName: row.connection_name as string,
          createdAt: new Date(row.created_at as string),
          updatedAt: new Date(row.updated_at as string),
       };

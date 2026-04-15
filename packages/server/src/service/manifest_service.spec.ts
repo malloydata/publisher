@@ -30,7 +30,6 @@ function createMocks() {
    const manifestStore: sinon.SinonStubbedInstance<ManifestStore> = {
       getManifest: sandbox.stub(),
       writeEntry: sandbox.stub(),
-      getEntryBySourceName: sandbox.stub(),
       deleteEntry: sandbox.stub(),
       listEntries: sandbox.stub(),
    };
@@ -39,10 +38,10 @@ function createMocks() {
       listManifestEntries: sandbox.stub(),
    } as unknown as sinon.SinonStubbedInstance<ResourceRepository>;
 
-   const reloadAllModels = sandbox.stub().resolves();
+   const setBuildManifest = sandbox.stub();
 
    const pkg = {
-      reloadAllModels,
+      setBuildManifest,
    };
 
    const project = {
@@ -66,7 +65,7 @@ function createMocks() {
       projectStore,
       project,
       pkg,
-      reloadAllModels,
+      setBuildManifest,
       service,
    };
 }
@@ -99,27 +98,41 @@ describe("ManifestService", () => {
       it("should delegate to the manifest store", async () => {
          ctx.manifestStore.writeEntry.resolves();
 
-         await ctx.service.writeEntry("proj-1", "pkg", "build-abc", {
-            tableName: "tbl",
-            sourceName: "src",
-            connectionName: "duckdb",
-         });
+         await ctx.service.writeEntry(
+            "proj-1",
+            "pkg",
+            "build-abc",
+            "tbl",
+            "src",
+            "duckdb",
+         );
 
          expect(ctx.manifestStore.writeEntry.calledOnce).toBe(true);
          const args = ctx.manifestStore.writeEntry.firstCall.args;
          expect(args[0]).toBe("proj-1");
          expect(args[1]).toBe("pkg");
          expect(args[2]).toBe("build-abc");
-         expect(args[3]).toEqual({
-            tableName: "tbl",
-            sourceName: "src",
-            connectionName: "duckdb",
-         });
+         expect(args[3]).toBe("tbl");
+         expect(args[4]).toBe("src");
+         expect(args[5]).toBe("duckdb");
+      });
+   });
+
+   describe("deleteEntry", () => {
+      it("should delegate to the manifest store", async () => {
+         ctx.manifestStore.deleteEntry.resolves();
+
+         await ctx.service.deleteEntry("entry-1");
+
+         expect(ctx.manifestStore.deleteEntry.calledOnce).toBe(true);
+         expect(ctx.manifestStore.deleteEntry.firstCall.args[0]).toBe(
+            "entry-1",
+         );
       });
    });
 
    describe("loadManifest", () => {
-      it("should get manifest, reload models, and return the manifest", async () => {
+      it("should get manifest, load it onto the package, and return it", async () => {
          const manifest: BuildManifest = {
             entries: { "build-abc": { tableName: "tbl" } },
             strict: false,
@@ -140,7 +153,7 @@ describe("ManifestService", () => {
             ),
          ).toBe(true);
          expect(ctx.project.getPackage.calledWith("pkg", false)).toBe(true);
-         expect(ctx.reloadAllModels.calledWith(manifest.entries)).toBe(true);
+         expect(ctx.setBuildManifest.calledWith(manifest.entries)).toBe(true);
       });
 
       it("should return an empty manifest when no entries exist", async () => {
@@ -157,7 +170,7 @@ describe("ManifestService", () => {
          );
 
          expect(result.entries).toEqual({});
-         expect(ctx.reloadAllModels.calledWith({})).toBe(true);
+         expect(ctx.setBuildManifest.calledWith({})).toBe(true);
       });
    });
 

@@ -64,33 +64,20 @@ export async function initializeSchema(
     )
   `);
 
-   // Tasks table
+   // Build executions table
    await db.run(`
-    CREATE TABLE IF NOT EXISTS tasks (
+    CREATE TABLE IF NOT EXISTS build_executions (
       id VARCHAR PRIMARY KEY,
       project_id VARCHAR NOT NULL,
-      name VARCHAR NOT NULL,
-      type VARCHAR NOT NULL DEFAULT 'materialize',
-      config JSON NOT NULL,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id),
-      UNIQUE (project_id, name)
-    )
-  `);
-
-   // Task executions table
-   await db.run(`
-    CREATE TABLE IF NOT EXISTS task_executions (
-      id VARCHAR PRIMARY KEY,
-      task_id VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
       status VARCHAR NOT NULL,
       started_at TIMESTAMP,
       completed_at TIMESTAMP,
       error TEXT,
       metadata JSON,
       created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL
+      updated_at TIMESTAMP NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
     )
   `);
 
@@ -119,10 +106,7 @@ export async function initializeSchema(
       "CREATE INDEX IF NOT EXISTS idx_connections_project_id ON connections(project_id)",
    );
    await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id)",
-   );
-   await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_task_executions_task_id ON task_executions(task_id)",
+      "CREATE INDEX IF NOT EXISTS idx_build_executions_project_package ON build_executions(project_id, package_name)",
    );
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_build_manifests_project_package ON build_manifests(project_id, package_name)",
@@ -132,8 +116,7 @@ export async function initializeSchema(
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = [
       "build_manifests",
-      "task_executions",
-      "tasks",
+      "build_executions",
       "packages",
       "connections",
       "projects",

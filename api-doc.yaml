@@ -51,8 +51,8 @@ tags:
     description: Embedded database management and access
   - name: watch-mode
     description: Real-time file watching for development workflows
-  - name: tasks
-    description: Materialization task management for building and caching persisted sources
+  - name: builds
+    description: Package-level materialization builds for persisting Malloy sources
   - name: manifests
     description: Build manifest management for tracking materialized source tables
 
@@ -1649,190 +1649,90 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /projects/{projectName}/tasks:
-    get:
-      tags:
-        - tasks
-      operationId: list-tasks
-      summary: List tasks for a project
-      description: Returns all materialization tasks defined for the specified project.
-      parameters:
-        - $ref: "#/components/parameters/projectName"
-      responses:
-        "200":
-          description: List of tasks
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Task"
-        "404":
-          $ref: "#/components/responses/NotFound"
+  /projects/{projectName}/packages/{packageName}/build:
     post:
       tags:
-        - tasks
-      operationId: create-task
-      summary: Create a materialization task
-      description: Creates a new materialization task for the specified project.
-      parameters:
-        - $ref: "#/components/parameters/projectName"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateTaskRequest"
-      responses:
-        "201":
-          description: Task created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Task"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  /projects/{projectName}/tasks/{taskId}:
-    get:
-      tags:
-        - tasks
-      operationId: get-task
-      summary: Get a task by ID
-      parameters:
-        - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
-      responses:
-        "200":
-          description: Task details
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Task"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    put:
-      tags:
-        - tasks
-      operationId: update-task
-      summary: Update a task
-      parameters:
-        - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateTaskRequest"
-      responses:
-        "200":
-          description: Task updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Task"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    delete:
-      tags:
-        - tasks
-      operationId: delete-task
-      summary: Delete a task
-      parameters:
-        - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
-      responses:
-        "204":
-          description: Task deleted
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  /projects/{projectName}/tasks/{taskId}/start:
-    post:
-      tags:
-        - tasks
-      operationId: start-task
-      summary: Start a materialization build
+        - builds
+      operationId: start-build
+      summary: Start a materialization build for a package
       description: |
-        Starts the materialization build for the specified task. Loads the model,
-        computes a build plan, and executes SQL to create materialized tables.
+        Triggers a materialization build for all persist sources across all models
+        in the package. Returns an execution handle immediately (202 Accepted).
+        The manifest is automatically activated after a successful build.
       parameters:
         - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
+        - $ref: "#/components/parameters/packageName"
       requestBody:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/StartTaskRequest"
+              $ref: "#/components/schemas/StartBuildRequest"
       responses:
-        "200":
-          description: Build execution result
+        "202":
+          description: Build started
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskExecution"
+                $ref: "#/components/schemas/BuildExecution"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Task already has an active execution
+          description: Package already has an active build
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /projects/{projectName}/tasks/{taskId}/stop:
+  /projects/{projectName}/packages/{packageName}/build/stop:
     post:
       tags:
-        - tasks
-      operationId: stop-task
+        - builds
+      operationId: stop-build
       summary: Stop an in-progress build
-      description: Cancels the currently running build execution for the task.
+      description: Cancels the currently running build for the package.
       parameters:
         - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
+        - $ref: "#/components/parameters/packageName"
       responses:
         "200":
           description: Execution being cancelled
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskExecution"
+                $ref: "#/components/schemas/BuildExecution"
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /projects/{projectName}/tasks/{taskId}/status:
+  /projects/{projectName}/packages/{packageName}/build/status:
     get:
       tags:
-        - tasks
-      operationId: get-task-status
-      summary: Get current task status
-      description: Returns the task and its latest execution state.
+        - builds
+      operationId: get-build-status
+      summary: Get current build status
+      description: Returns the latest build execution for the package.
       parameters:
         - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
+        - $ref: "#/components/parameters/packageName"
       responses:
         "200":
-          description: Task status
+          description: Build status
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskStatus"
+                $ref: "#/components/schemas/BuildStatus"
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /projects/{projectName}/tasks/{taskId}/executions:
+  /projects/{projectName}/packages/{packageName}/build/executions:
     get:
       tags:
-        - tasks
-      operationId: list-task-executions
-      summary: List execution history
-      description: Returns the execution history for the specified task, ordered by most recent first.
+        - builds
+      operationId: list-build-executions
+      summary: List build execution history
+      description: Returns the build execution history for the package, ordered by most recent first.
       parameters:
         - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
+        - $ref: "#/components/parameters/packageName"
       responses:
         "200":
           description: List of executions
@@ -1841,19 +1741,19 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/TaskExecution"
+                  $ref: "#/components/schemas/BuildExecution"
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /projects/{projectName}/tasks/{taskId}/executions/{executionId}:
+  /projects/{projectName}/packages/{packageName}/build/executions/{executionId}:
     get:
       tags:
-        - tasks
-      operationId: get-task-execution
-      summary: Get a specific execution
+        - builds
+      operationId: get-build-execution
+      summary: Get a specific build execution
       parameters:
         - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/taskId"
+        - $ref: "#/components/parameters/packageName"
         - name: executionId
           in: path
           required: true
@@ -1865,7 +1765,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskExecution"
+                $ref: "#/components/schemas/BuildExecution"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -2850,89 +2750,24 @@ components:
               type: object
               description: Character range within the source file
 
-    TaskConfig:
+    StartBuildRequest:
       type: object
-      description: Configuration for a materialization task
-      required:
-        - package
-        - modelPath
+      description: Options for starting a package build
       properties:
-        package:
-          type: string
-          description: Name of the package containing the model
-        modelPath:
-          type: string
-          description: Path to the Malloy model file within the package
+        forceRefresh:
+          type: boolean
+          default: false
+          description: If true, forces rebuild of all sources even if their BuildID is unchanged
 
-    Task:
+    BuildExecution:
       type: object
-      description: A materialization task definition
+      description: A record of a package build execution
       properties:
         id:
           type: string
         projectId:
           type: string
-        name:
-          type: string
-        type:
-          type: string
-          default: materialize
-        config:
-          $ref: "#/components/schemas/TaskConfig"
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-
-    CreateTaskRequest:
-      type: object
-      description: Request body for creating a new task
-      required:
-        - name
-        - config
-      properties:
-        name:
-          type: string
-          description: Unique name for the task within the project
-        type:
-          type: string
-          default: materialize
-        config:
-          $ref: "#/components/schemas/TaskConfig"
-
-    UpdateTaskRequest:
-      type: object
-      description: Request body for updating a task
-      properties:
-        name:
-          type: string
-        type:
-          type: string
-        config:
-          $ref: "#/components/schemas/TaskConfig"
-
-    StartTaskRequest:
-      type: object
-      description: Options for starting a task execution
-      properties:
-        autoLoadManifest:
-          type: boolean
-          default: false
-          description: If true, automatically loads the manifest into the Malloy Runtime after a successful build
-        refresh:
-          type: boolean
-          default: false
-          description: If true, forces rebuild of all sources even if their BuildID is unchanged
-
-    TaskExecution:
-      type: object
-      description: A record of a task execution
-      properties:
-        id:
-          type: string
-        taskId:
+        packageName:
           type: string
         status:
           type: string
@@ -2945,7 +2780,7 @@ components:
           format: date-time
         error:
           type: ["string", "null"]
-          description: Error message if the execution failed
+          description: Error message if the build failed
         metadata:
           type: ["object", "null"]
           description: Build metadata including source counts and durations
@@ -2956,15 +2791,13 @@ components:
           type: string
           format: date-time
 
-    TaskStatus:
+    BuildStatus:
       type: object
-      description: Combined task and latest execution state
+      description: Latest build execution state for a package
       properties:
-        task:
-          $ref: "#/components/schemas/Task"
         latestExecution:
           oneOf:
-            - $ref: "#/components/schemas/TaskExecution"
+            - $ref: "#/components/schemas/BuildExecution"
             - type: "null"
 
     BuildManifest:
@@ -3001,12 +2834,5 @@ components:
       in: path
       required: true
       description: Name of the package
-      schema:
-        type: string
-    taskId:
-      name: taskId
-      in: path
-      required: true
-      description: ID of the task
       schema:
         type: string

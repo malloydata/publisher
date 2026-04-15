@@ -20,9 +20,9 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
       return httpError(502, error.message);
-   } else if (error instanceof TaskNotFoundError) {
+   } else if (error instanceof BuildNotFoundError) {
       return httpError(404, error.message);
-   } else if (error instanceof TaskExecutionConflictError) {
+   } else if (error instanceof BuildConflictError) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
       return httpError(409, error.message);
@@ -97,13 +97,13 @@ export class FrozenConfigError extends Error {
    }
 }
 
-export class TaskNotFoundError extends Error {
+export class BuildNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }
 }
 
-export class TaskExecutionConflictError extends Error {
+export class BuildConflictError extends Error {
    constructor(message: string) {
       super(message);
    }

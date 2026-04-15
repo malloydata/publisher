@@ -85,11 +85,9 @@ export class DuckLakeManifestStore implements ManifestStore {
       projectId: string,
       packageName: string,
       buildId: string,
-      entry: {
-         tableName: string;
-         sourceName?: string;
-         connectionName?: string;
-      },
+      tableName: string,
+      sourceName: string,
+      connectionName: string,
    ): Promise<void> {
       const now = new Date().toISOString();
       const id = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
@@ -107,25 +105,13 @@ export class DuckLakeManifestStore implements ManifestStore {
             projectId,
             packageName,
             buildId,
-            entry.tableName,
-            entry.sourceName || null,
-            entry.connectionName || null,
+            tableName,
+            sourceName,
+            connectionName,
             now,
             now,
          ],
       );
-   }
-
-   async getEntryBySourceName(
-      projectId: string,
-      packageName: string,
-      sourceName: string,
-   ): Promise<ManifestEntry | null> {
-      const row = await this.db.get<Record<string, unknown>>(
-         `SELECT * FROM ${this.table} WHERE project_id = ? AND package_name = ? AND source_name = ? ORDER BY created_at DESC LIMIT 1`,
-         [projectId, packageName, sourceName],
-      );
-      return row ? this.mapToEntry(row) : null;
    }
 
    async deleteEntry(id: string): Promise<void> {
@@ -150,8 +136,8 @@ export class DuckLakeManifestStore implements ManifestStore {
          packageName: row.package_name as string,
          buildId: row.build_id as string,
          tableName: row.table_name as string,
-         sourceName: (row.source_name as string) || null,
-         connectionName: (row.connection_name as string) || null,
+         sourceName: row.source_name as string,
+         connectionName: row.connection_name as string,
          createdAt: new Date(row.created_at as string),
          updatedAt: new Date(row.updated_at as string),
       };

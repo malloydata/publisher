@@ -37,10 +37,21 @@ export class QueryController {
       if (!model) {
          throw new ModelNotFoundError(`${modelPath} does not exist`);
       } else {
+         const buildManifest = p.buildManifest;
+         const manifestOption =
+            Object.keys(buildManifest).length > 0
+               ? {
+                    buildManifest: {
+                       entries: buildManifest,
+                       strict: false,
+                    },
+                 }
+               : undefined;
          const { result, compactResult } = await model.getQueryResults(
             sourceName,
             queryName,
             query,
+            manifestOption,
          );
          const renderLogs = validateRenderTags(result);
          return {

@@ -34,7 +34,7 @@ export interface ResourceRepository {
    getConnectionById(id: string): Promise<Connection | null>;
    getConnectionByName(
       projectId: string,
-      id: string,
+      name: string,
    ): Promise<Connection | null>;
    createConnection(
       connection: Omit<Connection, "id" | "createdAt" | "updatedAt">,
@@ -45,50 +45,36 @@ export interface ResourceRepository {
    ): Promise<Connection>;
    deleteConnection(id: string): Promise<void>;
 
-   // Tasks
-   listTasks(projectId: string): Promise<Task[]>;
-   getTaskById(id: string): Promise<Task | null>;
-   getTaskByName(projectId: string, name: string): Promise<Task | null>;
-   createTask(
-      task: Omit<Task, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Task>;
-   updateTask(id: string, updates: Partial<Task>): Promise<Task>;
-   deleteTask(id: string): Promise<void>;
-
-   // Task Executions
-   listExecutions(taskId: string): Promise<TaskExecution[]>;
-   getExecutionById(id: string): Promise<TaskExecution | null>;
-   getRunningExecution(taskId: string): Promise<TaskExecution | null>;
-   createExecution(
-      taskId: string,
-      status?: TaskExecutionStatus,
-   ): Promise<TaskExecution | null>;
-   updateExecution(
+   // Build Executions
+   listBuildExecutions(
+      projectId: string,
+      packageName: string,
+   ): Promise<BuildExecution[]>;
+   getBuildExecutionById(id: string): Promise<BuildExecution | null>;
+   getRunningBuildExecution(
+      projectId: string,
+      packageName: string,
+   ): Promise<BuildExecution | null>;
+   createBuildExecution(
+      projectId: string,
+      packageName: string,
+      status?: BuildExecutionStatus,
+   ): Promise<BuildExecution | null>;
+   updateBuildExecution(
       id: string,
       updates: {
-         status?: TaskExecutionStatus;
+         status?: BuildExecutionStatus;
          startedAt?: Date;
          completedAt?: Date;
          error?: string | null;
          metadata?: Record<string, unknown> | null;
       },
-   ): Promise<TaskExecution>;
-
+   ): Promise<BuildExecution>;
    // Build Manifests
    listManifestEntries(
       projectId: string,
       packageName: string,
    ): Promise<ManifestEntry[]>;
-   getManifestEntryByBuildId(
-      projectId: string,
-      packageName: string,
-      buildId: string,
-   ): Promise<ManifestEntry | null>;
-   getManifestEntryBySourceName(
-      projectId: string,
-      packageName: string,
-      sourceName: string,
-   ): Promise<ManifestEntry | null>;
    upsertManifestEntry(
       entry: Omit<ManifestEntry, "id" | "createdAt" | "updatedAt">,
    ): Promise<ManifestEntry>;
@@ -126,32 +112,18 @@ export interface Connection {
    updatedAt: Date;
 }
 
-export type TaskExecutionStatus =
+export type BuildExecutionStatus =
    | "PENDING"
    | "RUNNING"
    | "SUCCESS"
    | "FAILED"
    | "CANCELLED";
 
-export interface TaskConfig {
-   package: string;
-   modelPath: string;
-}
-
-export interface Task {
+export interface BuildExecution {
    id: string;
    projectId: string;
-   name: string;
-   type: string;
-   config: TaskConfig;
-   createdAt: Date;
-   updatedAt: Date;
-}
-
-export interface TaskExecution {
-   id: string;
-   taskId: string;
-   status: TaskExecutionStatus;
+   packageName: string;
+   status: BuildExecutionStatus;
    startedAt: Date | null;
    completedAt: Date | null;
    error: string | null;
@@ -166,8 +138,8 @@ export interface ManifestEntry {
    packageName: string;
    buildId: string;
    tableName: string;
-   sourceName: string | null;
-   connectionName: string | null;
+   sourceName: string;
+   connectionName: string;
    createdAt: Date;
    updatedAt: Date;
 }
@@ -193,17 +165,10 @@ export interface ManifestStore {
       projectId: string,
       packageName: string,
       buildId: string,
-      entry: {
-         tableName: string;
-         sourceName?: string;
-         connectionName?: string;
-      },
-   ): Promise<void>;
-   getEntryBySourceName(
-      projectId: string,
-      packageName: string,
+      tableName: string,
       sourceName: string,
-   ): Promise<ManifestEntry | null>;
+      connectionName: string,
+   ): Promise<void>;
    deleteEntry(id: string): Promise<void>;
    listEntries(
       projectId: string,

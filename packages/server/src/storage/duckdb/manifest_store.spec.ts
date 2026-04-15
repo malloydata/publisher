@@ -24,15 +24,11 @@ function createMocks() {
    const repository: sinon.SinonStubbedInstance<
       Pick<
          ResourceRepository,
-         | "listManifestEntries"
-         | "upsertManifestEntry"
-         | "getManifestEntryBySourceName"
-         | "deleteManifestEntry"
+         "listManifestEntries" | "upsertManifestEntry" | "deleteManifestEntry"
       >
    > = {
       listManifestEntries: sandbox.stub(),
       upsertManifestEntry: sandbox.stub(),
-      getManifestEntryBySourceName: sandbox.stub(),
       deleteManifestEntry: sandbox.stub(),
    };
 
@@ -80,11 +76,14 @@ describe("DuckDBManifestStore", () => {
       it("should upsert an entry with all fields", async () => {
          ctx.repository.upsertManifestEntry.resolves(makeEntry());
 
-         await ctx.store.writeEntry("proj-1", "pkg", "build-abc", {
-            tableName: "tbl",
-            sourceName: "src",
-            connectionName: "conn",
-         });
+         await ctx.store.writeEntry(
+            "proj-1",
+            "pkg",
+            "build-abc",
+            "tbl",
+            "src",
+            "conn",
+         );
 
          expect(ctx.repository.upsertManifestEntry.calledOnce).toBe(true);
          const arg = ctx.repository.upsertManifestEntry.firstCall.args[0];
@@ -96,48 +95,6 @@ describe("DuckDBManifestStore", () => {
             sourceName: "src",
             connectionName: "conn",
          });
-      });
-
-      it("should default sourceName and connectionName to null when omitted", async () => {
-         ctx.repository.upsertManifestEntry.resolves(makeEntry());
-
-         await ctx.store.writeEntry("proj-1", "pkg", "build-abc", {
-            tableName: "tbl",
-         });
-
-         const arg = ctx.repository.upsertManifestEntry.firstCall.args[0];
-         expect(arg.sourceName).toBeNull();
-         expect(arg.connectionName).toBeNull();
-      });
-   });
-
-   describe("getEntryBySourceName", () => {
-      it("should delegate to repository", async () => {
-         const entry = makeEntry();
-         ctx.repository.getManifestEntryBySourceName.resolves(entry);
-
-         const result = await ctx.store.getEntryBySourceName(
-            "proj-1",
-            "pkg",
-            "my_source",
-         );
-
-         expect(result).toEqual(entry);
-         expect(ctx.repository.getManifestEntryBySourceName.calledOnce).toBe(
-            true,
-         );
-      });
-
-      it("should return null when no entry exists", async () => {
-         ctx.repository.getManifestEntryBySourceName.resolves(null);
-
-         const result = await ctx.store.getEntryBySourceName(
-            "proj-1",
-            "pkg",
-            "missing",
-         );
-
-         expect(result).toBeNull();
       });
    });
 

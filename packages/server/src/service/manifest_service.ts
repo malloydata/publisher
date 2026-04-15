@@ -40,29 +40,17 @@ export class ManifestService {
       projectId: string,
       packageName: string,
       buildId: string,
-      entry: {
-         tableName: string;
-         sourceName?: string;
-         connectionName?: string;
-      },
+      tableName: string,
+      sourceName: string,
+      connectionName: string,
    ): Promise<void> {
       await this.manifestStore.writeEntry(
          projectId,
          packageName,
          buildId,
-         entry,
-      );
-   }
-
-   async getEntryBySourceName(
-      projectId: string,
-      packageName: string,
-      sourceName: string,
-   ): Promise<ManifestEntry | null> {
-      return this.manifestStore.getEntryBySourceName(
-         projectId,
-         packageName,
+         tableName,
          sourceName,
+         connectionName,
       );
    }
 
@@ -71,9 +59,10 @@ export class ManifestService {
    }
 
    /**
-    * Load the manifest from storage and recompile all models in the package
-    * so queries resolve persist references to materialized tables.
-    * This is what `POST .../manifest/load` calls.
+    * Load the manifest from storage and activate it on the package so
+    * subsequent queries resolve persist references to materialized tables.
+    * This is what `POST .../manifest/load` calls (used by orchestrated
+    * workers that need to pick up manifest state produced elsewhere).
     */
    async loadManifest(
       projectId: string,
@@ -84,9 +73,9 @@ export class ManifestService {
 
       const project = await this.projectStore.getProject(projectName, false);
       const pkg = await project.getPackage(packageName, false);
-      await pkg.reloadAllModels(manifest.entries);
+      pkg.setBuildManifest(manifest.entries);
 
-      logger.info("Loaded manifest and recompiled models", {
+      logger.info("Loaded manifest", {
          projectId,
          packageName,
          entryCount: Object.keys(manifest.entries).length,

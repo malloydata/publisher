@@ -52,8 +52,8 @@ export class StorageManager {
       return {
          getManifest: async () => ({ entries: {}, strict: false }),
          writeEntry: async () => {},
-         getEntryBySourceName: async () => null,
          deleteEntry: async () => {},
+         listEntries: async () => [],
       };
    }
 }
