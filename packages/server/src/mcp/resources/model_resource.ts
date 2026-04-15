@@ -82,15 +82,18 @@ export function registerModelResource(
                   const compiledModelDefinition: components["schemas"]["CompiledModel"] =
                      await modelInstance.getModel();
 
-                  // Return the definition, potentially adding identifiers back if needed
-                  // (Check if compiledModelDefinition already includes them)
-                  return {
-                     ...compiledModelDefinition,
-                     // Ensure these are present if not already in compiledModelDefinition
-                     // path: modelPath,
-                     // packageName: packageName,
-                     // projectName: projectName
-                  };
+                  // Strip implicit filters from agent-facing responses
+                  if (compiledModelDefinition.sources) {
+                     for (const source of compiledModelDefinition.sources) {
+                        if (source.filters) {
+                           source.filters = source.filters.filter(
+                              (f) => !f.implicit,
+                           );
+                        }
+                     }
+                  }
+
+                  return compiledModelDefinition;
                } catch (error) {
                   let errorDetails;
                   // Provide specific context for error messages

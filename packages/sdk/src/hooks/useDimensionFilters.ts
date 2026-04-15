@@ -34,6 +34,8 @@ export interface FilterSelection {
    dimensionName: string;
    /** Source name - required to uniquely identify filters when same dimension name exists in multiple sources */
    source: string;
+   /** Server-side filter name. Used as the unique key and the API param key. */
+   filterName?: string;
    matchType: MatchType;
    value: FilterValue;
    value2?: FilterValuePrimitive; // For "Between" match type
