@@ -156,15 +156,20 @@ export default function Notebook({
                   filterType = filterTypeMap[filter.type] ?? "Star";
                }
 
-               // Pick default match type for date range filters
+               // Derive the match type from the #(filter) annotation type so
+               // the UI never needs to show a match-type dropdown.
                type MT = import("../../hooks/useDimensionFilters").MatchType;
-               let defaultMatchType: MT | undefined;
-               if (filterType === "DateMinMax") {
-                  if (filter.type === "greater_than")
-                     defaultMatchType = "After";
-                  else if (filter.type === "less_than")
-                     defaultMatchType = "Before";
-               }
+               const matchTypeMap: Record<string, MT> = {
+                  equal: "Equals",
+                  in: "Equals",
+                  like: "Contains",
+                  greater_than:
+                     filterType === "DateMinMax" ? "After" : "Greater Than",
+                  less_than:
+                     filterType === "DateMinMax" ? "Before" : "Less Than",
+               };
+               const defaultMatchType: MT | undefined =
+                  matchTypeMap[filter.type!];
 
                const filterLabel =
                   filter.name !== filter.dimension ? filter.name : undefined;
@@ -176,6 +181,7 @@ export default function Notebook({
                   label: filterLabel,
                   filterName: filter.name ?? filter.dimension!,
                   defaultMatchType,
+                  required: filter.required ?? false,
                });
             }
          }
@@ -220,15 +226,17 @@ export default function Notebook({
       return map;
    }, [dimensionSpecs]);
 
-   // Fetch filter range data when we have dimension specs
-   // The hook now handles multiple source/model combos internally
+   // Fetch filter range data when we have dimension specs.
+   // Do NOT pass activeFilters here — the index query should return all
+   // possible values for each dimension, not just those matching the
+   // current selection. Otherwise selecting "FORD" would hide every other
+   // manufacturer from the dropdown.
    const { data: filterValuesData } = useDimensionalFilterRangeData({
       project: projectName,
       package: packageName,
       dimensionSpecs,
       versionId,
       enabled: dimensionSpecs.length > 0,
-      activeFilters,
    });
 
    /**

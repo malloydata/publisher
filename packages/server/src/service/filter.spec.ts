@@ -269,11 +269,18 @@ describe("service/filter", () => {
          );
       });
 
-      it("builds like predicate", () => {
+      it("builds like predicate with auto-wrapping (case-insensitive)", () => {
          const clause = buildFilterClause([likeFilter], {
-            name_search: "%smith%",
+            name_search: "Smith",
          });
-         expect(clause).toBe("`customer_name` ~ '%smith%'");
+         expect(clause).toBe("lower(`customer_name`) ~ '%smith%'");
+      });
+
+      it("builds like predicate preserving existing wildcards", () => {
+         const clause = buildFilterClause([likeFilter], {
+            name_search: "%Smith%",
+         });
+         expect(clause).toBe("lower(`customer_name`) ~ '%smith%'");
       });
 
       it("builds greater_than predicate", () => {
@@ -336,7 +343,7 @@ describe("service/filter", () => {
          const clause = buildFilterClause([likeFilter], {
             name_search: "foo\\bar",
          });
-         expect(clause).toBe("`customer_name` ~ 'foo\\\\bar'");
+         expect(clause).toBe("lower(`customer_name`) ~ '%foo\\\\bar%'");
       });
 
       it("ignores params that don't match any filter", () => {

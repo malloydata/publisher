@@ -40,6 +40,8 @@ export interface DimensionSpec {
    values?: string[];
    /** Preferred initial match type (e.g. "After" for date greater_than filters) */
    defaultMatchType?: import("./useDimensionFilters").MatchType;
+   /** Whether a value must be provided before queries execute */
+   required?: boolean;
 }
 
 /**
@@ -720,6 +722,7 @@ export function useDimensionalFilterRangeData(
                   {
                      query: config.query,
                      versionId: versionId,
+                     bypassFilters: true,
                   },
                );
                return {

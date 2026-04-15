@@ -1996,6 +1996,19 @@ components:
         versionId:
           type: string
           description: Version ID
+        sourceFilters:
+          type: object
+          description: Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
+        bypassFilters:
+          type: boolean
+          default: false
+          description: When true, skip server-side #(filter) injection entirely.
 
     NotebookCell:
       type: object

@@ -206,7 +206,12 @@ function buildPredicate(
       }
       case "like": {
          const v = Array.isArray(value) ? value[0] : value;
-         return `${dim} ~ '${escapeMalloyString(v)}'`;
+         const escaped = escapeMalloyString(v.toLowerCase());
+         const pattern =
+            escaped.startsWith("%") || escaped.endsWith("%")
+               ? escaped
+               : `%${escaped}%`;
+         return `lower(${dim}) ~ '${pattern}'`;
       }
       case "greater_than": {
          const v = Array.isArray(value) ? value[0] : value;
