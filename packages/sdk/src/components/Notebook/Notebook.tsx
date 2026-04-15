@@ -95,9 +95,9 @@ export default function Notebook({
    );
    const modelPath = sourceData?.modelPath ?? null;
 
-   // Extract server-side source filter definitions from notebook sources
-   // These come from #(source_filter) annotations parsed by the server
-   const serverSourceFilters = useMemo(() => {
+   // Extract server-side filter definitions from notebook sources
+   // These come from #(filter) annotations parsed by the server
+   const serverFilters = useMemo(() => {
       const result = new Map<string, Source["filters"]>();
       if (!notebook?.sources) return result;
       for (const source of notebook.sources as Source[]) {
@@ -112,17 +112,17 @@ export default function Notebook({
       return result;
    }, [notebook]);
 
-   // Determine if we're using server-driven filters (#(source_filter)) or legacy (##(filters))
-   const useServerFilters = serverSourceFilters.size > 0;
+   // Determine if we're using server-driven filters (#(filter)) or legacy (##(filters))
+   const useServerFilters = serverFilters.size > 0;
 
    // Build dimension specs from filter config and source info map
    // Each spec includes source and model for proper query routing
    const dimensionSpecs = useMemo(() => {
       if (useServerFilters && modelPath) {
-         // Server-driven: build specs from #(source_filter) metadata
+         // Server-driven: build specs from #(filter) metadata
          const specs: import("../../hooks/useDimensionalFilterRangeData").DimensionSpec[] =
             [];
-         for (const [sourceName, filters] of serverSourceFilters) {
+         for (const [sourceName, filters] of serverFilters) {
             for (const filter of filters ?? []) {
                if (!filter.dimension || !filter.type) continue;
 
@@ -190,7 +190,7 @@ export default function Notebook({
       );
    }, [
       useServerFilters,
-      serverSourceFilters,
+      serverFilters,
       filterConfig,
       sourceInfoMap,
       modelPath,
@@ -233,14 +233,12 @@ export default function Notebook({
 
    /**
     * Convert active FilterSelections into a flat { filterName: value } map
-    * suitable for the server's sourceFilters / filter_params parameter.
+    * suitable for the server's filter_params parameter.
     * Uses filterName from the selection (propagated from the spec) as the
     * API param key, falling back to dimensionName.
     */
    const buildFilterParams = useCallback(
-      (
-         filtersToApply: FilterSelection[],
-      ): { [key: string]: string | string[] } | undefined => {
+      (filtersToApply: FilterSelection[]): string | undefined => {
          if (filtersToApply.length === 0) return undefined;
 
          const toParamString = (v: unknown): string => {
@@ -260,7 +258,9 @@ export default function Notebook({
                params[paramName] = toParamString(val);
             }
          }
-         return Object.keys(params).length > 0 ? params : undefined;
+         return Object.keys(params).length > 0
+            ? JSON.stringify(params)
+            : undefined;
       },
       [],
    );

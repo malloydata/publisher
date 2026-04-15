@@ -30,7 +30,7 @@ export interface DimensionSpec {
    label?: string;
    /**
     * Server-side filter identifier used as the API param key.
-    * Defaults to dimensionName when not set. Needed when the #(source_filter)
+    * Defaults to dimensionName when not set. Needed when the #(filter)
     * annotation specifies name=X where X differs from the dimension field name.
     */
    filterName?: string;

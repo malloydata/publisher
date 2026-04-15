@@ -1,8 +1,8 @@
 /**
- * Source filter annotation parsing and query filter injection.
+ * Filter annotation parsing and query filter injection.
  *
  * Annotation format on a Malloy source:
- *   #(source_filter) [name=NAME] dimension=DIMENSION_NAME type=[equal|in|like|greater_than|less_than] [implicit] [required]
+ *   #(filter) [name=NAME] dimension=DIMENSION_NAME type=[equal|in|like|greater_than|less_than] [implicit] [required]
  *
  * At query time, Publisher injects `+ {where: <clause>}` into the Malloy query
  * based on the provided filter values and the declared filter definitions.
@@ -12,14 +12,9 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export type SourceFilterType =
-   | "equal"
-   | "in"
-   | "like"
-   | "greater_than"
-   | "less_than";
+export type FilterType = "equal" | "in" | "like" | "greater_than" | "less_than";
 
-const VALID_FILTER_TYPES = new Set<SourceFilterType>([
+const VALID_FILTER_TYPES = new Set<FilterType>([
    "equal",
    "in",
    "like",
@@ -27,13 +22,13 @@ const VALID_FILTER_TYPES = new Set<SourceFilterType>([
    "less_than",
 ]);
 
-export interface SourceFilterDefinition {
+export interface FilterDefinition {
    /** Display name for the filter. Defaults to the dimension name. */
    name: string;
    /** The source dimension this filter targets. */
    dimension: string;
    /** Comparator type. */
-   type: SourceFilterType;
+   type: FilterType;
    /** Hidden from user/agent summaries; set by infrastructure (e.g. row-level security). */
    implicit: boolean;
    /** Must be provided for every query (or error). */
@@ -44,22 +39,22 @@ export interface SourceFilterDefinition {
  * Filter values provided at query time.
  * Keys are filter names, values are the filter input(s).
  */
-export type SourceFilterParams = Record<string, string | string[]>;
+export type FilterParams = Record<string, string | string[]>;
 
 // ---------------------------------------------------------------------------
 // Annotation Parsing
 // ---------------------------------------------------------------------------
 
-const ANNOTATION_PREFIX = "#(source_filter)";
+const ANNOTATION_PREFIX = "#(filter)";
 
 /**
- * Parse a single `#(source_filter)` annotation string into a definition.
- * Returns `null` if the string is not a source_filter annotation.
+ * Parse a single `#(filter)` annotation string into a definition.
+ * Returns `null` if the string is not a filter annotation.
  * Throws on malformed annotations (missing required fields, bad type).
  */
-export function parseSourceFilterAnnotation(
+export function parseFilterAnnotation(
    annotation: string,
-): SourceFilterDefinition | null {
+): FilterDefinition | null {
    const trimmed = annotation.trim();
    if (!trimmed.startsWith(ANNOTATION_PREFIX)) {
       return null;
@@ -70,7 +65,7 @@ export function parseSourceFilterAnnotation(
 
    let name: string | undefined;
    let dimension: string | undefined;
-   let type: SourceFilterType | undefined;
+   let type: FilterType | undefined;
    let implicit = false;
    let required = false;
 
@@ -87,15 +82,15 @@ export function parseSourceFilterAnnotation(
                dimension = value;
                break;
             case "type":
-               if (!VALID_FILTER_TYPES.has(value as SourceFilterType)) {
+               if (!VALID_FILTER_TYPES.has(value as FilterType)) {
                   throw new Error(
-                     `Invalid source_filter type "${value}". Must be one of: ${[...VALID_FILTER_TYPES].join(", ")}`,
+                     `Invalid filter type "${value}". Must be one of: ${[...VALID_FILTER_TYPES].join(", ")}`,
                   );
                }
-               type = value as SourceFilterType;
+               type = value as FilterType;
                break;
             default:
-               throw new Error(`Unknown source_filter parameter "${key}"`);
+               throw new Error(`Unknown filter parameter "${key}"`);
          }
       } else {
          const flag = token.toLowerCase();
@@ -104,20 +99,18 @@ export function parseSourceFilterAnnotation(
          } else if (flag === "required") {
             required = true;
          } else {
-            throw new Error(`Unknown source_filter flag "${token}"`);
+            throw new Error(`Unknown filter flag "${token}"`);
          }
       }
    }
 
    if (!dimension) {
       throw new Error(
-         "source_filter annotation missing required 'dimension' parameter",
+         "filter annotation missing required 'dimension' parameter",
       );
    }
    if (!type) {
-      throw new Error(
-         "source_filter annotation missing required 'type' parameter",
-      );
+      throw new Error("filter annotation missing required 'type' parameter");
    }
 
    return {
@@ -130,15 +123,13 @@ export function parseSourceFilterAnnotation(
 }
 
 /**
- * Extract all `#(source_filter)` definitions from a list of annotation strings
+ * Extract all `#(filter)` definitions from a list of annotation strings
  * (as found on a Malloy source's `blockNotes`).
  */
-export function parseSourceFilters(
-   annotations: string[],
-): SourceFilterDefinition[] {
-   const filters: SourceFilterDefinition[] = [];
+export function parseFilters(annotations: string[]): FilterDefinition[] {
+   const filters: FilterDefinition[] = [];
    for (const annotation of annotations) {
-      const parsed = parseSourceFilterAnnotation(annotation);
+      const parsed = parseFilterAnnotation(annotation);
       if (parsed) {
          filters.push(parsed);
       }
@@ -195,7 +186,7 @@ function malloyLiteral(v: string): string {
  * Build a single Malloy predicate expression for one filter.
  */
 function buildPredicate(
-   filter: SourceFilterDefinition,
+   filter: FilterDefinition,
    value: string | string[],
 ): string {
    const dim = `\`${filter.dimension}\``;
@@ -236,8 +227,8 @@ function buildPredicate(
  * Throws if a required filter has no value.
  */
 export function buildFilterClause(
-   filters: SourceFilterDefinition[],
-   params: SourceFilterParams,
+   filters: FilterDefinition[],
+   params: FilterParams,
 ): string {
    const predicates: string[] = [];
 
@@ -250,7 +241,7 @@ export function buildFilterClause(
 
       if (!hasValue) {
          if (filter.required) {
-            throw new SourceFilterValidationError(
+            throw new FilterValidationError(
                `Required filter "${filter.name}" (dimension: ${filter.dimension}) was not provided`,
             );
          }
@@ -287,10 +278,10 @@ export function injectFilterRefinement(
 // Validation Error
 // ---------------------------------------------------------------------------
 
-export class SourceFilterValidationError extends Error {
+export class FilterValidationError extends Error {
    constructor(message: string) {
       super(message);
-      this.name = "SourceFilterValidationError";
+      this.name = "FilterValidationError";
    }
 }
 

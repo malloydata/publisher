@@ -2,27 +2,27 @@ import { describe, expect, it } from "bun:test";
 import {
    buildFilterClause,
    injectFilterRefinement,
-   parseSourceFilterAnnotation,
-   parseSourceFilters,
-   SourceFilterValidationError,
-   type SourceFilterDefinition,
-   type SourceFilterParams,
-} from "./source_filter";
+   parseFilterAnnotation,
+   parseFilters,
+   FilterValidationError,
+   type FilterDefinition,
+   type FilterParams,
+} from "./filter";
 
-describe("service/source_filter", () => {
+describe("service/filter", () => {
    // -----------------------------------------------------------------------
-   // parseSourceFilterAnnotation
+   // parseFilterAnnotation
    // -----------------------------------------------------------------------
-   describe("parseSourceFilterAnnotation", () => {
-      it("returns null for non-source_filter annotations", () => {
-         expect(parseSourceFilterAnnotation("#(doc) Some docs")).toBeNull();
-         expect(parseSourceFilterAnnotation("# bar_chart")).toBeNull();
-         expect(parseSourceFilterAnnotation("")).toBeNull();
+   describe("parseFilterAnnotation", () => {
+      it("returns null for non-filter annotations", () => {
+         expect(parseFilterAnnotation("#(doc) Some docs")).toBeNull();
+         expect(parseFilterAnnotation("# bar_chart")).toBeNull();
+         expect(parseFilterAnnotation("")).toBeNull();
       });
 
       it("parses a minimal annotation (dimension + type)", () => {
-         const result = parseSourceFilterAnnotation(
-            "#(source_filter) dimension=status type=equal",
+         const result = parseFilterAnnotation(
+            "#(filter) dimension=status type=equal",
          );
          expect(result).toEqual({
             name: "status",
@@ -34,8 +34,8 @@ describe("service/source_filter", () => {
       });
 
       it("parses all fields including name, implicit, required", () => {
-         const result = parseSourceFilterAnnotation(
-            '#(source_filter) name="Customer ID" dimension=customer_id type=equal implicit required',
+         const result = parseFilterAnnotation(
+            '#(filter) name="Customer ID" dimension=customer_id type=equal implicit required',
          );
          expect(result).toEqual({
             name: "Customer ID",
@@ -47,8 +47,8 @@ describe("service/source_filter", () => {
       });
 
       it("parses type=in", () => {
-         const result = parseSourceFilterAnnotation(
-            "#(source_filter) dimension=region type=in",
+         const result = parseFilterAnnotation(
+            "#(filter) dimension=region type=in",
          );
          expect(result).toEqual({
             name: "region",
@@ -60,29 +60,29 @@ describe("service/source_filter", () => {
       });
 
       it("parses type=like", () => {
-         const result = parseSourceFilterAnnotation(
-            "#(source_filter) dimension=name type=like",
+         const result = parseFilterAnnotation(
+            "#(filter) dimension=name type=like",
          );
          expect(result!.type).toBe("like");
       });
 
       it("parses type=greater_than", () => {
-         const result = parseSourceFilterAnnotation(
-            "#(source_filter) dimension=created_at type=greater_than",
+         const result = parseFilterAnnotation(
+            "#(filter) dimension=created_at type=greater_than",
          );
          expect(result!.type).toBe("greater_than");
       });
 
       it("parses type=less_than", () => {
-         const result = parseSourceFilterAnnotation(
-            "#(source_filter) dimension=created_at type=less_than",
+         const result = parseFilterAnnotation(
+            "#(filter) dimension=created_at type=less_than",
          );
          expect(result!.type).toBe("less_than");
       });
 
       it("parses required without implicit", () => {
-         const result = parseSourceFilterAnnotation(
-            "#(source_filter) dimension=tenant_id type=equal required",
+         const result = parseFilterAnnotation(
+            "#(filter) dimension=tenant_id type=equal required",
          );
          expect(result).toEqual({
             name: "tenant_id",
@@ -94,15 +94,15 @@ describe("service/source_filter", () => {
       });
 
       it("handles single-quoted name values", () => {
-         const result = parseSourceFilterAnnotation(
-            "#(source_filter) name='My Filter' dimension=col type=equal",
+         const result = parseFilterAnnotation(
+            "#(filter) name='My Filter' dimension=col type=equal",
          );
          expect(result!.name).toBe("My Filter");
       });
 
       it("handles extra whitespace", () => {
-         const result = parseSourceFilterAnnotation(
-            "  #(source_filter)   dimension=status   type=equal   required  ",
+         const result = parseFilterAnnotation(
+            "  #(filter)   dimension=status   type=equal   required  ",
          );
          expect(result).toEqual({
             name: "status",
@@ -114,62 +114,60 @@ describe("service/source_filter", () => {
       });
 
       it("throws on missing dimension", () => {
-         expect(() =>
-            parseSourceFilterAnnotation("#(source_filter) type=equal"),
-         ).toThrow("missing required 'dimension'");
+         expect(() => parseFilterAnnotation("#(filter) type=equal")).toThrow(
+            "missing required 'dimension'",
+         );
       });
 
       it("throws on missing type", () => {
          expect(() =>
-            parseSourceFilterAnnotation("#(source_filter) dimension=status"),
+            parseFilterAnnotation("#(filter) dimension=status"),
          ).toThrow("missing required 'type'");
       });
 
       it("throws on invalid type", () => {
          expect(() =>
-            parseSourceFilterAnnotation(
-               "#(source_filter) dimension=status type=banana",
-            ),
-         ).toThrow('Invalid source_filter type "banana"');
+            parseFilterAnnotation("#(filter) dimension=status type=banana"),
+         ).toThrow('Invalid filter type "banana"');
       });
 
       it("throws on unknown parameter", () => {
          expect(() =>
-            parseSourceFilterAnnotation(
-               "#(source_filter) dimension=status type=equal foo=bar",
+            parseFilterAnnotation(
+               "#(filter) dimension=status type=equal foo=bar",
             ),
-         ).toThrow('Unknown source_filter parameter "foo"');
+         ).toThrow('Unknown filter parameter "foo"');
       });
 
       it("throws on unknown flag", () => {
          expect(() =>
-            parseSourceFilterAnnotation(
-               "#(source_filter) dimension=status type=equal banana",
+            parseFilterAnnotation(
+               "#(filter) dimension=status type=equal banana",
             ),
-         ).toThrow('Unknown source_filter flag "banana"');
+         ).toThrow('Unknown filter flag "banana"');
       });
    });
 
    // -----------------------------------------------------------------------
-   // parseSourceFilters
+   // parseFilters
    // -----------------------------------------------------------------------
-   describe("parseSourceFilters", () => {
-      it("extracts source_filter annotations from a mixed list", () => {
+   describe("parseFilters", () => {
+      it("extracts filter annotations from a mixed list", () => {
          const annotations = [
             "#(doc) This is a source for orders",
-            "#(source_filter) dimension=status type=equal",
+            "#(filter) dimension=status type=equal",
             "# bar_chart",
-            "#(source_filter) dimension=region type=in required",
+            "#(filter) dimension=region type=in required",
          ];
-         const filters = parseSourceFilters(annotations);
+         const filters = parseFilters(annotations);
          expect(filters).toHaveLength(2);
          expect(filters[0].dimension).toBe("status");
          expect(filters[1].dimension).toBe("region");
          expect(filters[1].required).toBe(true);
       });
 
-      it("returns empty array when no source_filter annotations", () => {
-         const filters = parseSourceFilters(["#(doc) some docs", "# hidden"]);
+      it("returns empty array when no filter annotations", () => {
+         const filters = parseFilters(["#(doc) some docs", "# hidden"]);
          expect(filters).toHaveLength(0);
       });
    });
@@ -178,7 +176,7 @@ describe("service/source_filter", () => {
    // buildFilterClause
    // -----------------------------------------------------------------------
    describe("buildFilterClause", () => {
-      const equalFilter: SourceFilterDefinition = {
+      const equalFilter: FilterDefinition = {
          name: "status",
          dimension: "status",
          type: "equal",
@@ -186,7 +184,7 @@ describe("service/source_filter", () => {
          required: false,
       };
 
-      const inFilter: SourceFilterDefinition = {
+      const inFilter: FilterDefinition = {
          name: "region",
          dimension: "region",
          type: "in",
@@ -194,7 +192,7 @@ describe("service/source_filter", () => {
          required: false,
       };
 
-      const likeFilter: SourceFilterDefinition = {
+      const likeFilter: FilterDefinition = {
          name: "name_search",
          dimension: "customer_name",
          type: "like",
@@ -202,7 +200,7 @@ describe("service/source_filter", () => {
          required: false,
       };
 
-      const gtFilter: SourceFilterDefinition = {
+      const gtFilter: FilterDefinition = {
          name: "start_date",
          dimension: "created_at",
          type: "greater_than",
@@ -210,7 +208,7 @@ describe("service/source_filter", () => {
          required: false,
       };
 
-      const ltFilter: SourceFilterDefinition = {
+      const ltFilter: FilterDefinition = {
          name: "end_date",
          dimension: "created_at",
          type: "less_than",
@@ -218,7 +216,7 @@ describe("service/source_filter", () => {
          required: false,
       };
 
-      const requiredFilter: SourceFilterDefinition = {
+      const requiredFilter: FilterDefinition = {
          name: "tenant_id",
          dimension: "tenant_id",
          type: "equal",
@@ -293,7 +291,7 @@ describe("service/source_filter", () => {
       });
 
       it("combines multiple filters with AND", () => {
-         const params: SourceFilterParams = {
+         const params: FilterParams = {
             status: "active",
             region: ["US", "EU"],
          };
@@ -304,7 +302,7 @@ describe("service/source_filter", () => {
       });
 
       it("skips optional filters with no value", () => {
-         const params: SourceFilterParams = {
+         const params: FilterParams = {
             status: "active",
          };
          const clause = buildFilterClause([equalFilter, inFilter], params);
@@ -313,7 +311,7 @@ describe("service/source_filter", () => {
 
       it("throws on missing required filter", () => {
          expect(() => buildFilterClause([requiredFilter], {})).toThrow(
-            SourceFilterValidationError,
+            FilterValidationError,
          );
          expect(() => buildFilterClause([requiredFilter], {})).toThrow(
             'Required filter "tenant_id"',

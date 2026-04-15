@@ -45,11 +45,11 @@ import { URL_READER } from "../utils";
 import {
    buildFilterClause,
    injectFilterRefinement,
-   parseSourceFilters,
-   SourceFilterValidationError,
-   type SourceFilterDefinition,
-   type SourceFilterParams,
-} from "./source_filter";
+   parseFilters,
+   FilterValidationError,
+   type FilterDefinition,
+   type FilterParams,
+} from "./filter";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -91,8 +91,8 @@ export class Model {
    private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
-   /** Parsed #(source_filter) definitions keyed by source name. */
-   private sourceFilterMap: Map<string, SourceFilterDefinition[]>;
+   /** Parsed #(filter) definitions keyed by source name. */
+   private filterMap: Map<string, FilterDefinition[]>;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -115,7 +115,7 @@ export class Model {
       sourceInfos: Malloy.SourceInfo[] | undefined,
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
-      sourceFilterMap?: Map<string, SourceFilterDefinition[]>,
+      filterMap?: Map<string, FilterDefinition[]>,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -128,18 +128,18 @@ export class Model {
       this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
-      this.sourceFilterMap = sourceFilterMap ?? new Map();
+      this.filterMap = filterMap ?? new Map();
       this.modelInfo = this.modelDef
          ? modelDefToModelInfo(this.modelDef)
          : undefined;
    }
 
    /**
-    * Get the parsed source filter definitions for a given source name.
+    * Get the parsed filter definitions for a given source name.
     * Returns an empty array if no filters are declared.
     */
-   public getSourceFilters(sourceName: string): SourceFilterDefinition[] {
-      return this.sourceFilterMap.get(sourceName) ?? [];
+   public getFilters(sourceName: string): FilterDefinition[] {
+      return this.filterMap.get(sourceName) ?? [];
    }
 
    /**
@@ -176,13 +176,13 @@ export class Model {
          let modelDef = undefined;
          let sources = undefined;
          let queries = undefined;
-         let sourceFilterMap: Map<string, SourceFilterDefinition[]> | undefined;
+         let filterMap: Map<string, FilterDefinition[]> | undefined;
          const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
             modelDef = (await modelMaterializer.getModel())._modelDef;
             const sourceResult = Model.getSources(modelPath, modelDef);
             sources = sourceResult.sources;
-            sourceFilterMap = sourceResult.sourceFilterMap;
+            filterMap = sourceResult.filterMap;
             queries = Model.getQueries(modelPath, modelDef);
 
             // Collect sourceInfos from imported models first
@@ -243,7 +243,7 @@ export class Model {
             sourceInfos.length > 0 ? sourceInfos : undefined,
             runnableNotebookCells,
             undefined,
-            sourceFilterMap,
+            filterMap,
          );
       } catch (error) {
          let computedError = error;
@@ -329,7 +329,7 @@ export class Model {
       sourceName?: string,
       queryName?: string,
       query?: string,
-      sourceFilterParams?: SourceFilterParams,
+      filterParams?: FilterParams,
       bypassFilters?: boolean,
    ): Promise<{
       result: Malloy.Result;
@@ -381,11 +381,11 @@ export class Model {
          if (!bypassFilters) {
             const effectiveSource = sourceName ?? this.extractSourceName(query);
             if (effectiveSource) {
-               const filters = this.getSourceFilters(effectiveSource);
+               const filters = this.getFilters(effectiveSource);
                if (filters.length > 0) {
                   const filterClause = buildFilterClause(
                      filters,
-                     sourceFilterParams ?? {},
+                     filterParams ?? {},
                   );
                   queryString = injectFilterRefinement(
                      queryString,
@@ -402,7 +402,7 @@ export class Model {
             throw error;
          }
          // Source filter validation errors are client errors (400)
-         if (error instanceof SourceFilterValidationError) {
+         if (error instanceof FilterValidationError) {
             throw new BadRequestError(error.message);
          }
          // Re-throw MalloyError as-is (maps to 400)
@@ -555,7 +555,7 @@ export class Model {
 
    public async executeNotebookCell(
       cellIndex: number,
-      sourceFilterParams?: SourceFilterParams,
+      filterParams?: FilterParams,
       bypassFilters?: boolean,
    ): Promise<{
       type: "code" | "markdown";
@@ -599,11 +599,11 @@ export class Model {
             if (!bypassFilters && cell.modelMaterializer) {
                const effectiveSource = this.extractSourceName(cell.text);
                if (effectiveSource) {
-                  const filters = this.getSourceFilters(effectiveSource);
+                  const filters = this.getFilters(effectiveSource);
                   if (filters.length > 0) {
                      const filterClause = buildFilterClause(
                         filters,
-                        sourceFilterParams ?? {},
+                        filterParams ?? {},
                      );
                      if (filterClause) {
                         const refinedQuery = injectFilterRefinement(
@@ -628,7 +628,7 @@ export class Model {
                this.modelInfo &&
                JSON.stringify(API.util.wrapResult(result));
          } catch (error) {
-            if (error instanceof SourceFilterValidationError) {
+            if (error instanceof FilterValidationError) {
                throw new BadRequestError(error.message);
             }
             if (error instanceof MalloyError) {
@@ -738,9 +738,9 @@ export class Model {
       modelDef: ModelDef,
    ): {
       sources: ApiSource[];
-      sourceFilterMap: Map<string, SourceFilterDefinition[]>;
+      filterMap: Map<string, FilterDefinition[]>;
    } {
-      const sourceFilterMap = new Map<string, SourceFilterDefinition[]>();
+      const filterMap = new Map<string, FilterDefinition[]>();
 
       const sources = Object.values(modelDef.contents)
          .filter((obj) => isSourceDef(obj))
@@ -750,7 +750,7 @@ export class Model {
                ?.filter((note) => note.at.url.includes(modelPath))
                .map((note) => note.text);
 
-            // Parse #(source_filter) from ALL annotations (including imports)
+            // Parse #(filter) from ALL annotations (including imports)
             // so filters defined on an imported source are honored by notebooks
             const allAnnotations = (
                sourceObj as StructDef
@@ -758,9 +758,9 @@ export class Model {
             let filters: ApiSourceFilter[] | undefined;
             if (allAnnotations && allAnnotations.length > 0) {
                try {
-                  const parsed = parseSourceFilters(allAnnotations);
+                  const parsed = parseFilters(allAnnotations);
                   if (parsed.length > 0) {
-                     sourceFilterMap.set(sourceName, parsed);
+                     filterMap.set(sourceName, parsed);
                      const structFields = (sourceObj as StructDef).fields;
                      filters = parsed.map((f) => {
                         const field = structFields.find(
@@ -778,7 +778,7 @@ export class Model {
                   }
                } catch (err) {
                   logger.warn(
-                     `Failed to parse source_filter annotations on source "${sourceName}"`,
+                     `Failed to parse filter annotations on source "${sourceName}"`,
                      { error: err },
                   );
                }
@@ -811,7 +811,7 @@ export class Model {
             } as ApiSource;
          });
 
-      return { sources, sourceFilterMap };
+      return { sources, filterMap };
    }
 
    static async getModelMaterializer(

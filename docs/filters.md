@@ -1,17 +1,17 @@
 # Source Filters
 
-Source filters let you declare filterable dimensions directly in your Malloy model using `#(source_filter)` annotations. Publisher automatically parses these declarations, exposes filter metadata through the API, renders filter widgets in the notebook UI, and injects `where:` clauses into queries server-side.
+Source filters let you declare filterable dimensions directly in your Malloy model using `#(filter)` annotations. Publisher automatically parses these declarations, exposes filter metadata through the API, renders filter widgets in the notebook UI, and injects `where:` clauses into queries server-side.
 
 ## Declaring Filters
 
-Add `#(source_filter)` annotations above a source definition:
+Add `#(filter)` annotations above a source definition:
 
 ```malloy
-#(source_filter) name=Manufacturer dimension=Manufacturer type=in
-#(source_filter) name=Subject dimension=Subject type=like
-#(source_filter) name=Major_Recall dimension="Major Recall" type=equal
-#(source_filter) name=Recall_After dimension="Report Received Date" type=greater_than
-#(source_filter) name=Recall_Before dimension="Report Received Date" type=less_than
+#(filter) name=Manufacturer dimension=Manufacturer type=in
+#(filter) name=Subject dimension=Subject type=like
+#(filter) name=Major_Recall dimension="Major Recall" type=equal
+#(filter) name=Recall_After dimension="Report Received Date" type=greater_than
+#(filter) name=Recall_Before dimension="Report Received Date" type=less_than
 source: recalls is duckdb.table('data/auto_recalls.csv') extend {
   measure:
     recall_count is count()
@@ -22,7 +22,7 @@ source: recalls is duckdb.table('data/auto_recalls.csv') extend {
 ### Annotation Syntax
 
 ```
-#(source_filter) [name=NAME] dimension=DIMENSION type=TYPE [implicit] [required]
+#(filter) [name=NAME] dimension=DIMENSION type=TYPE [implicit] [required]
 ```
 
 | Parameter | Required | Description |
@@ -48,8 +48,8 @@ source: recalls is duckdb.table('data/auto_recalls.csv') extend {
 You can declare multiple filters targeting the same dimension by giving each a unique `name`. This is useful for date ranges:
 
 ```malloy
-#(source_filter) name=Start_Date dimension="Created At" type=greater_than
-#(source_filter) name=End_Date dimension="Created At" type=less_than
+#(filter) name=Start_Date dimension="Created At" type=greater_than
+#(filter) name=End_Date dimension="Created At" type=less_than
 ```
 
 Each filter operates independently in the UI and maps to its own API parameter.
@@ -60,7 +60,7 @@ Each filter operates independently in the UI and maps to its own API parameter.
 
 When a query is executed, Publisher:
 
-1. Looks up `#(source_filter)` definitions for the query's source
+1. Looks up `#(filter)` definitions for the query's source
 2. Matches provided parameter values to filter definitions by `name`
 3. Builds Malloy predicates with proper literal formatting (strings, booleans, `@YYYY-MM-DD` dates)
 4. Appends a `+ { where: ... }` refinement to the query before compilation
@@ -141,7 +141,7 @@ Implicit filters are automatically stripped from MCP responses so AI agents only
 
 ## Notebook UI
 
-When a notebook's model declares `#(source_filter)` annotations, the Publisher UI automatically renders filter widgets above the notebook content. The widget type is chosen based on the dimension's data type:
+When a notebook's model declares `#(filter)` annotations, the Publisher UI automatically renders filter widgets above the notebook content. The widget type is chosen based on the dimension's data type:
 
 | Dimension Type | Widget |
 |---------------|--------|

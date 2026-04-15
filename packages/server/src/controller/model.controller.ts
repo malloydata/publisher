@@ -1,7 +1,7 @@
 import { components } from "../api";
 import { ModelNotFoundError } from "../errors";
 import { ProjectStore } from "../service/project_store";
-import type { SourceFilterParams } from "../service/source_filter";
+import type { FilterParams } from "../service/filter";
 
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
@@ -85,7 +85,7 @@ export class ModelController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
-      sourceFilters?: SourceFilterParams,
+      sourceFilters?: FilterParams,
       bypassFilters?: boolean,
    ): Promise<{
       type: "code" | "markdown";

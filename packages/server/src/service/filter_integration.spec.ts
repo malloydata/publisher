@@ -15,7 +15,7 @@ import path from "path";
 import { BadRequestError } from "../errors";
 import { Model } from "./model";
 
-const TEST_DIR = path.join(os.tmpdir(), "source-filter-integration-tests");
+const TEST_DIR = path.join(os.tmpdir(), "filter-integration-tests");
 const TEST_DB_DIR = path.join(TEST_DIR, "db");
 const TEST_DB_PATH = path.join(TEST_DB_DIR, "test.duckdb");
 const TEST_PKG_DIR = path.join(TEST_DIR, "pkg");
@@ -40,9 +40,9 @@ INSERT INTO orders VALUES
 `;
 
 const MODEL_WITH_REQUIRED = `
-#(source_filter) dimension=region type=in
-#(source_filter) dimension=status type=equal
-#(source_filter) name=tenant dimension=customer_id type=equal implicit required
+#(filter) dimension=region type=in
+#(filter) dimension=status type=equal
+#(filter) name=tenant dimension=customer_id type=equal implicit required
 source: orders is duckdb.table('orders') extend {
    primary_key: order_id
 
@@ -63,8 +63,8 @@ source: orders is duckdb.table('orders') extend {
 `;
 
 const MODEL_OPTIONAL_ONLY = `
-#(source_filter) dimension=region type=in
-#(source_filter) dimension=status type=equal
+#(filter) dimension=region type=in
+#(filter) dimension=status type=equal
 source: orders is duckdb.table('orders') extend {
    primary_key: order_id
 
@@ -133,10 +133,6 @@ function asRows(compactResult: unknown): Row[] {
 }
 
 /**
- * Parse a notebook cell result (JSON-stringified Malloy.Result wrapper)
- * and extract the first row values.
- */
-/**
  * Parse a notebook cell result (JSON-stringified Malloy result).
  * The shape is: { schema, data: { kind, array_value: [{ record_value: { field_name: {kind, ...value} } }, ...] }, ... }
  * We extract column values from the record structure.
@@ -172,7 +168,7 @@ function parseNotebookResult(resultJson: string): Row[] {
    );
 }
 
-describe("source_filter integration", () => {
+describe("filter integration", () => {
    beforeEach(async () => {
       await writeFile("orders.malloy", MODEL_WITH_REQUIRED);
       await writeFile("orders_optional.malloy", MODEL_OPTIONAL_ONLY);
@@ -192,7 +188,7 @@ describe("source_filter integration", () => {
    // Model loading & filter metadata
    // -----------------------------------------------------------------------
    describe("model loading", () => {
-      it("parses source filter annotations and exposes them via getSources()", async () => {
+      it("parses filter annotations and exposes them via getSources()", async () => {
          const model = await Model.create(
             "test-pkg",
             TEST_PKG_DIR,

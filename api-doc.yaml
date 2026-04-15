@@ -1471,6 +1471,21 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - name: filter_params
+          in: query
+          description: JSON-encoded filter parameter values keyed by filter name
+          required: false
+          schema:
+            type: string
+        - name: bypass_filters
+          in: query
+          description: When true, skip filter injection entirely
+          required: false
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
       responses:
         "200":
           description: Cell execution result
@@ -1911,7 +1926,7 @@ components:
 
     SourceFilter:
       type: object
-      description: A source filter declared via #(source_filter) annotation
+      description: A filter declared via #(filter) annotation on a Malloy source
       properties:
         name:
           type: string
@@ -1957,7 +1972,7 @@ components:
             $ref: "#/components/schemas/View"
         filters:
           type: array
-          description: Filters declared on this source via #(source_filter) annotations
+          description: Filters declared on this source via #(filter) annotations
           items:
             $ref: "#/components/schemas/SourceFilter"
 

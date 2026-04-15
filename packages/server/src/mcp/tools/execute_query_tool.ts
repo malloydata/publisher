@@ -28,7 +28,7 @@ const executeQueryShape = {
       .record(z.union([z.string(), z.array(z.string())]))
       .optional()
       .describe(
-         "Filter parameter values keyed by filter name. Used with sources that declare #(source_filter) annotations.",
+         "Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.",
       ),
 };
 

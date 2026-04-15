@@ -450,7 +450,7 @@ export interface components {
          /** @description Annotations attached to the query */
          annotations?: string[];
       };
-      /** @description A source filter declared via */
+      /** @description A filter declared via */
       SourceFilter: {
          /** @description Display name of the filter */
          name?: string;
