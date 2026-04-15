@@ -451,7 +451,7 @@ export interface components {
          annotations?: string[];
       };
       /** @description A filter declared via */
-      SourceFilter: {
+      Filter: {
          /** @description Display name of the filter */
          name?: string;
          /** @description Dimension this filter targets */
@@ -477,7 +477,7 @@ export interface components {
          /** @description Views defined in this source */
          views?: components["schemas"]["View"][];
          /** @description Filters declared on this source via */
-         filters?: components["schemas"]["SourceFilter"][];
+         filters?: components["schemas"]["Filter"][];
       };
       /** @description Request body for executing a Malloy query */
       QueryRequest: {
@@ -494,6 +494,15 @@ export interface components {
          compactJson?: boolean;
          /** @description Version ID */
          versionId?: string;
+         /** @description Filter parameter values keyed by filter name. Used with sources that declare */
+         filterParams?: {
+            [key: string]: string | string[];
+         };
+         /**
+          * @description When true, skip server-side
+          * @default false
+          */
+         bypassFilters?: boolean;
       };
       /** @description Individual cell within a Malloy notebook */
       NotebookCell: {
@@ -1972,6 +1981,10 @@ export interface operations {
          query?: {
             /** @description Version identifier for the package */
             versionId?: components["schemas"]["VersionIdPattern"];
+            /** @description JSON-encoded filter parameter values keyed by filter name */
+            filter_params?: string;
+            /** @description When true, skip filter injection entirely */
+            bypass_filters?: "true" | "false";
          };
          path: {
             /** @description Name of the project */

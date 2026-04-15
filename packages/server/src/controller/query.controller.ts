@@ -30,7 +30,7 @@ export class QueryController {
       queryName: string,
       query: string,
       compactJson: boolean = false,
-      sourceFilters?: FilterParams,
+      filterParams?: FilterParams,
       bypassFilters?: boolean,
    ): Promise<ApiQuery> {
       const project = await this.projectStore.getProject(projectName, false);
@@ -44,7 +44,7 @@ export class QueryController {
             sourceName,
             queryName,
             query,
-            sourceFilters,
+            filterParams,
             bypassFilters,
          );
          const renderLogs = validateRenderTags(result);

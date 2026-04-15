@@ -1924,7 +1924,7 @@ components:
           items:
             type: string
 
-    SourceFilter:
+    Filter:
       type: object
       description: A filter declared via #(filter) annotation on a Malloy source
       properties:
@@ -1974,7 +1974,7 @@ components:
           type: array
           description: Filters declared on this source via #(filter) annotations
           items:
-            $ref: "#/components/schemas/SourceFilter"
+            $ref: "#/components/schemas/Filter"
 
     QueryRequest:
       type: object
@@ -1996,7 +1996,7 @@ components:
         versionId:
           type: string
           description: Version ID
-        sourceFilters:
+        filterParams:
           type: object
           description: Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.
           additionalProperties:

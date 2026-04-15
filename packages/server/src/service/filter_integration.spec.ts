@@ -251,7 +251,7 @@ describe("filter integration", () => {
    // Query execution with optional filters
    // -----------------------------------------------------------------------
    describe("query execution with optional filters", () => {
-      it("runs unfiltered query (no sourceFilters provided)", async () => {
+      it("runs unfiltered query (no filterParams provided)", async () => {
          const model = await Model.create(
             "test-pkg",
             TEST_PKG_DIR,
@@ -548,7 +548,7 @@ describe("filter integration", () => {
          expect(Number(notebookRows[0].total_amount)).toBe(875);
       });
 
-      it("applies sourceFilters to notebook cell execution", async () => {
+      it("applies filterParams to notebook cell execution", async () => {
          const model = await Model.create(
             "test-pkg",
             TEST_PKG_DIR,

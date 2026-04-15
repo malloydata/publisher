@@ -55,7 +55,7 @@ type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 type ApiSource = components["schemas"]["Source"];
-type ApiSourceFilter = components["schemas"]["SourceFilter"];
+type ApiFilter = components["schemas"]["Filter"];
 type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
 export type ApiConnection = components["schemas"]["Connection"];
@@ -755,7 +755,7 @@ export class Model {
             const allAnnotations = (
                sourceObj as StructDef
             ).annotation?.blockNotes?.map((note) => note.text);
-            let filters: ApiSourceFilter[] | undefined;
+            let filters: ApiFilter[] | undefined;
             if (allAnnotations && allAnnotations.length > 0) {
                try {
                   const parsed = parseFilters(allAnnotations);

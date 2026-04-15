@@ -24,7 +24,7 @@ const executeQueryShape = {
    query: z.string().optional().describe("Ad-hoc Malloy query code"),
    sourceName: z.string().optional().describe("Source name for a view"),
    queryName: z.string().optional().describe("Named query or view"),
-   sourceFilters: z
+   filterParams: z
       .record(z.union([z.string(), z.array(z.string())]))
       .optional()
       .describe(
@@ -55,7 +55,7 @@ export function registerExecuteQueryTool(
             query,
             sourceName,
             queryName,
-            sourceFilters,
+            filterParams,
          } = params;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
@@ -127,7 +127,7 @@ export function registerExecuteQueryTool(
                   undefined,
                   undefined,
                   query,
-                  sourceFilters,
+                  filterParams,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"
@@ -173,7 +173,7 @@ export function registerExecuteQueryTool(
                   sourceName,
                   queryName,
                   undefined,
-                  sourceFilters,
+                  filterParams,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"

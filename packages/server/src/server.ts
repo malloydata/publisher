@@ -818,10 +818,10 @@ app.get(
          const notebookPath = (req.params as Record<string, string>)["0"];
 
          // Parse optional filter_params (JSON query string) and bypass_filters
-         let sourceFilters: Record<string, string | string[]> | undefined;
+         let filterParams: Record<string, string | string[]> | undefined;
          if (typeof req.query.filter_params === "string") {
             try {
-               sourceFilters = JSON.parse(req.query.filter_params);
+               filterParams = JSON.parse(req.query.filter_params);
             } catch {
                res.status(400).json({
                   error: "Invalid filter_params: must be valid JSON",
@@ -838,7 +838,7 @@ app.get(
                req.params.packageName,
                notebookPath,
                cellIndex,
-               sourceFilters,
+               filterParams,
                bypassFilters,
             ),
          );
@@ -896,7 +896,7 @@ app.post(
                req.body.queryName as string,
                req.body.query as string,
                req.body.compactJson === true,
-               req.body.sourceFilters as
+               (req.body.filterParams ?? req.body.sourceFilters) as
                   | Record<string, string | string[]>
                   | undefined,
                req.body.bypassFilters === true ? true : undefined,

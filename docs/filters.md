@@ -107,7 +107,7 @@ The `dimensionType` field reflects the Malloy type of the underlying dimension (
 ```json
 {
   "query": "run: recalls -> by_manufacturer",
-  "sourceFilters": {
+  "filterParams": {
     "Manufacturer": ["FORD", "TOYOTA"],
     "Recall_After": "2020-01-01"
   },
@@ -123,7 +123,7 @@ Query parameters:
 
 ### MCP Tool
 
-The `malloy_executeQuery` tool accepts a `sourceFilters` parameter:
+The `malloy_executeQuery` tool accepts a `filterParams` parameter:
 
 ```json
 {
@@ -131,7 +131,7 @@ The `malloy_executeQuery` tool accepts a `sourceFilters` parameter:
   "packageName": "auto_recalls",
   "model": "auto_recalls.malloy",
   "query": "run: recalls -> by_manufacturer",
-  "sourceFilters": {
+  "filterParams": {
     "Manufacturer": ["FORD"]
   }
 }

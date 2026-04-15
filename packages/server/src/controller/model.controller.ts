@@ -85,7 +85,7 @@ export class ModelController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
-      sourceFilters?: FilterParams,
+      filterParams?: FilterParams,
       bypassFilters?: boolean,
    ): Promise<{
       type: "code" | "markdown";
@@ -104,6 +104,6 @@ export class ModelController {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
-      return model.executeNotebookCell(cellIndex, sourceFilters, bypassFilters);
+      return model.executeNotebookCell(cellIndex, filterParams, bypassFilters);
    }
 }
