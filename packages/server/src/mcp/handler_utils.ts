@@ -126,10 +126,7 @@ export async function getModelForQuery(
    projectName: string,
    packageName: string,
    modelPath: string,
-): Promise<
-   | { model: Model; buildManifest: Record<string, { tableName: string }> }
-   | { error: ErrorDetails }
-> {
+): Promise<{ model: Model } | { error: ErrorDetails }> {
    try {
       const project = await projectStore.getProject(projectName, false);
       const pkg = await project.getPackage(packageName, false);
@@ -143,7 +140,7 @@ export async function getModelForQuery(
       }
       // Attempt to get the model definition early to catch initial compilation errors
       await model.getModel(); // This might throw ModelCompilationError
-      return { model, buildManifest: pkg.buildManifest };
+      return { model };
    } catch (error) {
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;

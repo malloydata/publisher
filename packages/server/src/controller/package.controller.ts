@@ -36,7 +36,11 @@ export class PackageController {
       return _package.getPackageMetadata();
    }
 
-   async addPackage(projectName: string, body: ApiPackage) {
+   async addPackage(
+      projectName: string,
+      body: ApiPackage,
+      options?: { autoLoadManifest?: boolean },
+   ) {
       if (this.projectStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
@@ -50,7 +54,9 @@ export class PackageController {
       const result = await project.addPackage(body.name);
       await this.projectStore.addPackageToDatabase(projectName, body.name);
 
-      await this.tryLoadExistingManifest(projectName, body.name);
+      if (options?.autoLoadManifest === true) {
+         await this.tryLoadExistingManifest(projectName, body.name);
+      }
 
       return result;
    }

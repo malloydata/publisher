@@ -110,4 +110,29 @@ describe("DuckDBManifestStore", () => {
          );
       });
    });
+
+   describe("listEntries", () => {
+      it("should return entries from the repository", async () => {
+         const entries = [
+            makeEntry(),
+            makeEntry({ id: "entry-2", buildId: "build-def" }),
+         ];
+         ctx.repository.listManifestEntries.resolves(entries);
+
+         const result = await ctx.store.listEntries("proj-1", "pkg");
+
+         expect(result).toEqual(entries);
+         expect(
+            ctx.repository.listManifestEntries.calledWith("proj-1", "pkg"),
+         ).toBe(true);
+      });
+
+      it("should return empty array when no entries exist", async () => {
+         ctx.repository.listManifestEntries.resolves([]);
+
+         const result = await ctx.store.listEntries("proj-1", "pkg");
+
+         expect(result).toEqual([]);
+      });
+   });
 });

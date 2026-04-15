@@ -38,10 +38,10 @@ function createMocks() {
       listManifestEntries: sandbox.stub(),
    } as unknown as sinon.SinonStubbedInstance<ResourceRepository>;
 
-   const setBuildManifest = sandbox.stub();
+   const reloadAllModels = sandbox.stub().resolves();
 
    const pkg = {
-      setBuildManifest,
+      reloadAllModels,
    };
 
    const project = {
@@ -50,7 +50,7 @@ function createMocks() {
 
    const projectStore = {
       storageManager: {
-         getManifestStore: () => manifestStore,
+         getManifestStore: (_projectId?: string) => manifestStore,
          getRepository: () => repository,
       },
       getProject: sandbox.stub().resolves(project),
@@ -65,7 +65,7 @@ function createMocks() {
       projectStore,
       project,
       pkg,
-      setBuildManifest,
+      reloadAllModels,
       service,
    };
 }
@@ -122,7 +122,7 @@ describe("ManifestService", () => {
       it("should delegate to the manifest store", async () => {
          ctx.manifestStore.deleteEntry.resolves();
 
-         await ctx.service.deleteEntry("entry-1");
+         await ctx.service.deleteEntry("proj-1", "entry-1");
 
          expect(ctx.manifestStore.deleteEntry.calledOnce).toBe(true);
          expect(ctx.manifestStore.deleteEntry.firstCall.args[0]).toBe(
@@ -153,7 +153,7 @@ describe("ManifestService", () => {
             ),
          ).toBe(true);
          expect(ctx.project.getPackage.calledWith("pkg", false)).toBe(true);
-         expect(ctx.setBuildManifest.calledWith(manifest.entries)).toBe(true);
+         expect(ctx.reloadAllModels.calledWith(manifest.entries)).toBe(true);
       });
 
       it("should return an empty manifest when no entries exist", async () => {
@@ -170,7 +170,7 @@ describe("ManifestService", () => {
          );
 
          expect(result.entries).toEqual({});
-         expect(ctx.setBuildManifest.calledWith({})).toBe(true);
+         expect(ctx.reloadAllModels.calledWith({})).toBe(true);
       });
    });
 

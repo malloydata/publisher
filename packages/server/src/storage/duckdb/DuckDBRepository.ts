@@ -1,16 +1,16 @@
 import {
-   BuildExecution,
-   BuildExecutionStatus,
    Connection,
    ManifestEntry,
+   Materialization,
+   MaterializationStatus,
    Package,
    Project,
    ResourceRepository,
 } from "../DatabaseInterface";
-import { BuildExecutionRepository } from "./BuildExecutionRepository";
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { ManifestRepository } from "./ManifestRepository";
+import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
 import { ProjectRepository } from "./ProjectRepository";
 
@@ -18,14 +18,14 @@ export class DuckDBRepository implements ResourceRepository {
    private projectRepo: ProjectRepository;
    private packageRepo: PackageRepository;
    private connectionRepo: ConnectionRepository;
-   private buildExecRepo: BuildExecutionRepository;
+   private materializationRepo: MaterializationRepository;
    private manifestRepo: ManifestRepository;
 
    constructor(public db: DuckDBConnection) {
       this.projectRepo = new ProjectRepository(db);
       this.packageRepo = new PackageRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
-      this.buildExecRepo = new BuildExecutionRepository(db);
+      this.materializationRepo = new MaterializationRepository(db);
       this.manifestRepo = new ManifestRepository(db);
    }
 
@@ -58,7 +58,7 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deleteProject(id: string): Promise<void> {
       await this.manifestRepo.deleteEntriesByProjectId(id);
-      await this.buildExecRepo.deleteByProjectId(id);
+      await this.materializationRepo.deleteByProjectId(id);
       await this.connectionRepo.deleteConnectionsByProjectId(id);
       await this.packageRepo.deletePackagesByProjectId(id);
       await this.projectRepo.deleteProject(id);
@@ -101,7 +101,10 @@ export class DuckDBRepository implements ResourceRepository {
             pkg.projectId,
             pkg.name,
          );
-         await this.buildExecRepo.deleteByPackage(pkg.projectId, pkg.name);
+         await this.materializationRepo.deleteByPackage(
+            pkg.projectId,
+            pkg.name,
+         );
       }
       await this.packageRepo.deletePackage(id);
    }
@@ -148,45 +151,50 @@ export class DuckDBRepository implements ResourceRepository {
       return this.connectionRepo.deleteConnectionsByProjectId(id);
    }
 
-   // ==================== BUILD EXECUTIONS ====================
+   // ==================== MATERIALIZATIONS ====================
 
-   async listBuildExecutions(
+   async listMaterializations(
       projectId: string,
       packageName: string,
-   ): Promise<BuildExecution[]> {
-      return this.buildExecRepo.listExecutions(projectId, packageName);
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
+      return this.materializationRepo.list(projectId, packageName, options);
    }
 
-   async getBuildExecutionById(id: string): Promise<BuildExecution | null> {
-      return this.buildExecRepo.getExecutionById(id);
+   async getMaterializationById(id: string): Promise<Materialization | null> {
+      return this.materializationRepo.getById(id);
    }
 
-   async getRunningBuildExecution(
+   async getActiveMaterialization(
       projectId: string,
       packageName: string,
-   ): Promise<BuildExecution | null> {
-      return this.buildExecRepo.getRunningExecution(projectId, packageName);
+   ): Promise<Materialization | null> {
+      return this.materializationRepo.getActive(projectId, packageName);
    }
 
-   async createBuildExecution(
+   async createMaterialization(
       projectId: string,
       packageName: string,
-      status: BuildExecutionStatus = "PENDING",
-   ): Promise<BuildExecution | null> {
-      return this.buildExecRepo.createExecution(projectId, packageName, status);
+      status: MaterializationStatus = "PENDING",
+   ): Promise<Materialization> {
+      return this.materializationRepo.create(projectId, packageName, status);
    }
 
-   async updateBuildExecution(
+   async updateMaterialization(
       id: string,
       updates: {
-         status?: BuildExecutionStatus;
+         status?: MaterializationStatus;
          startedAt?: Date;
          completedAt?: Date;
          error?: string | null;
          metadata?: Record<string, unknown> | null;
       },
-   ): Promise<BuildExecution> {
-      return this.buildExecRepo.updateExecution(id, updates);
+   ): Promise<Materialization> {
+      return this.materializationRepo.update(id, updates);
+   }
+
+   async deleteMaterialization(id: string): Promise<void> {
+      return this.materializationRepo.deleteById(id);
    }
 
    // ==================== BUILD MANIFESTS ====================

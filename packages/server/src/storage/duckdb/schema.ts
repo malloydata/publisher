@@ -64,9 +64,9 @@ export async function initializeSchema(
     )
   `);
 
-   // Build executions table
+   // Materializations table
    await db.run(`
-    CREATE TABLE IF NOT EXISTS build_executions (
+    CREATE TABLE IF NOT EXISTS materializations (
       id VARCHAR PRIMARY KEY,
       project_id VARCHAR NOT NULL,
       package_name VARCHAR NOT NULL,
@@ -89,8 +89,8 @@ export async function initializeSchema(
       package_name VARCHAR NOT NULL,
       build_id VARCHAR NOT NULL,
       table_name VARCHAR NOT NULL,
-      source_name VARCHAR,
-      connection_name VARCHAR,
+      source_name VARCHAR NOT NULL,
+      connection_name VARCHAR NOT NULL,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id),
@@ -106,7 +106,7 @@ export async function initializeSchema(
       "CREATE INDEX IF NOT EXISTS idx_connections_project_id ON connections(project_id)",
    );
    await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_build_executions_project_package ON build_executions(project_id, package_name)",
+      "CREATE INDEX IF NOT EXISTS idx_materializations_project_package ON materializations(project_id, package_name)",
    );
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_build_manifests_project_package ON build_manifests(project_id, package_name)",
@@ -116,7 +116,7 @@ export async function initializeSchema(
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = [
       "build_manifests",
-      "build_executions",
+      "materializations",
       "packages",
       "connections",
       "projects",

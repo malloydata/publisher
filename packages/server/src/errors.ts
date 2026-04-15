@@ -20,9 +20,9 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
       return httpError(502, error.message);
-   } else if (error instanceof BuildNotFoundError) {
+   } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
-   } else if (error instanceof BuildConflictError) {
+   } else if (error instanceof MaterializationConflictError) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
       return httpError(409, error.message);
@@ -97,13 +97,13 @@ export class FrozenConfigError extends Error {
    }
 }
 
-export class BuildNotFoundError extends Error {
+export class MaterializationNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }
 }
 
-export class BuildConflictError extends Error {
+export class MaterializationConflictError extends Error {
    constructor(message: string) {
       super(message);
    }

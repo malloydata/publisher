@@ -1,13 +1,13 @@
-import { BuildExecution, BuildExecutionStatus } from "../DatabaseInterface";
+import { Materialization, MaterializationStatus } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
 /**
- * DuckDB-backed repository for package build executions.
+ * DuckDB-backed repository for package materializations.
  *
- * A BuildExecution tracks a single build run for a (project, package) pair
+ * A Materialization tracks a single build run for a (project, package) pair
  * through its lifecycle: PENDING -> RUNNING -> SUCCESS | FAILED | CANCELLED.
  */
-export class BuildExecutionRepository {
+export class MaterializationRepository {
    constructor(private db: DuckDBConnection) {}
 
    private generateId(): string {
@@ -18,78 +18,74 @@ export class BuildExecutionRepository {
       return new Date();
    }
 
-   async listExecutions(
+   async list(
       projectId: string,
       packageName: string,
-   ): Promise<BuildExecution[]> {
-      const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM build_executions WHERE project_id = ? AND package_name = ? ORDER BY created_at DESC",
-         [projectId, packageName],
-      );
-      return rows.map(this.mapToExecution);
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
+      let sql =
+         "SELECT * FROM materializations WHERE project_id = ? AND package_name = ? ORDER BY created_at DESC";
+      const params: unknown[] = [projectId, packageName];
+      if (options?.limit !== undefined) {
+         sql += " LIMIT ?";
+         params.push(options.limit);
+      }
+      if (options?.offset !== undefined) {
+         sql += " OFFSET ?";
+         params.push(options.offset);
+      }
+      const rows = await this.db.all<Record<string, unknown>>(sql, params);
+      return rows.map(this.mapRow);
    }
 
-   async getExecutionById(id: string): Promise<BuildExecution | null> {
+   async getById(id: string): Promise<Materialization | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM build_executions WHERE id = ?",
+         "SELECT * FROM materializations WHERE id = ?",
          [id],
       );
-      return row ? this.mapToExecution(row) : null;
+      return row ? this.mapRow(row) : null;
    }
 
-   async getRunningExecution(
+   async getActive(
       projectId: string,
       packageName: string,
-   ): Promise<BuildExecution | null> {
+   ): Promise<Materialization | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM build_executions WHERE project_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')",
+         "SELECT * FROM materializations WHERE project_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')",
          [projectId, packageName],
       );
-      return row ? this.mapToExecution(row) : null;
+      return row ? this.mapRow(row) : null;
    }
 
-   /**
-    * Atomically creates an execution only if no PENDING/RUNNING execution
-    * exists for this (project, package). Returns null when an active
-    * execution already exists.
-    */
-   async createExecution(
+   async create(
       projectId: string,
       packageName: string,
-      status: BuildExecutionStatus = "PENDING",
-   ): Promise<BuildExecution | null> {
+      status: MaterializationStatus = "PENDING",
+   ): Promise<Materialization> {
       const id = this.generateId();
       const now = this.now();
       const iso = now.toISOString();
 
       const rows = await this.db.all<Record<string, unknown>>(
-         `INSERT INTO build_executions (id, project_id, package_name, status, created_at, updated_at)
-         SELECT ?, ?, ?, ?, ?, ?
-         WHERE NOT EXISTS (
-            SELECT 1 FROM build_executions
-            WHERE project_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')
-         )
+         `INSERT INTO materializations (id, project_id, package_name, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
          RETURNING *`,
-         [id, projectId, packageName, status, iso, iso, projectId, packageName],
+         [id, projectId, packageName, status, iso, iso],
       );
 
-      if (rows.length === 0) {
-         return null;
-      }
-
-      return this.mapToExecution(rows[0]);
+      return this.mapRow(rows[0]);
    }
 
-   async updateExecution(
+   async update(
       id: string,
       updates: {
-         status?: BuildExecutionStatus;
+         status?: MaterializationStatus;
          startedAt?: Date;
          completedAt?: Date;
          error?: string | null;
          metadata?: Record<string, unknown> | null;
       },
-   ): Promise<BuildExecution> {
+   ): Promise<Materialization> {
       const now = this.now();
       const setClauses: string[] = [];
       const params: unknown[] = [];
@@ -122,21 +118,25 @@ export class BuildExecutionRepository {
       params.push(id);
 
       await this.db.run(
-         `UPDATE build_executions SET ${setClauses.join(", ")} WHERE id = ?`,
+         `UPDATE materializations SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 
-      const updated = await this.getExecutionById(id);
+      const updated = await this.getById(id);
       if (!updated) {
-         throw new Error(`Build execution ${id} not found after update`);
+         throw new Error(`Materialization ${id} not found after update`);
       }
       return updated;
    }
 
    async deleteByProjectId(projectId: string): Promise<void> {
-      await this.db.run("DELETE FROM build_executions WHERE project_id = ?", [
+      await this.db.run("DELETE FROM materializations WHERE project_id = ?", [
          projectId,
       ]);
+   }
+
+   async deleteById(id: string): Promise<void> {
+      await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
    }
 
    async deleteByPackage(
@@ -144,12 +144,12 @@ export class BuildExecutionRepository {
       packageName: string,
    ): Promise<void> {
       await this.db.run(
-         "DELETE FROM build_executions WHERE project_id = ? AND package_name = ?",
+         "DELETE FROM materializations WHERE project_id = ? AND package_name = ?",
          [projectId, packageName],
       );
    }
 
-   private mapToExecution(row: Record<string, unknown>): BuildExecution {
+   private mapRow(row: Record<string, unknown>): Materialization {
       let metadata: Record<string, unknown> | null = null;
       if (row.metadata) {
          try {
@@ -163,7 +163,7 @@ export class BuildExecutionRepository {
          id: row.id as string,
          projectId: row.project_id as string,
          packageName: row.package_name as string,
-         status: row.status as BuildExecutionStatus,
+         status: row.status as MaterializationStatus,
          startedAt: row.started_at ? new Date(row.started_at as string) : null,
          completedAt: row.completed_at
             ? new Date(row.completed_at as string)

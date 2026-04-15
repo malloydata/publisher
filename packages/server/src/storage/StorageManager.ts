@@ -36,19 +36,30 @@ export interface StorageConfig {
       user: string;
       password: string;
    };
-   ducklakeManifest?: DuckLakeManifestConfig;
 }
-
-const DUCKLAKE_CATALOG_NAME = "manifest_lake";
 
 function escapeSQL(value: string): string {
    return value.replace(/'/g, "''");
 }
 
+/**
+ * Manages the storage backend (DuckDB, Postgres, etc.) and per-project
+ * manifest stores. Projects without `materializationStorage` config use
+ * the default DuckDB manifest store. Projects with the config get a
+ * DuckLake-backed store attached lazily on first access.
+ */
 export class StorageManager {
    private connection: DatabaseConnection | null = null;
+   private duckDbConnection: DuckDBConnection | null = null;
    private repository: ResourceRepository | null = null;
-   private manifestStore: ManifestStore | null = null;
+   private defaultManifestStore: ManifestStore | null = null;
+
+   /** Per-project DuckLake manifest stores, keyed by projectId. */
+   private projectManifestStores = new Map<string, ManifestStore>();
+
+   /** Tracks which catalogs have been attached to avoid duplicate ATTACHes. */
+   private attachedCatalogs = new Set<string>();
+
    private config: StorageConfig;
 
    constructor(config: StorageConfig) {
@@ -87,19 +98,48 @@ export class StorageManager {
       await initializeSchema(connection, reinit);
 
       this.connection = connection;
+      this.duckDbConnection = connection;
       this.repository = new DuckDBRepository(connection);
-
-      if (this.config.ducklakeManifest) {
-         this.manifestStore = await this.initializeDuckLakeManifest(connection);
-      } else {
-         this.manifestStore = new DuckDBManifestStore(this.repository);
-      }
+      this.defaultManifestStore = new DuckDBManifestStore(this.repository);
    }
 
-   private async initializeDuckLakeManifest(
-      connection: DuckDBConnection,
-   ): Promise<ManifestStore> {
-      const config = this.config.ducklakeManifest!;
+   /**
+    * Lazily initializes a DuckLake manifest store for a project.
+    * The DuckLake catalog is attached to the shared DuckDB connection
+    * and persists for the lifetime of the process.
+    */
+   async initializeDuckLakeForProject(
+      projectId: string,
+      config: DuckLakeManifestConfig,
+   ): Promise<void> {
+      if (!this.duckDbConnection) {
+         throw new Error("Storage not initialized. Call initialize() first.");
+      }
+
+      const catalogName = `manifest_lake_${projectId.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+
+      if (!this.attachedCatalogs.has(catalogName)) {
+         await this.attachDuckLakeCatalog(config, catalogName);
+      }
+
+      const store = new DuckLakeManifestStore(
+         this.duckDbConnection,
+         catalogName,
+      );
+      await store.bootstrapSchema();
+
+      this.projectManifestStores.set(projectId, store);
+      logger.info("DuckLake manifest store initialized for project", {
+         projectId,
+         catalogName,
+      });
+   }
+
+   private async attachDuckLakeCatalog(
+      config: DuckLakeManifestConfig,
+      catalogName: string,
+   ): Promise<void> {
+      const connection = this.duckDbConnection!;
 
       await connection.run("INSTALL ducklake; LOAD ducklake;");
 
@@ -114,7 +154,7 @@ export class StorageManager {
          config.dataPath.startsWith("gs://") ||
          config.dataPath.startsWith("s3://");
 
-      let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${DUCKLAKE_CATALOG_NAME}`;
+      let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${catalogName}`;
       const attachOpts: string[] = [`DATA_PATH '${escapedDataPath}'`];
       if (isCloudStorage) {
          attachOpts.push("OVERRIDE_DATA_PATH true");
@@ -124,13 +164,7 @@ export class StorageManager {
       logger.info(`Attaching DuckLake manifest catalog: ${attachCmd}`);
       await connection.run(attachCmd);
 
-      const store = new DuckLakeManifestStore(
-         connection,
-         DUCKLAKE_CATALOG_NAME,
-      );
-      await store.bootstrapSchema();
-      logger.info("DuckLake manifest store initialized");
-      return store;
+      this.attachedCatalogs.add(catalogName);
    }
 
    getRepository(): ResourceRepository {
@@ -140,19 +174,33 @@ export class StorageManager {
       return this.repository;
    }
 
-   getManifestStore(): ManifestStore {
-      if (!this.manifestStore) {
+   /**
+    * Returns the manifest store for a project. If the project has a
+    * DuckLake store configured, returns that; otherwise returns the
+    * default DuckDB-backed store.
+    */
+   getManifestStore(projectId?: string): ManifestStore {
+      if (projectId) {
+         const projectStore = this.projectManifestStores.get(projectId);
+         if (projectStore) {
+            return projectStore;
+         }
+      }
+      if (!this.defaultManifestStore) {
          throw new Error("Storage not initialized. Call initialize() first.");
       }
-      return this.manifestStore;
+      return this.defaultManifestStore;
    }
 
    async close(): Promise<void> {
       if (this.connection) {
          await this.connection.close();
          this.connection = null;
+         this.duckDbConnection = null;
          this.repository = null;
-         this.manifestStore = null;
+         this.defaultManifestStore = null;
+         this.projectManifestStores.clear();
+         this.attachedCatalogs.clear();
       }
    }
 

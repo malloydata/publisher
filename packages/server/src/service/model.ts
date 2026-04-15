@@ -1,5 +1,4 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { BuildManifest } from "@malloydata/malloy";
 import {
    Annotation,
    API,
@@ -42,6 +41,7 @@ import {
    ModelNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -126,11 +126,17 @@ export class Model {
       packagePath: string,
       modelPath: string,
       connections: Map<string, Connection>,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
       const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(packagePath, modelPath, connections);
+         await Model.getModelRuntime(
+            packagePath,
+            modelPath,
+            connections,
+            options,
+         );
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -293,7 +299,6 @@ export class Model {
       sourceName?: string,
       queryName?: string,
       query?: string,
-      options?: { buildManifest?: BuildManifest },
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
@@ -319,19 +324,12 @@ export class Model {
          throw new BadRequestError("Model has no queryable entities.");
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
-      const queryOptions = options?.buildManifest
-         ? { buildManifest: options.buildManifest }
-         : undefined;
       try {
          if (!sourceName && !queryName && query) {
-            runnable = this.modelMaterializer.loadQuery(
-               "\n" + query,
-               queryOptions,
-            );
+            runnable = this.modelMaterializer.loadQuery("\n" + query);
          } else if (queryName && !query) {
             runnable = this.modelMaterializer.loadQuery(
                `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
-               queryOptions,
             );
          } else {
             const endTime = performance.now();
@@ -579,6 +577,7 @@ export class Model {
       packagePath: string,
       modelPath: string,
       connections: Map<string, Connection>,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -618,10 +617,23 @@ export class Model {
          `SET FILE_SEARCH_PATH='${workingDirectory}';`,
       );
 
-      const runtime = new Runtime({
+      const runtimeOptions: {
+         urlReader: typeof urlReader;
+         connections: FixedConnectionMap;
+         buildManifest?: BuildManifest;
+      } = {
          urlReader,
          connections: new FixedConnectionMap(connections, "duckdb"),
-      });
+      };
+
+      if (options?.buildManifest) {
+         runtimeOptions.buildManifest = {
+            entries: options.buildManifest,
+            strict: false,
+         };
+      }
+
+      const runtime = new Runtime(runtimeOptions);
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
    }

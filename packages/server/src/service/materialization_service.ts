@@ -2,33 +2,49 @@ import type { BuildGraph, PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
-   BuildConflictError,
-   BuildNotFoundError,
    InvalidStateTransitionError,
-   ProjectNotFoundError,
+   MaterializationConflictError,
+   MaterializationNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
 import {
-   BuildExecution,
-   BuildExecutionStatus,
+   Materialization,
+   MaterializationStatus,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { ManifestService } from "./manifest_service";
 import { Model } from "./model";
 import { ProjectStore } from "./project_store";
+import { resolveProjectId } from "./resolve_project";
+
+/**
+ * Quote a potentially schema-qualified table path (e.g. "schema.table")
+ * by quoting each segment individually with the dialect's quoteTablePath.
+ */
+function quoteTablePath(
+   path: string,
+   dialect: { quoteTablePath(seg: string): string },
+): string {
+   return path
+      .split(".")
+      .map((seg) => dialect.quoteTablePath(seg))
+      .join(".");
+}
 
 /**
  * Allowed execution status transitions. SUCCESS, FAILED, and CANCELLED are
  * terminal — once an execution reaches one of these states it is immutable.
  */
-const VALID_TRANSITIONS: Record<BuildExecutionStatus, BuildExecutionStatus[]> =
-   {
-      PENDING: ["RUNNING", "CANCELLED"],
-      RUNNING: ["SUCCESS", "FAILED", "CANCELLED"],
-      SUCCESS: [],
-      FAILED: [],
-      CANCELLED: [],
-   };
+const VALID_TRANSITIONS: Record<
+   MaterializationStatus,
+   MaterializationStatus[]
+> = {
+   PENDING: ["RUNNING", "CANCELLED"],
+   RUNNING: ["SUCCESS", "FAILED", "CANCELLED"],
+   SUCCESS: [],
+   FAILED: [],
+   CANCELLED: [],
+};
 
 /**
  * Orchestrates package-level materialization builds: triggering builds,
@@ -37,18 +53,18 @@ const VALID_TRANSITIONS: Record<BuildExecutionStatus, BuildExecutionStatus[]> =
  *
  * A build targets an entire package — all models are compiled and all
  * persist sources across all models are processed in dependency order.
- * The manifest is automatically activated after a successful build so
+ * The manifest is optionally activated after a successful build so
  * subsequent queries resolve persist references to materialized tables.
  *
  * Enforces at-most-one concurrent build per (project, package) via the
- * repository's atomic `createBuildExecution`, and supports cooperative
+ * repository's atomic `createMaterialization`, and supports cooperative
  * cancellation through `AbortController`.
  */
-export class BuildService {
+export class MaterializationService {
    /**
     * Tracks in-flight executions so they can be cancelled. This map only
     * lives in-process memory — entries are lost on server restart, which is
-    * why `stopBuild` has an orphaned-execution fallback path.
+    * why `stopMaterialization` has an orphaned-execution fallback path.
     */
    private runningAbortControllers = new Map<string, AbortController>();
 
@@ -64,8 +80,8 @@ export class BuildService {
    // ==================== STATE MACHINE ====================
 
    private validateTransition(
-      current: BuildExecutionStatus,
-      next: BuildExecutionStatus,
+      current: MaterializationStatus,
+      next: MaterializationStatus,
    ): void {
       const allowed = VALID_TRANSITIONS[current];
       if (!allowed.includes(next)) {
@@ -77,96 +93,135 @@ export class BuildService {
 
    private async transitionExecution(
       executionId: string,
-      newStatus: BuildExecutionStatus,
+      newStatus: MaterializationStatus,
       extra?: {
          startedAt?: Date;
          completedAt?: Date;
          error?: string | null;
          metadata?: Record<string, unknown> | null;
       },
-   ): Promise<BuildExecution> {
+   ): Promise<Materialization> {
       const execution =
-         await this.repository.getBuildExecutionById(executionId);
+         await this.repository.getMaterializationById(executionId);
       if (!execution) {
-         throw new BuildNotFoundError(`Execution ${executionId} not found`);
+         throw new MaterializationNotFoundError(
+            `Execution ${executionId} not found`,
+         );
       }
       this.validateTransition(execution.status, newStatus);
-      return this.repository.updateBuildExecution(executionId, {
+      return this.repository.updateMaterialization(executionId, {
          status: newStatus,
          ...extra,
       });
    }
 
-   // ==================== EXECUTION QUERIES ====================
+   // ==================== BUILD QUERIES ====================
 
-   async getBuildStatus(
+   async listMaterializations(
       projectName: string,
       packageName: string,
-   ): Promise<{ latestExecution: BuildExecution | null }> {
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
       const projectId = await this.resolveProjectId(projectName);
-      const executions = await this.repository.listBuildExecutions(
+      return this.repository.listMaterializations(
          projectId,
          packageName,
+         options,
       );
-      return {
-         latestExecution: executions.length > 0 ? executions[0] : null,
-      };
    }
 
-   async listExecutions(
+   async getMaterialization(
       projectName: string,
       packageName: string,
-   ): Promise<BuildExecution[]> {
+      buildId: string,
+   ): Promise<Materialization> {
       const projectId = await this.resolveProjectId(projectName);
-      return this.repository.listBuildExecutions(projectId, packageName);
-   }
-
-   async getExecution(
-      projectName: string,
-      packageName: string,
-      executionId: string,
-   ): Promise<BuildExecution> {
-      const projectId = await this.resolveProjectId(projectName);
-      const execution =
-         await this.repository.getBuildExecutionById(executionId);
+      const execution = await this.repository.getMaterializationById(buildId);
       if (
          !execution ||
          execution.projectId !== projectId ||
          execution.packageName !== packageName
       ) {
-         throw new BuildNotFoundError(
-            `Execution ${executionId} not found for package ${packageName}`,
+         throw new MaterializationNotFoundError(
+            `Materialization ${buildId} not found for package ${packageName}`,
          );
       }
       return execution;
    }
 
-   // ==================== BUILD EXECUTION ====================
+   // ==================== BUILD LIFECYCLE ====================
 
-   async startBuild(
+   /**
+    * Creates a new build in PENDING state. Build options are stored in
+    * metadata so `startMaterialization` can read them back.
+    */
+   async createMaterialization(
       projectName: string,
       packageName: string,
-      options: { forceRefresh?: boolean } = {},
-   ): Promise<BuildExecution> {
+      options: { forceRefresh?: boolean; autoLoadManifest?: boolean } = {},
+   ): Promise<Materialization> {
       const projectId = await this.resolveProjectId(projectName);
 
       // Verify the package exists.
       const project = await this.projectStore.getProject(projectName, false);
       await project.getPackage(packageName, false);
 
-      // Atomically create an execution — returns null if one is already active.
-      const execution = await this.repository.createBuildExecution(
+      // Reject if there is already a PENDING or RUNNING materialization.
+      const active = await this.repository.getActiveMaterialization(
+         projectId,
+         packageName,
+      );
+      if (active) {
+         throw new MaterializationConflictError(
+            `Package ${packageName} already has an active materialization (${active.id})`,
+         );
+      }
+
+      const materialization = await this.repository.createMaterialization(
          projectId,
          packageName,
          "PENDING",
       );
-      if (!execution) {
-         const running = await this.repository.getRunningBuildExecution(
-            projectId,
-            packageName,
+
+      // Store build options in metadata so startMaterialization can retrieve them.
+      return this.repository.updateMaterialization(materialization.id, {
+         metadata: {
+            forceRefresh: options.forceRefresh ?? false,
+            autoLoadManifest: options.autoLoadManifest ?? false,
+         },
+      });
+   }
+
+   /**
+    * Transitions a PENDING build to RUNNING and starts execution in the
+    * background. Returns the RUNNING execution immediately.
+    */
+   async startMaterialization(
+      projectName: string,
+      packageName: string,
+      buildId: string,
+   ): Promise<Materialization> {
+      const projectId = await this.resolveProjectId(projectName);
+      const execution = await this.getMaterialization(
+         projectName,
+         packageName,
+         buildId,
+      );
+
+      if (execution.status !== "PENDING") {
+         throw new InvalidStateTransitionError(
+            `Materialization ${buildId} is ${execution.status}, expected PENDING`,
          );
-         throw new BuildConflictError(
-            `Package ${packageName} already has an active build${running ? ` (${running.id})` : ""}`,
+      }
+
+      // Check for a *different* active materialization on this package.
+      const active = await this.repository.getActiveMaterialization(
+         projectId,
+         packageName,
+      );
+      if (active && active.id !== execution.id) {
+         throw new MaterializationConflictError(
+            `Package ${packageName} already has an active materialization (${active.id})`,
          );
       }
 
@@ -174,14 +229,19 @@ export class BuildService {
          startedAt: new Date(),
       });
 
-      // Fire-and-forget: run the build in the background so the HTTP
-      // response returns immediately.
-      this.runBuild(
+      const buildOptions = (execution.metadata ?? {}) as {
+         forceRefresh?: boolean;
+         autoLoadManifest?: boolean;
+      };
+
+      // Fire-and-forget: run the build in the background.
+      this.runMaterialization(
          execution.id,
          projectName,
          projectId,
          packageName,
-         options,
+         buildOptions,
+         (execution.metadata ?? {}) as Record<string, unknown>,
       ).catch((err) => {
          logger.error("Unhandled error in background build", {
             executionId: execution.id,
@@ -192,12 +252,13 @@ export class BuildService {
       return running;
    }
 
-   private async runBuild(
+   private async runMaterialization(
       executionId: string,
       projectName: string,
       projectId: string,
       packageName: string,
-      options: { forceRefresh?: boolean },
+      options: { forceRefresh?: boolean; autoLoadManifest?: boolean },
+      baseMetadata: Record<string, unknown>,
    ): Promise<void> {
       const abortController = new AbortController();
       this.runningAbortControllers.set(executionId, abortController);
@@ -211,32 +272,51 @@ export class BuildService {
             abortController.signal,
          );
 
-         // Auto-activate: store the updated manifest on the package so
-         // subsequent queries resolve persist references to materialized tables.
-         const updatedManifest = await this.manifestService.getManifest(
-            projectId,
-            packageName,
-         );
-         const project = await this.projectStore.getProject(projectName, false);
-         const pkg = await project.getPackage(packageName, false);
-         pkg.setBuildManifest(updatedManifest.entries);
+         // If autoLoadManifest is set, reload all models with the updated
+         // manifest so subsequent queries resolve persist references.
+         if (options.autoLoadManifest) {
+            const updatedManifest = await this.manifestService.getManifest(
+               projectId,
+               packageName,
+            );
+            const project = await this.projectStore.getProject(
+               projectName,
+               false,
+            );
+            const pkg = await project.getPackage(packageName, false);
+            await pkg.reloadAllModels(updatedManifest.entries);
+         }
 
          await this.transitionExecution(executionId, "SUCCESS", {
             completedAt: new Date(),
-            metadata: buildMetadata,
+            metadata: {
+               ...baseMetadata,
+               ...buildMetadata,
+            },
          });
       } catch (err) {
          const errorMessage = err instanceof Error ? err.message : String(err);
 
-         if (abortController.signal.aborted) {
-            await this.transitionExecution(executionId, "CANCELLED", {
-               completedAt: new Date(),
-               error: "Build cancelled",
-            });
-         } else {
-            await this.transitionExecution(executionId, "FAILED", {
-               completedAt: new Date(),
-               error: errorMessage,
+         try {
+            if (abortController.signal.aborted) {
+               await this.transitionExecution(executionId, "CANCELLED", {
+                  completedAt: new Date(),
+                  error: "Build cancelled",
+               });
+            } else {
+               await this.transitionExecution(executionId, "FAILED", {
+                  completedAt: new Date(),
+                  error: errorMessage,
+               });
+            }
+         } catch (transitionErr) {
+            logger.error("Failed to transition execution after build error", {
+               executionId,
+               originalError: errorMessage,
+               transitionError:
+                  transitionErr instanceof Error
+                     ? transitionErr.message
+                     : String(transitionErr),
             });
          }
       } finally {
@@ -244,33 +324,67 @@ export class BuildService {
       }
    }
 
-   async stopBuild(
+   /**
+    * Cancels a running build. Takes a specific buildId.
+    */
+   async stopMaterialization(
       projectName: string,
       packageName: string,
-   ): Promise<BuildExecution | null> {
-      const projectId = await this.resolveProjectId(projectName);
-      const running = await this.repository.getRunningBuildExecution(
-         projectId,
+      buildId: string,
+   ): Promise<Materialization> {
+      const execution = await this.getMaterialization(
+         projectName,
          packageName,
+         buildId,
       );
-      if (!running) {
-         return null;
+
+      if (execution.status !== "RUNNING" && execution.status !== "PENDING") {
+         throw new InvalidStateTransitionError(
+            `Materialization ${buildId} is ${execution.status}, cannot stop`,
+         );
       }
 
-      const abortController = this.runningAbortControllers.get(running.id);
+      if (execution.status === "PENDING") {
+         return this.transitionExecution(execution.id, "CANCELLED", {
+            completedAt: new Date(),
+            error: "Build cancelled before starting",
+         });
+      }
+
+      const abortController = this.runningAbortControllers.get(execution.id);
       if (abortController) {
          abortController.abort();
-         return {
-            ...running,
-            metadata: { ...running.metadata, cancellationRequested: true },
-            updatedAt: new Date(),
-         };
+         return execution;
       } else {
-         return this.transitionExecution(running.id, "CANCELLED", {
+         return this.transitionExecution(execution.id, "CANCELLED", {
             completedAt: new Date(),
             error: "Force cancelled: execution was orphaned",
          });
       }
+   }
+
+   /**
+    * Deletes a materialization record. Only terminal materializations
+    * (SUCCESS, FAILED, CANCELLED) can be deleted.
+    */
+   async deleteMaterialization(
+      projectName: string,
+      packageName: string,
+      materializationId: string,
+   ): Promise<void> {
+      const execution = await this.getMaterialization(
+         projectName,
+         packageName,
+         materializationId,
+      );
+
+      if (execution.status === "PENDING" || execution.status === "RUNNING") {
+         throw new InvalidStateTransitionError(
+            `Cannot delete materialization ${materializationId} while it is ${execution.status}`,
+         );
+      }
+
+      await this.repository.deleteMaterialization(execution.id);
    }
 
    // ==================== BUILD LOGIC ====================
@@ -441,11 +555,7 @@ export class BuildService {
                      ? `${tableName.substring(0, lastDot + 1)}${tableName.substring(lastDot + 1)}__staging`
                      : `${tableName}__staging`;
                const dialect = persistSource.dialect;
-               const quotePath = (p: string) =>
-                  p
-                     .split(".")
-                     .map((seg) => dialect.quoteTablePath(seg))
-                     .join(".");
+               const quoted = (p: string) => quoteTablePath(p, dialect);
 
                logger.info(`Building source ${persistSource.name}`, {
                   tableName,
@@ -455,17 +565,20 @@ export class BuildService {
                const startTime = performance.now();
 
                await connection.runSQL(
-                  `DROP TABLE IF EXISTS ${quotePath(stagingTableName)}`,
+                  `DROP TABLE IF EXISTS ${quoted(stagingTableName)}`,
                );
                await connection.runSQL(
-                  `CREATE TABLE ${quotePath(stagingTableName)} AS (${buildSQL})`,
+                  `CREATE TABLE ${quoted(stagingTableName)} AS (${buildSQL})`,
                );
 
                await connection.runSQL(
-                  `DROP TABLE IF EXISTS ${quotePath(tableName)}`,
+                  `DROP TABLE IF EXISTS ${quoted(tableName)}`,
                );
+               const bareTableName = tableName.includes(".")
+                  ? tableName.substring(tableName.lastIndexOf(".") + 1)
+                  : tableName;
                await connection.runSQL(
-                  `ALTER TABLE ${quotePath(stagingTableName)} RENAME TO ${quotePath(tableName)}`,
+                  `ALTER TABLE ${quoted(stagingTableName)} RENAME TO ${dialect.quoteTablePath(bareTableName)}`,
                );
 
                const duration = performance.now() - startTime;
@@ -506,7 +619,7 @@ export class BuildService {
       );
       for (const dbEntry of allDbEntries) {
          if (!activeManifest.entries[dbEntry.buildId]) {
-            await this.manifestService.deleteEntry(dbEntry.id);
+            await this.manifestService.deleteEntry(projectId, dbEntry.id);
          }
       }
 
@@ -520,11 +633,7 @@ export class BuildService {
 
    // ==================== HELPERS ====================
 
-   private async resolveProjectId(projectName: string): Promise<string> {
-      const dbProject = await this.repository.getProjectByName(projectName);
-      if (!dbProject) {
-         throw new ProjectNotFoundError(`Project '${projectName}' not found`);
-      }
-      return dbProject.id;
+   private resolveProjectId(projectName: string): Promise<string> {
+      return resolveProjectId(this.repository, projectName);
    }
 }

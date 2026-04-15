@@ -45,31 +45,33 @@ export interface ResourceRepository {
    ): Promise<Connection>;
    deleteConnection(id: string): Promise<void>;
 
-   // Build Executions
-   listBuildExecutions(
+   // Materializations
+   listMaterializations(
       projectId: string,
       packageName: string,
-   ): Promise<BuildExecution[]>;
-   getBuildExecutionById(id: string): Promise<BuildExecution | null>;
-   getRunningBuildExecution(
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]>;
+   getMaterializationById(id: string): Promise<Materialization | null>;
+   getActiveMaterialization(
       projectId: string,
       packageName: string,
-   ): Promise<BuildExecution | null>;
-   createBuildExecution(
+   ): Promise<Materialization | null>;
+   createMaterialization(
       projectId: string,
       packageName: string,
-      status?: BuildExecutionStatus,
-   ): Promise<BuildExecution | null>;
-   updateBuildExecution(
+      status?: MaterializationStatus,
+   ): Promise<Materialization>;
+   updateMaterialization(
       id: string,
       updates: {
-         status?: BuildExecutionStatus;
+         status?: MaterializationStatus;
          startedAt?: Date;
          completedAt?: Date;
          error?: string | null;
          metadata?: Record<string, unknown> | null;
       },
-   ): Promise<BuildExecution>;
+   ): Promise<Materialization>;
+   deleteMaterialization(id: string): Promise<void>;
    // Build Manifests
    listManifestEntries(
       projectId: string,
@@ -112,18 +114,18 @@ export interface Connection {
    updatedAt: Date;
 }
 
-export type BuildExecutionStatus =
+export type MaterializationStatus =
    | "PENDING"
    | "RUNNING"
    | "SUCCESS"
    | "FAILED"
    | "CANCELLED";
 
-export interface BuildExecution {
+export interface Materialization {
    id: string;
    projectId: string;
    packageName: string;
-   status: BuildExecutionStatus;
+   status: MaterializationStatus;
    startedAt: Date | null;
    completedAt: Date | null;
    error: string | null;

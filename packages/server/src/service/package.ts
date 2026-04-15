@@ -19,6 +19,7 @@ import {
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
 import { formatDuration, logger } from "../logger";
+import { BuildManifest } from "../storage/DatabaseInterface";
 import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -37,7 +38,6 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private connections: Map<string, Connection> = new Map();
-   private _buildManifest: Record<string, { tableName: string }> = {};
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -210,18 +210,34 @@ export class Package {
       return Array.from(this.models.keys());
    }
 
-   public get buildManifest(): Record<string, { tableName: string }> {
-      return this._buildManifest;
-   }
-
-   public setBuildManifest(
-      manifest: Record<string, { tableName: string }>,
-   ): void {
-      this._buildManifest = manifest;
-      logger.info("Build manifest updated", {
+   /**
+    * Recompile every model in the package with the given build manifest
+    * so queries resolve persist references to materialized tables.
+    */
+   public async reloadAllModels(
+      buildManifest: BuildManifest["entries"],
+   ): Promise<void> {
+      const modelPaths = Array.from(this.models.keys());
+      logger.info("Reloading all models with build manifest", {
          packageName: this.packageName,
-         entryCount: Object.keys(manifest).length,
+         modelCount: modelPaths.length,
+         manifestEntryCount: Object.keys(buildManifest).length,
       });
+
+      const reloaded = await Promise.all(
+         modelPaths.map((modelPath) =>
+            Model.create(
+               this.packageName,
+               this.packagePath,
+               modelPath,
+               this.connections,
+               { buildManifest },
+            ),
+         ),
+      );
+      for (const model of reloaded) {
+         this.models.set(model.getPath(), model);
+      }
    }
 
    public getConnections(): Map<string, Connection> {

@@ -25,15 +25,18 @@ import { ProjectStore } from "./project_store";
 export class ManifestService {
    constructor(private projectStore: ProjectStore) {}
 
-   private get manifestStore(): ManifestStore {
-      return this.projectStore.storageManager.getManifestStore();
+   private manifestStoreFor(projectId: string): ManifestStore {
+      return this.projectStore.storageManager.getManifestStore(projectId);
    }
 
    async getManifest(
       projectId: string,
       packageName: string,
    ): Promise<BuildManifest> {
-      return this.manifestStore.getManifest(projectId, packageName);
+      return this.manifestStoreFor(projectId).getManifest(
+         projectId,
+         packageName,
+      );
    }
 
    async writeEntry(
@@ -44,7 +47,7 @@ export class ManifestService {
       sourceName: string,
       connectionName: string,
    ): Promise<void> {
-      await this.manifestStore.writeEntry(
+      await this.manifestStoreFor(projectId).writeEntry(
          projectId,
          packageName,
          buildId,
@@ -54,8 +57,8 @@ export class ManifestService {
       );
    }
 
-   async deleteEntry(id: string): Promise<void> {
-      await this.manifestStore.deleteEntry(id);
+   async deleteEntry(projectId: string, entryId: string): Promise<void> {
+      await this.manifestStoreFor(projectId).deleteEntry(entryId);
    }
 
    /**
@@ -73,9 +76,9 @@ export class ManifestService {
 
       const project = await this.projectStore.getProject(projectName, false);
       const pkg = await project.getPackage(packageName, false);
-      pkg.setBuildManifest(manifest.entries);
+      await pkg.reloadAllModels(manifest.entries);
 
-      logger.info("Loaded manifest", {
+      logger.info("Loaded manifest and recompiled models", {
          projectId,
          packageName,
          entryCount: Object.keys(manifest.entries).length,
@@ -93,6 +96,9 @@ export class ManifestService {
       projectId: string,
       packageName: string,
    ): Promise<ManifestEntry[]> {
-      return this.manifestStore.listEntries(projectId, packageName);
+      return this.manifestStoreFor(projectId).listEntries(
+         projectId,
+         packageName,
+      );
    }
 }

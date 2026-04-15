@@ -28,11 +28,11 @@ import {
 } from "./health";
 import { logger, loggerMiddleware } from "./logger";
 
-import { BuildController } from "./controller/build.controller";
 import { ManifestController } from "./controller/manifest.controller";
+import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
-import { BuildService } from "./service/build_service";
 import { ManifestService } from "./service/manifest_service";
+import { MaterializationService } from "./service/materialization_service";
 import { ProjectStore } from "./service/project_store";
 
 /** Normalize an Express query param into a string[] or undefined. */
@@ -129,7 +129,7 @@ const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
 const API_PREFIX = "/api/v0";
 const isDevelopment = process.env["NODE_ENV"] === "development";
 
-const app = express();
+export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
 const projectStore = new ProjectStore(SERVER_ROOT);
@@ -141,8 +141,13 @@ const packageController = new PackageController(projectStore, manifestService);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
 const compileController = new CompileController(projectStore);
-const buildService = new BuildService(projectStore, manifestService);
-const buildController = new BuildController(buildService);
+const materializationService = new MaterializationService(
+   projectStore,
+   manifestService,
+);
+const materializationController = new MaterializationController(
+   materializationService,
+);
 const manifestController = new ManifestController(
    projectStore,
    manifestService,
@@ -661,9 +666,11 @@ app.get(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
 
 app.post(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
    try {
+      const autoLoadManifest = req.query.autoLoadManifest === "true";
       const _package = await packageController.addPackage(
          req.params.projectName,
          req.body,
+         { autoLoadManifest },
       );
       res.status(200).json(_package?.getPackageMetadata());
    } catch (error) {
@@ -943,20 +950,59 @@ app.post(
    },
 );
 
-// ==================== BUILD ROUTES ====================
+// ==================== MATERIALIZATION ROUTES ====================
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/build`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
    async (req, res) => {
       try {
-         const execution = await buildController.startBuild(
+         const build = await materializationController.createMaterialization(
             req.params.projectName,
             req.params.packageName,
             req.body || {},
          );
-         res.status(202).json(execution);
+         res.status(201).json(build);
       } catch (error) {
-         logger.error("Build start error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   async (req, res) => {
+      try {
+         const limit = req.query.limit
+            ? parseInt(req.query.limit as string, 10)
+            : undefined;
+         const offset = req.query.offset
+            ? parseInt(req.query.offset as string, 10)
+            : undefined;
+         const builds = await materializationController.listMaterializations(
+            req.params.projectName,
+            req.params.packageName,
+            { limit, offset },
+         );
+         res.status(200).json(builds);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         const build = await materializationController.getMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.materializationId,
+         );
+         res.status(200).json(build);
+      } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -964,75 +1010,50 @@ app.post(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/stop`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId/start`,
    async (req, res) => {
       try {
-         const execution = await buildController.stopBuild(
+         const build = await materializationController.startMaterialization(
             req.params.projectName,
             req.params.packageName,
+            req.params.materializationId,
          );
-         if (execution) {
-            res.status(200).json(execution);
-         } else {
-            res.status(404).json({
-               code: 404,
-               message: "No active build found",
-            });
-         }
+         res.status(202).json(build);
       } catch (error) {
-         logger.error("Build stop error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
    },
 );
 
-app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/status`,
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId/stop`,
    async (req, res) => {
       try {
-         const result = await buildController.getBuildStatus(
+         const build = await materializationController.stopMaterialization(
             req.params.projectName,
             req.params.packageName,
+            req.params.materializationId,
          );
-         res.status(200).json(result);
+         res.status(200).json(build);
       } catch (error) {
-         logger.error("Build status error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
    },
 );
 
-app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/executions`,
+app.delete(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
-         const executions = await buildController.listExecutions(
+         await materializationController.deleteMaterialization(
             req.params.projectName,
             req.params.packageName,
+            req.params.materializationId,
          );
-         res.status(200).json(executions);
+         res.status(204).send();
       } catch (error) {
-         logger.error("List executions error", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/build/executions/:executionId`,
-   async (req, res) => {
-      try {
-         const execution = await buildController.getExecution(
-            req.params.projectName,
-            req.params.packageName,
-            req.params.executionId,
-         );
-         res.status(200).json(execution);
-      } catch (error) {
-         logger.error("Get execution error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

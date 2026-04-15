@@ -40,8 +40,8 @@ export class DuckLakeManifestStore implements ManifestStore {
             package_name VARCHAR NOT NULL,
             build_id VARCHAR NOT NULL,
             table_name VARCHAR NOT NULL,
-            source_name VARCHAR,
-            connection_name VARCHAR,
+            source_name VARCHAR NOT NULL,
+            connection_name VARCHAR NOT NULL,
             created_at TIMESTAMP NOT NULL,
             updated_at TIMESTAMP NOT NULL
          )
@@ -72,14 +72,11 @@ export class DuckLakeManifestStore implements ManifestStore {
    }
 
    /**
-    * Upsert a manifest entry using DELETE + INSERT to avoid the TOCTOU
-    * race inherent in a SELECT-then-UPDATE/INSERT pattern. Since the
-    * DuckLake catalog has no UNIQUE constraints, this is the safest
-    * approach across multiple workers sharing the same catalog.
-    *
-    * Within a single publisher process the DuckDBConnection mutex
-    * serializes these calls; across workers a rare duplicate INSERT is
-    * harmless because {@link getManifest} deduplicates by build_id.
+    * Upsert a manifest entry using INSERT-first then DELETE-old.
+    * INSERT before DELETE ensures at-least-once semantics: if the process
+    * crashes between the two operations the entry still exists (as a
+    * duplicate). {@link getManifest} deduplicates by build_id, keeping
+    * only the newest row, so transient duplicates are harmless.
     */
    async writeEntry(
       projectId: string,
@@ -91,11 +88,6 @@ export class DuckLakeManifestStore implements ManifestStore {
    ): Promise<void> {
       const now = new Date().toISOString();
       const id = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-
-      await this.db.run(
-         `DELETE FROM ${this.table} WHERE project_id = ? AND package_name = ? AND build_id = ?`,
-         [projectId, packageName, buildId],
-      );
 
       await this.db.run(
          `INSERT INTO ${this.table} (id, project_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
@@ -111,6 +103,11 @@ export class DuckLakeManifestStore implements ManifestStore {
             now,
             now,
          ],
+      );
+
+      await this.db.run(
+         `DELETE FROM ${this.table} WHERE project_id = ? AND package_name = ? AND build_id = ? AND id != ?`,
+         [projectId, packageName, buildId, id],
       );
    }
 
