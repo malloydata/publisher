@@ -12,6 +12,7 @@ import {
    MaterializationStatus,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
+import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import { ManifestService } from "./manifest_service";
 import { Model } from "./model";
 import { ProjectStore } from "./project_store";
@@ -56,9 +57,17 @@ const VALID_TRANSITIONS: Record<
  * The manifest is optionally activated after a successful build so
  * subsequent queries resolve persist references to materialized tables.
  *
- * Enforces at-most-one concurrent build per (project, package) via the
- * repository's atomic `createMaterialization`, and supports cooperative
- * cancellation through `AbortController`.
+ * Enforces at-most-one concurrent build per (project, package) via a
+ * DB-level unique index on `materializations.active_key` (see
+ * `MaterializationRepository`), and supports cooperative cancellation
+ * through `AbortController`.
+ *
+ * **Multi-worker caveat:** the `materializations` table lives in each
+ * worker's *local* DuckDB, so the active-materialization lock is only
+ * enforced within a single Publisher process. In orchestrated deployments
+ * (shared DuckLake manifest catalog), builds must be externally
+ * single-writer until a shared lease is added — see the scope note on
+ * `DuckLakeManifestStore`.
  */
 export class MaterializationService {
    /**
@@ -166,7 +175,9 @@ export class MaterializationService {
       const project = await this.projectStore.getProject(projectName, false);
       await project.getPackage(packageName, false);
 
-      // Reject if there is already a PENDING or RUNNING materialization.
+      // A non-atomic probe for a helpful error message. The DB-level unique
+      // index on active_key is the actual race-free guard — see the catch
+      // block below.
       const active = await this.repository.getActiveMaterialization(
          projectId,
          packageName,
@@ -177,11 +188,29 @@ export class MaterializationService {
          );
       }
 
-      const materialization = await this.repository.createMaterialization(
-         projectId,
-         packageName,
-         "PENDING",
-      );
+      let materialization;
+      try {
+         materialization = await this.repository.createMaterialization(
+            projectId,
+            packageName,
+            "PENDING",
+         );
+      } catch (err) {
+         if (err instanceof DuplicateActiveMaterializationError) {
+            // Lost the race with a concurrent create. Re-read to report the
+            // winner's id for parity with the non-racy error above.
+            const winner = await this.repository.getActiveMaterialization(
+               projectId,
+               packageName,
+            );
+            throw new MaterializationConflictError(
+               winner
+                  ? `Package ${packageName} already has an active materialization (${winner.id})`
+                  : `Package ${packageName} already has an active materialization`,
+            );
+         }
+         throw err;
+      }
 
       // Store build options in metadata so startMaterialization can retrieve them.
       return this.repository.updateMaterialization(materialization.id, {
@@ -400,6 +429,13 @@ export class MaterializationService {
     *
     * Iterates all models in the package so the manifest and GC cover
     * every persist source regardless of which model defines it.
+    *
+    * **GC scope.** Step 5 prunes manifest *metadata* only: stale
+    * `build_manifests` rows are removed so queries stop resolving to
+    * retired BuildIDs. The physical tables behind retired materializations
+    * are not dropped — if a persist source's SQL changes and it is
+    * re-materialized under a new BuildID, the old table remains in the
+    * target connection until an operator cleans it up manually.
     */
    private async executeBuild(
       projectName: string,
@@ -443,6 +479,20 @@ export class MaterializationService {
             importBaseURL,
          });
          const malloyModel = await modelMaterializer.getModel();
+
+         // Skip models that don't opt in to persistence. getBuildPlan() throws
+         // with "Model must have ##! experimental.persistence to use
+         // getBuildPlan()" if the tag is missing, so check the tag first to
+         // keep plain models in the same package buildable.
+         const modelTag = malloyModel.tagParse({ prefix: /^##! / }).tag;
+         if (!modelTag.has("experimental", "persistence")) {
+            logger.debug(
+               "Model has no ##! experimental.persistence tag, skipping",
+               { modelPath },
+            );
+            continue;
+         }
+
          const buildPlan = malloyModel.getBuildPlan();
 
          if (buildPlan.tagParseLog.length > 0) {
@@ -479,6 +529,23 @@ export class MaterializationService {
       if (allGraphs.length === 0) {
          logger.info("No persist sources to build");
          return { sourcesBuilt: 0, sourcesSkipped: 0 };
+      }
+
+      // Fail fast if two persist sources target the same (connection, table).
+      // Without this, the later source's DDL would silently clobber the
+      // earlier one's physical table while both manifest entries remain live.
+      const tableOwners = new Map<string, string>();
+      for (const [sourceID, source] of Object.entries(allSources)) {
+         const tableName =
+            source.tagParse({ prefix: /^#@ / }).tag.text("name") || source.name;
+         const key = `${source.connectionName}\u0000${tableName}`;
+         const existing = tableOwners.get(key);
+         if (existing) {
+            throw new BadRequestError(
+               `Persist target collision: sources '${existing}' and '${sourceID}' both resolve to table '${tableName}' on connection '${source.connectionName}'. Disambiguate with '#@ persist name=...'.`,
+            );
+         }
+         tableOwners.set(key, sourceID);
       }
 
       // Pre-compute connection digests.

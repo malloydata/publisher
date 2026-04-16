@@ -1843,15 +1843,19 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /projects/{projectName}/packages/{packageName}/manifest/load:
+  /projects/{projectName}/packages/{packageName}/manifest/reload:
     post:
       tags:
         - manifests
-      operationId: load-manifest
-      summary: Load manifest into the Malloy Runtime
+      operationId: reload-manifest
+      summary: Reload manifest from storage into this worker's Malloy Runtime
       description: |
-        Reloads the build manifest from storage into the in-memory Malloy Runtime.
-        Subsequent queries will resolve persisted sources using the loaded manifest.
+        Reads the build manifest from the shared store (DuckLake in
+        orchestrated mode, local DuckDB in standalone mode) and recompiles
+        every model in the package so subsequent queries resolve persisted
+        sources to their materialized tables. Intended for orchestrated
+        workers that did not themselves run the build; the endpoint does
+        not write anything *into* storage.
       parameters:
         - $ref: "#/components/parameters/projectName"
         - $ref: "#/components/parameters/packageName"

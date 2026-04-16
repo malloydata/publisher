@@ -81,7 +81,7 @@ export class PackageController {
          );
          if (Object.keys(manifest.entries).length === 0) return;
 
-         await this.manifestService.loadManifest(
+         await this.manifestService.reloadManifest(
             dbProject.id,
             packageName,
             projectName,

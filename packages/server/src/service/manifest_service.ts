@@ -15,9 +15,9 @@ import { ProjectStore } from "./project_store";
  * Two-phase lifecycle:
  *  1. **Persist** – `writeEntry` stores individual entries to the DB as they
  *     are produced during a build.
- *  2. **Load** – `loadManifest` reads the manifest from the DB and recompiles
- *     all models in the package so the Malloy Runtime resolves persist
- *     references to the materialized tables.
+ *  2. **Reload** – `reloadManifest` reads the manifest from the DB and
+ *     recompiles all models in the package so the Malloy Runtime resolves
+ *     persist references to the materialized tables.
  *
  * All manifest operations delegate to the active {@link ManifestStore}, which
  * is either the local DuckDB store (standalone) or DuckLake (orchestrated).
@@ -62,12 +62,14 @@ export class ManifestService {
    }
 
    /**
-    * Load the manifest from storage and activate it on the package so
-    * subsequent queries resolve persist references to materialized tables.
-    * This is what `POST .../manifest/load` calls (used by orchestrated
-    * workers that need to pick up manifest state produced elsewhere).
+    * Read the manifest from storage and reload it onto this worker's
+    * package so subsequent queries resolve persist references to
+    * materialized tables. This is what `POST .../manifest/reload` calls
+    * (used by orchestrated workers that need to pick up manifest state
+    * produced elsewhere). Despite the name, nothing is loaded *into*
+    * storage — the worker pulls the manifest down and recompiles.
     */
-   async loadManifest(
+   async reloadManifest(
       projectId: string,
       packageName: string,
       projectName: string,
@@ -78,7 +80,7 @@ export class ManifestService {
       const pkg = await project.getPackage(packageName, false);
       await pkg.reloadAllModels(manifest.entries);
 
-      logger.info("Loaded manifest and recompiled models", {
+      logger.info("Reloaded manifest and recompiled models", {
          projectId,
          packageName,
          entryCount: Object.keys(manifest.entries).length,

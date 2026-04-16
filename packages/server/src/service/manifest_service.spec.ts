@@ -131,15 +131,15 @@ describe("ManifestService", () => {
       });
    });
 
-   describe("loadManifest", () => {
-      it("should get manifest, load it onto the package, and return it", async () => {
+   describe("reloadManifest", () => {
+      it("should get manifest, reload it onto the package, and return it", async () => {
          const manifest: BuildManifest = {
             entries: { "build-abc": { tableName: "tbl" } },
             strict: false,
          };
          ctx.manifestStore.getManifest.resolves(manifest);
 
-         const result = await ctx.service.loadManifest(
+         const result = await ctx.service.reloadManifest(
             "proj-1",
             "pkg",
             "my-project",
@@ -163,7 +163,7 @@ describe("ManifestService", () => {
          };
          ctx.manifestStore.getManifest.resolves(emptyManifest);
 
-         const result = await ctx.service.loadManifest(
+         const result = await ctx.service.reloadManifest(
             "proj-1",
             "pkg",
             "my-project",

@@ -213,6 +213,11 @@ export class Package {
    /**
     * Recompile every model in the package with the given build manifest
     * so queries resolve persist references to materialized tables.
+    *
+    * Builds a fresh map off to the side and swaps it in at the end. If any
+    * recompile fails the whole call rejects before the swap and the live
+    * `this.models` reference remains untouched — no half-loaded state is
+    * ever observable to concurrent readers.
     */
    public async reloadAllModels(
       buildManifest: BuildManifest["entries"],
@@ -235,9 +240,11 @@ export class Package {
             ),
          ),
       );
+      const nextModels = new Map<string, Model>();
       for (const model of reloaded) {
-         this.models.set(model.getPath(), model);
+         nextModels.set(model.getPath(), model);
       }
+      this.models = nextModels;
    }
 
    public getConnections(): Map<string, Connection> {

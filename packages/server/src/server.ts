@@ -1080,16 +1080,16 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest/load`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest/reload`,
    async (req, res) => {
       try {
-         const manifest = await manifestController.loadManifest(
+         const manifest = await manifestController.reloadManifest(
             req.params.projectName,
             req.params.packageName,
          );
          res.status(200).json(manifest);
       } catch (error) {
-         logger.error("Load manifest error", { error });
+         logger.error("Reload manifest error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

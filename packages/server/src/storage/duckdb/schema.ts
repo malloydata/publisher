@@ -64,13 +64,22 @@ export async function initializeSchema(
     )
   `);
 
-   // Materializations table
+   // Materializations table.
+   //
+   // `active_key` enforces at-most-one active (PENDING or RUNNING)
+   // materialization per (project, package) at the DB layer. It is set to
+   // `{project_id}|{package_name}` while the row is active and cleared
+   // to NULL on transition to any terminal state. A unique index on
+   // `active_key` (see below) makes the insert-then-check race impossible —
+   // a second concurrent create fails with a constraint violation, which the
+   // service layer translates to `MaterializationConflictError`.
    await db.run(`
     CREATE TABLE IF NOT EXISTS materializations (
       id VARCHAR PRIMARY KEY,
       project_id VARCHAR NOT NULL,
       package_name VARCHAR NOT NULL,
       status VARCHAR NOT NULL,
+      active_key VARCHAR,
       started_at TIMESTAMP,
       completed_at TIMESTAMP,
       error TEXT,
@@ -107,6 +116,9 @@ export async function initializeSchema(
    );
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_materializations_project_package ON materializations(project_id, package_name)",
+   );
+   await db.run(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
    );
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_build_manifests_project_package ON build_manifests(project_id, package_name)",

@@ -17,6 +17,17 @@ import { DuckDBConnection } from "../duckdb/DuckDBConnection";
  * instantiated. The first worker to call {@link bootstrapSchema} creates the
  * `build_manifests` table idempotently. Schema ownership lives in the
  * publisher so that DDL and code co-evolve in the same repo.
+ *
+ * **Scope: manifest sync only.** Orchestrated mode only shares manifest
+ * state across workers. The active-materialization lock (the unique index
+ * on `materializations.active_key`) still lives in each worker's local
+ * DuckDB, so two workers can run builds concurrently and race on physical
+ * table names, staging table names, and manifest writes. Until a shared
+ * build lease lives in the DuckLake catalog, deployments running
+ * orchestrated mode must ensure builds are externally single-writer (e.g.,
+ * one designated build worker, or an external job scheduler). Other
+ * workers should only call `manifest/reload` to pick up manifests produced
+ * by the build worker.
  */
 export class DuckLakeManifestStore implements ManifestStore {
    private readonly table: string;

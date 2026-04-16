@@ -82,7 +82,7 @@ function createMocks() {
       getManifest: sandbox.stub().resolves({ entries: {}, strict: false }),
       writeEntry: sandbox.stub().resolves(),
       deleteEntry: sandbox.stub().resolves(),
-      loadManifest: sandbox.stub().resolves({ entries: {}, strict: false }),
+      reloadManifest: sandbox.stub().resolves({ entries: {}, strict: false }),
       listEntries: sandbox.stub().resolves([]),
    } as unknown as sinon.SinonStubbedInstance<ManifestService>;
 
@@ -271,6 +271,30 @@ describe("MaterializationService", () => {
          await expect(
             ctx.service.createMaterialization("my-project", "pkg"),
          ).rejects.toThrow(MaterializationConflictError);
+      });
+
+      it("should translate DuplicateActiveMaterializationError from a lost race", async () => {
+         const {
+            DuplicateActiveMaterializationError,
+         } = require("../storage/duckdb/MaterializationRepository");
+         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves({}),
+         });
+         // The pre-check finds nothing (race is still possible), but the
+         // atomic insert loses to a concurrent create and the repository
+         // raises DuplicateActiveMaterializationError.
+         ctx.repository.getActiveMaterialization
+            .onFirstCall()
+            .resolves(null)
+            .onSecondCall()
+            .resolves(makeExecution({ id: "winner", status: "PENDING" }));
+         ctx.repository.createMaterialization.rejects(
+            new DuplicateActiveMaterializationError("proj-1", "pkg"),
+         );
+
+         await expect(
+            ctx.service.createMaterialization("my-project", "pkg"),
+         ).rejects.toThrow(/winner/);
       });
    });
 

@@ -17,10 +17,10 @@ export class ManifestController {
       return this.manifestService.getManifest(projectId, packageName);
    }
 
-   async loadManifest(projectName: string, packageName: string) {
+   async reloadManifest(projectName: string, packageName: string) {
       const repository = this.projectStore.storageManager.getRepository();
       const projectId = await resolveProjectId(repository, projectName);
-      return this.manifestService.loadManifest(
+      return this.manifestService.reloadManifest(
          projectId,
          packageName,
          projectName,

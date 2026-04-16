@@ -1,6 +1,29 @@
 import { Materialization, MaterializationStatus } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
+const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
+   "SUCCESS",
+   "FAILED",
+   "CANCELLED",
+]);
+
+function activeKeyFor(projectId: string, packageName: string): string {
+   return `${projectId}|${packageName}`;
+}
+
+/**
+ * Thrown when an atomic insert loses a race on (project, package) active
+ * materialization. Surfaced separately from a generic DB error so the service
+ * layer can translate to `MaterializationConflictError`.
+ */
+export class DuplicateActiveMaterializationError extends Error {
+   constructor(projectId: string, packageName: string) {
+      super(
+         `Active materialization already exists for (${projectId}, ${packageName})`,
+      );
+   }
+}
+
 /**
  * DuckDB-backed repository for package materializations.
  *
@@ -65,15 +88,31 @@ export class MaterializationRepository {
       const id = this.generateId();
       const now = this.now();
       const iso = now.toISOString();
+      // Set active_key iff the row is in a non-terminal state. The unique
+      // index on active_key makes the race-free conditional insert: a second
+      // concurrent create on the same (project, package) fails here rather
+      // than in a check-then-write window.
+      const activeKey = TERMINAL_STATUSES.has(status)
+         ? null
+         : activeKeyFor(projectId, packageName);
 
-      const rows = await this.db.all<Record<string, unknown>>(
-         `INSERT INTO materializations (id, project_id, package_name, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         RETURNING *`,
-         [id, projectId, packageName, status, iso, iso],
-      );
-
-      return this.mapRow(rows[0]);
+      try {
+         const rows = await this.db.all<Record<string, unknown>>(
+            `INSERT INTO materializations (id, project_id, package_name, status, active_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING *`,
+            [id, projectId, packageName, status, activeKey, iso, iso],
+         );
+         return this.mapRow(rows[0]);
+      } catch (err) {
+         if (isUniqueViolation(err, "idx_materializations_active_key")) {
+            throw new DuplicateActiveMaterializationError(
+               projectId,
+               packageName,
+            );
+         }
+         throw err;
+      }
    }
 
    async update(
@@ -93,6 +132,15 @@ export class MaterializationRepository {
       if (updates.status !== undefined) {
          setClauses.push(`status = ?`);
          params.push(updates.status);
+         // Clear active_key on any transition to a terminal state; set it on
+         // any transition to a non-terminal state. The unique index
+         // guarantees we can never end up with two active rows for the same
+         // (project, package).
+         if (TERMINAL_STATUSES.has(updates.status)) {
+            setClauses.push(`active_key = NULL`);
+         } else {
+            setClauses.push(`active_key = project_id || '|' || package_name`);
+         }
       }
       if (updates.startedAt !== undefined) {
          setClauses.push(`started_at = ?`);
@@ -174,4 +222,17 @@ export class MaterializationRepository {
          updatedAt: new Date(row.updated_at as string),
       };
    }
+}
+
+/**
+ * DuckDB surfaces unique-constraint violations as plain Errors whose message
+ * mentions the violated index. We match on the index name rather than a
+ * generic substring so we don't misclassify unrelated constraint errors.
+ */
+function isUniqueViolation(err: unknown, indexName: string): boolean {
+   if (!(err instanceof Error)) return false;
+   const msg = err.message;
+   return (
+      msg.includes(indexName) || /duplicate key|unique constraint/i.test(msg)
+   );
 }

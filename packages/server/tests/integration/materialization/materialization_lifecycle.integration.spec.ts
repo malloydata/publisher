@@ -194,16 +194,16 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             >;
             expect(firstEntry.tableName).toBe("order_summary");
 
-            // 7. Load manifest
-            const loadRes = await fetch(url("/manifest/load"), {
+            // 7. Reload manifest
+            const reloadRes = await fetch(url("/manifest/reload"), {
                method: "POST",
             });
-            expect(loadRes.status).toBe(200);
-            const loadedManifest = (await loadRes.json()) as Record<
+            expect(reloadRes.status).toBe(200);
+            const reloadedManifest = (await reloadRes.json()) as Record<
                string,
                unknown
             >;
-            expect(loadedManifest.entries).toBeDefined();
+            expect(reloadedManifest.entries).toBeDefined();
 
             // 8. Delete
             const deleteRes = await fetch(
