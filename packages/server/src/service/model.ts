@@ -1,10 +1,10 @@
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    Annotation,
    API,
    Connection,
    FixedConnectionMap,
    isSourceDef,
+   MalloyConfig,
    MalloyError,
    ModelDef,
    modelDefToModelInfo,
@@ -27,7 +27,6 @@ import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
 import * as path from "path";
-import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    MODEL_FILE_SUFFIX,
@@ -67,6 +66,7 @@ export type TrinoConnection = components["schemas"]["TrinoConnection"];
 const MALLOY_VERSION = malloyPackage.version;
 
 export type ModelType = "model" | "notebook";
+type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 interface RunnableNotebookCell {
    type: "code" | "markdown";
@@ -157,12 +157,12 @@ export class Model {
       packageName: string,
       packagePath: string,
       modelPath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: ModelConnectionInput,
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
       const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(packagePath, modelPath, connections);
+         await Model.getModelRuntime(packagePath, modelPath, malloyConfig);
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -661,7 +661,7 @@ export class Model {
    static async getModelRuntime(
       packagePath: string,
       modelPath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: ModelConnectionInput,
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -691,22 +691,29 @@ export class Model {
 
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
-      const fileUrl = new URL(baseUrl.pathname, "file:");
-      const workingDirectory = fileURLToPath(fileUrl);
       const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
-      const duckdbConnection = connections.get("duckdb") as DuckDBConnection;
-      await duckdbConnection.runSQL(
-         `SET FILE_SEARCH_PATH='${workingDirectory}';`,
-      );
-
+      // Request runtimes borrow the cached package MalloyConfig. The package
+      // owns release; callers must not release this runtime per request.
       const runtime = new Runtime({
          urlReader,
-         connections: new FixedConnectionMap(connections, "duckdb"),
+         config: Model.toMalloyConfig(malloyConfig),
       });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
+   }
+
+   private static toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
+      if (input instanceof MalloyConfig) {
+         return input;
+      }
+
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () => new FixedConnectionMap(input, "duckdb"),
+      );
+      return malloyConfig;
    }
 
    private static getQueries(

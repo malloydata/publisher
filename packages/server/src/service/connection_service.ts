@@ -1,10 +1,66 @@
 import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
-import { createProjectConnections } from "./connection";
+import { buildProjectMalloyConfig } from "./connection";
 import { ProjectStore } from "./project_store";
 
 type ApiConnection = components["schemas"]["Connection"];
+type ReleaseCallback = () => Promise<void>;
+type ConnectionUpdateProject = {
+   runConnectionUpdateExclusive?: <T>(fn: () => Promise<T>) => Promise<T>;
+   updateConnections?: (
+      nextMalloyConfig: ReturnType<typeof buildProjectMalloyConfig>,
+      apiConnections?: ApiConnection[],
+      afterPreviousRelease?: ReleaseCallback,
+   ) => void;
+   deleteConnection?: (connectionName: string) => Promise<void>;
+   deleteDuckDBConnection?: (connectionName: string) => Promise<void>;
+   deleteDuckLakeConnection?: (connectionName: string) => Promise<void>;
+};
+
+async function runProjectConnectionUpdate<T>(
+   project: ConnectionUpdateProject,
+   fn: () => Promise<T>,
+): Promise<T> {
+   if (project.runConnectionUpdateExclusive) {
+      return project.runConnectionUpdateExclusive(fn);
+   }
+   return fn();
+}
+
+function updateProjectConnections(
+   project: ConnectionUpdateProject,
+   nextMalloyConfig: ReturnType<typeof buildProjectMalloyConfig>,
+   afterPreviousRelease?: ReleaseCallback,
+): void {
+   project.updateConnections?.(
+      nextMalloyConfig,
+      nextMalloyConfig.apiConnections,
+      afterPreviousRelease,
+   );
+}
+
+function buildDeletedConnectionCleanup(
+   project: ConnectionUpdateProject,
+   deletedConnection: ApiConnection,
+   connectionName: string,
+): ReleaseCallback | undefined {
+   if (
+      deletedConnection.type === "duckdb" &&
+      typeof project.deleteDuckDBConnection === "function"
+   ) {
+      return () => project.deleteDuckDBConnection!(connectionName);
+   }
+
+   if (
+      deletedConnection.type === "ducklake" &&
+      typeof project.deleteDuckLakeConnection === "function"
+   ) {
+      return () => project.deleteDuckLakeConnection!(connectionName);
+   }
+
+   return undefined;
+}
 
 export class ConnectionService {
    private projectStore: ProjectStore;
@@ -74,21 +130,21 @@ export class ConnectionService {
 
       // Update in-memory connections
       const project = await this.projectStore.getProject(projectName, false);
-      const existingConnections = project.listApiConnections();
-
-      const { malloyConnections, apiConnections } =
-         await createProjectConnections(
+      await runProjectConnectionUpdate(project, async () => {
+         const existingConnections = project.listApiConnections();
+         const nextMalloyConfig = buildProjectMalloyConfig(
             [...existingConnections, connection],
             project.metadata.location || "",
          );
 
-      project.updateConnections(malloyConnections, apiConnections);
+         await this.projectStore.addConnection(
+            connection,
+            dbProject.id,
+            repository,
+         );
 
-      await this.projectStore.addConnection(
-         connection,
-         dbProject.id,
-         repository,
-      );
+         updateProjectConnections(project, nextMalloyConfig);
+      });
 
       logger.info(
          `Successfully added connection "${connection.name}" to project "${projectName}"`,
@@ -117,31 +173,32 @@ export class ConnectionService {
 
       // Update in-memory connections
       const project = await this.projectStore.getProject(projectName, false);
-      const existingConnections = project.listApiConnections();
+      await runProjectConnectionUpdate(project, async () => {
+         const existingConnections = project.listApiConnections();
 
-      const updatedConnection = {
-         ...dbConnection.config,
-         ...connection,
-         name: connectionName,
-      };
+         const updatedConnection = {
+            ...dbConnection.config,
+            ...connection,
+            name: connectionName,
+         };
 
-      const updatedConnections = existingConnections.map((conn) =>
-         conn.name === connectionName ? updatedConnection : conn,
-      );
+         const updatedConnections = existingConnections.map((conn) =>
+            conn.name === connectionName ? updatedConnection : conn,
+         );
 
-      const { malloyConnections, apiConnections } =
-         await createProjectConnections(
+         const nextMalloyConfig = buildProjectMalloyConfig(
             updatedConnections,
             project.metadata.location || "",
          );
 
-      project.updateConnections(malloyConnections, apiConnections);
+         await this.projectStore.updateConnection(
+            updatedConnection,
+            dbProject.id,
+            repository,
+         );
 
-      await this.projectStore.updateConnection(
-         updatedConnection,
-         dbProject.id,
-         repository,
-      );
+         updateProjectConnections(project, nextMalloyConfig);
+      });
 
       logger.info(
          `Successfully updated connection "${connectionName}" in project "${projectName}"`,
@@ -169,10 +226,42 @@ export class ConnectionService {
 
       // Update in-memory connections
       const project = await this.projectStore.getProject(projectName, false);
-      await project.deleteConnection(connectionName);
+      await runProjectConnectionUpdate(project, async () => {
+         if (typeof project.listApiConnections !== "function") {
+            if (typeof project.deleteConnection === "function") {
+               await project.deleteConnection(connectionName);
+            }
+            await repository.deleteConnection(dbConnection.id);
+            return;
+         }
 
-      // Delete from database
-      await repository.deleteConnection(dbConnection.id);
+         const deletedConnection =
+            "getApiConnection" in project &&
+            typeof project.getApiConnection === "function"
+               ? project.getApiConnection(connectionName)
+               : dbConnection.config;
+         const updatedConnections = project
+            .listApiConnections()
+            .filter((connection) => connection.name !== connectionName);
+         const nextMalloyConfig = buildProjectMalloyConfig(
+            updatedConnections,
+            project.metadata.location || "",
+         );
+         const deleteConnectionFilesAfterRelease =
+            buildDeletedConnectionCleanup(
+               project,
+               deletedConnection,
+               connectionName,
+            );
+
+         await repository.deleteConnection(dbConnection.id);
+
+         updateProjectConnections(
+            project,
+            nextMalloyConfig,
+            deleteConnectionFilesAfterRelease,
+         );
+      });
 
       logger.info(
          `Successfully deleted connection "${connectionName}" from project "${projectName}"`,

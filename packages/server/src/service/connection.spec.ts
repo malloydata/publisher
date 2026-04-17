@@ -4,6 +4,7 @@ import path from "path";
 import sinon from "sinon";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { createProjectConnections, testConnectionConfig } from "./connection";
+import { assembleProjectConnections } from "./connection_config";
 import { components } from "../api";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -1121,19 +1122,264 @@ describe("connection integration tests", () => {
             ).rejects.toThrow(/cannot be 'duckdb'/);
          });
 
-         it("should throw error if no attached databases configured", async () => {
+         it("should allow DuckDB connections with no attachments", async () => {
+            const { malloyConnections } = await createProjectConnections(
+               [
+                  {
+                     name: "empty_duckdb",
+                     type: "duckdb",
+                     duckdbConnection: { attachedDatabases: [] },
+                  },
+               ],
+               testProjectPath,
+            );
+
+            const connection = malloyConnections.get("empty_duckdb");
+            expect(connection).toBeDefined();
+         });
+
+         it("should reject unsupported DuckDB connector fields", async () => {
             await expect(
                createProjectConnections(
                   [
                      {
-                        name: "empty_duckdb",
+                        name: "duckdb_with_setup_sql",
                         type: "duckdb",
-                        duckdbConnection: { attachedDatabases: [] },
+                        duckdbConnection: {
+                           attachedDatabases: [],
+                           setupSQL: "INSTALL httpfs",
+                        },
+                     } as unknown as ApiConnection,
+                  ],
+                  testProjectPath,
+               ),
+            ).rejects.toThrow(/Unsupported DuckDB connection field/);
+         });
+
+         it("should reject project-authored DuckDB policy fields", async () => {
+            await expect(
+               createProjectConnections(
+                  [
+                     {
+                        name: "duckdb_with_policy",
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [],
+                           securityPolicy: "sandboxed",
+                        },
+                     } as unknown as ApiConnection,
+                  ],
+                  testProjectPath,
+               ),
+            ).rejects.toThrow(/Unsupported DuckDB connection field/);
+         });
+
+         it("should preserve Snowflake private-key auth options", async () => {
+            const { malloyConnections, releaseConnections } =
+               await createProjectConnections(
+                  [
+                     {
+                        name: "sf_private_key",
+                        type: "snowflake",
+                        snowflakeConnection: {
+                           account: "test-account",
+                           username: "test-user",
+                           privateKey:
+                              "-----BEGIN PRIVATE KEY-----MIIB-----END PRIVATE KEY-----",
+                           warehouse: "test-warehouse",
+                        },
+                     },
+                  ],
+                  testProjectPath,
+               );
+
+            try {
+               const connection = malloyConnections.get(
+                  "sf_private_key",
+               ) as unknown as { connOptions: Record<string, unknown> };
+               expect(connection.connOptions.authenticator).toBe(
+                  "SNOWFLAKE_JWT",
+               );
+               expect(connection.connOptions.privateKey).toContain(
+                  "BEGIN PRIVATE KEY",
+               );
+            } finally {
+               await releaseConnections();
+            }
+         });
+
+         it("should translate Trino Peaka credentials to core extraCredential", () => {
+            const assembled = assembleProjectConnections(
+               [
+                  {
+                     name: "trino_peaka",
+                     type: "trino",
+                     trinoConnection: {
+                        server: "https://example.com",
+                        port: 443,
+                        catalog: "catalog",
+                        schema: "schema",
+                        user: "user",
+                        peakaKey: "peaka-secret",
+                     },
+                  },
+               ],
+               testProjectPath,
+            );
+
+            expect(assembled.pojo.connections.trino_peaka.extraCredential).toEqual(
+               { peakaKey: "peaka-secret" },
+            );
+            expect(
+               assembled.pojo.connections.trino_peaka.extraConfig,
+            ).toBeUndefined();
+         });
+
+         it("should validate project-level BigQuery service account keys", () => {
+            expect(() =>
+               assembleProjectConnections(
+                  [
+                     {
+                        name: "bq_invalid",
+                        type: "bigquery",
+                        bigqueryConnection: {
+                           defaultProjectId: "test-project",
+                           serviceAccountKeyJson: "{\"invalid\":\"key\"}",
+                        },
                      },
                   ],
                   testProjectPath,
                ),
-            ).rejects.toThrow(/at least one attached database/);
+            ).toThrow(/missing "type" field/);
+         });
+
+         it("should preserve PGSSLMODE for project-level Postgres", () => {
+            const previousPgSslMode = process.env.PGSSLMODE;
+            process.env.PGSSLMODE = "require";
+            try {
+               const assembled = assembleProjectConnections(
+                  [
+                     {
+                        name: "pg_ssl",
+                        type: "postgres",
+                        postgresConnection: {
+                           host: "localhost",
+                           port: 5432,
+                           userName: "user",
+                           password: "pass",
+                           databaseName: "db",
+                        },
+                     },
+                  ],
+                  testProjectPath,
+               );
+
+               expect(
+                  assembled.pojo.connections.pg_ssl.connectionString,
+               ).toContain("sslmode=require");
+            } finally {
+               if (previousPgSslMode === undefined) {
+                  delete process.env.PGSSLMODE;
+               } else {
+                  process.env.PGSSLMODE = previousPgSslMode;
+               }
+            }
+         });
+
+         it("should use project-root-relative file paths for project-level DuckDB", async () => {
+            const insideCsvPath = path.join(testProjectPath, "inside.csv");
+            await fs.writeFile(insideCsvPath, "id\n1\n");
+
+            const { malloyConnections } = await createProjectConnections(
+               [
+                  {
+                     name: "project_scoped_duckdb",
+                     type: "duckdb",
+                     duckdbConnection: { attachedDatabases: [] },
+                  },
+               ],
+               testProjectPath,
+            );
+
+            const connection = malloyConnections.get(
+               "project_scoped_duckdb",
+            ) as DuckDBConnection;
+            createdConnections.push(connection);
+
+            const assembled = assembleProjectConnections(
+               [
+                  {
+                     name: "project_scoped_duckdb",
+                     type: "duckdb",
+                     duckdbConnection: { attachedDatabases: [] },
+                  },
+               ],
+               testProjectPath,
+            );
+            expect(
+               assembled.pojo.connections.project_scoped_duckdb
+                  .workingDirectory,
+            ).toBeUndefined();
+            expect(
+               assembled.pojo.connections.project_scoped_duckdb.securityPolicy,
+            ).toBeUndefined();
+
+            await expect(
+               connection.runSQL("SELECT * FROM read_csv_auto('inside.csv')"),
+            ).resolves.toBeDefined();
+         });
+
+         it("should keep external access available for federated DuckDB entries", () => {
+            const assembled = assembleProjectConnections(
+               [
+                  {
+                     name: "federated_duckdb",
+                     type: "duckdb",
+                     duckdbConnection: {
+                        attachedDatabases: [
+                           {
+                              name: "pg",
+                              type: "postgres",
+                              postgresConnection: {
+                                 host: "localhost",
+                                 port: 5432,
+                                 userName: "user",
+                                 password: "pass",
+                                 databaseName: "db",
+                              },
+                           },
+                        ],
+                     },
+                  },
+               ],
+               testProjectPath,
+            );
+
+            const entry = assembled.pojo.connections.federated_duckdb;
+            expect(entry.securityPolicy).toBeUndefined();
+            expect(entry.enableExternalAccess).toBeUndefined();
+            expect(entry.allowedDirectories).toBeUndefined();
+         });
+
+         it("should keep external access available for MotherDuck entries", () => {
+            const assembled = assembleProjectConnections(
+               [
+                  {
+                     name: "md",
+                     type: "motherduck",
+                     motherduckConnection: {
+                        accessToken: "token",
+                        database: "db",
+                     },
+                  },
+               ],
+               testProjectPath,
+            );
+
+            const entry = assembled.pojo.connections.md;
+            expect(entry.securityPolicy).toBeUndefined();
+            expect(entry.enableExternalAccess).toBeUndefined();
+            expect(entry.allowedDirectories).toBeUndefined();
          });
 
          it("should handle already attached database gracefully", async () => {

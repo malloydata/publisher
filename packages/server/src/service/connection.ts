@@ -1,24 +1,46 @@
-import { BigQueryConnection } from "@malloydata/db-bigquery";
+import type { BigQueryConnection } from "@malloydata/db-bigquery";
+import "@malloydata/db-bigquery";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { MySQLConnection } from "@malloydata/db-mysql";
-import { PostgresConnection } from "@malloydata/db-postgres";
+import "@malloydata/db-duckdb/native";
+import type { MySQLConnection } from "@malloydata/db-mysql";
+import "@malloydata/db-mysql";
+import type { PostgresConnection } from "@malloydata/db-postgres";
+import "@malloydata/db-postgres";
 import { SnowflakeConnection } from "@malloydata/db-snowflake";
-import { TrinoConnection } from "@malloydata/db-trino";
-import { Connection, TableSourceDef } from "@malloydata/malloy";
+import type { TrinoConnection } from "@malloydata/db-trino";
+import "@malloydata/db-trino";
+import {
+   Connection,
+   contextOverlay,
+   MalloyConfig,
+   TableSourceDef,
+} from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
+import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import path from "path";
-import { v4 as uuidv4 } from "uuid";
+import type { ConnectionOptions as SnowflakeConnectionOptions } from "snowflake-sdk";
 import { components } from "../api";
-import { TEMP_DIR_PATH } from "../constants";
 import { logAxiosError, logger } from "../logger";
+import {
+   assembleProjectConnections,
+   CoreConnectionEntry,
+   normalizeSnowflakePrivateKey,
+   ProjectConnectionMetadata,
+} from "./connection_config";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionAttributes = components["schemas"]["ConnectionAttributes"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
+type PublisherDuckDBOptions = {
+   name: string;
+   databasePath?: string;
+   workingDirectory?: string;
+   motherDuckToken?: string;
+};
 
 // Extends the public API connection with the internal connection objects
 // which contains passwords and connection strings.
@@ -31,59 +53,6 @@ export type InternalConnection = ApiConnection & {
    duckdbConnection?: components["schemas"]["DuckdbConnection"];
    ducklakeConnection?: components["schemas"]["DucklakeConnection"];
 };
-
-function validateAndBuildTrinoConfig(
-   trinoConfig: components["schemas"]["TrinoConnection"],
-) {
-   if (!trinoConfig.server?.includes(trinoConfig.port?.toString() || "")) {
-      trinoConfig.server = `${trinoConfig.server}:${trinoConfig.port}`;
-   }
-
-   // Build base config
-   const baseConfig: {
-      server: string;
-      port?: number;
-      catalog?: string;
-      schema?: string;
-      user?: string;
-      password?: string;
-      extraConfig?: Record<string, unknown>;
-   } = {
-      server: trinoConfig.server,
-      port: trinoConfig.port,
-      catalog: trinoConfig.catalog,
-      schema: trinoConfig.schema,
-      user: trinoConfig.user,
-   };
-
-   if (trinoConfig.peakaKey) {
-      baseConfig.extraConfig = {
-         extraCredential: {
-            peakaKey: trinoConfig.peakaKey,
-         },
-      };
-      delete baseConfig.password;
-      delete baseConfig.catalog;
-      delete baseConfig.schema;
-   } else if (
-      trinoConfig.server?.startsWith("https://") &&
-      trinoConfig.password
-   ) {
-      // Only add password if no peakaKey and HTTPS connection
-      baseConfig.password = trinoConfig.password;
-   }
-
-   if (trinoConfig.server?.startsWith("http://")) {
-      delete baseConfig.password;
-      return baseConfig;
-   } else if (trinoConfig.server?.startsWith("https://")) {
-      return baseConfig;
-   } else {
-      throw new Error(
-         `Invalid Trino connection: expected "http://server:port" or "https://server:port".`,
-      );
-   }
-}
 
 // Shared utilities
 async function installAndLoadExtension(
@@ -145,54 +114,6 @@ function handleAlreadyAttachedError(error: unknown, dbName: string): void {
    } else {
       throw error;
    }
-}
-
-function normalizePrivateKey(privateKey: string): string {
-   let privateKeyContent = privateKey.trim();
-
-   if (!privateKeyContent.includes("\n")) {
-      // Try encrypted key first, then unencrypted
-      const keyPatterns = [
-         {
-            beginRegex: /-----BEGIN\s+ENCRYPTED\s+PRIVATE\s+KEY-----/i,
-            endRegex: /-----END\s+ENCRYPTED\s+PRIVATE\s+KEY-----/i,
-            beginMarker: "-----BEGIN ENCRYPTED PRIVATE KEY-----",
-            endMarker: "-----END ENCRYPTED PRIVATE KEY-----",
-         },
-         {
-            beginRegex: /-----BEGIN\s+PRIVATE\s+KEY-----/i,
-            endRegex: /-----END\s+PRIVATE\s+KEY-----/i,
-            beginMarker: "-----BEGIN PRIVATE KEY-----",
-            endMarker: "-----END PRIVATE KEY-----",
-         },
-      ];
-
-      for (const pattern of keyPatterns) {
-         const beginMatch = privateKeyContent.match(pattern.beginRegex);
-         const endMatch = privateKeyContent.match(pattern.endRegex);
-
-         if (beginMatch && endMatch) {
-            const beginPos = beginMatch.index! + beginMatch[0].length;
-            const endPos = endMatch.index!;
-            const keyData = privateKeyContent
-               .substring(beginPos, endPos)
-               .replace(/\s+/g, "");
-
-            const lines: string[] = [];
-            for (let i = 0; i < keyData.length; i += 64) {
-               lines.push(keyData.slice(i, i + 64));
-            }
-            privateKeyContent = `${pattern.beginMarker}\n${lines.join("\n")}\n${pattern.endMarker}\n`;
-            break;
-         }
-      }
-   } else {
-      if (!privateKeyContent.endsWith("\n")) {
-         privateKeyContent += "\n";
-      }
-   }
-
-   return privateKeyContent;
 }
 
 // Database-specific attachment handlers
@@ -780,12 +701,10 @@ class AzureDuckDBConnection extends DuckDBConnection {
    private azureDatabases: AttachedDatabase[];
 
    constructor(
-      connectionName: string,
-      databasePath: string,
-      workingDirectory: string,
+      options: PublisherDuckDBOptions,
       azureDatabases: AttachedDatabase[],
    ) {
-      super(connectionName, databasePath, workingDirectory);
+      super(options);
       this.azureDatabases = azureDatabases;
    }
 
@@ -833,22 +752,18 @@ class AzureDuckDBConnection extends DuckDBConnection {
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
 
-   constructor(
-      connectionName: string,
-      databasePath: string,
-      workingDirectory: string,
-   ) {
-      super(connectionName, databasePath, workingDirectory);
+   constructor(options: PublisherDuckDBOptions) {
+      super(options);
 
       // Validate that this is a DuckLake connection by checking the database path pattern
-      if (!databasePath.endsWith("_ducklake.duckdb")) {
+      if (!options.databasePath?.endsWith("_ducklake.duckdb")) {
          throw new Error(
             `DuckLakeConnection should only be used for DuckLake connections. ` +
-               `Expected database path ending with '_ducklake.duckdb', got: ${databasePath}`,
+               `Expected database path ending with '_ducklake.duckdb', got: ${options.databasePath}`,
          );
       }
 
-      this.connectionName = connectionName;
+      this.connectionName = options.name;
    }
 
    async fetchTableSchema(
@@ -915,6 +830,215 @@ export async function deleteDuckLakeConnectionFile(
    }
 }
 
+export type ProjectMalloyConfig = {
+   malloyConfig: MalloyConfig;
+   apiConnections: InternalConnection[];
+   // Releases both core-managed connections and Publisher wrapper-managed
+   // DuckDB connections captured by wrapConnections.
+   releaseConnections: () => Promise<void>;
+};
+
+function entryToDuckDBOptions(
+   name: string,
+   entry: CoreConnectionEntry,
+   workingDirectory?: string,
+): PublisherDuckDBOptions {
+   const { is: _is, ...rest } = entry;
+   if (workingDirectory !== undefined) {
+      rest.workingDirectory = workingDirectory;
+   }
+   return removeUndefined({ ...rest, name }) as PublisherDuckDBOptions;
+}
+
+function removeUndefined(value: Record<string, unknown>): Record<string, unknown> {
+   return Object.fromEntries(
+      Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined),
+   );
+}
+
+function buildSnowflakePrivateKeyConnection(
+   metadata: ProjectConnectionMetadata,
+): SnowflakeConnection {
+   const snowflake = metadata.apiConnection.snowflakeConnection;
+   if (!snowflake?.privateKey) {
+      throw new Error(
+         `Snowflake private key is required for connection ${metadata.apiConnection.name}`,
+      );
+   }
+
+   return new SnowflakeConnection(metadata.apiConnection.name!, {
+      connOptions: removeUndefined({
+         account: snowflake.account,
+         username: snowflake.username,
+         password: snowflake.password,
+         privateKey: normalizeSnowflakePrivateKey(snowflake.privateKey),
+         privateKeyPass: snowflake.privateKeyPass,
+         authenticator: "SNOWFLAKE_JWT",
+         warehouse: snowflake.warehouse,
+         database: snowflake.database,
+         schema: snowflake.schema,
+         role: snowflake.role,
+      }) as unknown as SnowflakeConnectionOptions,
+      timeoutMs: snowflake.responseTimeoutMilliseconds,
+   });
+}
+
+function buildDuckLakeConnection(
+   metadata: ProjectConnectionMetadata,
+   entry: CoreConnectionEntry,
+): DuckLakeConnection {
+   return new DuckLakeConnection(
+      entryToDuckDBOptions(
+         metadata.apiConnection.name!,
+         entry,
+         metadata.workingDirectory,
+      ),
+   );
+}
+
+function buildAzureDuckDBConnection(
+   metadata: ProjectConnectionMetadata,
+   entry: CoreConnectionEntry,
+): AzureDuckDBConnection {
+   return new AzureDuckDBConnection(
+      entryToDuckDBOptions(
+         metadata.apiConnection.name!,
+         entry,
+         metadata.workingDirectory,
+      ),
+      metadata.attachedDatabases,
+   );
+}
+
+function getMetadataForLookup(
+   metadata: Map<string, ProjectConnectionMetadata>,
+   name?: string,
+): ProjectConnectionMetadata | undefined {
+   return name ? metadata.get(name) : undefined;
+}
+
+function isDuckDBConnection(connection: Connection): connection is DuckDBConnection {
+   return connection instanceof DuckDBConnection;
+}
+
+export function buildProjectMalloyConfig(
+   connections: ApiConnection[] = [],
+   projectPath: string = "",
+   isUpdateConnectionRequest: boolean = false,
+): ProjectMalloyConfig {
+   const assembled = assembleProjectConnections(connections, projectPath);
+   const wrapperConnections = new Map<string, Connection>();
+   const attachPromises = new WeakMap<Connection, Promise<void>>();
+
+   const malloyConfig = new MalloyConfig(assembled.pojo, {
+      config: contextOverlay({ rootDirectory: projectPath }),
+   });
+
+   async function attachOnce(
+      connection: Connection,
+      metadata: ProjectConnectionMetadata,
+   ): Promise<void> {
+      if (
+         metadata.attachedDatabases.length === 0 ||
+         !isDuckDBConnection(connection)
+      ) {
+         return;
+      }
+
+      let attachPromise = attachPromises.get(connection);
+      if (!attachPromise) {
+         // One ATTACH run per connection object per config generation.
+         attachPromise = attachDatabasesToDuckDB(
+            connection,
+            metadata.attachedDatabases,
+         );
+         attachPromises.set(connection, attachPromise);
+      }
+      await attachPromise;
+   }
+
+   malloyConfig.wrapConnections(
+      (
+         base: LookupConnection<Connection>,
+      ): LookupConnection<Connection> => ({
+         lookupConnection: async (name?: string): Promise<Connection> => {
+            const metadata = getMetadataForLookup(assembled.metadata, name);
+
+            if (metadata?.isDuckLake) {
+               let connection = wrapperConnections.get(name!);
+               if (!connection) {
+                  const entry = assembled.pojo.connections[name!];
+                  connection = buildDuckLakeConnection(metadata, entry);
+                  wrapperConnections.set(name!, connection);
+               }
+               if (
+                  isUpdateConnectionRequest ||
+                  !(await isDatabaseAttached(connection as DuckDBConnection, name!))
+               ) {
+                  await attachDuckLake(
+                     connection as DuckDBConnection,
+                     name!,
+                     metadata.apiConnection.ducklakeConnection!,
+                  );
+               }
+               return connection;
+            }
+
+            if (metadata?.hasSnowflakePrivateKey) {
+               let connection = wrapperConnections.get(name!);
+               if (!connection) {
+                  connection = buildSnowflakePrivateKeyConnection(metadata);
+                  wrapperConnections.set(name!, connection);
+               }
+               return connection;
+            }
+
+            if (metadata?.hasAzureAttachment) {
+               let connection = wrapperConnections.get(name!);
+               if (!connection) {
+                  const entry = assembled.pojo.connections[name!];
+                  connection = buildAzureDuckDBConnection(metadata, entry);
+                  wrapperConnections.set(name!, connection);
+               }
+               await attachOnce(connection, metadata);
+               return connection;
+            }
+
+            const connection = await base.lookupConnection(name);
+            if (metadata) {
+               await attachOnce(connection, metadata);
+            }
+            return connection;
+         },
+      }),
+   );
+
+   return {
+      malloyConfig,
+      apiConnections: assembled.apiConnections as InternalConnection[],
+      releaseConnections: async () => {
+         const closeResults = await Promise.allSettled([
+            malloyConfig.releaseConnections(),
+            ...Array.from(wrapperConnections.values(), (connection) =>
+               connection.close(),
+            ),
+         ]);
+         wrapperConnections.clear();
+
+         const failures = closeResults.filter(
+            (result): result is PromiseRejectedResult =>
+               result.status === "rejected",
+         );
+         if (failures.length > 0) {
+            throw new AggregateError(
+               failures.map((failure) => failure.reason),
+               "Failed to release one or more project connections",
+            );
+         }
+      },
+   };
+}
+
 export async function createProjectConnections(
    connections: ApiConnection[] = [],
    projectPath: string = "",
@@ -922,347 +1046,30 @@ export async function createProjectConnections(
 ): Promise<{
    malloyConnections: Map<string, BaseConnection>;
    apiConnections: InternalConnection[];
+   releaseConnections: () => Promise<void>;
 }> {
    const connectionMap = new Map<string, BaseConnection>();
-   const processedConnections = new Set<string>();
-   const apiConnections: InternalConnection[] = [];
+   const projectConfig = buildProjectMalloyConfig(
+      connections,
+      projectPath,
+      isUpdateConnectionRequest,
+   );
 
-   for (const connection of connections) {
-      if (connection.name && processedConnections.has(connection.name)) {
-         continue;
-      }
-
-      logger.info(`Adding connection ${connection.name}`, {
-         connection,
-      });
-
-      if (!connection.name) {
-         throw "Invalid connection configuration.  No name.";
-      }
-
-      processedConnections.add(connection.name);
-
-      switch (connection.type) {
-         case "postgres": {
-            const configReader = async () => {
-               if (!connection.postgresConnection) {
-                  throw "Invalid connection configuration.  No postgres connection.";
-               }
-               return {
-                  host: connection.postgresConnection.host,
-                  port: connection.postgresConnection.port,
-                  username: connection.postgresConnection.userName,
-                  password: connection.postgresConnection.password,
-                  databaseName: connection.postgresConnection.databaseName,
-                  connectionString:
-                     connection.postgresConnection.connectionString,
-               };
-            };
-            const postgresConnection = new PostgresConnection(
-               connection.name,
-               () => ({}),
-               configReader,
-            );
-            connectionMap.set(connection.name, postgresConnection);
-            connection.attributes = getConnectionAttributes(postgresConnection);
-            break;
-         }
-
-         case "mysql": {
-            if (!connection.mysqlConnection) {
-               throw "Invalid connection configuration.  No mysql connection.";
-            }
-            const config = {
-               host: connection.mysqlConnection.host,
-               port: connection.mysqlConnection.port,
-               user: connection.mysqlConnection.user,
-               password: connection.mysqlConnection.password,
-               database: connection.mysqlConnection.database,
-            };
-            const mysqlConnection = new MySQLConnection(
-               connection.name,
-               config,
-            );
-            connectionMap.set(connection.name, mysqlConnection);
-            connection.attributes = getConnectionAttributes(mysqlConnection);
-            break;
-         }
-
-         case "bigquery": {
-            if (!connection.bigqueryConnection) {
-               throw "Invalid connection configuration.  No bigquery connection.";
-            }
-
-            // If a service account key file is provided, we persist it to disk
-            // and pass the path to the BigQueryConnection.
-            let serviceAccountKeyPath = undefined;
-            if (connection.bigqueryConnection.serviceAccountKeyJson) {
-               serviceAccountKeyPath = path.join(
-                  TEMP_DIR_PATH,
-                  `${connection.name}-${uuidv4()}-service-account-key.json`,
-               );
-               await fs.writeFile(
-                  serviceAccountKeyPath,
-                  connection.bigqueryConnection.serviceAccountKeyJson as string,
-               );
-            }
-
-            const bigqueryConnectionOptions = {
-               projectId: connection.bigqueryConnection.defaultProjectId,
-               serviceAccountKeyPath: serviceAccountKeyPath,
-               location: connection.bigqueryConnection.location,
-               maximumBytesBilled:
-                  connection.bigqueryConnection.maximumBytesBilled,
-               timeoutMs:
-                  connection.bigqueryConnection.queryTimeoutMilliseconds,
-               billingProjectId: connection.bigqueryConnection.billingProjectId,
-            };
-            const bigqueryConnection = new BigQueryConnection(
-               connection.name,
-               () => ({}),
-               bigqueryConnectionOptions,
-            );
-            connectionMap.set(connection.name, bigqueryConnection);
-            connection.attributes = getConnectionAttributes(bigqueryConnection);
-            break;
-         }
-
-         case "snowflake": {
-            if (!connection.snowflakeConnection) {
-               throw new Error(
-                  "Snowflake connection configuration is missing.",
-               );
-            }
-            if (!connection.snowflakeConnection.account) {
-               throw new Error("Snowflake account is required.");
-            }
-
-            if (!connection.snowflakeConnection.username) {
-               throw new Error("Snowflake username is required.");
-            }
-
-            if (
-               !connection.snowflakeConnection.password &&
-               !connection.snowflakeConnection.privateKey
-            ) {
-               throw new Error(
-                  "Snowflake password or private key or private key path is required.",
-               );
-            }
-
-            if (!connection.snowflakeConnection.warehouse) {
-               throw new Error("Snowflake warehouse is required.");
-            }
-
-            let privateKeyPath = undefined;
-
-            if (connection.snowflakeConnection.privateKey) {
-               privateKeyPath = path.join(
-                  TEMP_DIR_PATH,
-                  `${connection.name}-${uuidv4()}-private-key.pem`,
-               );
-               const normalizedKey = normalizePrivateKey(
-                  connection.snowflakeConnection.privateKey as string,
-               );
-               await fs.writeFile(privateKeyPath, normalizedKey);
-            }
-
-            const snowflakeConnectionOptions = {
-               connOptions: {
-                  account: connection.snowflakeConnection.account,
-                  username: connection.snowflakeConnection.username,
-                  warehouse: connection.snowflakeConnection.warehouse,
-                  database: connection.snowflakeConnection.database,
-                  schema: connection.snowflakeConnection.schema,
-                  role: connection.snowflakeConnection.role,
-                  ...(connection.snowflakeConnection.privateKey
-                     ? {
-                          privateKeyPath: privateKeyPath,
-                          authenticator: "SNOWFLAKE_JWT",
-                          privateKeyPass:
-                             connection.snowflakeConnection.privateKeyPass ||
-                             undefined,
-                       }
-                     : {
-                          password:
-                             connection.snowflakeConnection.password ||
-                             undefined,
-                       }),
-                  timeout:
-                     connection.snowflakeConnection.responseTimeoutMilliseconds,
-               },
-               poolOptions: {
-                  min: 1,
-                  max: 5,
-                  testOnBorrow: false,
-                  testOnReturn: false,
-                  testWhileIdle: true,
-               },
-            };
-            const snowflakeConnection = new SnowflakeConnection(
-               connection.name,
-               snowflakeConnectionOptions,
-            );
-            connectionMap.set(connection.name, snowflakeConnection);
-            connection.attributes =
-               getConnectionAttributes(snowflakeConnection);
-            break;
-         }
-
-         case "trino": {
-            if (!connection.trinoConnection) {
-               throw new Error("Trino connection configuration is missing.");
-            }
-
-            const trinoConnectionOptions = validateAndBuildTrinoConfig(
-               connection.trinoConnection,
-            );
-            const trinoConnection = new TrinoConnection(
-               connection.name,
-               {},
-               trinoConnectionOptions,
-            );
-            connectionMap.set(connection.name, trinoConnection);
-            connection.attributes = getConnectionAttributes(trinoConnection);
-            break;
-         }
-
-         case "duckdb": {
-            if (!connection.duckdbConnection) {
-               throw new Error("DuckDB connection configuration is missing.");
-            }
-
-            if (
-               connection.duckdbConnection.attachedDatabases?.some(
-                  (database) => database.name === connection.name,
-               )
-            ) {
-               throw new Error(
-                  `DuckDB attached databases names cannot conflict with connection name ${connection.name}`,
-               );
-            }
-
-            if (connection.name === "duckdb") {
-               throw new Error("DuckDB connection name cannot be 'duckdb'");
-            }
-
-            if (connection.duckdbConnection?.attachedDatabases?.length == 0) {
-               throw new Error(
-                  "DuckDB connection must have at least one attached database",
-               );
-            }
-
-            // Create DuckDB connection with project basePath as working directory
-            // This ensures relative paths in the project are resolved correctly
-            // Use unique memory database path to prevent sharing across connections
-            const attachedDatabases =
-               connection.duckdbConnection.attachedDatabases ?? [];
-            const hasAzureAttached = attachedDatabases.some(
-               (db) => db.type === "azure",
-            );
-            const duckdbConnection = hasAzureAttached
-               ? new AzureDuckDBConnection(
-                    connection.name,
-                    path.join(projectPath, `${connection.name}.duckdb`),
-                    projectPath,
-                    attachedDatabases,
-                 )
-               : new DuckDBConnection(
-                    connection.name,
-                    path.join(projectPath, `${connection.name}.duckdb`),
-                    projectPath,
-                 );
-
-            // Attach databases if configured
-            if (attachedDatabases.length > 0) {
-               await attachDatabasesToDuckDB(
-                  duckdbConnection,
-                  attachedDatabases,
-               );
-            }
-
-            connectionMap.set(connection.name, duckdbConnection);
-            connection.attributes = getConnectionAttributes(duckdbConnection);
-            break;
-         }
-
-         case "motherduck": {
-            if (!connection.motherduckConnection) {
-               throw new Error(
-                  "MotherDuck connection configuration is missing.",
-               );
-            }
-
-            if (!connection.motherduckConnection.accessToken) {
-               throw new Error("MotherDuck access token is required.");
-            }
-
-            let databasePath = `md:`;
-            // Build the MotherDuck database path
-            if (connection.motherduckConnection.database) {
-               databasePath = `md:${connection.motherduckConnection.database}?attach_mode=single`;
-            }
-
-            // Create MotherDuck connection using DuckDBConnectionOptions interface
-            const motherduckConnection = new DuckDBConnection({
-               name: connection.name,
-               databasePath: databasePath,
-               motherDuckToken: connection.motherduckConnection.accessToken,
-               workingDirectory: projectPath,
-            });
-
-            connectionMap.set(connection.name, motherduckConnection);
-            connection.attributes =
-               getConnectionAttributes(motherduckConnection);
-            break;
-         }
-
-         case "ducklake": {
-            if (!connection.ducklakeConnection) {
-               throw new Error("DuckLake connection configuration is missing.");
-            }
-
-            // Creating one Connection per DuckLake connection to avoid conflicts with other connections and better isolation.
-            const ducklakeDuckdbConnection = new DuckLakeConnection(
-               connection.name,
-               path.join(projectPath, `${connection.name}_ducklake.duckdb`),
-               projectPath,
-            );
-
-            // Only attach DuckLake if it's not already attached or is it an update connection request
-            if (
-               isUpdateConnectionRequest ||
-               !(await isDatabaseAttached(
-                  ducklakeDuckdbConnection,
-                  connection.name,
-               ))
-            ) {
-               await attachDuckLake(
-                  ducklakeDuckdbConnection,
-                  connection.name,
-                  connection.ducklakeConnection,
-               );
-            }
-
-            connectionMap.set(connection.name, ducklakeDuckdbConnection);
-            connection.attributes = getConnectionAttributes(
-               ducklakeDuckdbConnection,
-            );
-            break;
-         }
-
-         default: {
-            throw new Error(`Unsupported connection type: ${connection.type}`);
-         }
-      }
-
-      // Add the connection to apiConnections (this will be sanitized when returned)
-      apiConnections.push(connection);
+   for (const connection of projectConfig.apiConnections) {
+      if (!connection.name) continue;
+      logger.info(`Adding connection ${connection.name}`, { connection });
+      const malloyConnection =
+         await projectConfig.malloyConfig.connections.lookupConnection(
+            connection.name,
+         );
+      connection.attributes = getConnectionAttributes(malloyConnection);
+      connectionMap.set(connection.name, malloyConnection as BaseConnection);
    }
 
    return {
       malloyConnections: connectionMap,
-      apiConnections: apiConnections,
+      apiConnections: projectConfig.apiConnections,
+      releaseConnections: projectConfig.releaseConnections,
    };
 }
 
@@ -1412,26 +1219,18 @@ async function testDuckDBConnection(
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
-   let malloyConnections: Map<string, BaseConnection> | null = null;
+   let projectConfig: ProjectMalloyConfig | null = null;
    try {
       // Validate that connection name is provided
       if (!connectionConfig.name) {
          throw new Error("Connection name is required");
       }
 
-      // Use createProjectConnections to create the connection, then test it
-      const result = await createProjectConnections(
-         [connectionConfig], // Pass the single connection config
-      );
-      malloyConnections = result.malloyConnections;
-
-      // Get the created connection
-      const connection = malloyConnections.get(connectionConfig.name);
-      if (!connection) {
-         throw new Error(
-            `Failed to create connection: ${connectionConfig.name}`,
+      projectConfig = buildProjectMalloyConfig([connectionConfig]);
+      const connection =
+         await projectConfig.malloyConfig.connections.lookupConnection(
+            connectionConfig.name,
          );
-      }
 
       // Handle DuckDB connections specially since they have attached databases
       if (connectionConfig.type === "duckdb") {
@@ -1486,29 +1285,18 @@ export async function testConnectionConfig(
          errorMessage: (error as Error).message,
       };
    } finally {
-      // Cleanup: close all connections and remove ducklake files created during testing
-      if (malloyConnections) {
-         for (const [connName, conn] of malloyConnections) {
-            try {
-               // Close the connection
-               if (
-                  conn &&
-                  typeof (conn as DuckDBConnection).close === "function"
-               ) {
-                  await (conn as DuckDBConnection).close();
-               }
-            } catch (closeError) {
-               logger.warn(
-                  `Error closing connection ${connName} during test cleanup`,
-                  { error: closeError },
-               );
-            } finally {
-               // Remove ducklake files created during testing (only for ducklake connections)
-               if (connectionConfig.type === "ducklake") {
-                  await deleteDuckLakeConnectionFile(connName, process.cwd());
-               }
-            }
+      if (projectConfig) {
+         try {
+            await projectConfig.releaseConnections();
+         } catch (closeError) {
+            logger.warn("Error releasing temporary connection test config", {
+               error: closeError,
+            });
          }
+      }
+
+      if (connectionConfig.type === "ducklake" && connectionConfig.name) {
+         await deleteDuckLakeConnectionFile(connectionConfig.name, process.cwd());
       }
    }
 }

@@ -2,10 +2,14 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import "@malloydata/db-duckdb/native";
 import {
    Connection,
    ConnectionRuntime,
    EmptyURLReader,
+   FixedConnectionMap,
+   contextOverlay,
+   MalloyConfig,
    SourceDef,
 } from "@malloydata/malloy";
 import { metrics } from "@opentelemetry/api";
@@ -27,6 +31,7 @@ type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
+type PackageConnectionInput = MalloyConfig | Map<string, Connection>;
 
 const ENABLE_LIST_MODEL_COMPILATION = true;
 export class Package {
@@ -36,7 +41,7 @@ export class Package {
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
    private packagePath: string;
-   private connections: Map<string, Connection> = new Map();
+   private malloyConfig: MalloyConfig;
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -53,7 +58,7 @@ export class Package {
       packageMetadata: ApiPackage,
       databases: ApiDatabase[],
       models: Map<string, Model>,
-      connections: Map<string, Connection> = new Map(),
+      malloyConfig: MalloyConfig = new MalloyConfig({ connections: {} }),
    ) {
       this.projectName = projectName;
       this.packageName = packageName;
@@ -61,14 +66,14 @@ export class Package {
       this.packageMetadata = packageMetadata;
       this.databases = databases;
       this.models = models;
-      this.connections = connections;
+      this.malloyConfig = malloyConfig;
    }
 
    static async create(
       projectName: string,
       packageName: string,
       packagePath: string,
-      projectConnections: Map<string, Connection>,
+      projectMalloyConfig: PackageConnectionInput,
    ): Promise<Package> {
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -96,20 +101,15 @@ export class Package {
             databaseCount: databases.length,
             duration: formatDuration(databasesTime - packageConfigTime),
          });
-         const connections = new Map<string, Connection>(projectConnections);
-
-         // Add a duckdb connection for the package.
-         const duckdbConnection = new DuckDBConnection(
-            "duckdb",
-            ":memory:",
+         const malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
+            Package.toMalloyConfig(projectMalloyConfig),
          );
-         connections.set("duckdb", duckdbConnection);
 
          const models = await Package.loadModels(
             packageName,
             packagePath,
-            connections,
+            malloyConfig,
          );
          const modelsTime = performance.now();
          logger.info("Models loaded", {
@@ -158,7 +158,7 @@ export class Package {
             packageConfig,
             databases,
             models,
-            connections,
+            malloyConfig,
          );
       } catch (error) {
          logger.error(`Error loading package ${packageName}`, { error });
@@ -201,14 +201,12 @@ export class Package {
       return this.models.get(modelPath);
    }
 
-   public getMalloyConnection(connectionName: string): Connection {
-      const connection = this.connections.get(connectionName);
-      if (!connection) {
-         throw new Error(
-            `Connection ${connectionName} not found in package ${this.packageName}`,
-         );
-      }
-      return connection;
+   public async getMalloyConnection(connectionName: string): Promise<Connection> {
+      return this.malloyConfig.connections.lookupConnection(connectionName);
+   }
+
+   public getMalloyConfig(): MalloyConfig {
+      return this.malloyConfig;
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
@@ -272,15 +270,57 @@ export class Package {
    private static async loadModels(
       packageName: string,
       packagePath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: MalloyConfig,
    ): Promise<Map<string, Model>> {
       const modelPaths = await Package.getModelPaths(packagePath);
       const models = await Promise.all(
          modelPaths.map((modelPath) =>
-            Model.create(packageName, packagePath, modelPath, connections),
+            Model.create(packageName, packagePath, modelPath, malloyConfig),
          ),
       );
       return new Map(models.map((model) => [model.getPath(), model]));
+   }
+
+   private static buildPackageMalloyConfig(
+      packagePath: string,
+      projectMalloyConfig: MalloyConfig,
+   ): MalloyConfig {
+      const malloyConfig = new MalloyConfig(
+         {
+            connections: {
+               duckdb: {
+                  is: "duckdb",
+                  databasePath: ":memory:",
+               },
+            },
+         },
+         {
+            config: contextOverlay({ rootDirectory: packagePath }),
+         },
+      );
+
+      malloyConfig.wrapConnections((base) => ({
+         lookupConnection: async (name?: string) => {
+            if (!name || name === "duckdb") {
+               return base.lookupConnection(name);
+            }
+            return projectMalloyConfig.connections.lookupConnection(name);
+         },
+      }));
+
+      return malloyConfig;
+   }
+
+   private static toMalloyConfig(input: PackageConnectionInput): MalloyConfig {
+      if (input instanceof MalloyConfig) {
+         return input;
+      }
+
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () => new FixedConnectionMap(input, "duckdb"),
+      );
+      return malloyConfig;
    }
 
    private static async getModelPaths(packagePath: string): Promise<string[]> {
