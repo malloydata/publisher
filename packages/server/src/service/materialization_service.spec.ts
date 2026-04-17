@@ -1,3 +1,4 @@
+import type { Connection } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
@@ -6,13 +7,19 @@ import {
    MaterializationNotFoundError,
    ProjectNotFoundError,
 } from "../errors";
+import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import {
+   ManifestEntry,
    Materialization,
    MaterializationStatus,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { ManifestService } from "./manifest_service";
-import { MaterializationService } from "./materialization_service";
+import {
+   manifestTableKey,
+   MaterializationService,
+   tablePhysicallyExists,
+} from "./materialization_service";
 import { ProjectStore } from "./project_store";
 
 function makeExecution(
@@ -239,12 +246,11 @@ describe("MaterializationService", () => {
             getPackage: sinon.stub().resolves({}),
          });
          ctx.repository.getActiveMaterialization.resolves(null);
-         const pending = makeExecution({ status: "PENDING" });
-         ctx.repository.createMaterialization.resolves(pending);
-         ctx.repository.updateMaterialization.resolves({
-            ...pending,
+         const pending = makeExecution({
+            status: "PENDING",
             metadata: { forceRefresh: false, autoLoadManifest: true },
          });
+         ctx.repository.createMaterialization.resolves(pending);
 
          const result = await ctx.service.createMaterialization(
             "my-project",
@@ -258,6 +264,15 @@ describe("MaterializationService", () => {
          expect(
             (result.metadata as Record<string, unknown>)?.autoLoadManifest,
          ).toBe(true);
+         // Options persist on the INSERT itself; no follow-up update.
+         expect(ctx.repository.createMaterialization.calledOnce).toBe(true);
+         expect(ctx.repository.createMaterialization.firstCall.args).toEqual([
+            "proj-1",
+            "pkg",
+            "PENDING",
+            { forceRefresh: false, autoLoadManifest: true },
+         ]);
+         expect(ctx.repository.updateMaterialization.called).toBe(false);
       });
 
       it("should reject creation when an active materialization exists", async () => {
@@ -274,9 +289,6 @@ describe("MaterializationService", () => {
       });
 
       it("should translate DuplicateActiveMaterializationError from a lost race", async () => {
-         const {
-            DuplicateActiveMaterializationError,
-         } = require("../storage/duckdb/MaterializationRepository");
          (ctx.projectStore.getProject as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves({}),
          });
@@ -447,5 +459,189 @@ describe("MaterializationService", () => {
             ctx.service.deleteMaterialization("my-project", "pkg", "missing"),
          ).rejects.toThrow(MaterializationNotFoundError);
       });
+   });
+
+   // ==================== GC ====================
+
+   describe("gcPackage", () => {
+      it("refuses to run while a materialization is active", async () => {
+         ctx.repository.getActiveMaterialization.resolves(
+            makeExecution({ status: "RUNNING" }),
+         );
+
+         await expect(
+            ctx.service.gcPackage("my-project", "pkg"),
+         ).rejects.toThrow(MaterializationConflictError);
+      });
+
+      it("drops every manifest entry for the package and deletes its row", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = {
+            dialectName: "duckdb",
+            runSQL,
+         } as unknown as Connection;
+         const connections = new Map<string, Connection>([
+            ["conn", connection],
+         ]);
+         const pkg = { getConnections: () => connections };
+         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves(pkg),
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const entries: ManifestEntry[] = [
+            {
+               id: "entry-1",
+               projectId: "proj-1",
+               packageName: "pkg",
+               buildId: "abcdef1234567890abcdef1234567890",
+               tableName: "table_a",
+               sourceName: "src",
+               connectionName: "conn",
+               createdAt: new Date(),
+               updatedAt: new Date(),
+            },
+            {
+               id: "entry-2",
+               projectId: "proj-1",
+               packageName: "pkg",
+               buildId: "1234567890abcdef1234567890abcdef",
+               tableName: "table_b",
+               sourceName: "src",
+               connectionName: "conn",
+               createdAt: new Date(),
+               updatedAt: new Date(),
+            },
+         ];
+         (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
+
+         const result = await ctx.service.gcPackage("my-project", "pkg");
+
+         expect(result.dropped).toHaveLength(2);
+         expect(result.errors).toHaveLength(0);
+         // Each entry triggers target DROP + staging DROP = 2 calls per entry.
+         expect(runSQL.callCount).toBe(4);
+         expect(
+            (ctx.manifestService.deleteEntry as sinon.SinonStub).callCount,
+         ).toBe(2);
+      });
+
+      it("deletes rows whose connection is no longer registered (teardown force-delete)", async () => {
+         const runSQL = sinon.stub().resolves();
+         const livingConn = {
+            dialectName: "duckdb",
+            runSQL,
+         } as unknown as Connection;
+         // Only "live_conn" is registered; the manifest row below points at
+         // a vanished "ghost_conn", which used to be un-GC-able. `gcPackage`
+         // must force-delete the row anyway so teardown can complete.
+         const connections = new Map<string, Connection>([
+            ["live_conn", livingConn],
+         ]);
+         const pkg = { getConnections: () => connections };
+         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves(pkg),
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const entries: ManifestEntry[] = [
+            {
+               id: "entry-ghost",
+               projectId: "proj-1",
+               packageName: "pkg",
+               buildId: "abcdef1234567890abcdef1234567890",
+               tableName: "table_ghost",
+               sourceName: "src",
+               connectionName: "ghost_conn",
+               createdAt: new Date(),
+               updatedAt: new Date(),
+            },
+         ];
+         (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
+
+         const result = await ctx.service.gcPackage("my-project", "pkg");
+
+         expect(result.dropped).toHaveLength(1);
+         expect(result.dropped[0].targetDropSkipped).toBe(true);
+         expect(result.errors).toHaveLength(0);
+         // No DROP on the vanished connection, but the manifest row is gone.
+         expect(runSQL.called).toBe(false);
+         expect(
+            (ctx.manifestService.deleteEntry as sinon.SinonStub).calledOnce,
+         ).toBe(true);
+      });
+
+      it("dryRun reports would-drop entries without running DROP or deleting rows", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = {
+            dialectName: "duckdb",
+            runSQL,
+         } as unknown as Connection;
+         const connections = new Map<string, Connection>([
+            ["conn", connection],
+         ]);
+         const pkg = { getConnections: () => connections };
+         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves(pkg),
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const entry: ManifestEntry = {
+            id: "entry-1",
+            projectId: "proj-1",
+            packageName: "pkg",
+            buildId: "abcdef1234567890abcdef1234567890",
+            tableName: "orphan",
+            sourceName: "src",
+            connectionName: "conn",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+         };
+         (ctx.manifestService.listEntries as sinon.SinonStub).resolves([entry]);
+
+         const result = await ctx.service.gcPackage("my-project", "pkg", {
+            dryRun: true,
+         });
+
+         expect(result.dropped).toHaveLength(1);
+         expect(result.dropped[0].tableName).toBe("orphan");
+         expect(runSQL.called).toBe(false);
+         expect(
+            (ctx.manifestService.deleteEntry as sinon.SinonStub).called,
+         ).toBe(false);
+      });
+   });
+});
+
+// ==================== HELPER UNIT TESTS ====================
+
+describe("manifestTableKey", () => {
+   it("returns connectionName::tableName", () => {
+      expect(manifestTableKey("duckdb", "orders")).toBe("duckdb::orders");
+   });
+
+   it("handles schema-qualified table names", () => {
+      expect(manifestTableKey("pg", "analytics.summary")).toBe(
+         "pg::analytics.summary",
+      );
+   });
+});
+
+describe("tablePhysicallyExists", () => {
+   it("returns true when SELECT succeeds", async () => {
+      const conn = {
+         runSQL: sinon.stub().resolves({ rows: [] }),
+      } as unknown as Connection;
+
+      expect(await tablePhysicallyExists(conn, '"my_table"')).toBe(true);
+      expect((conn.runSQL as sinon.SinonStub).calledOnce).toBe(true);
+      expect((conn.runSQL as sinon.SinonStub).firstCall.args[0]).toBe(
+         'SELECT 1 FROM "my_table" WHERE 1=0',
+      );
+   });
+
+   it("returns false when SELECT throws (table does not exist)", async () => {
+      const conn = {
+         runSQL: sinon.stub().rejects(new Error("table not found")),
+      } as unknown as Connection;
+
+      expect(await tablePhysicallyExists(conn, '"missing"')).toBe(false);
    });
 });

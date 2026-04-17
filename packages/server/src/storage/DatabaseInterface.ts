@@ -60,6 +60,7 @@ export interface ResourceRepository {
       projectId: string,
       packageName: string,
       status?: MaterializationStatus,
+      metadata?: Record<string, unknown> | null,
    ): Promise<Materialization>;
    updateMaterialization(
       id: string,

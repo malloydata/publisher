@@ -1,4 +1,8 @@
-import type { BuildGraph, PersistSource } from "@malloydata/malloy";
+import type {
+   BuildGraph,
+   Connection as MalloyConnection,
+   PersistSource,
+} from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -7,6 +11,7 @@ import {
    MaterializationNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import type { ManifestEntry } from "../storage/DatabaseInterface";
 import {
    Materialization,
    MaterializationStatus,
@@ -14,22 +19,59 @@ import {
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import { ManifestService } from "./manifest_service";
+import {
+   dropManifestEntries,
+   GcResult,
+   liveTableKey,
+} from "./materialized_table_gc";
 import { Model } from "./model";
 import { ProjectStore } from "./project_store";
+import { quoteTablePath, splitTablePath } from "./quoting";
 import { resolveProjectId } from "./resolve_project";
 
 /**
- * Quote a potentially schema-qualified table path (e.g. "schema.table")
- * by quoting each segment individually with the dialect's quoteTablePath.
+ * Length of the BuildID prefix used when synthesizing staging table names.
+ * BuildID is a 64-char SHA-256 hex string; 12 hex chars is 48 bits of entropy
+ * — plenty of uniqueness per source, and keeps the final identifier well
+ * inside every dialect's limit (Postgres is the tightest at 63).
  */
-function quoteTablePath(
-   path: string,
-   dialect: { quoteTablePath(seg: string): string },
+const STAGING_BUILD_ID_LEN = 12;
+
+/**
+ * Return the staging suffix `_<truncatedBuildId>` appended to a table name
+ * while it is being built. The suffix is fully derivable from a manifest
+ * entry's `buildId`, which is how GC finds and drops orphaned staging tables.
+ */
+export function stagingSuffix(buildId: string): string {
+   return `_${buildId.substring(0, STAGING_BUILD_ID_LEN)}`;
+}
+
+/**
+ * Build a stable key for a `(connectionName, tableName)` pair.
+ * Used to check whether a persist target was created by a previous build.
+ */
+export function manifestTableKey(
+   connectionName: string,
+   tableName: string,
 ): string {
-   return path
-      .split(".")
-      .map((seg) => dialect.quoteTablePath(seg))
-      .join(".");
+   return `${connectionName}::${tableName}`;
+}
+
+/**
+ * Probe whether a table physically exists on the given connection by
+ * running a zero-row SELECT. Returns `true` if the table resolves,
+ * `false` if the query fails (assumed "table not found").
+ */
+export async function tablePhysicallyExists(
+   connection: MalloyConnection,
+   quotedTableName: string,
+): Promise<boolean> {
+   try {
+      await connection.runSQL(`SELECT 1 FROM ${quotedTableName} WHERE 1=0`);
+      return true;
+   } catch {
+      return false;
+   }
 }
 
 /**
@@ -188,12 +230,17 @@ export class MaterializationService {
          );
       }
 
-      let materialization;
+      const metadata = {
+         forceRefresh: options.forceRefresh ?? false,
+         autoLoadManifest: options.autoLoadManifest ?? false,
+      };
+
       try {
-         materialization = await this.repository.createMaterialization(
+         return await this.repository.createMaterialization(
             projectId,
             packageName,
             "PENDING",
+            metadata,
          );
       } catch (err) {
          if (err instanceof DuplicateActiveMaterializationError) {
@@ -211,14 +258,6 @@ export class MaterializationService {
          }
          throw err;
       }
-
-      // Store build options in metadata so startMaterialization can retrieve them.
-      return this.repository.updateMaterialization(materialization.id, {
-         metadata: {
-            forceRefresh: options.forceRefresh ?? false,
-            autoLoadManifest: options.autoLoadManifest ?? false,
-         },
-      });
    }
 
    /**
@@ -258,10 +297,7 @@ export class MaterializationService {
          startedAt: new Date(),
       });
 
-      const buildOptions = (execution.metadata ?? {}) as {
-         forceRefresh?: boolean;
-         autoLoadManifest?: boolean;
-      };
+      const metadata = (execution.metadata ?? {}) as Record<string, unknown>;
 
       // Fire-and-forget: run the build in the background.
       this.runMaterialization(
@@ -269,8 +305,7 @@ export class MaterializationService {
          projectName,
          projectId,
          packageName,
-         buildOptions,
-         (execution.metadata ?? {}) as Record<string, unknown>,
+         metadata,
       ).catch((err) => {
          logger.error("Unhandled error in background build", {
             executionId: execution.id,
@@ -286,8 +321,7 @@ export class MaterializationService {
       projectName: string,
       projectId: string,
       packageName: string,
-      options: { forceRefresh?: boolean; autoLoadManifest?: boolean },
-      baseMetadata: Record<string, unknown>,
+      metadata: Record<string, unknown>,
    ): Promise<void> {
       const abortController = new AbortController();
       this.runningAbortControllers.set(executionId, abortController);
@@ -297,13 +331,11 @@ export class MaterializationService {
             projectName,
             projectId,
             packageName,
-            options.forceRefresh || false,
+            !!metadata.forceRefresh,
             abortController.signal,
          );
 
-         // If autoLoadManifest is set, reload all models with the updated
-         // manifest so subsequent queries resolve persist references.
-         if (options.autoLoadManifest) {
+         if (metadata.autoLoadManifest) {
             const updatedManifest = await this.manifestService.getManifest(
                projectId,
                packageName,
@@ -318,10 +350,7 @@ export class MaterializationService {
 
          await this.transitionExecution(executionId, "SUCCESS", {
             completedAt: new Date(),
-            metadata: {
-               ...baseMetadata,
-               ...buildMetadata,
-            },
+            metadata: { ...metadata, ...buildMetadata },
          });
       } catch (err) {
          const errorMessage = err instanceof Error ? err.message : String(err);
@@ -416,26 +445,86 @@ export class MaterializationService {
       await this.repository.deleteMaterialization(execution.id);
    }
 
+   // ==================== GARBAGE COLLECTION ====================
+
+   /**
+    * Drop every materialized table and manifest row for a package.
+    *
+    * This is the only out-of-band GC surface exposed by the publisher and
+    * is intended for a single caller: the controlplane, invoking it on the
+    * truly destructive path before the package/project is torn down. The
+    * publisher's `DELETE` endpoints are *not* wired into GC because the
+    * controlplane invokes them for non-destructive unload too (down-
+    * replicate, drain, archive) where the entity still exists on other
+    * replicas, and dropping shared tables there would corrupt surviving
+    * workers.
+    *
+    * Reconciliation of stale rows against the package's live source code
+    * happens inline at the end of every successful build (see
+    * {@link executeBuild} Step 5) — that is where "active" vs. "orphan"
+    * is authoritatively determined, using the manifest's own `touch()`
+    * bookkeeping. This endpoint does not re-derive that information; it
+    * drops the manifest in its entirety, which is the correct behavior
+    * for the pre-deletion use case and avoids pulling the package's
+    * source through the compiler just to reach a foregone conclusion.
+    *
+    * Refuses to run while a materialization is active for the package
+    * (same serialization the inline GC gets by piggy-backing on the
+    * build).
+    *
+    * `dryRun` returns what would be dropped without issuing any DROP or
+    * deleting manifest rows.
+    */
+   async gcPackage(
+      projectName: string,
+      packageName: string,
+      options: { dryRun?: boolean } = {},
+   ): Promise<GcResult> {
+      const projectId = await this.resolveProjectId(projectName);
+
+      const active = await this.repository.getActiveMaterialization(
+         projectId,
+         packageName,
+      );
+      if (active) {
+         throw new MaterializationConflictError(
+            `Package ${packageName} has an active materialization (${active.id}); cannot GC`,
+         );
+      }
+
+      const project = await this.projectStore.getProject(projectName, false);
+      const pkg = await project.getPackage(packageName, false);
+      const connections = pkg.getConnections();
+
+      const entries = await this.manifestService.listEntries(
+         projectId,
+         packageName,
+      );
+
+      // `forceDeleteRowOnMissingConnection`: teardown is the one place
+      // where we'd rather lose the manifest row than leave it pointing at
+      // a vanished connection. We also deliberately omit `liveTables`:
+      // in teardown everything is stale, nothing is live.
+      return dropManifestEntries(entries, {
+         connections,
+         manifestService: this.manifestService,
+         projectId,
+         dryRun: options.dryRun,
+         forceDeleteRowOnMissingConnection: true,
+      });
+   }
+
    // ==================== BUILD LOGIC ====================
 
    /**
-    * Core build loop following the Malloy builder contract (5 steps):
+    * Core build pipeline (5 steps):
+    *   1. LOAD  — Load existing manifest.
+    *   2. COMPILE & PLAN — Compile all models, collect dependency graphs.
+    *   3. BUILD — Walk graphs in dependency order, materialize each source.
+    *   4. GC — Drop stale physical tables + prune manifest rows.
     *
-    *   1. LOAD  — Load existing manifest into an in-memory Manifest object.
-    *   2. COMPILE — Compile ALL models in the package without the manifest.
-    *   3. PLAN  — Get the dependency-ordered build plan from each model.
-    *   4. BUILD — Walk graphs -> levels -> nodes in dependency order.
-    *   5. WRITE — Persist only active manifest entries (GC).
-    *
-    * Iterates all models in the package so the manifest and GC cover
-    * every persist source regardless of which model defines it.
-    *
-    * **GC scope.** Step 5 prunes manifest *metadata* only: stale
-    * `build_manifests` rows are removed so queries stop resolving to
-    * retired BuildIDs. The physical tables behind retired materializations
-    * are not dropped — if a persist source's SQL changes and it is
-    * re-materialized under a new BuildID, the old table remains in the
-    * target connection until an operator cleans it up manually.
+    * Build success is not gated on GC — failures are surfaced in
+    * `gcErrors` metadata so the controller/UI can show them.
     */
    private async executeBuild(
       projectName: string,
@@ -452,7 +541,7 @@ export class MaterializationService {
       const project = await this.projectStore.getProject(projectName, false);
       const pkg = await project.getPackage(packageName, false);
 
-      // ── STEP 1: LOAD — Load existing manifest ──────────────────────
+      // ── STEP 1: LOAD ───────────────────────────────────────────────
       const manifest = new Manifest();
       const existingManifest = await this.manifestService.getManifest(
          projectId,
@@ -460,7 +549,111 @@ export class MaterializationService {
       );
       manifest.loadText(JSON.stringify(existingManifest));
 
-      // ── STEP 2 & 3: COMPILE & PLAN — Compile all models, collect build plans
+      const existingEntries = await this.manifestService.listEntries(
+         projectId,
+         packageName,
+      );
+      const knownMaterializedTables = new Set(
+         existingEntries.map((e: ManifestEntry) =>
+            manifestTableKey(e.connectionName, e.tableName),
+         ),
+      );
+
+      // ── STEP 2: COMPILE & PLAN ─────────────────────────────────────
+      const { graphs, sources, connectionDigests } =
+         await this.compilePackageBuildPlan(pkg, signal);
+
+      if (graphs.length === 0) {
+         logger.info("No persist sources to build");
+         return { sourcesBuilt: 0, sourcesSkipped: 0 };
+      }
+
+      // ── STEP 3: BUILD ──────────────────────────────────────────────
+      const connections = pkg.getConnections();
+      let sourcesBuilt = 0;
+      let sourcesSkipped = 0;
+      const sourceResults: Record<string, unknown>[] = [];
+
+      for (const graph of graphs) {
+         const connection = connections.get(graph.connectionName);
+         if (!connection) {
+            throw new BadRequestError(
+               `Connection '${graph.connectionName}' not found`,
+            );
+         }
+
+         for (const level of graph.nodes) {
+            for (const node of level) {
+               if (signal.aborted) throw new Error("Build cancelled");
+
+               const persistSource = sources[node.sourceID];
+               if (!persistSource) {
+                  logger.warn(
+                     `Source ${node.sourceID} not found in build plan, skipping`,
+                  );
+                  continue;
+               }
+
+               const result = await this.buildOneSource(
+                  persistSource,
+                  manifest,
+                  connection,
+                  connectionDigests,
+                  forceRefresh,
+                  projectId,
+                  packageName,
+                  knownMaterializedTables,
+               );
+
+               sourceResults.push(result);
+               if (result.status === "built") sourcesBuilt++;
+               else sourcesSkipped++;
+            }
+         }
+      }
+
+      // ── STEP 4: GC ─────────────────────────────────────────────────
+      const gcResult = await this.runPostBuildGc(
+         manifest,
+         projectId,
+         packageName,
+         connections,
+      );
+
+      logger.info("Materialization build complete", {
+         sourcesBuilt,
+         sourcesSkipped,
+         gcDropped: gcResult.dropped.length,
+         gcErrors: gcResult.errors.length,
+      });
+
+      return {
+         sourcesBuilt,
+         sourcesSkipped,
+         sources: sourceResults,
+         gcDropped: gcResult.dropped,
+         gcErrors: gcResult.errors,
+      };
+   }
+
+   // ==================== BUILD HELPERS ====================
+
+   /**
+    * Compile every model in the package and collect the dependency-ordered
+    * build graphs, persist sources, and pre-computed connection digests.
+    */
+   private async compilePackageBuildPlan(
+      pkg: {
+         getModelPaths(): string[];
+         getPackagePath(): string;
+         getConnections(): Map<string, MalloyConnection>;
+      },
+      signal: AbortSignal,
+   ): Promise<{
+      graphs: BuildGraph[];
+      sources: Record<string, PersistSource>;
+      connectionDigests: Record<string, string>;
+   }> {
       const modelPaths = pkg.getModelPaths();
       const allGraphs: BuildGraph[] = [];
       const allSources: Record<string, PersistSource> = {};
@@ -480,9 +673,7 @@ export class MaterializationService {
          });
          const malloyModel = await modelMaterializer.getModel();
 
-         // Skip models that don't opt in to persistence. getBuildPlan() throws
-         // with "Model must have ##! experimental.persistence to use
-         // getBuildPlan()" if the tag is missing, so check the tag first to
+         // getBuildPlan() throws if the tag is missing, so check first to
          // keep plain models in the same package buildable.
          const modelTag = malloyModel.tagParse({ prefix: /^##! / }).tag;
          if (!modelTag.has("experimental", "persistence")) {
@@ -495,15 +686,13 @@ export class MaterializationService {
 
          const buildPlan = malloyModel.getBuildPlan();
 
-         if (buildPlan.tagParseLog.length > 0) {
-            for (const msg of buildPlan.tagParseLog) {
-               logger.warn("Persist annotation issue", {
-                  modelPath,
-                  message: msg.message,
-                  severity: msg.severity,
-                  code: msg.code,
-               });
-            }
+         for (const msg of buildPlan.tagParseLog) {
+            logger.warn("Persist annotation issue", {
+               modelPath,
+               message: msg.message,
+               severity: msg.severity,
+               code: msg.code,
+            });
          }
 
          if (buildPlan.graphs.length > 0) {
@@ -526,19 +715,12 @@ export class MaterializationService {
          graphCount: allGraphs.length,
       });
 
-      if (allGraphs.length === 0) {
-         logger.info("No persist sources to build");
-         return { sourcesBuilt: 0, sourcesSkipped: 0 };
-      }
-
       // Fail fast if two persist sources target the same (connection, table).
-      // Without this, the later source's DDL would silently clobber the
-      // earlier one's physical table while both manifest entries remain live.
       const tableOwners = new Map<string, string>();
       for (const [sourceID, source] of Object.entries(allSources)) {
          const tableName =
             source.tagParse({ prefix: /^#@ / }).tag.text("name") || source.name;
-         const key = `${source.connectionName}\u0000${tableName}`;
+         const key = `${source.connectionName}::${tableName}`;
          const existing = tableOwners.get(key);
          if (existing) {
             throw new BadRequestError(
@@ -548,7 +730,6 @@ export class MaterializationService {
          tableOwners.set(key, sourceID);
       }
 
-      // Pre-compute connection digests.
       const connections = pkg.getConnections();
       const connectionDigests: Record<string, string> = {};
       for (const graph of allGraphs) {
@@ -558,144 +739,186 @@ export class MaterializationService {
          }
       }
 
-      // ── STEP 4: BUILD — Walk graphs in dependency order ────────────
-      let sourcesBuilt = 0;
-      let sourcesSkipped = 0;
-      const sourceResults: Record<string, unknown>[] = [];
+      return { graphs: allGraphs, sources: allSources, connectionDigests };
+   }
 
-      for (const graph of allGraphs) {
-         const connection = connections.get(graph.connectionName);
-         if (!connection) {
+   /**
+    * Materialize a single persist source: skip if up-to-date, otherwise
+    * build via staging table (CREATE → DROP old → RENAME), then write
+    * the manifest entry. Stale entries are cleaned up by post-build GC.
+    */
+   private async buildOneSource(
+      persistSource: PersistSource,
+      manifest: Manifest,
+      connection: MalloyConnection,
+      connectionDigests: Record<string, string>,
+      forceRefresh: boolean,
+      projectId: string,
+      packageName: string,
+      knownMaterializedTables: Set<string>,
+   ): Promise<Record<string, unknown>> {
+      const buildIdSQL = persistSource.getSQL();
+      const digest = connectionDigests[persistSource.connectionName];
+      const buildId = persistSource.makeBuildId(digest, buildIdSQL);
+
+      // Already built — mark active so it survives GC.
+      if (manifest.buildManifest.entries[buildId] && !forceRefresh) {
+         manifest.touch(buildId);
+         logger.info(`Source ${persistSource.name} up to date, skipping`, {
+            buildId,
+         });
+         return { name: persistSource.name, status: "skipped", buildId };
+      }
+
+      const buildSQL = persistSource.getSQL({
+         buildManifest: manifest.buildManifest,
+         connectionDigests,
+      });
+
+      const connectionName = persistSource.connectionName;
+      const tableName =
+         persistSource.tagParse({ prefix: /^#@ / }).tag.text("name") ||
+         persistSource.name;
+      const { schemaPrefix, bareName } = splitTablePath(tableName);
+      const stagingTableName = `${schemaPrefix}${bareName}${stagingSuffix(buildId)}`;
+      const dialect = persistSource.dialect;
+      const quoted = (p: string) => quoteTablePath(p, dialect);
+
+      // Guard: refuse to overwrite a pre-existing table that was not
+      // created by a previous materialization build. Without this check a
+      // model author could accidentally target a table name that already
+      // holds real data (e.g. `#@ persist name=customers`), and the
+      // DROP TABLE below would silently destroy it.
+      const tableKey = manifestTableKey(connectionName, tableName);
+      if (!knownMaterializedTables.has(tableKey)) {
+         if (await tablePhysicallyExists(connection, quoted(tableName))) {
             throw new BadRequestError(
-               `Connection '${graph.connectionName}' not found`,
+               `Refusing to materialize source '${persistSource.name}': ` +
+                  `target table '${tableName}' already exists on connection ` +
+                  `'${connectionName}' but was not created by a previous ` +
+                  `materialization build. Use '#@ persist name=...' to ` +
+                  `choose a different table name, or drop the existing ` +
+                  `table manually if it is no longer needed.`,
             );
-         }
-
-         for (const level of graph.nodes) {
-            for (const node of level) {
-               if (signal.aborted) {
-                  throw new Error("Build cancelled");
-               }
-
-               const persistSource = allSources[node.sourceID];
-               if (!persistSource) {
-                  logger.warn(
-                     `Source ${node.sourceID} not found in build plan, skipping`,
-                  );
-                  continue;
-               }
-
-               // BuildID SQL — fully inlined, no manifest substitution.
-               const buildIdSQL = persistSource.getSQL();
-               const digest = connectionDigests[persistSource.connectionName];
-               const buildId = persistSource.makeBuildId(digest, buildIdSQL);
-
-               // Already built — mark active so it survives GC.
-               if (manifest.buildManifest.entries[buildId] && !forceRefresh) {
-                  manifest.touch(buildId);
-                  logger.info(
-                     `Source ${persistSource.name} up to date, skipping`,
-                     { buildId },
-                  );
-                  sourcesSkipped++;
-                  sourceResults.push({
-                     name: persistSource.name,
-                     status: "skipped",
-                     buildId,
-                  });
-                  continue;
-               }
-
-               // Build SQL — with manifest substitution.
-               const buildSQL = persistSource.getSQL({
-                  buildManifest: manifest.buildManifest,
-                  connectionDigests,
-               });
-
-               const connectionName = persistSource.connectionName;
-               const tableName =
-                  persistSource.tagParse({ prefix: /^#@ / }).tag.text("name") ||
-                  persistSource.name;
-               const lastDot = tableName.lastIndexOf(".");
-               const stagingTableName =
-                  lastDot >= 0
-                     ? `${tableName.substring(0, lastDot + 1)}${tableName.substring(lastDot + 1)}__staging`
-                     : `${tableName}__staging`;
-               const dialect = persistSource.dialect;
-               const quoted = (p: string) => quoteTablePath(p, dialect);
-
-               logger.info(`Building source ${persistSource.name}`, {
-                  tableName,
-                  connectionName,
-               });
-
-               const startTime = performance.now();
-
-               await connection.runSQL(
-                  `DROP TABLE IF EXISTS ${quoted(stagingTableName)}`,
-               );
-               await connection.runSQL(
-                  `CREATE TABLE ${quoted(stagingTableName)} AS (${buildSQL})`,
-               );
-
-               await connection.runSQL(
-                  `DROP TABLE IF EXISTS ${quoted(tableName)}`,
-               );
-               const bareTableName = tableName.includes(".")
-                  ? tableName.substring(tableName.lastIndexOf(".") + 1)
-                  : tableName;
-               await connection.runSQL(
-                  `ALTER TABLE ${quoted(stagingTableName)} RENAME TO ${dialect.quoteTablePath(bareTableName)}`,
-               );
-
-               const duration = performance.now() - startTime;
-
-               manifest.update(buildId, { tableName });
-
-               await this.manifestService.writeEntry(
-                  projectId,
-                  packageName,
-                  buildId,
-                  tableName,
-                  persistSource.name,
-                  connectionName,
-               );
-
-               sourcesBuilt++;
-               sourceResults.push({
-                  name: persistSource.name,
-                  status: "built",
-                  buildId,
-                  tableName,
-                  durationMs: Math.round(duration),
-               });
-
-               logger.info(`Built source ${persistSource.name}`, {
-                  tableName,
-                  durationMs: Math.round(duration),
-               });
-            }
          }
       }
 
-      // ── STEP 5: WRITE — GC stale manifest entries ─────────────────
+      logger.info(`Building source ${persistSource.name}`, {
+         tableName,
+         connectionName,
+      });
+
+      const startTime = performance.now();
+
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quoted(stagingTableName)}`,
+      );
+
+      // If any step after CREATE throws we must best-effort drop the
+      // staging table, else it orphans under a name that GC will never
+      // find (no manifest row is written for a failed build).
+      try {
+         await connection.runSQL(
+            `CREATE TABLE ${quoted(stagingTableName)} AS (${buildSQL})`,
+         );
+         await connection.runSQL(`DROP TABLE IF EXISTS ${quoted(tableName)}`);
+         await connection.runSQL(
+            `ALTER TABLE ${quoted(stagingTableName)} RENAME TO ${dialect.quoteTablePath(bareName)}`,
+         );
+      } catch (err) {
+         try {
+            await connection.runSQL(
+               `DROP TABLE IF EXISTS ${quoted(stagingTableName)}`,
+            );
+         } catch (cleanupErr) {
+            logger.warn(
+               "Build: failed to clean up staging table after a failed rebuild; physical leak",
+               {
+                  stagingTableName,
+                  connectionName,
+                  cleanupError:
+                     cleanupErr instanceof Error
+                        ? cleanupErr.message
+                        : String(cleanupErr),
+               },
+            );
+         }
+         throw err;
+      }
+
+      const duration = performance.now() - startTime;
+
+      knownMaterializedTables.add(tableKey);
+      manifest.update(buildId, { tableName });
+
+      await this.manifestService.writeEntry(
+         projectId,
+         packageName,
+         buildId,
+         tableName,
+         persistSource.name,
+         connectionName,
+      );
+
+      logger.info(`Built source ${persistSource.name}`, {
+         tableName,
+         durationMs: Math.round(duration),
+      });
+
+      return {
+         name: persistSource.name,
+         status: "built",
+         buildId,
+         tableName,
+         durationMs: Math.round(duration),
+      };
+   }
+
+   /**
+    * Post-build GC: drop physical tables + manifest rows for entries whose
+    * BuildID is no longer produced by an active persist source.
+    *
+    * `liveTables` prevents a fresh build from having its table dropped when
+    * a stale row still references the same `(connection, tableName)` pair.
+    */
+   private async runPostBuildGc(
+      manifest: Manifest,
+      projectId: string,
+      packageName: string,
+      connections: Map<string, MalloyConnection>,
+   ): Promise<GcResult> {
       const activeManifest = manifest.activeEntries;
       const allDbEntries = await this.manifestService.listEntries(
          projectId,
          packageName,
       );
-      for (const dbEntry of allDbEntries) {
-         if (!activeManifest.entries[dbEntry.buildId]) {
-            await this.manifestService.deleteEntry(projectId, dbEntry.id);
+
+      const liveTables = new Set<string>();
+      for (const entry of allDbEntries) {
+         if (activeManifest.entries[entry.buildId]) {
+            liveTables.add(liveTableKey(entry.connectionName, entry.tableName));
          }
       }
 
-      logger.info("Materialization build complete", {
-         sourcesBuilt,
-         sourcesSkipped,
+      const staleEntries = allDbEntries.filter(
+         (entry) => !activeManifest.entries[entry.buildId],
+      );
+
+      const gcResult = await dropManifestEntries(staleEntries, {
+         connections,
+         manifestService: this.manifestService,
+         projectId,
+         liveTables,
       });
 
-      return { sourcesBuilt, sourcesSkipped, sources: sourceResults };
+      if (gcResult.errors.length > 0) {
+         logger.warn("Materialization GC surfaced errors", {
+            errorCount: gcResult.errors.length,
+            droppedCount: gcResult.dropped.length,
+         });
+      }
+
+      return gcResult;
    }
 
    // ==================== HELPERS ====================

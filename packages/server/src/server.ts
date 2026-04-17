@@ -1060,6 +1060,23 @@ app.delete(
    },
 );
 
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/gc`,
+   async (req, res) => {
+      try {
+         const result = await materializationController.gcPackage(
+            req.params.projectName,
+            req.params.packageName,
+            req.body || {},
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 // ==================== MANIFEST ROUTES ====================
 
 app.get(

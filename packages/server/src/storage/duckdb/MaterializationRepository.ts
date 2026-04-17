@@ -84,6 +84,7 @@ export class MaterializationRepository {
       projectId: string,
       packageName: string,
       status: MaterializationStatus = "PENDING",
+      metadata: Record<string, unknown> | null = null,
    ): Promise<Materialization> {
       const id = this.generateId();
       const now = this.now();
@@ -95,13 +96,23 @@ export class MaterializationRepository {
       const activeKey = TERMINAL_STATUSES.has(status)
          ? null
          : activeKeyFor(projectId, packageName);
+      const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            `INSERT INTO materializations (id, project_id, package_name, status, active_key, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO materializations (id, project_id, package_name, status, active_key, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *`,
-            [id, projectId, packageName, status, activeKey, iso, iso],
+            [
+               id,
+               projectId,
+               packageName,
+               status,
+               activeKey,
+               metadataJson,
+               iso,
+               iso,
+            ],
          );
          return this.mapRow(rows[0]);
       } catch (err) {

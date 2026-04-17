@@ -92,7 +92,7 @@ export class ManifestService {
    /**
     * Get the manifest entries from the active store for inspection.
     * Routes through ManifestStore so DuckLake mode reads the shared
-    * catalog instead of the (empty) local DuckDB table.
+    * catalog instead of the local DuckDB table.
     */
    async listEntries(
       projectId: string,

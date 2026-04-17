@@ -176,8 +176,14 @@ export class DuckDBRepository implements ResourceRepository {
       projectId: string,
       packageName: string,
       status: MaterializationStatus = "PENDING",
+      metadata: Record<string, unknown> | null = null,
    ): Promise<Materialization> {
-      return this.materializationRepo.create(projectId, packageName, status);
+      return this.materializationRepo.create(
+         projectId,
+         packageName,
+         status,
+         metadata,
+      );
    }
 
    async updateMaterialization(

@@ -96,4 +96,28 @@ export class MaterializationController {
          materializationId,
       );
    }
+
+   async gcPackage(
+      projectName: string,
+      packageName: string,
+      body: Record<string, unknown>,
+   ) {
+      const options = this.validateGcBody(body);
+      return this.materializationService.gcPackage(
+         projectName,
+         packageName,
+         options,
+      );
+   }
+
+   private validateGcBody(body: Record<string, unknown>): { dryRun?: boolean } {
+      const options: { dryRun?: boolean } = {};
+      if (body.dryRun !== undefined) {
+         if (typeof body.dryRun !== "boolean") {
+            throw new BadRequestError("dryRun must be a boolean");
+         }
+         options.dryRun = body.dryRun;
+      }
+      return options;
+   }
 }

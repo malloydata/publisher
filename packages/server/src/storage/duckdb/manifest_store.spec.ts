@@ -21,12 +21,7 @@ function makeEntry(overrides: Partial<ManifestEntry> = {}): ManifestEntry {
 function createMocks() {
    const sandbox = sinon.createSandbox();
 
-   const repository: sinon.SinonStubbedInstance<
-      Pick<
-         ResourceRepository,
-         "listManifestEntries" | "upsertManifestEntry" | "deleteManifestEntry"
-      >
-   > = {
+   const repository = {
       listManifestEntries: sandbox.stub(),
       upsertManifestEntry: sandbox.stub(),
       deleteManifestEntry: sandbox.stub(),

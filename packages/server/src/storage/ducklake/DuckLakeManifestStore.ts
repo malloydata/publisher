@@ -83,11 +83,9 @@ export class DuckLakeManifestStore implements ManifestStore {
    }
 
    /**
-    * Upsert a manifest entry using INSERT-first then DELETE-old.
-    * INSERT before DELETE ensures at-least-once semantics: if the process
-    * crashes between the two operations the entry still exists (as a
-    * duplicate). {@link getManifest} deduplicates by build_id, keeping
-    * only the newest row, so transient duplicates are harmless.
+    * Insert a manifest entry. If a row with the same `build_id` already
+    * exists (retry after crash), the duplicate is harmless:
+    * {@link getManifest} deduplicates by build_id keeping the newest row.
     */
    async writeEntry(
       projectId: string,
@@ -114,11 +112,6 @@ export class DuckLakeManifestStore implements ManifestStore {
             now,
             now,
          ],
-      );
-
-      await this.db.run(
-         `DELETE FROM ${this.table} WHERE project_id = ? AND package_name = ? AND build_id = ? AND id != ?`,
-         [projectId, packageName, buildId, id],
       );
    }
 

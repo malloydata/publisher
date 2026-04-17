@@ -285,4 +285,170 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          expect(res.status).toBe(404);
       });
    });
+
+   // ── Group C: Garbage Collection ──────────────────────────────────
+
+   describe("garbage collection", () => {
+      it(
+         "dryRun reports stale entries without dropping tables or deleting rows",
+         async () => {
+            // Run a full build so there are manifest entries to GC.
+            const createRes = await createMaterialization({
+               autoLoadManifest: true,
+            });
+            expect(createRes.status).toBe(201);
+            const created = (await createRes.json()) as Record<string, unknown>;
+            const id = created.id as string;
+            await fetch(url(`/materializations/${id}/start`), {
+               method: "POST",
+            });
+            const terminal = await pollUntilTerminal(id);
+            expect(terminal.status).toBe("SUCCESS");
+
+            // Must delete the materialization record before GC (GC refuses
+            // to run while an active materialization exists).
+            await fetch(url(`/materializations/${id}`), { method: "DELETE" });
+
+            // dryRun GC — should report entries but not actually drop them.
+            const gcRes = await fetch(url("/materializations/gc"), {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ dryRun: true }),
+            });
+            expect(gcRes.status).toBe(200);
+            const gcResult = (await gcRes.json()) as Record<string, unknown>;
+            const dropped = gcResult.dropped as Record<string, unknown>[];
+            expect(dropped).toBeDefined();
+            expect(gcResult.errors).toBeDefined();
+
+            // Manifest should still be intact after a dry run.
+            const manifestRes = await fetch(url("/manifest"));
+            expect(manifestRes.status).toBe(200);
+            const manifest = (await manifestRes.json()) as Record<
+               string,
+               unknown
+            >;
+            const entries = manifest.entries as Record<string, unknown>;
+            expect(Object.keys(entries).length).toBeGreaterThan(0);
+         },
+         { timeout: 60_000 },
+      );
+
+      it(
+         "live GC drops stale manifest entries and cleans up tables",
+         async () => {
+            // Build so there are manifest entries.
+            const createRes = await createMaterialization({
+               autoLoadManifest: true,
+            });
+            expect(createRes.status).toBe(201);
+            const created = (await createRes.json()) as Record<string, unknown>;
+            const id = created.id as string;
+            await fetch(url(`/materializations/${id}/start`), {
+               method: "POST",
+            });
+            const terminal = await pollUntilTerminal(id);
+            expect(terminal.status).toBe("SUCCESS");
+
+            await fetch(url(`/materializations/${id}`), { method: "DELETE" });
+
+            // Live GC — should drop everything since all entries are stale
+            // (no active build claims them).
+            const gcRes = await fetch(url("/materializations/gc"), {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({}),
+            });
+            expect(gcRes.status).toBe(200);
+            const gcResult = (await gcRes.json()) as Record<string, unknown>;
+            const dropped = gcResult.dropped as Record<string, unknown>[];
+            expect(dropped.length).toBeGreaterThan(0);
+            expect((gcResult.errors as unknown[]).length).toBe(0);
+
+            // Manifest should be empty after live GC.
+            const manifestRes = await fetch(url("/manifest"));
+            expect(manifestRes.status).toBe(200);
+            const manifest = (await manifestRes.json()) as Record<
+               string,
+               unknown
+            >;
+            const entries = manifest.entries as Record<string, unknown>;
+            expect(Object.keys(entries).length).toBe(0);
+         },
+         { timeout: 60_000 },
+      );
+
+      it("GC rejects while an active materialization exists", async () => {
+         const createRes = await createMaterialization();
+         expect(createRes.status).toBe(201);
+         const created = (await createRes.json()) as Record<string, unknown>;
+         const id = created.id as string;
+
+         const gcRes = await fetch(url("/materializations/gc"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+         });
+         expect(gcRes.status).toBe(409);
+
+         await cleanup(id);
+      });
+
+      it(
+         "forceRefresh rebuilds and post-build GC step executes",
+         async () => {
+            // First build — populates manifest.
+            const first = await createMaterialization({
+               autoLoadManifest: true,
+            });
+            expect(first.status).toBe(201);
+            const firstData = (await first.json()) as Record<string, unknown>;
+            const firstId = firstData.id as string;
+            await fetch(url(`/materializations/${firstId}/start`), {
+               method: "POST",
+            });
+            const firstTerminal = await pollUntilTerminal(firstId);
+            expect(firstTerminal.status).toBe("SUCCESS");
+            await fetch(url(`/materializations/${firstId}`), {
+               method: "DELETE",
+            });
+
+            // Second build with forceRefresh — the buildId won't change
+            // (hash of SQL + connection is identical), but forceRefresh
+            // forces a rebuild rather than skipping.
+            const second = await createMaterialization({
+               forceRefresh: true,
+               autoLoadManifest: true,
+            });
+            expect(second.status).toBe(201);
+            const secondData = (await second.json()) as Record<string, unknown>;
+            const secondId = secondData.id as string;
+            await fetch(url(`/materializations/${secondId}/start`), {
+               method: "POST",
+            });
+            const secondTerminal = await pollUntilTerminal(secondId);
+            expect(secondTerminal.status).toBe("SUCCESS");
+
+            const metadata = secondTerminal.metadata as Record<string, unknown>;
+            // forceRefresh should actually rebuild, not skip.
+            expect(metadata.sourcesBuilt).toBeGreaterThan(0);
+            expect(metadata.sourcesSkipped).toBe(0);
+            // Post-build GC step ran (arrays present even if empty).
+            expect(metadata.gcDropped).toBeDefined();
+            expect(metadata.gcErrors).toBeDefined();
+
+            // Manifest should still have entries after rebuild.
+            const manifestRes = await fetch(url("/manifest"));
+            const manifest = (await manifestRes.json()) as Record<
+               string,
+               unknown
+            >;
+            const entries = manifest.entries as Record<string, unknown>;
+            expect(Object.keys(entries).length).toBeGreaterThan(0);
+
+            await cleanup(secondId);
+         },
+         { timeout: 90_000 },
+      );
+   });
 });

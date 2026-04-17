@@ -935,6 +935,7 @@ export class ProjectStore {
    private isLocalPath(location: string) {
       return (
          location.startsWith("./") ||
+         location.startsWith("../") ||
          location.startsWith("~/") ||
          location.startsWith("/") ||
          path.isAbsolute(location)
