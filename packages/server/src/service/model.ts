@@ -750,13 +750,29 @@ export class Model {
                ?.filter((note) => note.at.url.includes(modelPath))
                .map((note) => note.text);
 
-            // Parse #(filter) from ALL annotations (including imports)
-            // so filters defined on an imported source are honored by notebooks
-            const allAnnotations = (
-               sourceObj as StructDef
-            ).annotation?.blockNotes?.map((note) => note.text);
+            // Parse #(filter) from ALL annotations, traversing the inherits
+            // chain so that filters on a base source (e.g. `recalls`) are
+            // picked up by an extending source (`manufacturer_recalls is
+            // recalls extend {}`).  The Malloy compiler stores the base
+            // source's annotations in `annotation.inherits`.
+            //
+            // The chain goes child → parent, so we collect child-first.
+            // parseFilters uses "last wins" dedup, so we reverse to put
+            // parent annotations first and child annotations last (winning).
+            const collectedAnnotations: string[][] = [];
+            let curAnnotation: Annotation | undefined = (sourceObj as StructDef)
+               .annotation;
+            while (curAnnotation) {
+               if (curAnnotation.blockNotes) {
+                  collectedAnnotations.push(
+                     curAnnotation.blockNotes.map((note) => note.text),
+                  );
+               }
+               curAnnotation = curAnnotation.inherits;
+            }
+            const allAnnotations = collectedAnnotations.reverse().flat();
             let filters: ApiFilter[] | undefined;
-            if (allAnnotations && allAnnotations.length > 0) {
+            if (allAnnotations.length > 0) {
                try {
                   const parsed = parseFilters(allAnnotations);
                   if (parsed.length > 0) {

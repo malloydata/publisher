@@ -170,6 +170,61 @@ describe("service/filter", () => {
          const filters = parseFilters(["#(doc) some docs", "# hidden"]);
          expect(filters).toHaveLength(0);
       });
+
+      it("deduplicates by name, later annotations win (extend pattern)", () => {
+         const annotations = [
+            // Base source annotations (come first in blockNotes via inherits chain)
+            "#(filter) name=Manufacturer dimension=Manufacturer type=in",
+            "#(filter) name=Subject dimension=Subject type=like",
+            '#(filter) name="Major Recall" dimension="Major Recall" type=equal',
+            // Extending source annotations (come later, should win)
+            "#(filter) name=Manufacturer dimension=Manufacturer type=equal required",
+            "#(filter) name=Subject dimension=Subject type=like",
+         ];
+         const filters = parseFilters(annotations);
+         // 3 unique names: Manufacturer, Subject, Major Recall
+         expect(filters).toHaveLength(3);
+
+         // Manufacturer: child overrides base (in → equal, gains required)
+         const mfr = filters.find((f) => f.name === "Manufacturer");
+         expect(mfr).toBeDefined();
+         expect(mfr!.type).toBe("equal");
+         expect(mfr!.required).toBe(true);
+
+         // Subject: child re-declares identically, no visible change
+         const subj = filters.find((f) => f.name === "Subject");
+         expect(subj).toBeDefined();
+         expect(subj!.type).toBe("like");
+         expect(subj!.required).toBeFalsy();
+
+         // Major Recall: only on base, preserved in child
+         const major = filters.find((f) => f.name === "Major Recall");
+         expect(major).toBeDefined();
+         expect(major!.type).toBe("equal");
+         expect(major!.dimension).toBe("Major Recall");
+      });
+
+      it("child can remove required flag by overriding", () => {
+         const annotations = [
+            "#(filter) name=status dimension=status type=equal required",
+            "#(filter) name=status dimension=status type=equal",
+         ];
+         const filters = parseFilters(annotations);
+         expect(filters).toHaveLength(1);
+         expect(filters[0].name).toBe("status");
+         expect(filters[0].required).toBeFalsy();
+      });
+
+      it("child can change filter type by overriding", () => {
+         const annotations = [
+            "#(filter) name=category dimension=category type=in",
+            "#(filter) name=category dimension=category type=equal required",
+         ];
+         const filters = parseFilters(annotations);
+         expect(filters).toHaveLength(1);
+         expect(filters[0].type).toBe("equal");
+         expect(filters[0].required).toBe(true);
+      });
    });
 
    // -----------------------------------------------------------------------
