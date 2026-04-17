@@ -174,12 +174,12 @@ describe("service/filter", () => {
       it("deduplicates by name, later annotations win (extend pattern)", () => {
          const annotations = [
             // Base source annotations (come first in blockNotes via inherits chain)
-            '#(filter) name=Manufacturer dimension=Manufacturer type=in',
-            '#(filter) name=Subject dimension=Subject type=like',
+            "#(filter) name=Manufacturer dimension=Manufacturer type=in",
+            "#(filter) name=Subject dimension=Subject type=like",
             '#(filter) name="Major Recall" dimension="Major Recall" type=equal',
             // Extending source annotations (come later, should win)
-            '#(filter) name=Manufacturer dimension=Manufacturer type=equal required',
-            '#(filter) name=Subject dimension=Subject type=like',
+            "#(filter) name=Manufacturer dimension=Manufacturer type=equal required",
+            "#(filter) name=Subject dimension=Subject type=like",
          ];
          const filters = parseFilters(annotations);
          // 3 unique names: Manufacturer, Subject, Major Recall
@@ -206,8 +206,8 @@ describe("service/filter", () => {
 
       it("child can remove required flag by overriding", () => {
          const annotations = [
-            '#(filter) name=status dimension=status type=equal required',
-            '#(filter) name=status dimension=status type=equal',
+            "#(filter) name=status dimension=status type=equal required",
+            "#(filter) name=status dimension=status type=equal",
          ];
          const filters = parseFilters(annotations);
          expect(filters).toHaveLength(1);
@@ -217,8 +217,8 @@ describe("service/filter", () => {
 
       it("child can change filter type by overriding", () => {
          const annotations = [
-            '#(filter) name=category dimension=category type=in',
-            '#(filter) name=category dimension=category type=equal required',
+            "#(filter) name=category dimension=category type=in",
+            "#(filter) name=category dimension=category type=equal required",
          ];
          const filters = parseFilters(annotations);
          expect(filters).toHaveLength(1);

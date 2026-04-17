@@ -683,9 +683,7 @@ describe("filter integration", () => {
          expect(child!.filters).toBeDefined();
 
          // status is defined only on the base — it should carry through
-         const statusFilter = child!.filters!.find(
-            (f) => f.name === "status",
-         );
+         const statusFilter = child!.filters!.find((f) => f.name === "status");
          expect(statusFilter).toBeDefined();
          expect(statusFilter!.type).toBe("equal");
       });
@@ -703,9 +701,7 @@ describe("filter integration", () => {
          expect(child).toBeDefined();
 
          // region: base=in, child overrides to equal
-         const regionFilter = child!.filters!.find(
-            (f) => f.name === "region",
-         );
+         const regionFilter = child!.filters!.find((f) => f.name === "region");
          expect(regionFilter).toBeDefined();
          expect(regionFilter!.type).toBe("equal");
       });
@@ -723,9 +719,7 @@ describe("filter integration", () => {
          expect(child).toBeDefined();
 
          // tenant: base=required, child overrides without required
-         const tenantFilter = child!.filters!.find(
-            (f) => f.name === "tenant",
-         );
+         const tenantFilter = child!.filters!.find((f) => f.name === "tenant");
          expect(tenantFilter).toBeDefined();
          expect(tenantFilter!.required).toBeFalsy();
       });
