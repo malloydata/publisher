@@ -27,7 +27,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.181",
+      "version": "0.0.186",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -78,7 +78,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.181",
+      "version": "0.0.186",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -111,10 +111,10 @@
         "vite-plugin-svgr": "^4.3.0",
       },
       "peerDependencies": {
-        "@malloydata/malloy-explorer": "^0.0.377",
-        "@malloydata/malloy-interfaces": "^0.0.377",
-        "@malloydata/malloy-query-builder": "^0.0.377",
-        "@malloydata/render": "^0.0.377",
+        "@malloydata/malloy-explorer": ">=0.0.338-dev260215172810",
+        "@malloydata/malloy-interfaces": ">=0.0.374",
+        "@malloydata/malloy-query-builder": ">=0.0.374",
+        "@malloydata/render": ">=0.0.374",
         "@mui/icons-material": ">=7.1.1",
         "@mui/material": ">=7.1.1",
         "@mui/system": ">=7.1.1",
@@ -129,7 +129,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.181",
+      "version": "0.0.186",
       "bin": {
         "malloy-publisher": "dist/server.js",
       },
