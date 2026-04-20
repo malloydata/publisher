@@ -47,9 +47,7 @@
    },
    "style": "./dist/malloy-explorer.css",
    "sideEffects": [
-      "**/*.css",
-      "./src/index.ts",
-      "./dist/index.*.js"
+      "**/*.css"
    ],
    "repository": {
       "type": "git",
