@@ -20,7 +20,11 @@ import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
-import { internalErrorToHttpError, NotImplementedError } from "./errors";
+import {
+   BadRequestError,
+   internalErrorToHttpError,
+   NotImplementedError,
+} from "./errors";
 import {
    drainingGuard,
    registerHealthEndpoints,
@@ -1031,15 +1035,15 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId/start`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/teardown`,
    async (req, res) => {
       try {
-         const build = await materializationController.startMaterialization(
+         const result = await materializationController.teardownPackage(
             req.params.projectName,
             req.params.packageName,
-            req.params.materializationId,
+            req.body || {},
          );
-         res.status(202).json(build);
+         res.status(200).json(result);
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
@@ -1048,15 +1052,29 @@ app.post(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId/stop`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
-         const build = await materializationController.stopMaterialization(
-            req.params.projectName,
-            req.params.packageName,
-            req.params.materializationId,
-         );
-         res.status(200).json(build);
+         const action = req.query.action;
+         if (action === "start") {
+            const build = await materializationController.startMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            );
+            res.status(202).json(build);
+         } else if (action === "stop") {
+            const build = await materializationController.stopMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            );
+            res.status(200).json(build);
+         } else {
+            throw new BadRequestError(
+               `Unsupported action '${String(action ?? "")}'. Expected 'start' or 'stop'.`,
+            );
+         }
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
@@ -1074,23 +1092,6 @@ app.delete(
             req.params.materializationId,
          );
          res.status(204).send();
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/gc`,
-   async (req, res) => {
-      try {
-         const result = await materializationController.gcPackage(
-            req.params.projectName,
-            req.params.packageName,
-            req.body || {},
-         );
-         res.status(200).json(result);
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
@@ -1118,16 +1119,23 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest/reload`,
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
    async (req, res) => {
       try {
-         const manifest = await manifestController.reloadManifest(
-            req.params.projectName,
-            req.params.packageName,
-         );
-         res.status(200).json(manifest);
+         const action = req.query.action;
+         if (action === "reload") {
+            const manifest = await manifestController.reloadManifest(
+               req.params.projectName,
+               req.params.packageName,
+            );
+            res.status(200).json(manifest);
+         } else {
+            throw new BadRequestError(
+               `Unsupported action '${String(action ?? "")}'. Expected 'reload'.`,
+            );
+         }
       } catch (error) {
-         logger.error("Reload manifest error", { error });
+         logger.error("Manifest action error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

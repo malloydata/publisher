@@ -64,7 +64,7 @@ export class ManifestService {
    /**
     * Read the manifest from storage and reload it onto this worker's
     * package so subsequent queries resolve persist references to
-    * materialized tables. This is what `POST .../manifest/reload` calls
+    * materialized tables. This is what `POST .../manifest?action=reload` calls
     * (used by orchestrated workers that need to pick up manifest state
     * produced elsewhere). Despite the name, nothing is loaded *into*
     * storage — the worker pulls the manifest down and recompiles.

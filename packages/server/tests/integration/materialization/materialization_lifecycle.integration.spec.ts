@@ -121,7 +121,9 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       const status = data.status as string;
 
       if (status === "PENDING" || status === "RUNNING") {
-         await fetch(url(`/materializations/${id}/stop`), { method: "POST" });
+         await fetch(url(`/materializations/${id}?action=stop`), {
+            method: "POST",
+         });
          await pollUntilTerminal(id);
       }
       await fetch(url(`/materializations/${id}`), { method: "DELETE" });
@@ -165,7 +167,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
 
             // 4. Start
             const startRes = await fetch(
-               url(`/materializations/${materializationId}/start`),
+               url(`/materializations/${materializationId}?action=start`),
                { method: "POST" },
             );
             expect(startRes.status).toBe(202);
@@ -195,7 +197,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             expect(firstEntry.tableName).toBe("order_summary");
 
             // 7. Reload manifest
-            const reloadRes = await fetch(url("/manifest/reload"), {
+            const reloadRes = await fetch(url("/manifest?action=reload"), {
                method: "POST",
             });
             expect(reloadRes.status).toBe(200);
@@ -226,9 +228,12 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          const created = (await createRes.json()) as Record<string, unknown>;
          const id = created.id as string;
 
-         const stopRes = await fetch(url(`/materializations/${id}/stop`), {
-            method: "POST",
-         });
+         const stopRes = await fetch(
+            url(`/materializations/${id}?action=stop`),
+            {
+               method: "POST",
+            },
+         );
          expect(stopRes.status).toBe(200);
          const stopped = (await stopRes.json()) as Record<string, unknown>;
          expect(stopped.status).toBe("CANCELLED");
@@ -254,11 +259,16 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          const created = (await createRes.json()) as Record<string, unknown>;
          const id = created.id as string;
 
-         await fetch(url(`/materializations/${id}/stop`), { method: "POST" });
-
-         const startRes = await fetch(url(`/materializations/${id}/start`), {
+         await fetch(url(`/materializations/${id}?action=stop`), {
             method: "POST",
          });
+
+         const startRes = await fetch(
+            url(`/materializations/${id}?action=start`),
+            {
+               method: "POST",
+            },
+         );
          expect(startRes.status).toBe(409);
 
          await cleanup(id);
@@ -286,40 +296,43 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       });
    });
 
-   // ── Group C: Garbage Collection ──────────────────────────────────
+   // ── Group C: Package Teardown ────────────────────────────────────
 
-   describe("garbage collection", () => {
+   describe("package teardown", () => {
       it(
          "dryRun reports stale entries without dropping tables or deleting rows",
          async () => {
-            // Run a full build so there are manifest entries to GC.
+            // Run a full build so there are manifest entries to tear down.
             const createRes = await createMaterialization({
                autoLoadManifest: true,
             });
             expect(createRes.status).toBe(201);
             const created = (await createRes.json()) as Record<string, unknown>;
             const id = created.id as string;
-            await fetch(url(`/materializations/${id}/start`), {
+            await fetch(url(`/materializations/${id}?action=start`), {
                method: "POST",
             });
             const terminal = await pollUntilTerminal(id);
             expect(terminal.status).toBe("SUCCESS");
 
-            // Must delete the materialization record before GC (GC refuses
-            // to run while an active materialization exists).
+            // Must delete the materialization record before teardown
+            // (teardown refuses to run while an active materialization exists).
             await fetch(url(`/materializations/${id}`), { method: "DELETE" });
 
-            // dryRun GC — should report entries but not actually drop them.
-            const gcRes = await fetch(url("/materializations/gc"), {
+            // dryRun teardown — should report entries but not actually drop them.
+            const teardownRes = await fetch(url("/materializations/teardown"), {
                method: "POST",
                headers: { "Content-Type": "application/json" },
                body: JSON.stringify({ dryRun: true }),
             });
-            expect(gcRes.status).toBe(200);
-            const gcResult = (await gcRes.json()) as Record<string, unknown>;
-            const dropped = gcResult.dropped as Record<string, unknown>[];
+            expect(teardownRes.status).toBe(200);
+            const teardownResult = (await teardownRes.json()) as Record<
+               string,
+               unknown
+            >;
+            const dropped = teardownResult.dropped as Record<string, unknown>[];
             expect(dropped).toBeDefined();
-            expect(gcResult.errors).toBeDefined();
+            expect(teardownResult.errors).toBeDefined();
 
             // Manifest should still be intact after a dry run.
             const manifestRes = await fetch(url("/manifest"));
@@ -335,7 +348,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       );
 
       it(
-         "live GC drops stale manifest entries and cleans up tables",
+         "live teardown drops stale manifest entries and cleans up tables",
          async () => {
             // Build so there are manifest entries.
             const createRes = await createMaterialization({
@@ -344,7 +357,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             expect(createRes.status).toBe(201);
             const created = (await createRes.json()) as Record<string, unknown>;
             const id = created.id as string;
-            await fetch(url(`/materializations/${id}/start`), {
+            await fetch(url(`/materializations/${id}?action=start`), {
                method: "POST",
             });
             const terminal = await pollUntilTerminal(id);
@@ -352,20 +365,23 @@ describe("Materialization & Manifest REST API (E2E)", () => {
 
             await fetch(url(`/materializations/${id}`), { method: "DELETE" });
 
-            // Live GC — should drop everything since all entries are stale
-            // (no active build claims them).
-            const gcRes = await fetch(url("/materializations/gc"), {
+            // Live teardown — should drop everything since all entries are
+            // stale (no active build claims them).
+            const teardownRes = await fetch(url("/materializations/teardown"), {
                method: "POST",
                headers: { "Content-Type": "application/json" },
                body: JSON.stringify({}),
             });
-            expect(gcRes.status).toBe(200);
-            const gcResult = (await gcRes.json()) as Record<string, unknown>;
-            const dropped = gcResult.dropped as Record<string, unknown>[];
+            expect(teardownRes.status).toBe(200);
+            const teardownResult = (await teardownRes.json()) as Record<
+               string,
+               unknown
+            >;
+            const dropped = teardownResult.dropped as Record<string, unknown>[];
             expect(dropped.length).toBeGreaterThan(0);
-            expect((gcResult.errors as unknown[]).length).toBe(0);
+            expect((teardownResult.errors as unknown[]).length).toBe(0);
 
-            // Manifest should be empty after live GC.
+            // Manifest should be empty after live teardown.
             const manifestRes = await fetch(url("/manifest"));
             expect(manifestRes.status).toBe(200);
             const manifest = (await manifestRes.json()) as Record<
@@ -378,18 +394,18 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          { timeout: 60_000 },
       );
 
-      it("GC rejects while an active materialization exists", async () => {
+      it("teardown rejects while an active materialization exists", async () => {
          const createRes = await createMaterialization();
          expect(createRes.status).toBe(201);
          const created = (await createRes.json()) as Record<string, unknown>;
          const id = created.id as string;
 
-         const gcRes = await fetch(url("/materializations/gc"), {
+         const teardownRes = await fetch(url("/materializations/teardown"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({}),
          });
-         expect(gcRes.status).toBe(409);
+         expect(teardownRes.status).toBe(409);
 
          await cleanup(id);
       });
@@ -404,7 +420,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             expect(first.status).toBe(201);
             const firstData = (await first.json()) as Record<string, unknown>;
             const firstId = firstData.id as string;
-            await fetch(url(`/materializations/${firstId}/start`), {
+            await fetch(url(`/materializations/${firstId}?action=start`), {
                method: "POST",
             });
             const firstTerminal = await pollUntilTerminal(firstId);
@@ -423,7 +439,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             expect(second.status).toBe(201);
             const secondData = (await second.json()) as Record<string, unknown>;
             const secondId = secondData.id as string;
-            await fetch(url(`/materializations/${secondId}/start`), {
+            await fetch(url(`/materializations/${secondId}?action=start`), {
                method: "POST",
             });
             const secondTerminal = await pollUntilTerminal(secondId);

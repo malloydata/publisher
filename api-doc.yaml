@@ -1682,7 +1682,7 @@ paths:
       summary: Create a materialization
       description: |
         Creates a new materialization in PENDING state for all persist sources across all
-        models in the package. Use POST .../materializations/{materializationId}/start to begin execution.
+        models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
       parameters:
         - $ref: "#/components/parameters/projectName"
         - $ref: "#/components/parameters/packageName"
@@ -1760,6 +1760,52 @@ paths:
                 $ref: "#/components/schemas/Materialization"
         "404":
           $ref: "#/components/responses/NotFound"
+    post:
+      tags:
+        - materializations
+      operationId: materialization-action
+      summary: Perform an action on a materialization
+      description: |
+        Performs an action on a materialization. The action is specified via
+        the `action` query parameter:
+          * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
+          * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - start
+              - stop
+          description: Action to perform on the materialization
+      responses:
+        "200":
+          description: Materialization cancelled (action=stop)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "202":
+          description: Materialization started (action=start)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Materialization cannot transition to the requested state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       tags:
         - materializations
@@ -1777,60 +1823,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: Materialization cannot be deleted (PENDING or RUNNING)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
-  /projects/{projectName}/packages/{packageName}/materializations/{materializationId}/start:
-    post:
-      tags:
-        - materializations
-      operationId: start-materialization
-      summary: Start a pending materialization
-      description: Transitions a PENDING materialization to RUNNING and begins execution in the background.
-      parameters:
-        - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/packageName"
-        - $ref: "#/components/parameters/materializationId"
-      responses:
-        "202":
-          description: Materialization started
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Materialization"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description: Materialization is not in PENDING state, or another is already running
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
-  /projects/{projectName}/packages/{packageName}/materializations/{materializationId}/stop:
-    post:
-      tags:
-        - materializations
-      operationId: stop-materialization
-      summary: Stop a materialization
-      description: Cancels a PENDING or RUNNING materialization.
-      parameters:
-        - $ref: "#/components/parameters/projectName"
-        - $ref: "#/components/parameters/packageName"
-        - $ref: "#/components/parameters/materializationId"
-      responses:
-        "200":
-          description: Materialization cancelled
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Materialization"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description: Materialization cannot be stopped (already terminal)
           content:
             application/json:
               schema:
@@ -1857,23 +1849,31 @@ paths:
                 $ref: "#/components/schemas/BuildManifest"
         "404":
           $ref: "#/components/responses/NotFound"
-
-  /projects/{projectName}/packages/{packageName}/manifest/reload:
     post:
       tags:
         - manifests
-      operationId: reload-manifest
-      summary: Reload manifest from storage into this worker's Malloy Runtime
+      operationId: manifest-action
+      summary: Perform an action on the package manifest
       description: |
-        Reads the build manifest from the shared store (DuckLake in
-        orchestrated mode, local DuckDB in standalone mode) and recompiles
-        every model in the package so subsequent queries resolve persisted
-        sources to their materialized tables. Intended for orchestrated
-        workers that did not themselves run the build; the endpoint does
-        not write anything *into* storage.
+        Performs an action on the package manifest. The action is specified via
+        the `action` query parameter:
+          * `reload` - Reads the build manifest from the shared store (DuckLake
+            in orchestrated mode, local DuckDB in standalone mode) and recompiles
+            every model in the package so subsequent queries resolve persisted
+            sources to their materialized tables. Intended for orchestrated
+            workers that did not themselves run the build; the endpoint does
+            not write anything *into* storage.
       parameters:
         - $ref: "#/components/parameters/projectName"
         - $ref: "#/components/parameters/packageName"
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - reload
+          description: Action to perform on the manifest
       responses:
         "200":
           description: Manifest loaded
@@ -1881,6 +1881,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BuildManifest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 

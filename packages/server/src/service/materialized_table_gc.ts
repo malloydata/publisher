@@ -85,8 +85,8 @@ export interface GcContext {
    /**
     * When true, delete the manifest row even if the row's
     * `connectionName` is no longer registered with the package. Used by
-    * `gcPackage` on teardown where retaining rows that point at a
-    * vanished connection just makes them un-GC-able.
+    * `teardownPackage` where retaining rows that point at a vanished
+    * connection just makes them un-GC-able.
     */
    forceDeleteRowOnMissingConnection?: boolean;
 }

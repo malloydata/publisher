@@ -445,19 +445,19 @@ export class MaterializationService {
       await this.repository.deleteMaterialization(execution.id);
    }
 
-   // ==================== GARBAGE COLLECTION ====================
+   // ==================== PACKAGE TEARDOWN ====================
 
    /**
     * Drop every materialized table and manifest row for a package.
     *
-    * This is the only out-of-band GC surface exposed by the publisher and
-    * is intended for a single caller: the controlplane, invoking it on the
-    * truly destructive path before the package/project is torn down. The
-    * publisher's `DELETE` endpoints are *not* wired into GC because the
-    * controlplane invokes them for non-destructive unload too (down-
-    * replicate, drain, archive) where the entity still exists on other
-    * replicas, and dropping shared tables there would corrupt surviving
-    * workers.
+    * This is the only out-of-band teardown surface exposed by the
+    * publisher and is intended for a single caller: the controlplane,
+    * invoking it on the truly destructive path before the package/project
+    * is torn down. The publisher's `DELETE` endpoints are *not* wired into
+    * teardown because the controlplane invokes them for non-destructive
+    * unload too (down-replicate, drain, archive) where the entity still
+    * exists on other replicas, and dropping shared tables there would
+    * corrupt surviving workers.
     *
     * Reconciliation of stale rows against the package's live source code
     * happens inline at the end of every successful build (see
@@ -475,7 +475,7 @@ export class MaterializationService {
     * `dryRun` returns what would be dropped without issuing any DROP or
     * deleting manifest rows.
     */
-   async gcPackage(
+   async teardownPackage(
       projectName: string,
       packageName: string,
       options: { dryRun?: boolean } = {},
@@ -488,7 +488,7 @@ export class MaterializationService {
       );
       if (active) {
          throw new MaterializationConflictError(
-            `Package ${packageName} has an active materialization (${active.id}); cannot GC`,
+            `Package ${packageName} has an active materialization (${active.id}); cannot tear down`,
          );
       }
 

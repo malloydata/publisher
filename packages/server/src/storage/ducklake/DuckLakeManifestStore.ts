@@ -26,7 +26,7 @@ import { DuckDBConnection } from "../duckdb/DuckDBConnection";
  * build lease lives in the DuckLake catalog, deployments running
  * orchestrated mode must ensure builds are externally single-writer (e.g.,
  * one designated build worker, or an external job scheduler). Other
- * workers should only call `manifest/reload` to pick up manifests produced
+ * workers should only call `manifest?action=reload` to pick up manifests produced
  * by the build worker.
  */
 export class DuckLakeManifestStore implements ManifestStore {

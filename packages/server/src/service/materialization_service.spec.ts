@@ -461,16 +461,16 @@ describe("MaterializationService", () => {
       });
    });
 
-   // ==================== GC ====================
+   // ==================== TEARDOWN ====================
 
-   describe("gcPackage", () => {
+   describe("teardownPackage", () => {
       it("refuses to run while a materialization is active", async () => {
          ctx.repository.getActiveMaterialization.resolves(
             makeExecution({ status: "RUNNING" }),
          );
 
          await expect(
-            ctx.service.gcPackage("my-project", "pkg"),
+            ctx.service.teardownPackage("my-project", "pkg"),
          ).rejects.toThrow(MaterializationConflictError);
       });
 
@@ -514,7 +514,7 @@ describe("MaterializationService", () => {
          ];
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
 
-         const result = await ctx.service.gcPackage("my-project", "pkg");
+         const result = await ctx.service.teardownPackage("my-project", "pkg");
 
          expect(result.dropped).toHaveLength(2);
          expect(result.errors).toHaveLength(0);
@@ -532,8 +532,9 @@ describe("MaterializationService", () => {
             runSQL,
          } as unknown as Connection;
          // Only "live_conn" is registered; the manifest row below points at
-         // a vanished "ghost_conn", which used to be un-GC-able. `gcPackage`
-         // must force-delete the row anyway so teardown can complete.
+         // a vanished "ghost_conn", which used to be impossible to tear down.
+         // `teardownPackage` must force-delete the row anyway so teardown
+         // can complete.
          const connections = new Map<string, Connection>([
             ["live_conn", livingConn],
          ]);
@@ -557,7 +558,7 @@ describe("MaterializationService", () => {
          ];
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
 
-         const result = await ctx.service.gcPackage("my-project", "pkg");
+         const result = await ctx.service.teardownPackage("my-project", "pkg");
 
          expect(result.dropped).toHaveLength(1);
          expect(result.dropped[0].targetDropSkipped).toBe(true);
@@ -596,7 +597,7 @@ describe("MaterializationService", () => {
          };
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves([entry]);
 
-         const result = await ctx.service.gcPackage("my-project", "pkg", {
+         const result = await ctx.service.teardownPackage("my-project", "pkg", {
             dryRun: true,
          });
 

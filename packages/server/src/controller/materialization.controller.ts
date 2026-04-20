@@ -97,20 +97,22 @@ export class MaterializationController {
       );
    }
 
-   async gcPackage(
+   async teardownPackage(
       projectName: string,
       packageName: string,
       body: Record<string, unknown>,
    ) {
-      const options = this.validateGcBody(body);
-      return this.materializationService.gcPackage(
+      const options = this.validateTeardownBody(body);
+      return this.materializationService.teardownPackage(
          projectName,
          packageName,
          options,
       );
    }
 
-   private validateGcBody(body: Record<string, unknown>): { dryRun?: boolean } {
+   private validateTeardownBody(body: Record<string, unknown>): {
+      dryRun?: boolean;
+   } {
       const options: { dryRun?: boolean } = {};
       if (body.dryRun !== undefined) {
          if (typeof body.dryRun !== "boolean") {
