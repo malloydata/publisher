@@ -2,8 +2,8 @@ import {
    McpServer,
    ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { URL } from "url"; // Import URL
-import type { components } from "../../api"; // Need this for Source definition type
+import { URL } from "url";
+import type { components } from "../../api";
 import { ModelCompilationError } from "../../errors";
 import { logger } from "../../logger";
 import { ProjectStore } from "../../service/project_store";
@@ -89,22 +89,23 @@ export function registerSourceResource(
                   if (!sources) {
                      throw new Error("Could not retrieve sources from model.");
                   }
-                  // Add type annotation for 's'
                   const source = sources.find(
-                     // @ts-expect-error TODO: Fix missing Source type in API
                      (s: components["schemas"]["Source"]) =>
                         s.name === sourceName,
                   );
 
                   if (!source) {
-                     // Specific "Source not found" error
                      const errorDetails = getNotFoundError(
                         `Source '${sourceName}' in model '${modelPath}' package '${packageName}' project '${projectName}'`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }
 
-                  // Return the source definition
+                  // Strip implicit filters from agent-facing responses
+                  if (source.filters) {
+                     source.filters = source.filters.filter((f) => !f.implicit);
+                  }
+
                   return source;
                } catch (error) {
                   // Catch errors from getModelForQuery or finding the source

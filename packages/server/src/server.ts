@@ -30,6 +30,14 @@ import { logger, loggerMiddleware } from "./logger";
 
 import { initializeMcpServer } from "./mcp/server";
 import { ProjectStore } from "./service/project_store";
+
+/** Normalize an Express query param into a string[] or undefined. */
+export function normalizeQueryArray(value: unknown): string[] | undefined {
+   if (value === undefined || value === null) return undefined;
+   if (Array.isArray(value)) return value.map(String);
+   return [String(value)];
+}
+
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
@@ -467,6 +475,7 @@ app.get(
             req.params.projectName,
             req.params.connectionName,
             req.params.schemaName,
+            normalizeQueryArray(req.query.tableNames),
          );
          res.status(200).json(results);
       } catch (error) {
@@ -528,26 +537,6 @@ app.post(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/tableSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTableSource(
-               req.params.projectName,
-               req.params.connectionName,
-               req.query.tableKey as string,
-               req.query.tablePath as string,
             ),
          );
       } catch (error) {
@@ -828,12 +817,29 @@ app.get(
          // Express stores wildcard matches in params['0']
          const notebookPath = (req.params as Record<string, string>)["0"];
 
+         // Parse optional filter_params (JSON query string) and bypass_filters
+         let filterParams: Record<string, string | string[]> | undefined;
+         if (typeof req.query.filter_params === "string") {
+            try {
+               filterParams = JSON.parse(req.query.filter_params);
+            } catch {
+               res.status(400).json({
+                  error: "Invalid filter_params: must be valid JSON",
+               });
+               return;
+            }
+         }
+         const bypassFilters =
+            req.query.bypass_filters === "true" ? true : undefined;
+
          res.status(200).json(
             await modelController.executeNotebookCell(
                req.params.projectName,
                req.params.packageName,
                notebookPath,
                cellIndex,
+               filterParams,
+               bypassFilters,
             ),
          );
       } catch (error) {
@@ -890,6 +896,10 @@ app.post(
                req.body.queryName as string,
                req.body.query as string,
                req.body.compactJson === true,
+               (req.body.filterParams ?? req.body.sourceFilters) as
+                  | Record<string, string | string[]>
+                  | undefined,
+               req.body.bypassFilters === true ? true : undefined,
             ),
          );
       } catch (error) {

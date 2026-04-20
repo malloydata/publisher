@@ -530,6 +530,16 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: tableNames
+          in: query
+          description: |
+            List of table names to filter results. When provided, only returns metadata
+            for the specified tables. When omitted, returns all tables in the schema.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
       responses:
         "200":
           description: A list of table names available in the specified schema
@@ -749,6 +759,7 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
   /projects/{projectName}/connections/{connectionName}/sqlTemporaryTable:
     post:
       tags:
@@ -837,59 +848,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TemporaryTable"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  # TODO: Remove this endpoint. This is deprecated and replaced by /projects/{projectName}/connections/{connectionName}/table resource.
-  /projects/{projectName}/connections/{connectionName}/tableSource:
-    get:
-      tags:
-        - connections
-      operationId: get-tablesource
-      summary: Get table source information
-      deprecated: true
-      description: |
-        Retrieves information about a specific table or view from the database connection.
-        This includes table schema, column definitions, and metadata. The table can be specified
-        by either tableKey or tablePath parameters, depending on the database type.
-      parameters:
-        - name: projectName
-          in: path
-          description: Name of the project
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: tableKey
-          in: query
-          description: Table key
-          required: false
-          schema:
-            type: string
-        - name: tablePath
-          in: query
-          description: Table path
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Table source information
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TableSource"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1513,6 +1471,21 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - name: filter_params
+          in: query
+          description: JSON-encoded filter parameter values keyed by filter name
+          required: false
+          schema:
+            type: string
+        - name: bypass_filters
+          in: query
+          description: When true, skip filter injection entirely
+          required: false
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
       responses:
         "200":
           description: Cell execution result
@@ -1881,6 +1854,11 @@ components:
           description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
+        sources:
+          type: array
+          description: Sources defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Source"
 
     CompiledModel:
       type: object
@@ -1911,6 +1889,11 @@ components:
           description: Array of named queries defined in the model
           items:
             $ref: "#/components/schemas/Query"
+        sources:
+          type: array
+          description: Sources defined in this model
+          items:
+            $ref: "#/components/schemas/Source"
 
     View:
       type: object
@@ -1941,6 +1924,58 @@ components:
           items:
             type: string
 
+    Filter:
+      type: object
+      description: A filter declared via #(filter) annotation on a Malloy source
+      properties:
+        name:
+          type: string
+          description: Display name of the filter
+        dimension:
+          type: string
+          description: Dimension this filter targets
+        type:
+          type: string
+          description: Comparator type
+          enum:
+            - equal
+            - in
+            - like
+            - greater_than
+            - less_than
+        implicit:
+          type: boolean
+          description: Whether this filter is hidden from users
+        required:
+          type: boolean
+          description: Whether a value must be provided
+        dimensionType:
+          type: string
+          description: Malloy data type of the dimension (e.g. string, number, boolean, date, timestamp)
+
+    Source:
+      type: object
+      description: A Malloy source defined in a model
+      properties:
+        name:
+          type: string
+          description: Name of the source
+        annotations:
+          type: array
+          description: Annotations attached to the source
+          items:
+            type: string
+        views:
+          type: array
+          description: Views defined in this source
+          items:
+            $ref: "#/components/schemas/View"
+        filters:
+          type: array
+          description: Filters declared on this source via #(filter) annotations
+          items:
+            $ref: "#/components/schemas/Filter"
+
     QueryRequest:
       type: object
       description: Request body for executing a Malloy query
@@ -1961,6 +1996,19 @@ components:
         versionId:
           type: string
           description: Version ID
+        filterParams:
+          type: object
+          description: Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
+        bypassFilters:
+          type: boolean
+          default: false
+          description: When true, skip server-side #(filter) injection entirely.
 
     NotebookCell:
       type: object
@@ -2099,7 +2147,16 @@ components:
           type: string
           description: Type of database connection
           enum:
-            [postgres, bigquery, snowflake, trino, mysql, duckdb, motherduck, ducklake]
+            [
+              postgres,
+              bigquery,
+              snowflake,
+              trino,
+              mysql,
+              duckdb,
+              motherduck,
+              ducklake,
+            ]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         postgresConnection:
