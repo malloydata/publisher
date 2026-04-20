@@ -20,7 +20,7 @@ export class ConnectionService {
       const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
-         throw new Error(`Project "${projectName}" not found in database`);
+         throw new Error(`Environment "${projectName}" not found in database`);
       }
 
       const dbConnection = await repository.getConnectionByName(
@@ -30,7 +30,7 @@ export class ConnectionService {
 
       if (!dbConnection) {
          throw new ConnectionNotFoundError(
-            `Connection "${connectionName}" not found in project "${projectName}"`,
+            `Connection "${connectionName}" not found in environment "${projectName}"`,
          );
       }
 
@@ -49,15 +49,15 @@ export class ConnectionService {
       }
 
       logger.info(
-         `Adding connection "${connectionName}" to project "${projectName}"`,
+         `Adding connection "${connectionName}" to environment "${projectName}"`,
       );
 
-      // Get database project and repository
+      // Get database environment record and repository
       const repository = this.projectStore.storageManager.getRepository();
       const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
-         throw new Error(`Project "${projectName}" not found in database`);
+         throw new Error(`Environment "${projectName}" not found in database`);
       }
 
       // Check if connection already exists in database
@@ -68,7 +68,7 @@ export class ConnectionService {
 
       if (existingDbConn) {
          throw new Error(
-            `Connection "${connectionName}" already exists in project "${projectName}".`,
+            `Connection "${connectionName}" already exists in environment "${projectName}".`,
          );
       }
 
@@ -91,7 +91,7 @@ export class ConnectionService {
       );
 
       logger.info(
-         `Successfully added connection "${connection.name}" to project "${projectName}"`,
+         `Successfully added connection "${connection.name}" to environment "${projectName}"`,
       );
    }
 
@@ -107,7 +107,7 @@ export class ConnectionService {
       }
 
       logger.info(
-         `Updating connection "${connectionName}" in project "${projectName}"`,
+         `Updating connection "${connectionName}" in environment "${projectName}"`,
       );
 
       const { dbProject, dbConnection, repository } = await this.getConnection(
@@ -144,7 +144,7 @@ export class ConnectionService {
       );
 
       logger.info(
-         `Successfully updated connection "${connectionName}" in project "${projectName}"`,
+         `Successfully updated connection "${connectionName}" in environment "${projectName}"`,
       );
    }
 
@@ -159,7 +159,7 @@ export class ConnectionService {
       }
 
       logger.info(
-         `Deleting connection "${connectionName}" from project "${projectName}"`,
+         `Deleting connection "${connectionName}" from environment "${projectName}"`,
       );
 
       const { dbConnection, repository } = await this.getConnection(
@@ -175,7 +175,7 @@ export class ConnectionService {
       await repository.deleteConnection(dbConnection.id);
 
       logger.info(
-         `Successfully deleted connection "${connectionName}" from project "${projectName}"`,
+         `Successfully deleted connection "${connectionName}" from environment "${projectName}"`,
       );
    }
 }

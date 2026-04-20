@@ -75,7 +75,7 @@ export function registerNotebookResource(
                      const isNotebookError =
                         modelInstance?.getModelType() !== "notebook";
                      const errorDetails = getNotFoundError(
-                        `Notebook '${notebookName}' in package '${packageName}' project '${projectName}'${
+                        `Notebook '${notebookName}' in package '${packageName}' environment '${projectName}'${
                            isNotebookError ? " (not a .malloynb file)" : ""
                         }`,
                      );
@@ -95,7 +95,7 @@ export function registerNotebookResource(
                   if (error instanceof PackageNotFoundError) {
                      throw new McpGetResourceError(
                         getNotFoundError(
-                           `Package '${packageName}' in project '${projectName}'`,
+                           `Package '${packageName}' in environment '${projectName}'`,
                         ),
                      );
                   }
@@ -114,7 +114,7 @@ export function registerNotebookResource(
                   if (error instanceof ModelNotFoundError) {
                      throw new McpGetResourceError(
                         getNotFoundError(
-                           `Notebook '${notebookName}' not found in package '${packageName}' project '${projectName}'`,
+                           `Notebook '${notebookName}' not found in package '${packageName}' environment '${projectName}'`,
                         ),
                      );
                   }

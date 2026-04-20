@@ -57,7 +57,7 @@ export class ModelController {
          }
          // Wrap other errors with more context
          throw new Error(
-            `Failed to get model ${modelPath} from package ${packageName} in project ${projectName}: ${error}`,
+            `Failed to get model ${modelPath} from package ${packageName} in environment ${projectName}: ${error}`,
          );
       }
    }

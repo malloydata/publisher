@@ -96,7 +96,7 @@ export function registerSourceResource(
 
                   if (!source) {
                      const errorDetails = getNotFoundError(
-                        `Source '${sourceName}' in model '${modelPath}' package '${packageName}' project '${projectName}'`,
+                        `Source '${sourceName}' in model '${modelPath}' package '${packageName}' environment '${projectName}'`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }

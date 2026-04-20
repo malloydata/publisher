@@ -90,7 +90,7 @@ export class ProjectRepository {
    ): Promise<Project> {
       const existing = await this.getProjectById(id);
       if (!existing) {
-         throw new Error(`Project with id ${id} not found`);
+         throw new Error(`Environment with id ${id} not found`);
       }
 
       const now = this.now();

@@ -20,10 +20,12 @@ export class WatchModeController {
    }
 
    public getWatchStatus: Handler<void, WatchStatusRes> = async (_req, res) => {
+      const name = this.watchingProjectName ?? "";
       return res.json({
          enabled: !!this.watchingPath,
          watchingPath: this.watchingPath ?? "",
-         projectName: this.watchingProjectName ?? "",
+         projectName: name,
+         environmentName: name,
       });
    };
 
@@ -31,25 +33,26 @@ export class WatchModeController {
       req,
       res,
    ) => {
+      const watchName = req.body.projectName ?? req.body.environmentName ?? "";
       const projectManifest = await ProjectStore.reloadProjectManifest(
          this.projectStore.serverRootPath,
       );
-      this.watchingProjectName = req.body.projectName;
+      this.watchingProjectName = watchName || null;
 
-      // Find the project in the new array structure
+      // Find the environment in the manifest ("projects" array)
       const project = projectManifest.projects.find(
-         (p) => p.name === req.body.projectName,
+         (p) => p.name === watchName,
       );
       if (!project || !project.packages || project.packages.length === 0) {
          res.status(404).json({
-            error: `Project ${req.body.projectName} not found or has no packages`,
+            error: `Environment ${watchName} not found or has no packages`,
          });
          return;
       }
 
       this.watchingPath = path.join(
          this.projectStore.serverRootPath,
-         req.body.projectName,
+         watchName,
       );
       this.watcher = chokidar.watch(this.watchingPath, {
          ignored: (path, stats) =>
@@ -59,30 +62,27 @@ export class WatchModeController {
          ignoreInitial: true,
       });
       const reloadProject = async () => {
-         // Overwrite the project with it's existing metadata to trigger a re-read
-         const project = await this.projectStore.getProject(
-            req.body.projectName,
-            true,
-         );
+         // Overwrite the environment with its existing metadata to trigger a re-read
+         const project = await this.projectStore.getProject(watchName, true);
          await this.projectStore.addProject(project.metadata);
-         logger.info(`Reloaded ${req.body.projectName}`);
+         logger.info(`Reloaded environment ${watchName}`);
       };
 
       this.watcher.on("add", async (path) => {
          logger.info(
-            `Detected new file ${path}, reloading ${req.body.projectName}`,
+            `Detected new file ${path}, reloading environment ${watchName}`,
          );
          await reloadProject();
       });
       this.watcher.on("unlink", async (path) => {
          logger.info(
-            `Detected deletion of ${path}, reloading ${req.body.projectName}`,
+            `Detected deletion of ${path}, reloading environment ${watchName}`,
          );
          await reloadProject();
       });
       this.watcher.on("change", async (path) => {
          logger.info(
-            `Detected change on ${path}, reloading ${req.body.projectName}`,
+            `Detected change on ${path}, reloading environment ${watchName}`,
          );
          await reloadProject();
       });

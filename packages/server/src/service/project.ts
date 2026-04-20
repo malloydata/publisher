@@ -1,6 +1,10 @@
 import type { LogMessage } from "@malloydata/malloy";
-import { FixedConnectionMap, MalloyError, Runtime } from "@malloydata/malloy";
-import { BaseConnection } from "@malloydata/malloy/connection";
+import {
+   Connection,
+   FixedConnectionMap,
+   MalloyError,
+   Runtime,
+} from "@malloydata/malloy";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
 import * as path from "path";
@@ -40,7 +44,7 @@ export class Project {
    private packages: Map<string, Package> = new Map();
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
-   private malloyConnections: Map<string, BaseConnection>;
+   private malloyConnections: Map<string, Connection>;
    private apiConnections: ApiConnection[];
    private projectPath: string;
    private projectName: string;
@@ -49,7 +53,7 @@ export class Project {
    constructor(
       projectName: string,
       projectPath: string,
-      malloyConnections: Map<string, BaseConnection>,
+      malloyConnections: Map<string, Connection>,
       apiConnections: InternalConnection[],
    ) {
       this.projectName = projectName;
@@ -57,7 +61,7 @@ export class Project {
       this.malloyConnections = malloyConnections;
       this.apiConnections = apiConnections;
       this.metadata = {
-         resource: `${API_PREFIX}/projects/${this.projectName}`,
+         resource: `${API_PREFIX}/environments/${this.projectName}`,
          name: this.projectName,
          location: this.projectPath,
       };
@@ -71,10 +75,10 @@ export class Project {
 
       try {
          await fs.promises.writeFile(readmePath, readme, "utf-8");
-         logger.info(`Updated README.md for project ${this.projectName}`);
+         logger.info(`Updated README.md for environment ${this.projectName}`);
       } catch (err) {
          logger.error(`Failed to write README.md`, { error: err });
-         throw new Error(`Failed to update project README`);
+         throw new Error(`Failed to update environment README`);
       }
    }
 
@@ -85,10 +89,10 @@ export class Project {
       }
 
       // Handle connections update
-      // TODO: Update project connections should have its own API endpoint
+      // TODO: Update environment connections should have its own API endpoint
       if (payload.connections) {
          logger.info(
-            `Updating ${payload.connections.length} connections for project ${this.projectName}`,
+            `Updating ${payload.connections.length} connections for environment ${this.projectName}`,
          );
          const isUpdateConnectionRequest = true;
          // Reload connections with full config
@@ -99,12 +103,12 @@ export class Project {
                isUpdateConnectionRequest,
             );
 
-         // Update the project's connection maps
+         // Update the environment's connection maps
          this.malloyConnections = malloyConnections;
          this.apiConnections = apiConnections;
 
          logger.info(
-            `Successfully updated connections for project ${this.projectName}`,
+            `Successfully updated connections for environment ${this.projectName}`,
             {
                malloyConnections: malloyConnections.size,
                apiConnections: apiConnections.length,
@@ -123,16 +127,16 @@ export class Project {
    ): Promise<Project> {
       if (!(await fs.promises.stat(projectPath))?.isDirectory()) {
          throw new ProjectNotFoundError(
-            `Project path ${projectPath} not found`,
+            `Environment path ${projectPath} not found`,
          );
       }
 
-      logger.info(`Creating project with connection configuration`);
+      logger.info(`Creating environment with connection configuration`);
       const { malloyConnections, apiConnections } =
          await createProjectConnections(connections, projectPath);
 
       logger.info(
-         `Loaded ${malloyConnections.size + apiConnections.length} connections for project ${projectName}`,
+         `Loaded ${malloyConnections.size + apiConnections.length} connections for environment ${projectName}`,
          {
             malloyConnections,
             apiConnections,
@@ -160,7 +164,7 @@ export class Project {
       }
       this.metadata = {
          ...this.metadata,
-         resource: `${API_PREFIX}/projects/${this.projectName}`,
+         resource: `${API_PREFIX}/environments/${this.projectName}`,
          name: this.projectName,
          readme,
       };
@@ -203,7 +207,7 @@ export class Project {
          },
       };
 
-      // Initialize Runtime with the project's active connections
+      // Initialize Runtime with the environment's active connections
       const runtime = new Runtime({
          urlReader: interceptingReader,
          connections: new FixedConnectionMap(this.malloyConnections, "duckdb"),
@@ -254,7 +258,7 @@ export class Project {
       return connection;
    }
 
-   public getMalloyConnection(connectionName: string): BaseConnection {
+   public getMalloyConnection(connectionName: string): Connection {
       const connection = this.malloyConnections.get(connectionName);
       if (!connection) {
          throw new ConnectionNotFoundError(
@@ -388,7 +392,7 @@ export class Project {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
       logger.info(
-         `Adding package ${packageName} to project ${this.projectName}`,
+         `Adding package ${packageName} to environment ${this.projectName}`,
          {
             packagePath,
             malloyConnections: this.malloyConnections,
@@ -532,7 +536,7 @@ export class Project {
    }
 
    public updateConnections(
-      malloyConnections: Map<string, BaseConnection>,
+      malloyConnections: Map<string, Connection>,
       apiConnections: ApiConnection[],
    ): void {
       this.malloyConnections = malloyConnections;
@@ -560,11 +564,11 @@ export class Project {
 
       if (isDeleted || index !== -1) {
          logger.info(
-            `Removed connection ${connectionName} from project ${this.projectName}`,
+            `Removed connection ${connectionName} from environment ${this.projectName}`,
          );
       } else {
          logger.warn(
-            `Connection ${connectionName} not found in project ${this.projectName}`,
+            `Connection ${connectionName} not found in environment ${this.projectName}`,
          );
       }
    }
@@ -575,11 +579,11 @@ export class Project {
          try {
             connection.close();
             logger.info(
-               `Closed connection ${connectionName} for project ${this.projectName}`,
+               `Closed connection ${connectionName} for environment ${this.projectName}`,
             );
          } catch (error) {
             logger.error(
-               `Error closing connection ${connectionName} for project ${this.projectName}`,
+               `Error closing connection ${connectionName} for environment ${this.projectName}`,
                { error },
             );
          }
@@ -589,7 +593,7 @@ export class Project {
       this.malloyConnections.clear();
       this.apiConnections = [];
 
-      logger.info(`Closed all connections for project ${this.projectName}`);
+      logger.info(`Closed all connections for environment ${this.projectName}`);
    }
 
    public async serialize(): Promise<ApiProject> {
@@ -612,19 +616,19 @@ export class Project {
                .rm(duckdbPath)
                .then(() => {
                   logger.info(
-                     `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                     `Removed DuckDB connection file ${connectionName} from environment ${this.projectName}`,
                   );
                })
                .catch((error) => {
                   logger.error(
-                     `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                     `Failed to remove DuckDB connection file ${connectionName} from environment ${this.projectName}`,
                      { error },
                   );
                });
          })
          .catch((error) => {
             logger.error(
-               `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+               `Failed to remove DuckDB connection file ${connectionName} from environment ${this.projectName}`,
                { error },
             );
          });
@@ -635,7 +639,7 @@ export class Project {
    ): Promise<void> {
       await deleteDuckLakeConnectionFile(connectionName, this.projectPath);
       logger.info(
-         `Removed DuckLake connection ${connectionName} from project ${this.projectName}`,
+         `Removed DuckLake connection ${connectionName} from environment ${this.projectName}`,
       );
    }
 }

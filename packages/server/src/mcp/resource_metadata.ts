@@ -42,6 +42,6 @@ export const RESOURCE_METADATA: Record<
    },
    project: {
       description: "The main workspace folder holding Packages, Models, etc.",
-      usage: "Use `ListResources` on this Project's URI to see the Packages inside and begin navigating your data assets.",
+      usage: "Use `ListResources` on this environment's URI to see the Packages inside and begin navigating your data assets.",
    },
 };

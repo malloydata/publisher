@@ -1,11 +1,11 @@
-import {
-  Configuration,
-  ProjectsApi,
-  PackagesApi,
-  ConnectionsApi,
-} from "./generated";
 import { AxiosError } from "axios";
 import { logAxiosError } from "../utils/logger.js";
+import {
+  Configuration,
+  ConnectionsApi,
+  PackagesApi,
+  ProjectsApi,
+} from "./generated";
 
 export class PublisherClient {
   private projectsApi: ProjectsApi;

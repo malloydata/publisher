@@ -88,7 +88,7 @@ describe("service/connection_service", () => {
 
          await expect(
             connectionService.getConnection("non-existent", "test-connection"),
-         ).rejects.toThrow('Project "non-existent" not found in database');
+         ).rejects.toThrow('Environment "non-existent" not found in database');
       });
 
       it("should throw ConnectionNotFoundError when connection not found", async () => {
@@ -176,7 +176,7 @@ describe("service/connection_service", () => {
                name: "new-connection",
                type: "postgres",
             } as ApiConnection),
-         ).rejects.toThrow('Project "non-existent" not found in database');
+         ).rejects.toThrow('Environment "non-existent" not found in database');
       });
 
       it("should throw error when connection already exists", async () => {
@@ -210,7 +210,7 @@ describe("service/connection_service", () => {
                } as ApiConnection,
             ),
          ).rejects.toThrow(
-            'Connection "existing-connection" already exists in project "test-project"',
+            'Connection "existing-connection" already exists in environment "test-project"',
          );
       });
 
@@ -629,7 +629,7 @@ describe("service/connection_service", () => {
          );
          getConnectionStub.rejects(
             new ConnectionNotFoundError(
-               'Connection "non-existent" not found in project "test-project"',
+               'Connection "non-existent" not found in environment "test-project"',
             ),
          );
 

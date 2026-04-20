@@ -5,7 +5,6 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { SnowflakeConnection } from "@malloydata/db-snowflake";
 import { TrinoConnection } from "@malloydata/db-trino";
 import { Connection, TableSourceDef } from "@malloydata/malloy";
-import { BaseConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import path from "path";
@@ -920,10 +919,10 @@ export async function createProjectConnections(
    projectPath: string = "",
    isUpdateConnectionRequest: boolean = false,
 ): Promise<{
-   malloyConnections: Map<string, BaseConnection>;
+   malloyConnections: Map<string, Connection>;
    apiConnections: InternalConnection[];
 }> {
-   const connectionMap = new Map<string, BaseConnection>();
+   const connectionMap = new Map<string, Connection>();
    const processedConnections = new Set<string>();
    const apiConnections: InternalConnection[] = [];
 
@@ -1149,8 +1148,8 @@ export async function createProjectConnections(
                );
             }
 
-            // Create DuckDB connection with project basePath as working directory
-            // This ensures relative paths in the project are resolved correctly
+            // Create DuckDB connection with environment basePath as working directory
+            // This ensures relative paths in the environment are resolved correctly
             // Use unique memory database path to prevent sharing across connections
             const attachedDatabases =
                connection.duckdbConnection.attachedDatabases ?? [];
@@ -1409,7 +1408,7 @@ async function testDuckDBConnection(
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
-   let malloyConnections: Map<string, BaseConnection> | null = null;
+   let malloyConnections: Map<string, Connection> | null = null;
    try {
       // Validate that connection name is provided
       if (!connectionConfig.name) {

@@ -87,7 +87,7 @@ export class Package {
                packageConfigTime - manifestValidationTime,
             ),
          });
-         packageConfig.resource = `${API_PREFIX}/projects/${projectName}/packages/${packageName}`;
+         packageConfig.resource = `${API_PREFIX}/environments/${projectName}/packages/${packageName}`;
 
          const databases = await Package.readDatabases(packagePath);
          const databasesTime = performance.now();

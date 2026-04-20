@@ -28,7 +28,7 @@ async function handleGetPackageContents(
    try {
       const { projectName, packageName } = params;
       if (typeof projectName !== "string" || projectName === "") {
-         throw new Error("Invalid project name parameter.");
+         throw new Error("Invalid environment name parameter.");
       }
       if (typeof packageName !== "string" || packageName === "") {
          throw new Error("Invalid package name parameter.");
@@ -172,10 +172,10 @@ async function handleGetPackageContents(
       } else if (
          error instanceof Error &&
          (error.message.includes("Invalid package name") ||
-            error.message.includes("Invalid project name"))
+            error.message.includes("Invalid environment name"))
       ) {
          errorDetails = getNotFoundError(
-            `Invalid project/package identifier in URI '${uri.href}'`,
+            `Invalid environment/package identifier in URI '${uri.href}'`,
          );
       } else {
          logger.error(
@@ -231,7 +231,7 @@ export function registerPackageResource(
             }) => {
                try {
                   if (typeof projectName !== "string") {
-                     throw new Error("Invalid project name parameter.");
+                     throw new Error("Invalid environment name parameter.");
                   }
                   if (typeof packageName !== "string") {
                      throw new Error("Invalid package name parameter.");
@@ -251,10 +251,10 @@ export function registerPackageResource(
                   } else if (
                      error instanceof Error &&
                      (error.message.includes("Invalid package name") ||
-                        error.message.includes("Invalid project name"))
+                        error.message.includes("Invalid environment name"))
                   ) {
                      errorDetails = getNotFoundError(
-                        `Invalid project/package identifier in URI '${uri.href}'`,
+                        `Invalid environment/package identifier in URI '${uri.href}'`,
                      );
                   } else {
                      errorDetails = getInternalError(
@@ -332,11 +332,11 @@ export function registerPackageResource(
             } else if (
                error instanceof Error &&
                (error.message.includes("Invalid package name") ||
-                  error.message.includes("Invalid project name"))
+                  error.message.includes("Invalid environment name"))
             ) {
                // Handle invalid identifier errors specifically
                errorDetails = getNotFoundError(
-                  `Invalid project/package identifier in URI '${uri.href}'`,
+                  `Invalid environment/package identifier in URI '${uri.href}'`,
                );
             } else {
                // Handle other unexpected errors

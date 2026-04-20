@@ -49,7 +49,7 @@ export function registerModelResource(
                try {
                   // Validate all parameters
                   if (typeof projectName !== "string") {
-                     throw new Error("Invalid project name parameter.");
+                     throw new Error("Invalid environment name parameter.");
                   }
                   if (typeof packageName !== "string") {
                      throw new Error("Invalid package name parameter.");
@@ -105,13 +105,13 @@ export function registerModelResource(
                   const safeModelPath =
                      typeof modelPath === "string" ? modelPath : "unknown";
 
-                  const notFoundContext = `Model '${safeModelPath}' in package '${safePackageName}' for project '${safeProjectName}'`;
+                  const notFoundContext = `Model '${safeModelPath}' in package '${safePackageName}' for environment '${safeProjectName}'`;
                   const malloyErrorContext = `${safeProjectName}/${safePackageName}/${safeModelPath}`;
 
                   if (error instanceof PackageNotFoundError) {
                      // Package not found during getPackage call
                      errorDetails = getNotFoundError(
-                        `Package '${safePackageName}' in project '${safeProjectName}'`,
+                        `Package '${safePackageName}' in environment '${safeProjectName}'`,
                      );
                   } else if (error instanceof ModelNotFoundError) {
                      // Model not found (either from getModel or type check)

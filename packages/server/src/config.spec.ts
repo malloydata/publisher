@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import { getPublisherConfig, type PublisherConfig } from "./config";
@@ -153,7 +153,7 @@ describe("Config Environment Variable Substitution", () => {
                   packages: [
                      {
                         name: "test-package",
-                        location: "./projects/${PROJECT_ID}/models",
+                        location: "./environments/${PROJECT_ID}/models",
                      },
                   ],
                },
@@ -165,7 +165,7 @@ describe("Config Environment Variable Substitution", () => {
          const result = getPublisherConfig(testServerRoot);
 
          expect(result.projects[0].packages[0].location).toBe(
-            "./projects/analytics-2024/models",
+            "./environments/analytics-2024/models",
          );
       });
 

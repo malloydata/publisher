@@ -134,7 +134,7 @@ export async function getModelForQuery(
       if (!model || model.getModelType() === "notebook") {
          // Ensure it's actually a model
          const details = getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for project '${projectName}'`,
+            `model '${modelPath}' in package '${packageName}' for environment '${projectName}'`,
          );
          return { error: details };
       }
@@ -145,14 +145,14 @@ export async function getModelForQuery(
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;
       if (error instanceof ProjectNotFoundError) {
-         errorDetails = getNotFoundError(`project '${projectName}'`);
+         errorDetails = getNotFoundError(`environment '${projectName}'`);
       } else if (error instanceof PackageNotFoundError) {
          errorDetails = getNotFoundError(
-            `package '${packageName}' in project '${projectName}'`,
+            `package '${packageName}' in environment '${projectName}'`,
          );
       } else if (error instanceof ModelNotFoundError) {
          errorDetails = getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for project '${projectName}'`,
+            `model '${modelPath}' in package '${packageName}' for environment '${projectName}'`,
          );
       } else if (error instanceof ModelCompilationError) {
          errorDetails = getMalloyErrorDetails(

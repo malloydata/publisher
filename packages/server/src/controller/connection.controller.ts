@@ -93,7 +93,7 @@ export class ConnectionController {
 
    /**
     * Gets the appropriate Malloy connection for a given connection name.
-    * For DuckDB connections, retrieves from package level; for others, from project level.
+    * For DuckDB connections, retrieves from package level; for others, from environment level.
     */
    private async getMalloyConnection(
       projectName: string,
@@ -448,7 +448,7 @@ export class ConnectionController {
       validateAzureAttachedDatabases(connectionConfig);
 
       logger.info(
-         `Creating connection "${connectionName}" in project "${projectName}"`,
+         `Creating connection "${connectionName}" in environment "${projectName}"`,
       );
 
       await this.connectionService.addConnection(
@@ -474,7 +474,7 @@ export class ConnectionController {
       validateAzureAttachedDatabases(connection as ApiConnection);
 
       logger.info(
-         `Updating connection "${connectionName}" in project "${projectName}"`,
+         `Updating connection "${connectionName}" in environment "${projectName}"`,
       );
 
       await this.connectionService.updateConnection(
@@ -493,7 +493,7 @@ export class ConnectionController {
       connectionName: string,
    ): Promise<{ message: string }> {
       logger.info(
-         `Deleting connection "${connectionName}" from project "${projectName}"`,
+         `Deleting connection "${connectionName}" from environment "${projectName}"`,
       );
 
       await this.connectionService.deleteConnection(

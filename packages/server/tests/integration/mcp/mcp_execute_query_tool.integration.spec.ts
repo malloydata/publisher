@@ -292,7 +292,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          expect(errorPayloadPkgNotFound.suggestions.length).toBeGreaterThan(0);
 
          // Check the specific error message within the parsed object
-         const expectedErrorMessageNotFound = `Resource not found: package '${params.packageName}' in project '${params.projectName}'`;
+         const expectedErrorMessageNotFound = `Resource not found: package '${params.packageName}' in environment '${params.projectName}'`;
          expect(errorPayloadPkgNotFound.error).toEqual(
             expectedErrorMessageNotFound,
          );
@@ -335,7 +335,7 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
          expect(errorPayloadModel.suggestions.length).toBeGreaterThan(0);
 
          // Check the specific error message within the parsed object
-         const expectedErrorMessageModel = `Resource not found: model '${params.modelPath}' in package '${params.packageName}' for project '${params.projectName}'`;
+         const expectedErrorMessageModel = `Resource not found: model '${params.modelPath}' in package '${params.packageName}' for environment '${params.projectName}'`;
          expect(errorPayloadModel.error).toEqual(expectedErrorMessageModel);
 
          // Check for the specific model name and context in the message

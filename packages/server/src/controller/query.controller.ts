@@ -2,8 +2,8 @@ import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
-import { ProjectStore } from "../service/project_store";
 import type { FilterParams } from "../service/filter";
+import { ProjectStore } from "../service/project_store";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -52,7 +52,7 @@ export class QueryController {
             result: compactJson
                ? JSON.stringify(compactResult, bigIntReplacer)
                : JSON.stringify(result),
-            resource: `${API_PREFIX}/projects/${projectName}/packages/${packageName}/models/${modelPath}/query`,
+            resource: `${API_PREFIX}/environments/${projectName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
          } as ApiQuery;
       }

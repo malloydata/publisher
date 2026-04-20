@@ -112,7 +112,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       !Array.isArray(processedConfig.projects)
    ) {
       logger.error(
-         `Invalid ${PUBLISHER_CONFIG_NAME}: projects must be an array. Using default empty config.`,
+         `Invalid ${PUBLISHER_CONFIG_NAME}: the "projects" field must be a JSON array of environments. Using default empty config.`,
       );
       return {
          frozenConfig: false,
@@ -176,7 +176,7 @@ export const getConnectionsFromPublisherConfig = (
       return Array.isArray(project?.connections) ? project.connections : [];
    } catch (error) {
       logger.error(
-         `Error getting connections for project "${projectName}" from ${PUBLISHER_CONFIG_NAME}`,
+         `Error getting connections for environment "${projectName}" from ${PUBLISHER_CONFIG_NAME}`,
          { error },
       );
       return [];
@@ -226,7 +226,7 @@ export const getProcessedPublisherConfig = (
    // Ensure projects is an array
    if (!Array.isArray(rawConfig.projects)) {
       logger.warn(
-         `Invalid ${PUBLISHER_CONFIG_NAME}: projects must be an array. Using empty array.`,
+         `Invalid ${PUBLISHER_CONFIG_NAME}: the "projects" field must be a JSON array of environments. Using empty array.`,
       );
       return {
          frozenConfig: rawConfig.frozenConfig ?? false,
@@ -234,19 +234,19 @@ export const getProcessedPublisherConfig = (
       };
    }
 
-   // Filter and validate projects, skipping invalid ones
+   // Filter and validate environments (publisher.config "projects" entries), skipping invalid ones
    const validProjects: ProcessedProject[] = [];
    for (const project of rawConfig.projects) {
       if (!project || typeof project !== "object") {
          logger.warn(
-            `Invalid project in ${PUBLISHER_CONFIG_NAME}: project must be an object. Skipping.`,
+            `Invalid environment in ${PUBLISHER_CONFIG_NAME}: entry must be an object. Skipping.`,
          );
          continue;
       }
 
       if (!project.name || typeof project.name !== "string") {
          logger.warn(
-            `Invalid project in ${PUBLISHER_CONFIG_NAME}: missing or invalid "name" field. Skipping project.`,
+            `Invalid environment in ${PUBLISHER_CONFIG_NAME}: missing or invalid "name" field. Skipping entry.`,
             { project },
          );
          continue;
@@ -254,7 +254,7 @@ export const getProcessedPublisherConfig = (
 
       if (!Array.isArray(project.packages)) {
          logger.warn(
-            `Invalid project "${project.name}" in ${PUBLISHER_CONFIG_NAME}: missing or invalid "packages" field (must be an array). Skipping project.`,
+            `Invalid environment "${project.name}" in ${PUBLISHER_CONFIG_NAME}: missing or invalid "packages" field (must be an array). Skipping entry.`,
          );
          continue;
       }
@@ -263,19 +263,19 @@ export const getProcessedPublisherConfig = (
       const validPackages = project.packages.filter((pkg) => {
          if (!pkg || typeof pkg !== "object") {
             logger.warn(
-               `Invalid package in project "${project.name}": package must be an object. Skipping.`,
+               `Invalid package in environment "${project.name}": package must be an object. Skipping.`,
             );
             return false;
          }
          if (!pkg.name || typeof pkg.name !== "string") {
             logger.warn(
-               `Invalid package in project "${project.name}": missing or invalid "name" field. Skipping.`,
+               `Invalid package in environment "${project.name}": missing or invalid "name" field. Skipping.`,
             );
             return false;
          }
          if (!pkg.location || typeof pkg.location !== "string") {
             logger.warn(
-               `Invalid package "${pkg.name}" in project "${project.name}": missing or invalid "location" field. Skipping.`,
+               `Invalid package "${pkg.name}" in environment "${project.name}": missing or invalid "location" field. Skipping.`,
             );
             return false;
          }
@@ -284,7 +284,7 @@ export const getProcessedPublisherConfig = (
 
       if (validPackages.length === 0) {
          logger.warn(
-            `Project "${project.name}" has no valid packages. Skipping project.`,
+            `Environment "${project.name}" has no valid packages. Skipping entry.`,
          );
          continue;
       }

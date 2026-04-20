@@ -39,7 +39,7 @@ export function normalizeQueryArray(value: unknown): string[] | undefined {
 }
 
 /**
- * Resolve the project identifier from either the legacy `projectName` path
+ * Resolve the environment identifier from either the legacy `projectName` path
  * parameter or the new `environmentName` parameter. Both the `/projects/*`
  * and `/environments/*` routes share the same handlers.
  */
@@ -322,7 +322,7 @@ app.post(
    [`${API_PREFIX}/projects`, `${API_PREFIX}/environments`],
    async (req, res) => {
       try {
-         logger.info("Adding project", { body: req.body });
+         logger.info("Adding environment", { body: req.body });
          const project = await projectStore.addProject(req.body);
          res.status(200).json(await project.serialize());
       } catch (error) {

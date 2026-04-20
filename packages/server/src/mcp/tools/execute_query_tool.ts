@@ -13,7 +13,7 @@ const executeQueryShape = {
    projectName: z
       .string()
       .describe(
-         "Project name. Project names are listed in the malloy resource list.",
+         "Environment name. Names are listed in the malloy resource list.",
       ),
    packageName: z
       .string()
@@ -232,7 +232,7 @@ export function registerExecuteQueryTool(
             );
             const errorDetails: ErrorDetails = getMalloyErrorDetails(
                "executeQuery",
-               `${projectName}/${packageName}/${modelPath}`, // Include project
+               `${projectName}/${packageName}/${modelPath}`, // Include environment
                queryError,
             );
 

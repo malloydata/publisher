@@ -83,7 +83,7 @@ export function registerQueryResource(
                   if (!query) {
                      // Specific "Query not found" error
                      const errorDetails = getNotFoundError(
-                        `Query '${queryName}' in model '${modelPath}' package '${packageName}' project '${projectName}'`,
+                        `Query '${queryName}' in model '${modelPath}' package '${packageName}' environment '${projectName}'`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }

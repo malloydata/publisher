@@ -143,7 +143,7 @@ export class ProjectStore {
                   await this.addProject(
                      {
                         name: project.name,
-                        resource: `${API_PREFIX}/projects/${project.name}`,
+                        resource: `${API_PREFIX}/environments/${project.name}`,
                         connections: project.connections,
                         packages: project.packages,
                      },
@@ -175,7 +175,7 @@ export class ProjectStore {
                            const projectInstance = await this.addProject(
                               {
                                  name: projectConfig.name,
-                                 resource: `${API_PREFIX}/projects/${projectConfig.name}`,
+                                 resource: `${API_PREFIX}/environments/${projectConfig.name}`,
                                  connections: projectConfig.connections,
                                  packages: projectConfig.packages,
                               },
@@ -190,7 +190,7 @@ export class ProjectStore {
                            return projectInstance.listPackages();
                         } else {
                            logger.error(
-                              `Project "${dbProject.name}" not found in config and files missing`,
+                              `Environment "${dbProject.name}" not found in config and files missing`,
                            );
                            return;
                         }
@@ -235,7 +235,7 @@ export class ProjectStore {
                      await this.addProject(
                         {
                            name: project.name,
-                           resource: `${API_PREFIX}/projects/${project.name}`,
+                           resource: `${API_PREFIX}/environments/${project.name}`,
                            connections: project.connections,
                            packages: project.packages,
                         },
@@ -250,25 +250,25 @@ export class ProjectStore {
          markReady();
          const initializationDuration = performance.now() - initialTime;
          logger.info(
-            `Project store successfully initialized in ${formatDuration(initializationDuration)}`,
+            `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
       } catch (error) {
          markNotReady();
          const errorData = this.extractErrorDataFromError(error);
-         logger.error("Error initializing project store", errorData);
+         logger.error("Error initializing environment store", errorData);
          process.exit(1);
       }
    }
 
    public async addProjectToDatabase(project: Project): Promise<void> {
       if (!project) {
-         logger.error("Cannot sync: project is null or undefined");
+         logger.error("Cannot sync: environment is null or undefined");
          return;
       }
 
       const projectName = project.metadata?.name;
       if (!projectName) {
-         throw new Error("Project name is required but not found");
+         throw new Error("Environment name is required but not found");
       }
 
       const repository = this.storageManager.getRepository();
@@ -282,7 +282,7 @@ export class ProjectStore {
       // Sync packages
       await this.addPackages(project, dbProject.id, repository);
 
-      logger.info(`Synced project "${projectName}" to database`);
+      logger.info(`Synced environment "${projectName}" to database`);
    }
 
    public async deleteProjectFromDatabase(projectName: string): Promise<void> {
@@ -292,13 +292,13 @@ export class ProjectStore {
       const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
-         logger.error(`Project "${projectName}" not found in database`);
+         logger.error(`Environment "${projectName}" not found in database`);
          return;
       }
 
       // Delete the project (this will cascade delete connections and packages)
       await repository.deleteProject(dbProject.id);
-      logger.info(`Deleted project "${projectName}" from database`);
+      logger.info(`Deleted environment "${projectName}" from database`);
    }
 
    private async addProjectMetadata(
@@ -307,7 +307,7 @@ export class ProjectStore {
    ): Promise<{ id: string; name: string }> {
       const projectName = project.metadata?.name;
       if (!projectName) {
-         throw new Error("Project name is required but not found");
+         throw new Error("Environment name is required but not found");
       }
       const projectPath = project.metadata?.location || "";
       const projectDescription = project.metadata?.readme;
@@ -488,7 +488,7 @@ export class ProjectStore {
       );
 
       if (!existingConn) {
-         logger.error(`Connection "${conn.name}" not found in project`);
+         logger.error(`Connection "${conn.name}" not found in environment`);
       }
 
       const connectionData = {
@@ -519,8 +519,8 @@ export class ProjectStore {
       const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
-         logger.error(`Project "${projectName}" not found in database`);
-         throw new Error(`Project "${projectName}" not found in database`);
+         logger.error(`Environment "${projectName}" not found in database`);
+         throw new Error(`Environment "${projectName}" not found in database`);
       }
 
       // Get the package from the project
@@ -528,7 +528,7 @@ export class ProjectStore {
       const pkg = packages.find((p) => p.name === packageName);
 
       if (!pkg) {
-         logger.warn(`Package "${packageName}" not found in project`);
+         logger.warn(`Package "${packageName}" not found in environment`);
          return;
       }
 
@@ -550,7 +550,7 @@ export class ProjectStore {
       const dbProject = await repository.getProjectByName(projectName);
 
       if (!dbProject) {
-         logger.error(`Project "${projectName}" not found in database`);
+         logger.error(`Environment "${projectName}" not found in database`);
          return;
       }
 
@@ -634,7 +634,7 @@ export class ProjectStore {
                const packages = project.packages;
                const connections = project.connections;
 
-               logger.debug(`Project ${project.name} status:`, {
+               logger.debug(`Environment ${project.name} status:`, {
                   connectionsCount: project.connections?.length || 0,
                   packagesCount: packages?.length || 0,
                });
@@ -708,12 +708,12 @@ export class ProjectStore {
             projectConfig?.packages[0]?.location;
          if (!projectPath) {
             throw new ProjectNotFoundError(
-               `Project "${projectName}" could not be resolved to a path.`,
+               `Environment "${projectName}" could not be resolved to a path.`,
             );
          }
          return await this.addProject({
             name: projectName,
-            resource: `${API_PREFIX}/projects/${projectName}`,
+            resource: `${API_PREFIX}/environments/${projectName}`,
             connections: projectConfig?.connections || [],
          });
       });
@@ -731,7 +731,7 @@ export class ProjectStore {
       }
       const projectName = project.name;
       if (!projectName) {
-         throw new Error("Project name is required");
+         throw new Error("Environment name is required");
       }
       // Check if project already exists and update it instead of creating a new one
       const existingProject = this.projects.get(projectName);
@@ -811,11 +811,11 @@ export class ProjectStore {
       validateProjectAzureUrls(project);
       const projectName = project.name;
       if (!projectName) {
-         throw new Error("Project name is required");
+         throw new Error("Environment name is required");
       }
       const existingProject = this.projects.get(projectName);
       if (!existingProject) {
-         throw new ProjectNotFoundError(`Project ${projectName} not found`);
+         throw new ProjectNotFoundError(`Environment ${projectName} not found`);
       }
       const updatedProject = await existingProject.update(project);
       this.projects.set(projectName, updatedProject);
@@ -837,7 +837,7 @@ export class ProjectStore {
 
       const projectPath = project.metadata?.location;
 
-      // Close all connections before removing the project
+      // Close all connections before removing the environment
       project.closeAllConnections();
 
       this.projects.delete(projectName);
@@ -845,9 +845,11 @@ export class ProjectStore {
       if (projectPath) {
          try {
             await fs.promises.rm(projectPath, { recursive: true, force: true });
-            logger.info(`Deleted project directory: ${projectPath}`);
+            logger.info(`Deleted environment directory: ${projectPath}`);
          } catch (err) {
-            logger.error("Error removing project directory", { error: err });
+            logger.error("Error removing environment directory", {
+               error: err,
+            });
          }
       }
 
@@ -901,7 +903,7 @@ export class ProjectStore {
    private async scaffoldProject(project: ApiProject) {
       const projectName = project.name;
       if (!projectName) {
-         throw new Error("Project name is required");
+         throw new Error("Environment name is required");
       }
       const absoluteProjectPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${projectName}`;
       await fs.promises.mkdir(absoluteProjectPath, { recursive: true });
@@ -948,7 +950,7 @@ export class ProjectStore {
 
       if (!packages || packages.length === 0) {
          throw new PackageNotFoundError(
-            `No packages found for project ${projectName}`,
+            `No packages found for environment ${projectName}`,
          );
       }
 
@@ -1234,7 +1236,7 @@ export class ProjectStore {
          });
       } else {
          throw new PackageNotFoundError(
-            `Package ${packageName} for project ${projectName} not found in "${projectPath}"`,
+            `Package ${packageName} for environment ${projectName} not found in "${projectPath}"`,
          );
       }
    }
@@ -1253,7 +1255,7 @@ export class ProjectStore {
       });
       if (files.length === 0) {
          throw new ProjectNotFoundError(
-            `Project ${projectName} not found in ${gcsPath}`,
+            `Environment ${projectName} not found in ${gcsPath}`,
          );
       }
       if (!isCompressedFile) {
@@ -1313,7 +1315,7 @@ export class ProjectStore {
          const item = await this.s3Client.send(command);
          if (!item.Body) {
             throw new ProjectNotFoundError(
-               `Project ${projectName} not found in ${s3Path}`,
+               `Environment ${projectName} not found in ${s3Path}`,
             );
          }
          const file = fs.createWriteStream(zipFilePath);
@@ -1339,7 +1341,7 @@ export class ProjectStore {
 
       if (!objects.Contents || objects.Contents.length === 0) {
          throw new ProjectNotFoundError(
-            `Project ${projectName} not found in ${s3Path}`,
+            `Environment ${projectName} not found in ${s3Path}`,
          );
       }
       await Promise.all(

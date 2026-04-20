@@ -1,13 +1,13 @@
 import {
-   ResourceRepository,
-   Project,
-   Package,
    Connection,
+   Package,
+   Project,
+   ResourceRepository,
 } from "../DatabaseInterface";
-import { DuckDBConnection } from "./DuckDBConnection";
-import { ProjectRepository } from "./ProjectRepository";
-import { PackageRepository } from "./PackageRepository";
 import { ConnectionRepository } from "./ConnectionRepository";
+import { DuckDBConnection } from "./DuckDBConnection";
+import { PackageRepository } from "./PackageRepository";
+import { ProjectRepository } from "./ProjectRepository";
 
 export class DuckDBRepository implements ResourceRepository {
    private projectRepo: ProjectRepository;
@@ -52,7 +52,7 @@ export class DuckDBRepository implements ResourceRepository {
       await this.connectionRepo.deleteConnectionsByProjectId(id);
       await this.packageRepo.deletePackagesByProjectId(id);
 
-      // Then delete the project
+      // Then delete the environment row (table name remains `projects`)
       await this.projectRepo.deleteProject(id);
    }
 

@@ -17,8 +17,8 @@ interface PackageWithProject {
 }
 
 /**
- * Registers the Malloy Project resource type with the MCP server.
- * Handles getting details for the hardcoded 'home' project and listing packages within it.
+ * Registers the Malloy environment resource type with the MCP server (URI scheme malloy://project/...).
+ * Lists packages across environments and resolves environment metadata on read.
  */
 export function registerProjectResource(
    mcpServer: McpServer,
@@ -29,25 +29,25 @@ export function registerProjectResource(
       new ResourceTemplate("malloy://project/{projectName}", {
          /**
           * Handles ListResources requests.
-          * If projectName is specified, lists packages for that project (only 'home' supported).
-          * If projectName is not specified (general ListResources call), lists packages for the default 'home' project.
+          * If projectName is specified, lists packages for that environment (only 'home' supported).
+          * If projectName is not specified (general ListResources call), lists packages for the default 'home' environment.
           */
          list: async (/* extra: ListProjectExtra - Deleted */): Promise<ListResourcesResult> => {
             logger.info(
-               "[MCP LOG] Entering ListResources (project) handler (listing ALL packages)...",
+               "[MCP LOG] Entering ListResources (environment) handler (listing ALL packages)...",
             );
             // Ignore parameters from 'extra' as URI path params aren't passed to list handlers.
 
             try {
                const allProjects = await projectStore.listProjects();
                logger.info(
-                  `[MCP LOG] Found ${allProjects.length} projects defined.`,
+                  `[MCP LOG] Found ${allProjects.length} environments defined.`,
                );
 
                const packagePromises = allProjects.map(async (proj) => {
                   try {
                      logger.info(
-                        `[MCP LOG] Getting project '${proj.name}' to list its packages...`,
+                        `[MCP LOG] Getting environment '${proj.name}' to list its packages...`,
                      );
                      const projectInstance = await projectStore.getProject(
                         proj.name!,
@@ -55,7 +55,7 @@ export function registerProjectResource(
                      ); // Use proj.name
                      const packages = await projectInstance.listPackages();
                      logger.info(
-                        `[MCP LOG] Found ${packages.length} packages in project '${proj.name}'.`,
+                        `[MCP LOG] Found ${packages.length} packages in environment '${proj.name}'.`,
                      );
                      // Return packages along with their project name for URI construction
                      return packages.map((pkg) => ({
@@ -64,10 +64,10 @@ export function registerProjectResource(
                      }));
                   } catch (projectError) {
                      logger.error(
-                        `[MCP Server Error] Error getting/listing packages for project ${proj.name}:`,
+                        `[MCP Server Error] Error getting/listing packages for environment ${proj.name}:`,
                         { error: projectError },
                      );
-                     return []; // Return empty array for this project on error
+                     return []; // Return empty array for this environment on error
                   }
                });
 
@@ -82,7 +82,7 @@ export function registerProjectResource(
                   );
 
                logger.info(
-                  `[MCP LOG] Total packages found across all projects: ${allPackagesWithProjectName.length}`,
+                  `[MCP LOG] Total packages found across all environments: ${allPackagesWithProjectName.length}`,
                );
 
                const packageMetadata = RESOURCE_METADATA.package;
@@ -102,31 +102,31 @@ export function registerProjectResource(
                });
 
                logger.info(
-                  `[MCP LOG] ListResources (project): Returning ${mappedResources.length} package resources.`,
+                  `[MCP LOG] ListResources (environment): Returning ${mappedResources.length} package resources.`,
                );
                return {
                   resources: mappedResources,
                };
             } catch (error) {
                // Catch errors from projectStore.listProjects() itself
-               logger.error(`[MCP Server Error] Error listing projects:`, {
+               logger.error(`[MCP Server Error] Error listing environments:`, {
                   error,
                });
                const errorDetails = getInternalError(
-                  `ListResources (project - initial list)`,
+                  `ListResources (environment - initial list)`,
                   error,
                );
-               logger.error("MCP ListResources (project) error:", {
+               logger.error("MCP ListResources (environment) error:", {
                   error: errorDetails.message,
                });
                logger.info(
-                  "[MCP LOG] ListResources (project): Returning empty on error listing projects.",
+                  "[MCP LOG] ListResources (environment): Returning empty on error listing environments.",
                );
                return { resources: [] };
             }
          },
       }),
-      /** Handles GetResource requests for Malloy Projects */
+      /** Handles GetResource requests for Malloy environments */
       (uri, params) =>
          handleResourceGet(
             uri,
@@ -134,42 +134,42 @@ export function registerProjectResource(
             "project",
             async ({ projectName }: { projectName?: unknown }) => {
                logger.info(
-                  `[MCP LOG] Entering GetResource (project) handler for projectName: ${projectName}`,
+                  `[MCP LOG] Entering GetResource (environment) handler for projectName: ${projectName}`,
                );
-               // Validate project name parameter
+               // Validate environment name parameter
                if (typeof projectName !== "string") {
                   logger.error(
-                     "[MCP LOG] GetResource (project): Invalid project name param.",
+                     "[MCP LOG] GetResource (environment): Invalid environment name param.",
                   );
-                  throw new Error("Invalid project name parameter.");
+                  throw new Error("Invalid environment name parameter.");
                }
 
                try {
                   logger.info(
-                     `[MCP LOG] GetResource: Getting project '${projectName}'...`,
+                     `[MCP LOG] GetResource: Getting environment '${projectName}'...`,
                   );
                   // Get the project instance, but we might not need its metadata directly
                   await projectStore.getProject(projectName, false);
                   // Construct the definition object expected by the test
                   const definition = { name: projectName };
                   logger.info(
-                     `[MCP LOG] GetResource (project): Returning definition for '${projectName}'.`,
+                     `[MCP LOG] GetResource (environment): Returning definition for '${projectName}'.`,
                   );
                   // Return the explicit definition structure
                   return definition;
                } catch (error) {
                   logger.error(
-                     `[MCP LOG] GetResource (project): Error caught for '${projectName}':`,
+                     `[MCP LOG] GetResource (environment): Error caught for '${projectName}':`,
                      { error },
                   );
                   // Catch expected errors from this specific resource logic
                   if (error instanceof Error) {
-                     // Use getNotFoundError for the specific project not found case
+                     // Use getNotFoundError for the specific environment not found case
                      // or a generic message for the invalid param case.
                      const errorDetails = getNotFoundError(
                         error.message.includes("not found")
-                           ? `Project '${projectName}'` // More specific context
-                           : `Invalid project identifier provided for URI ${uri.href}`, // Generic but informative
+                           ? `Environment '${projectName}'` // More specific context
+                           : `Invalid environment identifier provided for URI ${uri.href}`, // Generic but informative
                      );
                      // Re-throw structured error for handleResourceGet to catch
                      throw new McpGetResourceError(errorDetails);

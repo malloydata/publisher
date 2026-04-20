@@ -41,7 +41,7 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
    ];
 
    suggestions.push(
-      "Check if the resource exists and is correctly named in your Malloy project structure or the specific model file.",
+      "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file.",
    );
 
    return {

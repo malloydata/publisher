@@ -26,7 +26,7 @@ export function initializeMcpServer(projectStore: ProjectStore): McpServer {
 
    const mcpServer = new McpServer(testServerInfo);
 
-   logger.info("[MCP Init] Registering project resource...");
+   logger.info("[MCP Init] Registering environment resource...");
    registerProjectResource(mcpServer, projectStore);
    logger.info("[MCP Init] Registering package resource...");
    registerPackageResource(mcpServer, projectStore);

@@ -89,7 +89,7 @@ export function registerViewResource(
                   if (!source) {
                      throw new McpGetResourceError(
                         getNotFoundError(
-                           `Source '${sourceName}' in model '${modelPath}' package '${packageName}' project '${projectName}'`,
+                           `Source '${sourceName}' in model '${modelPath}' package '${packageName}' environment '${projectName}'`,
                         ),
                      );
                   }
@@ -102,7 +102,7 @@ export function registerViewResource(
                   if (!view) {
                      // Specific "View not found" error
                      const errorDetails = getNotFoundError(
-                        `View '${viewName}' in source '${sourceName}' model '${modelPath}' package '${packageName}' project '${projectName}'`,
+                        `View '${viewName}' in source '${sourceName}' model '${modelPath}' package '${packageName}' environment '${projectName}'`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }

@@ -9,7 +9,7 @@ import { MALLOY_PROMPTS } from "./prompt_definitions";
  * Registers all defined Malloy prompts with the MCP server.
  *
  * @param mcpServer The McpServer instance.
- * @param projectStore The ProjectStore instance for handlers to access project data.
+ * @param projectStore The ProjectStore instance for handlers to access environment data.
  */
 export function registerPromptCapability(
    mcpServer: McpServer,
