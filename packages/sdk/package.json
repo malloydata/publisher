@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/sdk",
    "description": "Malloy Publisher SDK",
-   "version": "0.0.187",
+   "version": "0.0.188",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
@@ -47,9 +47,7 @@
    },
    "style": "./dist/malloy-explorer.css",
    "sideEffects": [
-      "**/*.css",
-      "./src/index.ts",
-      "./dist/index.*.js"
+      "**/*.css"
    ],
    "repository": {
       "type": "git",

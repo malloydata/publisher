@@ -73,6 +73,7 @@ Publisher consists of four packages:
 | **[packages/app](packages/app/)** | Reference implementation and production-ready data exploration tool built with the SDK. |
 | **[packages/python-client](packages/python-client/)** | Auto-generated Python SDK for the REST API. |
 
+
 ## Development
 
 This project uses [bun](https://bun.sh/) as the JavaScript runtime.
