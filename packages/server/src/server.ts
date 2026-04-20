@@ -20,7 +20,11 @@ import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
-import { internalErrorToHttpError, NotImplementedError } from "./errors";
+import {
+   BadRequestError,
+   internalErrorToHttpError,
+   NotImplementedError,
+} from "./errors";
 import {
    drainingGuard,
    registerHealthEndpoints,
@@ -28,7 +32,11 @@ import {
 } from "./health";
 import { logger, loggerMiddleware } from "./logger";
 
+import { ManifestController } from "./controller/manifest.controller";
+import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { ManifestService } from "./service/manifest_service";
+import { MaterializationService } from "./service/materialization_service";
 import { ProjectStore } from "./service/project_store";
 
 /** Normalize an Express query param into a string[] or undefined. */
@@ -125,17 +133,29 @@ const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
 const API_PREFIX = "/api/v0";
 const isDevelopment = process.env["NODE_ENV"] === "development";
 
-const app = express();
+export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
 const projectStore = new ProjectStore(SERVER_ROOT);
+const manifestService = new ManifestService(projectStore);
 const watchModeController = new WatchModeController(projectStore);
 const connectionController = new ConnectionController(projectStore);
 const modelController = new ModelController(projectStore);
-const packageController = new PackageController(projectStore);
+const packageController = new PackageController(projectStore, manifestService);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
 const compileController = new CompileController(projectStore);
+const materializationService = new MaterializationService(
+   projectStore,
+   manifestService,
+);
+const materializationController = new MaterializationController(
+   materializationService,
+);
+const manifestController = new ManifestController(
+   projectStore,
+   manifestService,
+);
 
 export const mcpApp = express();
 
@@ -650,9 +670,11 @@ app.get(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
 
 app.post(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
    try {
+      const autoLoadManifest = req.query.autoLoadManifest === "true";
       const _package = await packageController.addPackage(
          req.params.projectName,
          req.body,
+         { autoLoadManifest },
       );
       res.status(200).json(_package?.getPackageMetadata());
    } catch (error) {
@@ -947,6 +969,173 @@ app.post(
          res.status(200).json(result);
       } catch (error) {
          logger.error("Compilation error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// ==================== MATERIALIZATION ROUTES ====================
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   async (req, res) => {
+      try {
+         const build = await materializationController.createMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.body || {},
+         );
+         res.status(201).json(build);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   async (req, res) => {
+      try {
+         const limit = req.query.limit
+            ? parseInt(req.query.limit as string, 10)
+            : undefined;
+         const offset = req.query.offset
+            ? parseInt(req.query.offset as string, 10)
+            : undefined;
+         const builds = await materializationController.listMaterializations(
+            req.params.projectName,
+            req.params.packageName,
+            { limit, offset },
+         );
+         res.status(200).json(builds);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         const build = await materializationController.getMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.materializationId,
+         );
+         res.status(200).json(build);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/teardown`,
+   async (req, res) => {
+      try {
+         const result = await materializationController.teardownPackage(
+            req.params.projectName,
+            req.params.packageName,
+            req.body || {},
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         const action = req.query.action;
+         if (action === "start") {
+            const build = await materializationController.startMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            );
+            res.status(202).json(build);
+         } else if (action === "stop") {
+            const build = await materializationController.stopMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            );
+            res.status(200).json(build);
+         } else {
+            throw new BadRequestError(
+               `Unsupported action '${String(action ?? "")}'. Expected 'start' or 'stop'.`,
+            );
+         }
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.delete(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         await materializationController.deleteMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.materializationId,
+         );
+         res.status(204).send();
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// ==================== MANIFEST ROUTES ====================
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   async (req, res) => {
+      try {
+         const manifest = await manifestController.getManifest(
+            req.params.projectName,
+            req.params.packageName,
+         );
+         res.status(200).json(manifest);
+      } catch (error) {
+         logger.error("Get manifest error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   async (req, res) => {
+      try {
+         const action = req.query.action;
+         if (action === "reload") {
+            const manifest = await manifestController.reloadManifest(
+               req.params.projectName,
+               req.params.packageName,
+            );
+            res.status(200).json(manifest);
+         } else {
+            throw new BadRequestError(
+               `Unsupported action '${String(action ?? "")}'. Expected 'reload'.`,
+            );
+         }
+      } catch (error) {
+         logger.error("Manifest action error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

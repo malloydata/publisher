@@ -51,6 +51,10 @@ tags:
     description: Embedded database management and access
   - name: watch-mode
     description: Real-time file watching for development workflows
+  - name: materializations
+    description: Package-level materializations for persisting Malloy sources
+  - name: manifests
+    description: Build manifest management for tracking materialized source tables
 
 paths:
   /status:
@@ -960,6 +964,16 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: autoLoadManifest
+          in: query
+          description: |
+            When true, automatically loads any existing build manifest
+            for the package so materialized table references resolve immediately.
+            Defaults to false.
+          required: false
+          schema:
+            type: boolean
+            default: false
       requestBody:
         required: true
         content:
@@ -1660,6 +1674,218 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /projects/{projectName}/packages/{packageName}/materializations:
+    post:
+      tags:
+        - materializations
+      operationId: create-materialization
+      summary: Create a materialization
+      description: |
+        Creates a new materialization in PENDING state for all persist sources across all
+        models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMaterializationRequest"
+      responses:
+        "201":
+          description: Materialization created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Package already has an active materialization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags:
+        - materializations
+      operationId: list-materializations
+      summary: List materializations for a package
+      description: Returns the materialization history for the package, ordered by most recent first.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Maximum number of materializations to return
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Number of materializations to skip
+      responses:
+        "200":
+          description: List of materializations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/packages/{packageName}/materializations/{materializationId}:
+    get:
+      tags:
+        - materializations
+      operationId: get-materialization
+      summary: Get a specific materialization
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+      responses:
+        "200":
+          description: Materialization details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags:
+        - materializations
+      operationId: materialization-action
+      summary: Perform an action on a materialization
+      description: |
+        Performs an action on a materialization. The action is specified via
+        the `action` query parameter:
+          * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
+          * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - start
+              - stop
+          description: Action to perform on the materialization
+      responses:
+        "200":
+          description: Materialization cancelled (action=stop)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "202":
+          description: Materialization started (action=start)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Materialization cannot transition to the requested state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - materializations
+      operationId: delete-materialization
+      summary: Delete a materialization
+      description: Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+      responses:
+        "204":
+          description: Materialization deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Materialization cannot be deleted (PENDING or RUNNING)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /projects/{projectName}/packages/{packageName}/manifest:
+    get:
+      tags:
+        - manifests
+      operationId: get-manifest
+      summary: Get the build manifest for a package
+      description: |
+        Returns the current build manifest containing buildId-to-tableName mappings
+        for all materialized sources in the package.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+      responses:
+        "200":
+          description: Build manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildManifest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags:
+        - manifests
+      operationId: manifest-action
+      summary: Perform an action on the package manifest
+      description: |
+        Performs an action on the package manifest. The action is specified via
+        the `action` query parameter:
+          * `reload` - Reads the build manifest from the shared store (DuckLake
+            in orchestrated mode, local DuckDB in standalone mode) and recompiles
+            every model in the package so subsequent queries resolve persisted
+            sources to their materialized tables. Intended for orchestrated
+            workers that did not themselves run the build; the endpoint does
+            not write anything *into* storage.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - reload
+          description: Action to perform on the manifest
+      responses:
+        "200":
+          description: Manifest loaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildManifest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   responses:
     BadRequest:
@@ -1776,6 +2002,17 @@ components:
           description: List of Malloy packages in this project
           items:
             $ref: "#/components/schemas/Package"
+        materializationStorage:
+          type: object
+          nullable: true
+          description: Optional DuckLake-backed storage for materialization manifests (orchestrated mode). When set, manifests are stored in a shared DuckLake catalog instead of the local DuckDB database.
+          properties:
+            catalogUrl:
+              type: string
+              description: PostgreSQL connection URL for the DuckLake catalog metadata store
+            dataPath:
+              type: string
+              description: Cloud storage path (s3:// or gs://) for DuckLake data files
 
     Package:
       type: object
@@ -2671,3 +2908,92 @@ components:
             range:
               type: object
               description: Character range within the source file
+
+    CreateMaterializationRequest:
+      type: object
+      description: Options for creating a materialization
+      properties:
+        forceRefresh:
+          type: boolean
+          default: false
+          description: If true, forces rebuild of all sources even if their BuildID is unchanged
+        autoLoadManifest:
+          type: boolean
+          default: false
+          description: If true, automatically reloads the manifest into the Malloy Runtime after a successful materialization
+
+    Materialization:
+      type: object
+      description: A record of a package materialization
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        packageName:
+          type: string
+        status:
+          type: string
+          enum: ["PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELLED"]
+        startedAt:
+          type: ["string", "null"]
+          format: date-time
+        completedAt:
+          type: ["string", "null"]
+          format: date-time
+        error:
+          type: ["string", "null"]
+          description: Error message if the materialization failed
+        metadata:
+          type: ["object", "null"]
+          description: Materialization metadata including build options, source counts, and durations
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BuildManifest:
+      type: object
+      description: Manifest mapping BuildIDs to materialized table names
+      properties:
+        entries:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ManifestEntry"
+          description: Map of BuildID to manifest entry
+        strict:
+          type: boolean
+          description: Whether the manifest is in strict mode
+
+    ManifestEntry:
+      type: object
+      description: A single entry in the build manifest
+      properties:
+        tableName:
+          type: string
+          description: Name of the materialized table
+
+  parameters:
+    projectName:
+      name: projectName
+      in: path
+      required: true
+      description: Name of the project
+      schema:
+        type: string
+    packageName:
+      name: packageName
+      in: path
+      required: true
+      description: Name of the package
+      schema:
+        type: string
+    materializationId:
+      name: materializationId
+      in: path
+      required: true
+      description: ID of the materialization
+      schema:
+        type: string
