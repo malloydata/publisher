@@ -763,7 +763,7 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
-          
+
   /projects/{projectName}/connections/{connectionName}/sqlTemporaryTable:
     post:
       tags:
@@ -1485,6 +1485,21 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - name: filter_params
+          in: query
+          description: JSON-encoded filter parameter values keyed by filter name
+          required: false
+          schema:
+            type: string
+        - name: bypass_filters
+          in: query
+          description: When true, skip filter injection entirely
+          required: false
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
       responses:
         "200":
           description: Cell execution result
@@ -2074,6 +2089,11 @@ components:
           description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
+        sources:
+          type: array
+          description: Sources defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Source"
 
     CompiledModel:
       type: object
@@ -2104,6 +2124,11 @@ components:
           description: Array of named queries defined in the model
           items:
             $ref: "#/components/schemas/Query"
+        sources:
+          type: array
+          description: Sources defined in this model
+          items:
+            $ref: "#/components/schemas/Source"
 
     View:
       type: object
@@ -2134,6 +2159,58 @@ components:
           items:
             type: string
 
+    Filter:
+      type: object
+      description: A filter declared via #(filter) annotation on a Malloy source
+      properties:
+        name:
+          type: string
+          description: Display name of the filter
+        dimension:
+          type: string
+          description: Dimension this filter targets
+        type:
+          type: string
+          description: Comparator type
+          enum:
+            - equal
+            - in
+            - like
+            - greater_than
+            - less_than
+        implicit:
+          type: boolean
+          description: Whether this filter is hidden from users
+        required:
+          type: boolean
+          description: Whether a value must be provided
+        dimensionType:
+          type: string
+          description: Malloy data type of the dimension (e.g. string, number, boolean, date, timestamp)
+
+    Source:
+      type: object
+      description: A Malloy source defined in a model
+      properties:
+        name:
+          type: string
+          description: Name of the source
+        annotations:
+          type: array
+          description: Annotations attached to the source
+          items:
+            type: string
+        views:
+          type: array
+          description: Views defined in this source
+          items:
+            $ref: "#/components/schemas/View"
+        filters:
+          type: array
+          description: Filters declared on this source via #(filter) annotations
+          items:
+            $ref: "#/components/schemas/Filter"
+
     QueryRequest:
       type: object
       description: Request body for executing a Malloy query
@@ -2154,6 +2231,19 @@ components:
         versionId:
           type: string
           description: Version ID
+        filterParams:
+          type: object
+          description: Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
+        bypassFilters:
+          type: boolean
+          default: false
+          description: When true, skip server-side #(filter) injection entirely.
 
     NotebookCell:
       type: object
