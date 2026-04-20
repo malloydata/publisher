@@ -1,11 +1,16 @@
 import {
    Connection,
+   ManifestEntry,
+   Materialization,
+   MaterializationStatus,
    Package,
    Project,
    ResourceRepository,
 } from "../DatabaseInterface";
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
+import { ManifestRepository } from "./ManifestRepository";
+import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
 import { ProjectRepository } from "./ProjectRepository";
 
@@ -13,11 +18,15 @@ export class DuckDBRepository implements ResourceRepository {
    private projectRepo: ProjectRepository;
    private packageRepo: PackageRepository;
    private connectionRepo: ConnectionRepository;
+   private materializationRepo: MaterializationRepository;
+   private manifestRepo: ManifestRepository;
 
    constructor(public db: DuckDBConnection) {
       this.projectRepo = new ProjectRepository(db);
       this.packageRepo = new PackageRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
+      this.materializationRepo = new MaterializationRepository(db);
+      this.manifestRepo = new ManifestRepository(db);
    }
 
    // ==================== PROJECTS ====================
@@ -48,11 +57,10 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async deleteProject(id: string): Promise<void> {
-      // Delete related connections and packages first
+      await this.manifestRepo.deleteEntriesByProjectId(id);
+      await this.materializationRepo.deleteByProjectId(id);
       await this.connectionRepo.deleteConnectionsByProjectId(id);
       await this.packageRepo.deletePackagesByProjectId(id);
-
-      // Then delete the environment row (table name remains `projects`)
       await this.projectRepo.deleteProject(id);
    }
 
@@ -87,7 +95,18 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async deletePackage(id: string): Promise<void> {
-      return this.packageRepo.deletePackage(id);
+      const pkg = await this.packageRepo.getPackageById(id);
+      if (pkg) {
+         await this.manifestRepo.deleteEntriesByPackage(
+            pkg.projectId,
+            pkg.name,
+         );
+         await this.materializationRepo.deleteByPackage(
+            pkg.projectId,
+            pkg.name,
+         );
+      }
+      await this.packageRepo.deletePackage(id);
    }
 
    async deletePackagesByProjectId(id: string): Promise<void> {
@@ -130,5 +149,76 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deleteConnectionsByProjectId(id: string): Promise<void> {
       return this.connectionRepo.deleteConnectionsByProjectId(id);
+   }
+
+   // ==================== MATERIALIZATIONS ====================
+
+   async listMaterializations(
+      projectId: string,
+      packageName: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
+      return this.materializationRepo.list(projectId, packageName, options);
+   }
+
+   async getMaterializationById(id: string): Promise<Materialization | null> {
+      return this.materializationRepo.getById(id);
+   }
+
+   async getActiveMaterialization(
+      projectId: string,
+      packageName: string,
+   ): Promise<Materialization | null> {
+      return this.materializationRepo.getActive(projectId, packageName);
+   }
+
+   async createMaterialization(
+      projectId: string,
+      packageName: string,
+      status: MaterializationStatus = "PENDING",
+      metadata: Record<string, unknown> | null = null,
+   ): Promise<Materialization> {
+      return this.materializationRepo.create(
+         projectId,
+         packageName,
+         status,
+         metadata,
+      );
+   }
+
+   async updateMaterialization(
+      id: string,
+      updates: {
+         status?: MaterializationStatus;
+         startedAt?: Date;
+         completedAt?: Date;
+         error?: string | null;
+         metadata?: Record<string, unknown> | null;
+      },
+   ): Promise<Materialization> {
+      return this.materializationRepo.update(id, updates);
+   }
+
+   async deleteMaterialization(id: string): Promise<void> {
+      return this.materializationRepo.deleteById(id);
+   }
+
+   // ==================== BUILD MANIFESTS ====================
+
+   async listManifestEntries(
+      projectId: string,
+      packageName: string,
+   ): Promise<ManifestEntry[]> {
+      return this.manifestRepo.listEntries(projectId, packageName);
+   }
+
+   async upsertManifestEntry(
+      entry: Omit<ManifestEntry, "id" | "createdAt" | "updatedAt">,
+   ): Promise<ManifestEntry> {
+      return this.manifestRepo.upsertEntry(entry);
+   }
+
+   async deleteManifestEntry(id: string): Promise<void> {
+      return this.manifestRepo.deleteEntry(id);
    }
 }

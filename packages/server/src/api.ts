@@ -623,6 +623,56 @@ export interface paths {
        */
       post: operations["stop-watching"];
    };
+   "/projects/{projectName}/packages/{packageName}/materializations": {
+      /**
+       * List materializations for a package
+       * @description Returns the materialization history for the package, ordered by most recent first.
+       */
+      get: operations["list-materializations"];
+      /**
+       * Create a materialization
+       * @description Creates a new materialization in PENDING state for all persist sources across all
+       * models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
+       */
+      post: operations["create-materialization"];
+   };
+   "/projects/{projectName}/packages/{packageName}/materializations/{materializationId}": {
+      /** Get a specific materialization */
+      get: operations["get-materialization"];
+      /**
+       * Perform an action on a materialization
+       * @description Performs an action on a materialization. The action is specified via
+       * the `action` query parameter:
+       *   * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
+       *   * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+       */
+      post: operations["materialization-action"];
+      /**
+       * Delete a materialization
+       * @description Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
+       */
+      delete: operations["delete-materialization"];
+   };
+   "/projects/{projectName}/packages/{packageName}/manifest": {
+      /**
+       * Get the build manifest for a package
+       * @description Returns the current build manifest containing buildId-to-tableName mappings
+       * for all materialized sources in the package.
+       */
+      get: operations["get-manifest"];
+      /**
+       * Perform an action on the package manifest
+       * @description Performs an action on the package manifest. The action is specified via
+       * the `action` query parameter:
+       *   * `reload` - Reads the build manifest from the shared store (DuckLake
+       *     in orchestrated mode, local DuckDB in standalone mode) and recompiles
+       *     every model in the package so subsequent queries resolve persisted
+       *     sources to their materialized tables. Intended for orchestrated
+       *     workers that did not themselves run the build; the endpoint does
+       *     not write anything *into* storage.
+       */
+      post: operations["manifest-action"];
+   };
 }
 
 export type webhooks = Record<string, never>;
@@ -665,6 +715,13 @@ export interface components {
          connections?: components["schemas"]["Connection"][];
          /** @description List of Malloy packages in this project */
          packages?: components["schemas"]["Package"][];
+         /** @description Optional DuckLake-backed storage for materialization manifests (orchestrated mode). When set, manifests are stored in a shared DuckLake catalog instead of the local DuckDB database. */
+         materializationStorage?: {
+            /** @description PostgreSQL connection URL for the DuckLake catalog metadata store */
+            catalogUrl?: string;
+            /** @description Cloud storage path (s3:// or gs://) for DuckLake data files */
+            dataPath?: string;
+         } | null;
       };
       /** @description Represents a Malloy environment containing packages, connections, and other resources */
       Environment: {
@@ -1238,6 +1295,53 @@ export interface components {
             range?: Record<string, never>;
          };
       };
+      /** @description Options for creating a materialization */
+      CreateMaterializationRequest: {
+         /**
+          * @description If true, forces rebuild of all sources even if their BuildID is unchanged
+          * @default false
+          */
+         forceRefresh?: boolean;
+         /**
+          * @description If true, automatically reloads the manifest into the Malloy Runtime after a successful materialization
+          * @default false
+          */
+         autoLoadManifest?: boolean;
+      };
+      /** @description A record of a package materialization */
+      Materialization: {
+         id?: string;
+         projectId?: string;
+         packageName?: string;
+         /** @enum {string} */
+         status?: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED";
+         /** Format: date-time */
+         startedAt?: string | null;
+         /** Format: date-time */
+         completedAt?: string | null;
+         /** @description Error message if the materialization failed */
+         error?: string | null;
+         /** @description Materialization metadata including build options, source counts, and durations */
+         metadata?: Record<string, never> | null;
+         /** Format: date-time */
+         createdAt?: string;
+         /** Format: date-time */
+         updatedAt?: string;
+      };
+      /** @description Manifest mapping BuildIDs to materialized table names */
+      BuildManifest: {
+         /** @description Map of BuildID to manifest entry */
+         entries?: {
+            [key: string]: components["schemas"]["ManifestEntry"];
+         };
+         /** @description Whether the manifest is in strict mode */
+         strict?: boolean;
+      };
+      /** @description A single entry in the build manifest */
+      ManifestEntry: {
+         /** @description Name of the materialized table */
+         tableName?: string;
+      };
    };
    responses: {
       /** @description The request was malformed or cannot be performed given the current state of the system */
@@ -1289,7 +1393,14 @@ export interface components {
          };
       };
    };
-   parameters: never;
+   parameters: {
+      /** @description Name of the project */
+      projectName: string;
+      /** @description Name of the package */
+      packageName: string;
+      /** @description ID of the materialization */
+      materializationId: string;
+   };
    requestBodies: never;
    headers: never;
    pathItems: never;
@@ -1977,6 +2088,14 @@ export interface operations {
     */
    "create-package": {
       parameters: {
+         query?: {
+            /**
+             * @description When true, automatically loads any existing build manifest
+             * for the package so materialized table references resolve immediately.
+             * Defaults to false.
+             */
+            autoLoadManifest?: boolean;
+         };
          path: {
             /** @description Name of the project */
             projectName: components["schemas"]["IdentifierPattern"];
@@ -3525,6 +3644,208 @@ export interface operations {
          401: components["responses"]["Unauthorized"];
          500: components["responses"]["InternalServerError"];
          503: components["responses"]["ServiceUnavailable"];
+      };
+   };
+   /**
+    * List materializations for a package
+    * @description Returns the materialization history for the package, ordered by most recent first.
+    */
+   "list-materializations": {
+      parameters: {
+         query?: {
+            /** @description Maximum number of materializations to return */
+            limit?: number;
+            /** @description Number of materializations to skip */
+            offset?: number;
+         };
+         path: {
+            projectName: components["parameters"]["projectName"];
+            packageName: components["parameters"]["packageName"];
+         };
+      };
+      responses: {
+         /** @description List of materializations */
+         200: {
+            content: {
+               "application/json": components["schemas"]["Materialization"][];
+            };
+         };
+         404: components["responses"]["NotFound"];
+      };
+   };
+   /**
+    * Create a materialization
+    * @description Creates a new materialization in PENDING state for all persist sources across all
+    * models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
+    */
+   "create-materialization": {
+      parameters: {
+         path: {
+            projectName: components["parameters"]["projectName"];
+            packageName: components["parameters"]["packageName"];
+         };
+      };
+      requestBody?: {
+         content: {
+            "application/json": components["schemas"]["CreateMaterializationRequest"];
+         };
+      };
+      responses: {
+         /** @description Materialization created */
+         201: {
+            content: {
+               "application/json": components["schemas"]["Materialization"];
+            };
+         };
+         404: components["responses"]["NotFound"];
+         /** @description Package already has an active materialization */
+         409: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+      };
+   };
+   /** Get a specific materialization */
+   "get-materialization": {
+      parameters: {
+         path: {
+            projectName: components["parameters"]["projectName"];
+            packageName: components["parameters"]["packageName"];
+            materializationId: components["parameters"]["materializationId"];
+         };
+      };
+      responses: {
+         /** @description Materialization details */
+         200: {
+            content: {
+               "application/json": components["schemas"]["Materialization"];
+            };
+         };
+         404: components["responses"]["NotFound"];
+      };
+   };
+   /**
+    * Perform an action on a materialization
+    * @description Performs an action on a materialization. The action is specified via
+    * the `action` query parameter:
+    *   * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
+    *   * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+    */
+   "materialization-action": {
+      parameters: {
+         query: {
+            /** @description Action to perform on the materialization */
+            action: "start" | "stop";
+         };
+         path: {
+            projectName: components["parameters"]["projectName"];
+            packageName: components["parameters"]["packageName"];
+            materializationId: components["parameters"]["materializationId"];
+         };
+      };
+      responses: {
+         /** @description Materialization cancelled (action=stop) */
+         200: {
+            content: {
+               "application/json": components["schemas"]["Materialization"];
+            };
+         };
+         /** @description Materialization started (action=start) */
+         202: {
+            content: {
+               "application/json": components["schemas"]["Materialization"];
+            };
+         };
+         400: components["responses"]["BadRequest"];
+         404: components["responses"]["NotFound"];
+         /** @description Materialization cannot transition to the requested state */
+         409: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+      };
+   };
+   /**
+    * Delete a materialization
+    * @description Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
+    */
+   "delete-materialization": {
+      parameters: {
+         path: {
+            projectName: components["parameters"]["projectName"];
+            packageName: components["parameters"]["packageName"];
+            materializationId: components["parameters"]["materializationId"];
+         };
+      };
+      responses: {
+         /** @description Materialization deleted */
+         204: {
+            content: never;
+         };
+         404: components["responses"]["NotFound"];
+         /** @description Materialization cannot be deleted (PENDING or RUNNING) */
+         409: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+      };
+   };
+   /**
+    * Get the build manifest for a package
+    * @description Returns the current build manifest containing buildId-to-tableName mappings
+    * for all materialized sources in the package.
+    */
+   "get-manifest": {
+      parameters: {
+         path: {
+            projectName: components["parameters"]["projectName"];
+            packageName: components["parameters"]["packageName"];
+         };
+      };
+      responses: {
+         /** @description Build manifest */
+         200: {
+            content: {
+               "application/json": components["schemas"]["BuildManifest"];
+            };
+         };
+         404: components["responses"]["NotFound"];
+      };
+   };
+   /**
+    * Perform an action on the package manifest
+    * @description Performs an action on the package manifest. The action is specified via
+    * the `action` query parameter:
+    *   * `reload` - Reads the build manifest from the shared store (DuckLake
+    *     in orchestrated mode, local DuckDB in standalone mode) and recompiles
+    *     every model in the package so subsequent queries resolve persisted
+    *     sources to their materialized tables. Intended for orchestrated
+    *     workers that did not themselves run the build; the endpoint does
+    *     not write anything *into* storage.
+    */
+   "manifest-action": {
+      parameters: {
+         query: {
+            /** @description Action to perform on the manifest */
+            action: "reload";
+         };
+         path: {
+            projectName: components["parameters"]["projectName"];
+            packageName: components["parameters"]["packageName"];
+         };
+      };
+      responses: {
+         /** @description Manifest loaded */
+         200: {
+            content: {
+               "application/json": components["schemas"]["BuildManifest"];
+            };
+         };
+         400: components["responses"]["BadRequest"];
+         404: components["responses"]["NotFound"];
       };
    };
 }
