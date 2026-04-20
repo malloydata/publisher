@@ -991,11 +991,11 @@ app.post(
 // ==================== MATERIALIZATION ROUTES ====================
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
       try {
          const build = await materializationController.createMaterialization(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.body || {},
          );
@@ -1008,7 +1008,7 @@ app.post(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
       try {
          const limit = req.query.limit
@@ -1018,7 +1018,7 @@ app.get(
             ? parseInt(req.query.offset as string, 10)
             : undefined;
          const builds = await materializationController.listMaterializations(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             { limit, offset },
          );
@@ -1031,11 +1031,11 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          const build = await materializationController.getMaterialization(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
          );
@@ -1048,11 +1048,11 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/teardown`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/teardown`,
    async (req, res) => {
       try {
          const result = await materializationController.teardownPackage(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.body || {},
          );
@@ -1065,20 +1065,20 @@ app.post(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          const action = req.query.action;
          if (action === "start") {
             const build = await materializationController.startMaterialization(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                req.params.materializationId,
             );
             res.status(202).json(build);
          } else if (action === "stop") {
             const build = await materializationController.stopMaterialization(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                req.params.materializationId,
             );
@@ -1096,11 +1096,11 @@ app.post(
 );
 
 app.delete(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          await materializationController.deleteMaterialization(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
          );
@@ -1115,11 +1115,11 @@ app.delete(
 // ==================== MANIFEST ROUTES ====================
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
    async (req, res) => {
       try {
          const manifest = await manifestController.getManifest(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
          );
          res.status(200).json(manifest);
@@ -1132,13 +1132,13 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
    async (req, res) => {
       try {
          const action = req.query.action;
          if (action === "reload") {
             const manifest = await manifestController.reloadManifest(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
             );
             res.status(200).json(manifest);

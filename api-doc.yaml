@@ -1687,7 +1687,7 @@ paths:
         Creates a new materialization in PENDING state for all persist sources across all
         models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
       parameters:
-        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
       requestBody:
         content:
@@ -1714,9 +1714,10 @@ paths:
         - materializations
       operationId: list-materializations
       summary: List materializations for a package
-      description: Returns the materialization history for the package, ordered by most recent first.
+      description: Returns the materialization history for the package, ordered by
+        most recent first.
       parameters:
-        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - name: limit
           in: query
@@ -1751,7 +1752,7 @@ paths:
       operationId: get-materialization
       summary: Get a specific materialization
       parameters:
-        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
       responses:
@@ -1774,7 +1775,7 @@ paths:
           * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
           * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
       parameters:
-        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
         - name: action
@@ -1814,9 +1815,10 @@ paths:
         - materializations
       operationId: delete-materialization
       summary: Delete a materialization
-      description: Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
+      description: Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization
+        record.
       parameters:
-        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
       responses:
@@ -1831,7 +1833,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /projects/{projectName}/packages/{packageName}/manifest:
+  //{projectName}/packages/{packageName}/manifest:
     get:
       tags:
         - manifests
@@ -1841,7 +1843,7 @@ paths:
         Returns the current build manifest containing buildId-to-tableName mappings
         for all materialized sources in the package.
       parameters:
-        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
       responses:
         "200":
@@ -1867,7 +1869,7 @@ paths:
             workers that did not themselves run the build; the endpoint does
             not write anything *into* storage.
       parameters:
-        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - name: action
           in: query
@@ -2016,7 +2018,9 @@ components:
         materializationStorage:
           type: object
           nullable: true
-          description: Optional DuckLake-backed storage for materialization manifests (orchestrated mode). When set, manifests are stored in a shared DuckLake catalog instead of the local DuckDB database.
+          description: Optional DuckLake-backed storage for materialization manifests
+            (orchestrated mode). When set, manifests are stored in a shared
+            DuckLake catalog instead of the local DuckDB database.
           properties:
             catalogUrl:
               type: string
@@ -2957,11 +2961,13 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description: If true, forces rebuild of all sources even if their BuildID is unchanged
+          description: If true, forces rebuild of all sources even if their BuildID is
+            unchanged
         autoLoadManifest:
           type: boolean
           default: false
-          description: If true, automatically reloads the manifest into the Malloy Runtime after a successful materialization
+          description: If true, automatically reloads the manifest into the Malloy Runtime
+            after a successful materialization
 
     Materialization:
       type: object
@@ -2975,19 +2981,20 @@ components:
           type: string
         status:
           type: string
-          enum: ["PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELLED"]
+          enum: [ "PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELLED" ]
         startedAt:
-          type: ["string", "null"]
+          type: [ "string", "null" ]
           format: date-time
         completedAt:
-          type: ["string", "null"]
+          type: [ "string", "null" ]
           format: date-time
         error:
-          type: ["string", "null"]
+          type: [ "string", "null" ]
           description: Error message if the materialization failed
         metadata:
-          type: ["object", "null"]
-          description: Materialization metadata including build options, source counts, and durations
+          type: [ "object", "null" ]
+          description: Materialization metadata including build options, source counts,
+            and durations
         createdAt:
           type: string
           format: date-time
@@ -3017,11 +3024,11 @@ components:
           description: Name of the materialized table
 
   parameters:
-    projectName:
-      name: projectName
+    environmentName:
+      name: environmentName
       in: path
       required: true
-      description: Name of the project
+      description: Name of the environment
       schema:
         type: string
     packageName:
