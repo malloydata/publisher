@@ -4,17 +4,17 @@ import React, {
    createContext,
    ReactNode,
    useContext,
-   useMemo,
    useEffect,
+   useMemo,
    useState,
 } from "react";
 import {
    ConnectionsApi,
    DatabasesApi,
+   EnvironmentsApi,
    ModelsApi,
    NotebooksApi,
    PackagesApi,
-   ProjectsApi,
    PublisherApi,
    WatchModeApi,
 } from "../client";
@@ -83,7 +83,7 @@ const getApiClients = (
    return {
       models: new ModelsApi(config, basePath, axiosInstance),
       publisher: new PublisherApi(config, basePath, axiosInstance),
-      projects: new ProjectsApi(config, basePath, axiosInstance),
+      projects: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
