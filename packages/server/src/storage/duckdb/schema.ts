@@ -64,7 +64,7 @@ export async function initializeSchema(
     )
   `);
 
-   // Materializations table.
+   // Materializations table
    //
    // `active_key` enforces at-most-one active (PENDING or RUNNING)
    // materialization per (project, package) at the DB layer. It is set to
