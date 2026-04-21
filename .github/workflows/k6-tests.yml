@@ -24,8 +24,18 @@ jobs:
         with:
           bun-version: 1.3.13
 
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - name: Build server
         run: |
+          echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
           bun install --frozen-lockfile
           bun run build
         env:
