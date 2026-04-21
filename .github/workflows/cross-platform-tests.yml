@@ -10,8 +10,8 @@ permissions: {}
 # There is no solution for this yet (but a couple of active issues), so we need to use this workaround for faster CI runs.
 
 env:
-  WINDOWS_USERPROFILE: 'D:\'
-  WINDOWS_BUN_CACHE_DIR: 'D:\.bun\install\cache'
+  WINDOWS_USERPROFILE: "D:\\"
+  WINDOWS_BUN_CACHE_DIR: "D:\\.bun\\install\\cache"
 
 jobs:
   cross_platform_test:
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -47,7 +47,7 @@ jobs:
         env:
           USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         with:
-          bun-version: 1.2.23
+          bun-version: 1.3.13
 
       - name: Cache Bun dependencies (Linux/macOS)
         if: runner.os != 'Windows'
