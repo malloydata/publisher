@@ -47,7 +47,7 @@ export class MaterializationRepository {
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]> {
       let sql =
-         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC";
+         "SELECT * FROM main.materializations WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC";
       const params: unknown[] = [environmentId, packageName];
       if (options?.limit !== undefined) {
          sql += " LIMIT ?";
@@ -63,7 +63,7 @@ export class MaterializationRepository {
 
    async getById(id: string): Promise<Materialization | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM materializations WHERE id = ?",
+         "SELECT * FROM main.materializations WHERE id = ?",
          [id],
       );
       return row ? this.mapRow(row) : null;
@@ -74,7 +74,7 @@ export class MaterializationRepository {
       packageName: string,
    ): Promise<Materialization | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')",
+         "SELECT * FROM main.materializations WHERE environment_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')",
          [environmentId, packageName],
       );
       return row ? this.mapRow(row) : null;
@@ -100,7 +100,7 @@ export class MaterializationRepository {
 
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, created_at, updated_at)
+            `INSERT INTO main.materializations (id, environment_id, package_name, status, active_key, metadata, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *`,
             [
@@ -179,7 +179,7 @@ export class MaterializationRepository {
       params.push(id);
 
       await this.db.run(
-         `UPDATE materializations SET ${setClauses.join(", ")} WHERE id = ?`,
+         `UPDATE main.materializations SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 
@@ -192,13 +192,13 @@ export class MaterializationRepository {
 
    async deleteByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run(
-         "DELETE FROM materializations WHERE environment_id = ?",
+         "DELETE FROM main.materializations WHERE environment_id = ?",
          [environmentId],
       );
    }
 
    async deleteById(id: string): Promise<void> {
-      await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
+      await this.db.run("DELETE FROM main.materializations WHERE id = ?", [id]);
    }
 
    async deleteByPackage(
@@ -206,7 +206,7 @@ export class MaterializationRepository {
       packageName: string,
    ): Promise<void> {
       await this.db.run(
-         "DELETE FROM materializations WHERE environment_id = ? AND package_name = ?",
+         "DELETE FROM main.materializations WHERE environment_id = ? AND package_name = ?",
          [environmentId, packageName],
       );
    }

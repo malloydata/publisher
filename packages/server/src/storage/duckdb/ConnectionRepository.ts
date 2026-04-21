@@ -15,7 +15,7 @@ export class ConnectionRepository {
    async listConnections(environmentId: string): Promise<Connection[]> {
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            "SELECT * FROM connections WHERE environment_id = ? ORDER BY name",
+            "SELECT * FROM main.connections WHERE environment_id = ? ORDER BY name",
             [environmentId],
          );
          return rows.map(this.mapToConnection);
@@ -28,7 +28,7 @@ export class ConnectionRepository {
 
    async getConnectionById(id: string): Promise<Connection | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM connections WHERE id = ?",
+         "SELECT * FROM main.connections WHERE id = ?",
          [id],
       );
       return row ? this.mapToConnection(row) : null;
@@ -39,7 +39,7 @@ export class ConnectionRepository {
       name: string,
    ): Promise<Connection | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM connections WHERE environment_id = ? AND name = ?",
+         "SELECT * FROM main.connections WHERE environment_id = ? AND name = ?",
          [environmentId, name],
       );
       return row ? this.mapToConnection(row) : null;
@@ -55,7 +55,7 @@ export class ConnectionRepository {
          const configJson = JSON.stringify(connection.config);
 
          await this.db.run(
-            `INSERT INTO connections (id, environment_id, name, type, config, created_at, updated_at)
+            `INSERT INTO main.connections (id, environment_id, name, type, config, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`,
             [
                id,
@@ -112,7 +112,7 @@ export class ConnectionRepository {
       params.push(id);
 
       await this.db.run(
-         `UPDATE connections SET ${setClauses.join(", ")} WHERE id = ?`,
+         `UPDATE main.connections SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 
@@ -120,11 +120,11 @@ export class ConnectionRepository {
    }
 
    async deleteConnection(id: string): Promise<void> {
-      await this.db.run("DELETE FROM connections WHERE id = ?", [id]);
+      await this.db.run("DELETE FROM main.connections WHERE id = ?", [id]);
    }
 
    async deleteConnectionsByEnvironmentId(id: string): Promise<void> {
-      await this.db.run("DELETE FROM connections WHERE environment_id = ?", [
+      await this.db.run("DELETE FROM main.connections WHERE environment_id = ?", [
          id,
       ]);
    }

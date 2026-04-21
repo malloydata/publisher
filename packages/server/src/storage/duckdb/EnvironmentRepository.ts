@@ -14,14 +14,14 @@ export class EnvironmentRepository {
 
    async listEnvironments(): Promise<Environment[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM environments ORDER BY name",
+         "SELECT * FROM main.environments ORDER BY name",
       );
       return rows.map(this.mapToEnvironment);
    }
 
    async getEnvironmentById(id: string): Promise<Environment | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM environments WHERE id = ?",
+         "SELECT * FROM main.environments WHERE id = ?",
          [id],
       );
       return row ? this.mapToEnvironment(row) : null;
@@ -29,7 +29,7 @@ export class EnvironmentRepository {
 
    async getEnvironmentByName(name: string): Promise<Environment | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM environments WHERE name = ?",
+         "SELECT * FROM main.environments WHERE name = ?",
          [name],
       );
       return row ? this.mapToEnvironment(row) : null;
@@ -53,7 +53,7 @@ export class EnvironmentRepository {
 
       try {
          await this.db.run(
-            `INSERT INTO environments (id, name, path, description, metadata, created_at, updated_at)
+            `INSERT INTO main.environments (id, name, path, description, metadata, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`,
             params,
          );
@@ -72,7 +72,7 @@ export class EnvironmentRepository {
             error.message?.includes("Constraint")
          ) {
             const existing = await this.db.get<Record<string, unknown>>(
-               "SELECT * FROM environments WHERE name = ?",
+               "SELECT * FROM main.environments WHERE name = ?",
                [environment.name],
             );
             if (existing) {
@@ -121,7 +121,7 @@ export class EnvironmentRepository {
       params.push(id);
 
       await this.db.run(
-         `UPDATE environments SET ${setClauses.join(", ")} WHERE id = ?`,
+         `UPDATE main.environments SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 
@@ -129,7 +129,7 @@ export class EnvironmentRepository {
    }
 
    async deleteEnvironment(id: string): Promise<void> {
-      await this.db.run("DELETE FROM environments WHERE id = ?", [id]);
+      await this.db.run("DELETE FROM main.environments WHERE id = ?", [id]);
    }
 
    private mapToEnvironment(row: Record<string, unknown>): Environment {
