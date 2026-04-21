@@ -2,10 +2,10 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
 
-# self contained tests
+    # self contained tests
 jobs:
   lint:
     name: Typecheck
@@ -100,13 +100,13 @@ jobs:
           sleep 12
       - name: Test API endpoint
         run: |
-          response=$(curl -s http://localhost:4002/api/v0/projects)
+          response=$(curl -s http://localhost:4002/api/v0/environments)
           echo "API Response: $response"
           # Check if response is a JSON array with 1 entry
           if echo "$response" | jq -e '. | length == 1' > /dev/null; then
-            echo "✓ API test passed: Found 1 project"
+            echo "✓ API test passed: Found 1 environment"
           else
-            echo "✗ API test failed: Expected 1 project, got different response"
+            echo "✗ API test failed: Expected 1 environment, got different response"
             exit 1
           fi
 
