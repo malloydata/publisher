@@ -22,9 +22,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
+          # Scope cache to the installed bun version so native-addon
+          # artifacts (duckdb) compiled against a different bun Node-API
+          # are never restored into this job.
+          key: ${{ runner.os }}-bun-1.3.13-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-1.3.13-
       - name: Typecheck
         run: |
           if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
@@ -49,9 +52,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
+          # Scope cache to the installed bun version so native-addon
+          # artifacts (duckdb) compiled against a different bun Node-API
+          # are never restored into this job.
+          key: ${{ runner.os }}-bun-1.3.13-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-1.3.13-
       - name: Install dependencies
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
@@ -81,9 +87,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
+          # Scope cache to the installed bun version so native-addon
+          # artifacts (duckdb) compiled against a different bun Node-API
+          # are never restored into this job.
+          key: ${{ runner.os }}-bun-1.3.13-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-1.3.13-
       - name: build server
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"

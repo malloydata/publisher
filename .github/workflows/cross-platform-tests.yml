@@ -54,8 +54,14 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
-          restore-keys: ${{ runner.os }}-bun-
+          # Key includes bun-version so a cache populated by an older Bun
+          # (main is on 1.2.23) is never restored into this job's 1.3.13
+          # runtime. Native addons (duckdb) cached under this path were
+          # compiled against a specific Bun Node-API and must not cross
+          # versions. restore-keys also scoped to this bun-version for the
+          # same reason.
+          key: ${{ runner.os }}-bun-1.3.13-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock', 'scripts/bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-1.3.13-
 
       - name: Install dependencies
         env:
