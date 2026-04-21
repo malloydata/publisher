@@ -5,6 +5,14 @@ export interface RestE2EEnv {
    baseUrl: string;
 }
 
+// Synchronous stderr logger — bun's stdout buffering can swallow
+// `console.log` output written from a failed `beforeAll`, making CI
+// failures impossible to diagnose without a local repro. stderr flushes
+// line-by-line and survives across suite boundaries.
+function diag(msg: string): void {
+   process.stderr.write(`[REST E2E] ${msg}\n`);
+}
+
 /**
  * Spin up an HTTP server wrapping the real Express REST app.
  *
@@ -18,9 +26,9 @@ export interface RestE2EEnv {
 export async function startRestE2E(): Promise<
    RestE2EEnv & { stop(): Promise<void> }
 > {
-   console.log("[REST E2E] importing server module...");
+   diag("importing server module...");
    const { app } = await import("../../src/server");
-   console.log("[REST E2E] server module imported");
+   diag("server module imported");
 
    const httpServer: http.Server = await new Promise<http.Server>(
       (resolve, reject) => {
@@ -28,7 +36,9 @@ export async function startRestE2E(): Promise<
             .createServer(app)
             .listen(0, "127.0.0.1", () => resolve(srv));
          srv.on("error", (err: NodeJS.ErrnoException) => {
-            console.error("[REST E2E] server listen error", err);
+            diag(
+               `server listen error: ${err.code ?? ""} ${err.message ?? err}`,
+            );
             reject(err);
          });
       },
@@ -36,7 +46,7 @@ export async function startRestE2E(): Promise<
 
    const addr = httpServer.address() as { port: number };
    const baseUrl = `http://127.0.0.1:${addr.port}`;
-   console.log(`[REST E2E] listening on ${baseUrl}, polling readiness...`);
+   diag(`listening on ${baseUrl}, polling readiness...`);
 
    // Keep the readiness wait below bun's default 100s test timeout so a
    // stuck startup fails with a useful error rather than the whole
@@ -72,10 +82,10 @@ export async function startRestE2E(): Promise<
          ? `last status: ${lastStatus}`
          : `last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
       const msg = `REST E2E server did not become ready within ${maxWait / 1000}s (${detail})`;
-      console.error(`[REST E2E] ${msg}`);
+      diag(msg);
       throw new Error(msg);
    }
-   console.log(`[REST E2E] ready (took ${Date.now() - start}ms)`);
+   diag(`ready (took ${Date.now() - start}ms)`);
 
    const stop = async (): Promise<void> => {
       httpServer.closeAllConnections?.();

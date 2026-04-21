@@ -12,6 +12,14 @@ const PROJECT_NAME = "test-project";
 const PACKAGE_NAME = "persist-test";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
+// Synchronous stderr logger — bun's stdout buffering has been swallowing
+// `console.log` output in this suite under Ubuntu CI (see PR discussion).
+// stderr writes are line-buffered by the runtime and flush before each
+// suite boundary, so diagnostic lines survive a failed `beforeAll`.
+function diag(msg: string): void {
+   process.stderr.write(`[mat-e2e] ${msg}\n`);
+}
+
 describe("Materialization & Manifest REST API (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
@@ -20,15 +28,17 @@ describe("Materialization & Manifest REST API (E2E)", () => {
    // (Ubuntu needs ~60s for malloy-samples initialization when this spec
    // runs before the MCP harness has warmed the shared EnvironmentStore).
    beforeAll(async () => {
-      console.log("[mat-e2e] beforeAll: starting REST E2E server...");
+      diag("beforeAll: starting REST E2E server...");
       try {
          env = await startRestE2E();
       } catch (err) {
-         console.error("[mat-e2e] startRestE2E failed:", err);
+         diag(
+            `startRestE2E failed: ${err instanceof Error ? err.message : String(err)}`,
+         );
          throw err;
       }
       baseUrl = env.baseUrl;
-      console.log(`[mat-e2e] REST E2E ready at ${baseUrl}`);
+      diag(`REST E2E ready at ${baseUrl}`);
 
       // Pre-clean: if a prior suite (e.g. MCP harness) left `test-project`
       // around in the shared in-process EnvironmentStore, delete it so we
@@ -38,19 +48,17 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             `${baseUrl}/api/v0/environments/${PROJECT_NAME}`,
             { method: "DELETE" },
          );
-         console.log(
-            `[mat-e2e] pre-clean DELETE ${PROJECT_NAME} -> ${delRes.status}`,
-         );
+         diag(`pre-clean DELETE ${PROJECT_NAME} -> ${delRes.status}`);
       } catch (err) {
-         console.warn("[mat-e2e] pre-clean DELETE failed (ignored):", err);
+         diag(
+            `pre-clean DELETE failed (ignored): ${err instanceof Error ? err.message : String(err)}`,
+         );
       }
 
       // Create the test environment via the REST API using an absolute
       // path to the fixture so it works regardless of SERVER_ROOT.
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
-      console.log(
-         `[mat-e2e] POST /environments {name:${PROJECT_NAME}, location:${fixtureDir}}`,
-      );
+      diag(`POST /environments {name:${PROJECT_NAME}, location:${fixtureDir}}`);
       let createRes: Response;
       try {
          createRes = await fetch(`${baseUrl}/api/v0/environments`, {
@@ -63,12 +71,15 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             }),
          });
       } catch (err) {
-         console.error("[mat-e2e] POST /environments threw:", err);
+         diag(
+            `POST /environments threw: ${err instanceof Error ? err.message : String(err)}`,
+         );
          throw err;
       }
-      console.log(`[mat-e2e] POST /environments -> ${createRes.status}`);
+      diag(`POST /environments -> ${createRes.status}`);
       if (!createRes.ok) {
          const body = await createRes.text();
+         diag(`POST /environments body: ${body}`);
          // Include the fixture path + baseUrl in the error to make CI
          // failures diagnosable without needing a local repro.
          throw new Error(
@@ -78,7 +89,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       }
 
       // Wait for the package to finish loading.
-      console.log(`[mat-e2e] waiting for package ${PACKAGE_NAME} to load...`);
+      diag(`waiting for package ${PACKAGE_NAME} to load...`);
       const deadline = Date.now() + 30_000;
       let pkgReady = false;
       let lastPkgStatus: number | undefined;
@@ -98,12 +109,15 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          await new Promise((r) => setTimeout(r, 500));
       }
       if (!pkgReady) {
+         diag(
+            `package ${PACKAGE_NAME} not ready (last status: ${lastPkgStatus ?? "no response"})`,
+         );
          throw new Error(
             `Test package ${PACKAGE_NAME} did not become available within 30s ` +
                `(last status: ${lastPkgStatus ?? "no response"})`,
          );
       }
-      console.log(`[mat-e2e] package ${PACKAGE_NAME} ready`);
+      diag(`package ${PACKAGE_NAME} ready`);
    });
 
    afterAll(async () => {
