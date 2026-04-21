@@ -20,32 +20,53 @@ describe("Materialization & Manifest REST API (E2E)", () => {
    // (Ubuntu needs ~60s for malloy-samples initialization when this spec
    // runs before the MCP harness has warmed the shared EnvironmentStore).
    beforeAll(async () => {
-      env = await startRestE2E();
+      console.log("[mat-e2e] beforeAll: starting REST E2E server...");
+      try {
+         env = await startRestE2E();
+      } catch (err) {
+         console.error("[mat-e2e] startRestE2E failed:", err);
+         throw err;
+      }
       baseUrl = env.baseUrl;
+      console.log(`[mat-e2e] REST E2E ready at ${baseUrl}`);
 
       // Pre-clean: if a prior suite (e.g. MCP harness) left `test-project`
       // around in the shared in-process EnvironmentStore, delete it so we
       // start from a known-empty state. Ignore errors — a 404 is fine.
       try {
-         await fetch(`${baseUrl}/api/v0/environments/${PROJECT_NAME}`, {
-            method: "DELETE",
-         });
-      } catch {
-         // best-effort pre-clean
+         const delRes = await fetch(
+            `${baseUrl}/api/v0/environments/${PROJECT_NAME}`,
+            { method: "DELETE" },
+         );
+         console.log(
+            `[mat-e2e] pre-clean DELETE ${PROJECT_NAME} -> ${delRes.status}`,
+         );
+      } catch (err) {
+         console.warn("[mat-e2e] pre-clean DELETE failed (ignored):", err);
       }
 
       // Create the test environment via the REST API using an absolute
       // path to the fixture so it works regardless of SERVER_ROOT.
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
-      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: PROJECT_NAME,
-            packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
-            connections: [],
-         }),
-      });
+      console.log(
+         `[mat-e2e] POST /environments {name:${PROJECT_NAME}, location:${fixtureDir}}`,
+      );
+      let createRes: Response;
+      try {
+         createRes = await fetch(`${baseUrl}/api/v0/environments`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+               name: PROJECT_NAME,
+               packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
+               connections: [],
+            }),
+         });
+      } catch (err) {
+         console.error("[mat-e2e] POST /environments threw:", err);
+         throw err;
+      }
+      console.log(`[mat-e2e] POST /environments -> ${createRes.status}`);
       if (!createRes.ok) {
          const body = await createRes.text();
          // Include the fixture path + baseUrl in the error to make CI
@@ -57,13 +78,16 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       }
 
       // Wait for the package to finish loading.
+      console.log(`[mat-e2e] waiting for package ${PACKAGE_NAME} to load...`);
       const deadline = Date.now() + 30_000;
       let pkgReady = false;
+      let lastPkgStatus: number | undefined;
       while (!pkgReady && Date.now() < deadline) {
          try {
             const res = await fetch(
                `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`,
             );
+            lastPkgStatus = res.status;
             if (res.ok) {
                pkgReady = true;
                break;
@@ -74,8 +98,12 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          await new Promise((r) => setTimeout(r, 500));
       }
       if (!pkgReady) {
-         throw new Error("Test package did not become available in time");
+         throw new Error(
+            `Test package ${PACKAGE_NAME} did not become available within 30s ` +
+               `(last status: ${lastPkgStatus ?? "no response"})`,
+         );
       }
+      console.log(`[mat-e2e] package ${PACKAGE_NAME} ready`);
    });
 
    afterAll(async () => {

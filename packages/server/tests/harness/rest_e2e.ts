@@ -18,7 +18,9 @@ export interface RestE2EEnv {
 export async function startRestE2E(): Promise<
    RestE2EEnv & { stop(): Promise<void> }
 > {
+   console.log("[REST E2E] importing server module...");
    const { app } = await import("../../src/server");
+   console.log("[REST E2E] server module imported");
 
    const httpServer: http.Server = await new Promise<http.Server>(
       (resolve, reject) => {
@@ -34,6 +36,7 @@ export async function startRestE2E(): Promise<
 
    const addr = httpServer.address() as { port: number };
    const baseUrl = `http://127.0.0.1:${addr.port}`;
+   console.log(`[REST E2E] listening on ${baseUrl}, polling readiness...`);
 
    // Keep the readiness wait below bun's default 100s test timeout so a
    // stuck startup fails with a useful error rather than the whole
@@ -68,10 +71,11 @@ export async function startRestE2E(): Promise<
       const detail = lastStatus
          ? `last status: ${lastStatus}`
          : `last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
-      throw new Error(
-         `REST E2E server did not become ready within ${maxWait / 1000}s (${detail})`,
-      );
+      const msg = `REST E2E server did not become ready within ${maxWait / 1000}s (${detail})`;
+      console.error(`[REST E2E] ${msg}`);
+      throw new Error(msg);
    }
+   console.log(`[REST E2E] ready (took ${Date.now() - start}ms)`);
 
    const stop = async (): Promise<void> => {
       httpServer.closeAllConnections?.();
