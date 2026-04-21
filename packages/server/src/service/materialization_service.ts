@@ -211,14 +211,16 @@ export class MaterializationService {
       packageName: string,
       options: { forceRefresh?: boolean; autoLoadManifest?: boolean } = {},
    ): Promise<Materialization> {
-      const environmentId = await this.resolveEnvironmentId(environmentName);
-
-      // Verify the package exists.
+      // Resolve the in-memory environment first so package errors surface
+      // before repository lookups; `resolveEnvironmentId` can back-fill the
+      // DuckDB row when it is missing but the environment is loaded.
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
       await environment.getPackage(packageName, false);
+
+      const environmentId = await this.resolveEnvironmentId(environmentName);
 
       // A non-atomic probe for a helpful error message. The DB-level unique
       // index on active_key is the actual race-free guard — see the catch
@@ -933,6 +935,10 @@ export class MaterializationService {
    // ==================== HELPERS ====================
 
    private resolveEnvironmentId(environmentName: string): Promise<string> {
-      return resolveEnvironmentId(this.repository, environmentName);
+      return resolveEnvironmentId(
+         this.repository,
+         environmentName,
+         this.environmentStore,
+      );
    }
 }

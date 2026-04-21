@@ -341,6 +341,7 @@ export class EnvironmentStore {
       let dbEnvironment: { id: string; name: string };
       if (existingProject) {
          const updateData = {
+            path: environmentPath,
             description: environmentDescription,
             metadata: environment.metadata || {},
          };
@@ -889,7 +890,26 @@ export class EnvironmentStore {
       }
       const environment = this.environments.get(environmentName);
       if (!environment) {
-         return;
+         // Orphaned DB row: init can skip loading an environment when its path
+         // is missing from disk, leaving no in-memory entry. REST pre-clean
+         // must still remove the row so CREATE + repository-backed routes agree.
+         const repository = this.storageManager.getRepository();
+         const dbOnly = await repository.getEnvironmentByName(environmentName);
+         if (dbOnly?.path) {
+            try {
+               await fs.promises.rm(dbOnly.path, {
+                  recursive: true,
+                  force: true,
+               });
+               logger.info(`Deleted environment directory: ${dbOnly.path}`);
+            } catch (err) {
+               logger.error("Error removing environment directory", {
+                  error: err,
+               });
+            }
+         }
+         await this.deleteEnvironmentFromDatabase(environmentName);
+         return undefined;
       }
 
       const environmentPath = environment.metadata?.location;
