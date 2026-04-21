@@ -99,7 +99,10 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
    ): Promise<Connection> {
-      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const connection = environment.getApiConnection(connectionName);
 
       // For DuckDB connections, get the connection from a package
@@ -187,8 +190,13 @@ export class ConnectionController {
       return environment.getApiConnection(connectionName);
    }
 
-   public async listConnections(environmentName: string): Promise<ApiConnection[]> {
-      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+   public async listConnections(
+      environmentName: string,
+   ): Promise<ApiConnection[]> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       return environment.listApiConnections();
    }
 
@@ -197,7 +205,10 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
    ): Promise<ApiSchema[]> {
-      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const connection = environment.getApiConnection(connectionName);
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -214,7 +225,10 @@ export class ConnectionController {
       schemaName: string,
       tableNames?: string[],
    ): Promise<ApiTable[]> {
-      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const connection = environment.getApiConnection(connectionName);
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -274,7 +288,10 @@ export class ConnectionController {
          connectionName,
       );
       // Use getApiConnection to get the unwrapped ApiConnection config, consistent with listSchemas and listTables.
-      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const connection = environment.getApiConnection(connectionName);
 
       // TODO: Move this database connection logic to the db_utils.ts file -- and

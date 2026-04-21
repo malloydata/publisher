@@ -255,7 +255,9 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.environments[0].connections?.[0].name).toBe("db-localhost");
+         expect(result.environments[0].connections?.[0].name).toBe(
+            "db-localhost",
+         );
       });
 
       it("should substitute variables in nested configuration objects", () => {
@@ -419,7 +421,9 @@ describe("Config Environment Variable Substitution", () => {
          // Key should not be substituted
          expect(result.environments[0]).toHaveProperty("${DYNAMIC_KEY}");
          expect(
-            (result.environments[0] as Record<string, unknown>)["${DYNAMIC_KEY}"],
+            (result.environments[0] as Record<string, unknown>)[
+               "${DYNAMIC_KEY}"
+            ],
          ).toBe("value1");
 
          // Value should be substituted
@@ -710,7 +714,9 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.environments[0].packages[0].location).toBe("./packages/dev");
+         expect(result.environments[0].packages[0].location).toBe(
+            "./packages/dev",
+         );
          expect(result.environments[1].packages[0].location).toBe(
             "gs://production-data/models",
          );
@@ -842,7 +848,9 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.environments[0].connections?.[0].name).toBe("production-db");
+         expect(result.environments[0].connections?.[0].name).toBe(
+            "production-db",
+         );
 
          delete process.env.DB_CONNECTION;
       });

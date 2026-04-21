@@ -84,7 +84,9 @@ describe("service/connection_service", () => {
       });
 
       it("should throw error when project not found", async () => {
-         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(null);
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(
+            null,
+         );
 
          await expect(
             connectionService.getConnection("non-existent", "test-connection"),
@@ -143,7 +145,9 @@ describe("service/connection_service", () => {
             mockDbProject,
          );
          (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
-         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
 
          await connectionService.addConnection(
             "test-project",
@@ -169,7 +173,9 @@ describe("service/connection_service", () => {
       });
 
       it("should throw error when project not found", async () => {
-         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(null);
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(
+            null,
+         );
 
          await expect(
             connectionService.addConnection("non-existent", "new-connection", {
@@ -253,7 +259,9 @@ describe("service/connection_service", () => {
             mockDbProject,
          );
          (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
-         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
 
          await connectionService.addConnection(
             "test-project",
@@ -317,7 +325,9 @@ describe("service/connection_service", () => {
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
 
          const updates: Partial<ApiConnection> = {
             type: "postgres",
@@ -421,7 +431,9 @@ describe("service/connection_service", () => {
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
 
          await connectionService.updateConnection("test-project", "conn-1", {
             type: "postgres",
@@ -478,7 +490,9 @@ describe("service/connection_service", () => {
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
 
          const partialUpdate: Partial<ApiConnection> = {
             type: "postgres",
@@ -548,7 +562,9 @@ describe("service/connection_service", () => {
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
 
          await connectionService.updateConnection("test-project", "test-conn", {
             type: "postgres",
@@ -594,7 +610,9 @@ describe("service/connection_service", () => {
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
 
          await connectionService.deleteConnection(
             "test-project",

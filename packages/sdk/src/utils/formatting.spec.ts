@@ -3,7 +3,8 @@ import { encodeResourceUri, parseResourceUri } from "./formatting";
 
 describe("parseResourceUri", () => {
    it("should parse a package URI", () => {
-      const resourceUri = "publisher://environments/malloy-samples/packages/names";
+      const resourceUri =
+         "publisher://environments/malloy-samples/packages/names";
       const parsedResource = parseResourceUri(resourceUri);
       expect(parsedResource).toEqual({
          environmentName: "malloy-samples",

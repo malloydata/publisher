@@ -653,19 +653,21 @@ describe("DuckLake Connection Tests", () => {
          };
 
          // Create connection twice - second should handle already attached gracefully
-         const { malloyConnections: conn1 } = await createEnvironmentConnections(
-            [ducklakeConnection],
-            testProjectPath,
-         );
+         const { malloyConnections: conn1 } =
+            await createEnvironmentConnections(
+               [ducklakeConnection],
+               testProjectPath,
+            );
          const connection1 = conn1.get(
             "ducklake_duplicate_test",
          ) as DuckDBConnection;
          createdConnections.push(connection1);
 
-         const { malloyConnections: conn2 } = await createEnvironmentConnections(
-            [ducklakeConnection],
-            testProjectPath,
-         );
+         const { malloyConnections: conn2 } =
+            await createEnvironmentConnections(
+               [ducklakeConnection],
+               testProjectPath,
+            );
          const connection2 = conn2.get(
             "ducklake_duplicate_test",
          ) as DuckDBConnection;

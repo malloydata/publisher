@@ -26,7 +26,9 @@ export class ManifestService {
    constructor(private environmentStore: EnvironmentStore) {}
 
    private manifestStoreFor(environmentId: string): ManifestStore {
-      return this.environmentStore.storageManager.getManifestStore(environmentId);
+      return this.environmentStore.storageManager.getManifestStore(
+         environmentId,
+      );
    }
 
    async getManifest(

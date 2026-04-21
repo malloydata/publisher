@@ -174,20 +174,24 @@ export class EnvironmentStore {
                            );
 
                         if (environmentConfig) {
-                           const environmentInstance = await this.addEnvironment(
-                              {
-                                 name: environmentConfig.name,
-                                 resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
-                                 connections: environmentConfig.connections,
-                                 packages: environmentConfig.packages,
-                              },
-                              true,
-                           );
+                           const environmentInstance =
+                              await this.addEnvironment(
+                                 {
+                                    name: environmentConfig.name,
+                                    resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
+                                    connections: environmentConfig.connections,
+                                    packages: environmentConfig.packages,
+                                 },
+                                 true,
+                              );
 
                            // Update database with new path
-                           await repository.updateEnvironment(dbEnvironment.id, {
-                              path: environmentInstance.metadata.location,
-                           });
+                           await repository.updateEnvironment(
+                              dbEnvironment.id,
+                              {
+                                 path: environmentInstance.metadata.location,
+                              },
+                           );
 
                            return environmentInstance.listPackages();
                         } else {
@@ -214,7 +218,10 @@ export class EnvironmentStore {
                         })),
                      );
 
-                     this.environments.set(dbEnvironment.name, environmentInstance);
+                     this.environments.set(
+                        dbEnvironment.name,
+                        environmentInstance,
+                     );
 
                      // Get packages from database
                      const packages = await repository.listPackages(
@@ -298,7 +305,8 @@ export class EnvironmentStore {
       const repository = this.storageManager.getRepository();
 
       // Get the environment from database
-      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
+      const dbEnvironment =
+         await repository.getEnvironmentByName(environmentName);
 
       if (!dbEnvironment) {
          logger.error(`Environment "${environmentName}" not found in database`);
@@ -327,7 +335,8 @@ export class EnvironmentStore {
          description: environmentDescription,
          metadata: environment.metadata || {},
       };
-      const existingProject = await repository.getEnvironmentByName(environmentName);
+      const existingProject =
+         await repository.getEnvironmentByName(environmentName);
 
       let dbEnvironment: { id: string; name: string };
       if (existingProject) {
@@ -351,10 +360,13 @@ export class EnvironmentStore {
          materializationStorage?.catalogUrl &&
          materializationStorage?.dataPath
       ) {
-         await this.storageManager.initializeDuckLakeForEnvironment(dbEnvironment.id, {
-            catalogUrl: materializationStorage.catalogUrl,
-            dataPath: materializationStorage.dataPath,
-         });
+         await this.storageManager.initializeDuckLakeForEnvironment(
+            dbEnvironment.id,
+            {
+               catalogUrl: materializationStorage.catalogUrl,
+               dataPath: materializationStorage.dataPath,
+            },
+         );
       }
 
       return dbEnvironment;
@@ -546,7 +558,8 @@ export class EnvironmentStore {
       const repository = this.storageManager.getRepository();
 
       // Get the environment ID from database
-      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
+      const dbEnvironment =
+         await repository.getEnvironmentByName(environmentName);
 
       if (!dbEnvironment) {
          logger.error(`Environment "${environmentName}" not found in database`);
@@ -579,7 +592,8 @@ export class EnvironmentStore {
       const repository = this.storageManager.getRepository();
 
       // Get the environment ID from database
-      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
+      const dbEnvironment =
+         await repository.getEnvironmentByName(environmentName);
 
       if (!dbEnvironment) {
          logger.error(`Environment "${environmentName}" not found in database`);
@@ -769,7 +783,8 @@ export class EnvironmentStore {
       // Check if environment already exists and update it instead of creating a new one
       const existingEnvironment = this.environments.get(environmentName);
       if (existingEnvironment) {
-         const updatedEnvironment = await existingEnvironment.update(environment);
+         const updatedEnvironment =
+            await existingEnvironment.update(environment);
          this.environments.set(environmentName, updatedEnvironment);
          await this.addEnvironmentToDatabase(updatedEnvironment);
          return updatedEnvironment;
@@ -781,8 +796,7 @@ export class EnvironmentStore {
       );
       const hasPackages =
          (environment?.packages && environment.packages.length > 0) ||
-         (environmentConfig?.packages &&
-            environmentConfig.packages.length > 0);
+         (environmentConfig?.packages && environmentConfig.packages.length > 0);
       let absoluteEnvironmentPath: string;
       if (hasPackages) {
          const packagesToProcess =

@@ -214,7 +214,10 @@ export class MaterializationService {
       const environmentId = await this.resolveEnvironmentId(environmentName);
 
       // Verify the package exists.
-      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       await environment.getPackage(packageName, false);
 
       // A non-atomic probe for a helpful error message. The DB-level unique
@@ -492,7 +495,10 @@ export class MaterializationService {
          );
       }
 
-      const project = await this.environmentStore.getEnvironment(environmentName, false);
+      const project = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const pkg = await project.getPackage(packageName, false);
       const connections = pkg.getConnections();
 
@@ -538,7 +544,10 @@ export class MaterializationService {
          packageName,
       });
 
-      const project = await this.environmentStore.getEnvironment(environmentName, false);
+      const project = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const pkg = await project.getPackage(packageName, false);
 
       // ── STEP 1: LOAD ───────────────────────────────────────────────

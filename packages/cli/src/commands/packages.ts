@@ -40,7 +40,12 @@ export async function createPackage(
   location: string,
   description?: string,
 ): Promise<void> {
-  await client.createPackage(environmentName, packageName, location, description);
+  await client.createPackage(
+    environmentName,
+    packageName,
+    location,
+    description,
+  );
   logSuccess(`Created package: ${packageName}`);
 }
 

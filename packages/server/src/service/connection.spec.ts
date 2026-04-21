@@ -3,7 +3,10 @@ import fs from "fs/promises";
 import path from "path";
 import sinon from "sinon";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { createEnvironmentConnections, testConnectionConfig } from "./connection";
+import {
+   createEnvironmentConnections,
+   testConnectionConfig,
+} from "./connection";
 import { components } from "../api";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -986,41 +989,45 @@ describe("connection integration tests", () => {
                      return;
                   }
 
-                  const { malloyConnections } = await createEnvironmentConnections(
-                     [
-                        {
-                           name: "ducklake_test",
-                           type: "ducklake",
-                           ducklakeConnection: {
-                              catalog: {
-                                 postgresConnection: {
-                                    host: process.env.POSTGRES_TEST_HOST,
-                                    port: parseInt(
-                                       process.env.POSTGRES_TEST_PORT || "5432",
-                                    ),
-                                    userName: process.env.POSTGRES_TEST_USER!,
-                                    password:
-                                       process.env.POSTGRES_TEST_PASSWORD!,
-                                    databaseName:
-                                       process.env.POSTGRES_TEST_DATABASE,
+                  const { malloyConnections } =
+                     await createEnvironmentConnections(
+                        [
+                           {
+                              name: "ducklake_test",
+                              type: "ducklake",
+                              ducklakeConnection: {
+                                 catalog: {
+                                    postgresConnection: {
+                                       host: process.env.POSTGRES_TEST_HOST,
+                                       port: parseInt(
+                                          process.env.POSTGRES_TEST_PORT ||
+                                             "5432",
+                                       ),
+                                       userName:
+                                          process.env.POSTGRES_TEST_USER!,
+                                       password:
+                                          process.env.POSTGRES_TEST_PASSWORD!,
+                                       databaseName:
+                                          process.env.POSTGRES_TEST_DATABASE,
+                                    },
                                  },
-                              },
-                              storage: {
-                                 bucketUrl:
-                                    process.env.S3_TEST_BUCKET_URL ||
-                                    "s3://test-bucket",
-                                 s3Connection: {
-                                    accessKeyId:
-                                       process.env.S3_TEST_ACCESS_KEY_ID!,
-                                    secretAccessKey:
-                                       process.env.S3_TEST_SECRET_ACCESS_KEY!,
+                                 storage: {
+                                    bucketUrl:
+                                       process.env.S3_TEST_BUCKET_URL ||
+                                       "s3://test-bucket",
+                                    s3Connection: {
+                                       accessKeyId:
+                                          process.env.S3_TEST_ACCESS_KEY_ID!,
+                                       secretAccessKey:
+                                          process.env
+                                             .S3_TEST_SECRET_ACCESS_KEY!,
+                                    },
                                  },
                               },
                            },
-                        },
-                     ],
-                     testProjectPath,
-                  );
+                        ],
+                        testProjectPath,
+                     );
 
                   const connection = malloyConnections.get(
                      "ducklake_test",

@@ -17,7 +17,8 @@ export class ConnectionService {
       await this.environmentStore.finishedInitialization;
 
       const repository = this.environmentStore.storageManager.getRepository();
-      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
+      const dbEnvironment =
+         await repository.getEnvironmentByName(environmentName);
 
       if (!dbEnvironment) {
          throw new Error(
@@ -56,7 +57,8 @@ export class ConnectionService {
 
       // Get database environment record and repository
       const repository = this.environmentStore.storageManager.getRepository();
-      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
+      const dbEnvironment =
+         await repository.getEnvironmentByName(environmentName);
 
       if (!dbEnvironment) {
          throw new Error(
@@ -117,10 +119,8 @@ export class ConnectionService {
          `Updating connection "${connectionName}" in environment "${environmentName}"`,
       );
 
-      const { dbEnvironment, dbConnection, repository } = await this.getConnection(
-         environmentName,
-         connectionName,
-      );
+      const { dbEnvironment, dbConnection, repository } =
+         await this.getConnection(environmentName, connectionName);
 
       // Update in-memory connections
       const environment = await this.environmentStore.getEnvironment(

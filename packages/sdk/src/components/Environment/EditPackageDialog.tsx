@@ -42,15 +42,21 @@ export default function EditPackageDialog({
    const { packageName, environmentName } = parseResourceUri(resourceUri);
    const editPackage = useMutationWithApiError({
       async mutationFn(variables: { description: string }) {
-         return apiClients.packages.updatePackage(environmentName, packageName, {
-            name: packageName,
-            description: variables.description,
-         });
+         return apiClients.packages.updatePackage(
+            environmentName,
+            packageName,
+            {
+               name: packageName,
+               description: variables.description,
+            },
+         );
       },
       onSuccess() {
          handleClose();
          setNotificationMessage("Package updated successfully");
-         queryClient.invalidateQueries({ queryKey: ["packages", environmentName] });
+         queryClient.invalidateQueries({
+            queryKey: ["packages", environmentName],
+         });
       },
       onError(error) {
          setNotificationMessage(

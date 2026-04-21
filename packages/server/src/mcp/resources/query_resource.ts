@@ -46,7 +46,12 @@ export function registerQueryResource(
             params as QueryParams,
             "query",
             async (
-               { environmentName, packageName, modelPath, queryName }: QueryParams,
+               {
+                  environmentName,
+                  packageName,
+                  modelPath,
+                  queryName,
+               }: QueryParams,
                uri: URL,
             ) => {
                if (

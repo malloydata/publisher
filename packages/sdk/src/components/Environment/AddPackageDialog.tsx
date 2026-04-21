@@ -47,7 +47,9 @@ export default function AddPackageDialog({
       onSuccess() {
          handleClose();
          setNotificationMessage("Package created successfully");
-         queryClient.invalidateQueries({ queryKey: ["packages", environmentName] });
+         queryClient.invalidateQueries({
+            queryKey: ["packages", environmentName],
+         });
       },
       onError(error) {
          setNotificationMessage(

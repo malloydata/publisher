@@ -41,7 +41,9 @@ mock.module("../storage/StorageManager", () => {
                   return null;
                },
 
-               createEnvironment: async (data: MockData): Promise<MockData> => ({
+               createEnvironment: async (
+                  data: MockData,
+               ): Promise<MockData> => ({
                   id: "test-project-id",
                   name: data.name,
                   path: data.path,
@@ -436,7 +438,10 @@ describe("EnvironmentStore Service", () => {
          const project1 = await environmentStore.getEnvironment(projectName);
 
          // Get the project again with reload=true
-         const project2 = await environmentStore.getEnvironment(projectName, true);
+         const project2 = await environmentStore.getEnvironment(
+            projectName,
+            true,
+         );
 
          expect(project1).toBeInstanceOf(Environment);
          expect(project2).toBeInstanceOf(Environment);
@@ -469,7 +474,9 @@ describe("EnvironmentStore Service", () => {
       );
 
       // Test that getting the project throws an error
-      await expect(environmentStore.getEnvironment(projectName)).rejects.toThrow();
+      await expect(
+         environmentStore.getEnvironment(projectName),
+      ).rejects.toThrow();
    });
 
    it("should handle invalid publisher config", async () => {
@@ -741,7 +748,9 @@ describe("Project Service Error Recovery", () => {
          );
 
          // Test that the project store handles the missing directory
-         await expect(environmentStore.getEnvironment(projectName)).rejects.toThrow();
+         await expect(
+            environmentStore.getEnvironment(projectName),
+         ).rejects.toThrow();
       });
 
       it(
@@ -849,7 +858,8 @@ describe("Project Service Error Recovery", () => {
             ).rejects.toThrow();
 
             // Verify the original project is still accessible
-            const projectAgain = await environmentStore.getEnvironment(projectName);
+            const projectAgain =
+               await environmentStore.getEnvironment(projectName);
             expect(projectAgain).toBeInstanceOf(Environment);
             expect(projectAgain.metadata.name).toBe(projectName);
          },

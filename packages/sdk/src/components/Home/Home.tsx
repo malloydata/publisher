@@ -395,9 +395,7 @@ function EnvironmentCard({
             {mutable && (
                <>
                   <IconButton
-                     aria-controls={
-                        isMenuOpen ? "environment-menu" : undefined
-                     }
+                     aria-controls={isMenuOpen ? "environment-menu" : undefined}
                      aria-haspopup="true"
                      aria-expanded={isMenuOpen ? "true" : undefined}
                      onClick={openMenu}

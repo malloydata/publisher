@@ -406,7 +406,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(succeeded);
          ctx.repository.deleteMaterialization.resolves();
 
-         await ctx.service.deleteMaterialization("my-environment", "pkg", "exec-1");
+         await ctx.service.deleteMaterialization(
+            "my-environment",
+            "pkg",
+            "exec-1",
+         );
 
          expect(ctx.repository.deleteMaterialization.calledOnce).toBe(true);
          expect(ctx.repository.deleteMaterialization.firstCall.args[0]).toBe(
@@ -419,7 +423,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(failed);
          ctx.repository.deleteMaterialization.resolves();
 
-         await ctx.service.deleteMaterialization("my-environment", "pkg", "exec-1");
+         await ctx.service.deleteMaterialization(
+            "my-environment",
+            "pkg",
+            "exec-1",
+         );
 
          expect(ctx.repository.deleteMaterialization.calledOnce).toBe(true);
       });
@@ -429,7 +437,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(cancelled);
          ctx.repository.deleteMaterialization.resolves();
 
-         await ctx.service.deleteMaterialization("my-environment", "pkg", "exec-1");
+         await ctx.service.deleteMaterialization(
+            "my-environment",
+            "pkg",
+            "exec-1",
+         );
 
          expect(ctx.repository.deleteMaterialization.calledOnce).toBe(true);
       });
@@ -439,7 +451,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(pending);
 
          await expect(
-            ctx.service.deleteMaterialization("my-environment", "pkg", "exec-1"),
+            ctx.service.deleteMaterialization(
+               "my-environment",
+               "pkg",
+               "exec-1",
+            ),
          ).rejects.toThrow(InvalidStateTransitionError);
       });
 
@@ -448,7 +464,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(running);
 
          await expect(
-            ctx.service.deleteMaterialization("my-environment", "pkg", "exec-1"),
+            ctx.service.deleteMaterialization(
+               "my-environment",
+               "pkg",
+               "exec-1",
+            ),
          ).rejects.toThrow(InvalidStateTransitionError);
       });
 
@@ -456,7 +476,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(null);
 
          await expect(
-            ctx.service.deleteMaterialization("my-environment", "pkg", "missing"),
+            ctx.service.deleteMaterialization(
+               "my-environment",
+               "pkg",
+               "missing",
+            ),
          ).rejects.toThrow(MaterializationNotFoundError);
       });
    });
@@ -514,7 +538,10 @@ describe("MaterializationService", () => {
          ];
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
 
-         const result = await ctx.service.teardownPackage("my-environment", "pkg");
+         const result = await ctx.service.teardownPackage(
+            "my-environment",
+            "pkg",
+         );
 
          expect(result.dropped).toHaveLength(2);
          expect(result.errors).toHaveLength(0);
@@ -558,7 +585,10 @@ describe("MaterializationService", () => {
          ];
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
 
-         const result = await ctx.service.teardownPackage("my-environment", "pkg");
+         const result = await ctx.service.teardownPackage(
+            "my-environment",
+            "pkg",
+         );
 
          expect(result.dropped).toHaveLength(1);
          expect(result.dropped[0].targetDropSkipped).toBe(true);
@@ -597,9 +627,13 @@ describe("MaterializationService", () => {
          };
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves([entry]);
 
-         const result = await ctx.service.teardownPackage("my-environment", "pkg", {
-            dryRun: true,
-         });
+         const result = await ctx.service.teardownPackage(
+            "my-environment",
+            "pkg",
+            {
+               dryRun: true,
+            },
+         );
 
          expect(result.dropped).toHaveLength(1);
          expect(result.dropped[0].tableName).toBe("orphan");

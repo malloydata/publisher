@@ -23,7 +23,8 @@ export default function About({ resourceUri }: AboutProps) {
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["about", environmentName],
-      queryFn: () => apiClients.environments.getEnvironment(environmentName, false),
+      queryFn: () =>
+         apiClients.environments.getEnvironment(environmentName, false),
    });
 
    const readmeContent = data?.data?.readme || "";
@@ -93,7 +94,10 @@ export default function About({ resourceUri }: AboutProps) {
             </PackageCard>
          )}
          {isError && (
-            <ApiErrorDisplay error={error} context={`${environmentName} > About`} />
+            <ApiErrorDisplay
+               error={error}
+               context={`${environmentName} > About`}
+            />
          )}
       </>
    );

@@ -2,7 +2,8 @@ import { encodeResourceUri, Workbook } from "@malloy-publisher/sdk";
 import { useParams } from "react-router-dom";
 
 function WorkbookPage() {
-   const { workspace, workbookPath, environmentName, packageName } = useParams();
+   const { workspace, workbookPath, environmentName, packageName } =
+      useParams();
    if (!workspace) {
       return (
          <div>

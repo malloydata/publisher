@@ -92,7 +92,8 @@ export class PackageController {
       try {
          const repository =
             this.environmentStore.storageManager.getRepository();
-         const dbEnvironment = await repository.getEnvironmentByName(environmentName);
+         const dbEnvironment =
+            await repository.getEnvironmentByName(environmentName);
          if (!dbEnvironment) return;
 
          const manifest = await this.manifestService.getManifest(
@@ -150,7 +151,11 @@ export class PackageController {
          false,
       );
       if (body.location) {
-         await this.downloadPackage(environmentName, packageName, body.location);
+         await this.downloadPackage(
+            environmentName,
+            packageName,
+            body.location,
+         );
       }
       const result = await environment.updatePackage(packageName, body);
       await this.environmentStore.addPackageToDatabase(

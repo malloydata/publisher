@@ -112,7 +112,9 @@ export default function EditEnvironmentDialog({
                      type="text"
                      fullWidth
                      variant="standard"
-                     defaultValue={getEnvironmentDescription(environment.readme)}
+                     defaultValue={getEnvironmentDescription(
+                        environment.readme,
+                     )}
                   />
                </form>
             </DialogContent>
