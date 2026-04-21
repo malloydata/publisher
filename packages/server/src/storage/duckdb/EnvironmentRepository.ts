@@ -1,3 +1,4 @@
+import { logger } from "../../logger";
 import { Environment } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
@@ -32,6 +33,18 @@ export class EnvironmentRepository {
          "SELECT * FROM environments WHERE name = ?",
          [name],
       );
+      if (!row) {
+         // Diagnostic: when a lookup misses, dump the full name list so we
+         // can tell whether the table is empty (INSERT never landed) vs.
+         // populated with unexpected names (row was deleted / name encoding
+         // drift). Safe to leave in — miss path is rare.
+         const all = await this.db.all<{ name: string }>(
+            "SELECT name FROM environments",
+         );
+         logger.warn(
+            `getEnvironmentByName("${name}") miss; table has ${all.length} rows: ${JSON.stringify(all.map((r) => r.name))}`,
+         );
+      }
       return row ? this.mapToEnvironment(row) : null;
    }
 
