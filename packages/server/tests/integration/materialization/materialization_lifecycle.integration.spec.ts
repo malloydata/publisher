@@ -16,11 +16,25 @@ describe("Materialization & Manifest REST API (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 
+   // Give beforeAll enough time to start the server even on slow CI runners
+   // (Ubuntu needs ~60s for malloy-samples initialization when this spec
+   // runs before the MCP harness has warmed the shared EnvironmentStore).
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
 
-      // Create the test project via the REST API using an absolute
+      // Pre-clean: if a prior suite (e.g. MCP harness) left `test-project`
+      // around in the shared in-process EnvironmentStore, delete it so we
+      // start from a known-empty state. Ignore errors — a 404 is fine.
+      try {
+         await fetch(`${baseUrl}/api/v0/environments/${PROJECT_NAME}`, {
+            method: "DELETE",
+         });
+      } catch {
+         // best-effort pre-clean
+      }
+
+      // Create the test environment via the REST API using an absolute
       // path to the fixture so it works regardless of SERVER_ROOT.
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
@@ -34,8 +48,11 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       });
       if (!createRes.ok) {
          const body = await createRes.text();
+         // Include the fixture path + baseUrl in the error to make CI
+         // failures diagnosable without needing a local repro.
          throw new Error(
-            `Failed to create test project (${createRes.status}): ${body}`,
+            `Failed to create test environment (${createRes.status}) at ${baseUrl} ` +
+               `from fixture ${fixtureDir}: ${body}`,
          );
       }
 

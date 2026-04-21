@@ -35,28 +35,42 @@ export async function startRestE2E(): Promise<
    const addr = httpServer.address() as { port: number };
    const baseUrl = `http://127.0.0.1:${addr.port}`;
 
-   const maxWait = 180_000;
+   // Keep the readiness wait below bun's default 100s test timeout so a
+   // stuck startup fails with a useful error rather than the whole
+   // beforeAll timing out silently (which produces 1ms fake-failures for
+   // every `it` in the suite — hard to diagnose on CI).
+   const maxWait = 90_000;
    const start = Date.now();
    let ready = false;
+   let lastStatus: string | undefined;
+   let lastError: unknown;
    while (!ready && Date.now() - start < maxWait) {
       try {
          const res = await fetch(`${baseUrl}/health/readiness`);
          if (res.ok) {
             const data = (await res.json()) as { status: string };
+            lastStatus = data.status;
             if (data.status === "UP") {
                ready = true;
                break;
             }
+         } else {
+            lastStatus = `HTTP ${res.status}`;
          }
-      } catch {
-         // server not ready yet
+      } catch (err) {
+         lastError = err;
       }
       await new Promise((r) => setTimeout(r, 500));
    }
    if (!ready) {
       httpServer.closeAllConnections?.();
       await new Promise<void>((r) => httpServer.close(() => r()));
-      throw new Error("REST E2E server did not become ready in time");
+      const detail = lastStatus
+         ? `last status: ${lastStatus}`
+         : `last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
+      throw new Error(
+         `REST E2E server did not become ready within ${maxWait / 1000}s (${detail})`,
+      );
    }
 
    const stop = async (): Promise<void> => {
