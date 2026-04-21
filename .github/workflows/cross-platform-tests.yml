@@ -72,6 +72,15 @@ jobs:
         run: bun run build
         shell: bash
 
+      - name: Remove stale DuckDB files before tests
+        # EnvironmentStore uses SERVER_ROOT (= packages/server during tests)
+        # and opens `${SERVER_ROOT}/publisher.db`. Any leftover .db / .db.wal
+        # from a prior step in this job can mask a broken INSERT by making
+        # rows appear to "persist" across runs. Clean them out so every run
+        # starts with an empty DuckDB.
+        run: rm -f packages/server/publisher.db packages/server/publisher.db.wal
+        shell: bash
+
       - name: Run tests
         run: bun run test
         shell: bash
