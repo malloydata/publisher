@@ -32,12 +32,29 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             connections: [],
          }),
       });
+      const createResBody = await createRes.text();
       if (!createRes.ok) {
-         const body = await createRes.text();
          throw new Error(
-            `Failed to create test project (${createRes.status}): ${body}`,
+            `Failed to create test project (${createRes.status}): ${createResBody}`,
          );
       }
+      console.log(
+         `Test project created: (${createRes.status}): ${createResBody}`,
+      );
+      await new Promise((r) => setTimeout(r, 1000));
+      // call getEnvironment to set the environment in the environment store
+      const getEnvironmentRes = await fetch(
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}`,
+      );
+      const getEnvironmentBody = await getEnvironmentRes.text();
+      if (!getEnvironmentRes.ok) {
+         throw new Error(
+            `Failed to get test project environment (${getEnvironmentRes.status}): ${getEnvironmentBody}`,
+         );
+      }
+      console.log(
+         `Environment present: (${getEnvironmentRes.status}): ${getEnvironmentBody}`,
+      );
 
       // Wait for the package to finish loading.
       const deadline = Date.now() + 30_000;
