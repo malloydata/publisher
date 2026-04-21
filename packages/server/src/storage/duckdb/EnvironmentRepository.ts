@@ -1,3 +1,4 @@
+import { logger } from "../../logger";
 import { Environment } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
@@ -58,18 +59,16 @@ export class EnvironmentRepository {
             params,
          );
 
-         // Read-after-write: fail loudly if the INSERT returned success but
-         // the row is not visible on a subsequent lookup. Uses the same
-         // `name` lookup path the materialization/manifest handlers use
-         // (getEnvironmentByName), so we verify the exact read path that
-         // would otherwise 404 later.
          const verified = await this.db.get<Record<string, unknown>>(
             "SELECT * FROM environments WHERE name = ?",
             [environment.name],
          );
          if (!verified) {
+            logger.error(
+               `createEnvironment("${environment.name}"): INSERT returned success but row is not visible on read-back (id=${id}; name=${environment.name})`,
+            );
             throw new Error(
-               `createEnvironment("${environment.name}"): INSERT returned success but row is not visible on read-back (id=${id})`,
+               `Failed to write record to database (id=${id}; name=${environment.name})`,
             );
          }
 
