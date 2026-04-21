@@ -7,20 +7,20 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../errors";
-import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import {
    ManifestEntry,
    Materialization,
    MaterializationStatus,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
+import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
+import { EnvironmentStore } from "./environment_store";
 import { ManifestService } from "./manifest_service";
 import {
    manifestTableKey,
    MaterializationService,
    tablePhysicallyExists,
 } from "./materialization_service";
-import { EnvironmentStore } from "./environment_store";
 
 function makeExecution(
    overrides: Partial<Materialization> = {},
@@ -123,9 +123,7 @@ describe("MaterializationService", () => {
    describe("resolveEnvironmentId (via listMaterializations)", () => {
       it("should throw EnvironmentNotFoundError when environment is not in DB", async () => {
          ctx.repository.getEnvironmentByName.resolves(null);
-         (
-            ctx.environmentStore.getEnvironment as sinon.SinonStub
-         ).rejects(
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).rejects(
             new EnvironmentNotFoundError(`Environment 'unknown' not found`),
          );
 
