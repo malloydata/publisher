@@ -13,6 +13,7 @@ export class ManifestController {
       const environmentId = await resolveEnvironmentId(
          repository,
          environmentName,
+         this.environmentStore,
       );
       // Verify the package exists so we return 404 instead of an empty manifest.
       const environment = await this.environmentStore.getEnvironment(
@@ -28,6 +29,7 @@ export class ManifestController {
       const environmentId = await resolveEnvironmentId(
          repository,
          environmentName,
+         this.environmentStore,
       );
       return this.manifestService.reloadManifest(
          environmentId,

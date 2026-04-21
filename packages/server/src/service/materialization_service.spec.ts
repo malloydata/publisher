@@ -123,6 +123,11 @@ describe("MaterializationService", () => {
    describe("resolveEnvironmentId (via listMaterializations)", () => {
       it("should throw EnvironmentNotFoundError when environment is not in DB", async () => {
          ctx.repository.getEnvironmentByName.resolves(null);
+         (
+            ctx.environmentStore.getEnvironment as sinon.SinonStub
+         ).rejects(
+            new EnvironmentNotFoundError(`Environment 'unknown' not found`),
+         );
 
          await expect(
             ctx.service.listMaterializations("unknown", "pkg"),
