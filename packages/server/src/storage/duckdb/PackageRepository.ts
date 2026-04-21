@@ -14,7 +14,7 @@ export class PackageRepository {
 
    async listPackages(environmentId: string): Promise<Package[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM main.packages WHERE environment_id = ? ORDER BY name",
+         "SELECT * FROM packages WHERE environment_id = ? ORDER BY name",
          [environmentId],
       );
       return rows.map(this.mapToPackage);
@@ -22,7 +22,7 @@ export class PackageRepository {
 
    async getPackageById(id: string): Promise<Package | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM main.packages WHERE id = ?",
+         "SELECT * FROM packages WHERE id = ?",
          [id],
       );
       return row ? this.mapToPackage(row) : null;
@@ -33,7 +33,7 @@ export class PackageRepository {
       name: string,
    ): Promise<Package | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM main.packages WHERE environment_id = ? AND name = ?",
+         "SELECT * FROM packages WHERE environment_id = ? AND name = ?",
          [environmentId, name],
       );
       return row ? this.mapToPackage(row) : null;
@@ -46,7 +46,7 @@ export class PackageRepository {
       const now = this.now();
 
       await this.db.run(
-         `INSERT INTO main.packages (id, environment_id, name, description, manifest_path, metadata, created_at, updated_at)
+         `INSERT INTO packages (id, environment_id, name, description, manifest_path, metadata, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
          [
             id,
@@ -103,7 +103,7 @@ export class PackageRepository {
       params.push(id);
 
       await this.db.run(
-         `UPDATE main.packages SET ${setClauses.join(", ")} WHERE id = ?`,
+         `UPDATE packages SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 
@@ -111,11 +111,11 @@ export class PackageRepository {
    }
 
    async deletePackage(id: string): Promise<void> {
-      await this.db.run("DELETE FROM main.packages WHERE id = ?", [id]);
+      await this.db.run("DELETE FROM packages WHERE id = ?", [id]);
    }
 
    async deletePackagesByEnvironmentId(id: string): Promise<void> {
-      await this.db.run("DELETE FROM main.packages WHERE environment_id = ?", [id]);
+      await this.db.run("DELETE FROM packages WHERE environment_id = ?", [id]);
    }
 
    private mapToPackage(row: Record<string, unknown>): Package {

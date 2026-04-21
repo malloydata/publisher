@@ -23,7 +23,7 @@ export class ManifestRepository {
       packageName: string,
    ): Promise<ManifestEntry[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM main.build_manifests WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC",
+         "SELECT * FROM build_manifests WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC",
          [environmentId, packageName],
       );
       return rows.map(this.mapToEntry);
@@ -36,7 +36,7 @@ export class ManifestRepository {
       buildId: string,
    ): Promise<ManifestEntry | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM main.build_manifests WHERE environment_id = ? AND package_name = ? AND build_id = ?",
+         "SELECT * FROM build_manifests WHERE environment_id = ? AND package_name = ? AND build_id = ?",
          [environmentId, packageName, buildId],
       );
       return row ? this.mapToEntry(row) : null;
@@ -55,7 +55,7 @@ export class ManifestRepository {
       const iso = now.toISOString();
 
       const rows = await this.db.all<Record<string, unknown>>(
-         `INSERT INTO main.build_manifests (id, environment_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
+         `INSERT INTO build_manifests (id, environment_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (environment_id, package_name, build_id)
          DO UPDATE SET table_name = EXCLUDED.table_name,
@@ -81,13 +81,13 @@ export class ManifestRepository {
 
    /** Deletes a single manifest entry by ID. */
    async deleteEntry(id: string): Promise<void> {
-      await this.db.run("DELETE FROM main.build_manifests WHERE id = ?", [id]);
+      await this.db.run("DELETE FROM build_manifests WHERE id = ?", [id]);
    }
 
    /** Removes all manifest entries belonging to an environment (used on environment deletion). */
    async deleteEntriesByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run(
-         "DELETE FROM main.build_manifests WHERE environment_id = ?",
+         "DELETE FROM build_manifests WHERE environment_id = ?",
          [environmentId],
       );
    }
@@ -98,7 +98,7 @@ export class ManifestRepository {
       packageName: string,
    ): Promise<void> {
       await this.db.run(
-         "DELETE FROM main.build_manifests WHERE environment_id = ? AND package_name = ?",
+         "DELETE FROM build_manifests WHERE environment_id = ? AND package_name = ?",
          [environmentId, packageName],
       );
    }

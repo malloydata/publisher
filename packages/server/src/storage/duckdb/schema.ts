@@ -109,19 +109,19 @@ export async function initializeSchema(
 
    // Create indexes for better query performance
    await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_packages_environment_id ON main.packages(environment_id)",
+      "CREATE INDEX IF NOT EXISTS idx_packages_environment_id ON packages(environment_id)",
    );
    await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_connections_environment_id ON main.connections(environment_id)",
+      "CREATE INDEX IF NOT EXISTS idx_connections_environment_id ON connections(environment_id)",
    );
    await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_materializations_environment_package ON main.materializations(environment_id, package_name)",
+      "CREATE INDEX IF NOT EXISTS idx_materializations_environment_package ON materializations(environment_id, package_name)",
    );
    await db.run(
-      "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON main.materializations(active_key)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
    );
    await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_build_manifests_environment_package ON main.build_manifests(environment_id, package_name)",
+      "CREATE INDEX IF NOT EXISTS idx_build_manifests_environment_package ON build_manifests(environment_id, package_name)",
    );
 }
 
@@ -138,7 +138,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
 
    for (const table of tables) {
       try {
-         await db.run(`DROP TABLE IF EXISTS main.${table}`);
+         await db.run(`DROP TABLE IF EXISTS ${table}`);
          logger.info(`Dropped table: ${table}`);
       } catch (err) {
          logger.warn(` Warning: Could not drop table ${table}:`, err);
