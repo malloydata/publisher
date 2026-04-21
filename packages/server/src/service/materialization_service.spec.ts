@@ -83,6 +83,7 @@ function createMocks() {
    const environmentStore = {
       storageManager,
       getEnvironment: sandbox.stub(),
+      addEnvironmentToDatabase: sandbox.stub().resolves(),
    } as unknown as EnvironmentStore;
 
    const manifestService = {

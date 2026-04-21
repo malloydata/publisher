@@ -20,6 +20,17 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
 
+      // Pre-clean: if a prior suite (e.g. MCP harness) left `test-project`
+      // around in the shared in-process EnvironmentStore, delete it so we
+      // start from a known-empty state. Ignore errors — a 404 is fine.
+      try {
+         await fetch(`${baseUrl}/api/v0/environments/${PROJECT_NAME}`, {
+            method: "DELETE",
+         });
+      } catch {
+         // best-effort cleanup
+      }
+
       // Create the test project via the REST API using an absolute
       // path to the fixture so it works regardless of SERVER_ROOT.
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
