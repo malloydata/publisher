@@ -28,6 +28,8 @@ describe("Materialization & Manifest REST API (E2E)", () => {
    // (Ubuntu needs ~60s for malloy-samples initialization when this spec
    // runs before the MCP harness has warmed the shared EnvironmentStore).
    beforeAll(async () => {
+      // Verbose DuckDB resolve tracing (stderr) on GitHub Actions / Ubuntu CI.
+
       diag("beforeAll: starting REST E2E server...");
       try {
          env = await startRestE2E();
