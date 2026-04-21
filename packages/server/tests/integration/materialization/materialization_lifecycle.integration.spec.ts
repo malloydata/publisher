@@ -32,49 +32,33 @@ describe("Materialization & Manifest REST API (E2E)", () => {
             connections: [],
          }),
       });
-      const createResBody = await createRes.text();
       if (!createRes.ok) {
+         const body = await createRes.text();
          throw new Error(
-            `Failed to create test project (${createRes.status}): ${createResBody}`,
+            `Failed to create test project (${createRes.status}): ${body}`,
          );
       }
-      console.log(
-         `Test project created: (${createRes.status}): ${createResBody}`,
-      );
 
-      // Gate the suite on the same lookup the materialization routes use:
-      // GET /materializations goes through resolveEnvironmentId, which
-      // queries the DuckDB `environments` table. Passing this check proves
-      // the env exists in both the in-memory store AND the repository —
-      // so the tests below won't race against a half-synced create.
+      // Wait for the package to finish loading.
       const deadline = Date.now() + 30_000;
-      let lastStatus = 0;
-      let lastBody = "";
-      let ready = false;
-      while (Date.now() < deadline) {
-         // Touch GET /environments/:name to trigger a lazy in-memory load
-         // if the process started cold.
-         await fetch(`${baseUrl}/api/v0/environments/${PROJECT_NAME}`);
-
-         const probe = await fetch(
-            `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}/materializations`,
-         );
-         lastStatus = probe.status;
-         lastBody = await probe.text();
-         if (probe.ok) {
-            ready = true;
-            break;
+      let pkgReady = false;
+      while (!pkgReady && Date.now() < deadline) {
+         try {
+            const res = await fetch(
+               `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`,
+            );
+            if (res.ok) {
+               pkgReady = true;
+               break;
+            }
+         } catch {
+            // not ready yet
          }
          await new Promise((r) => setTimeout(r, 500));
       }
-      if (!ready) {
-         throw new Error(
-            `Environment '${PROJECT_NAME}' never became resolvable via the materialization lookup path (last status ${lastStatus}): ${lastBody}`,
-         );
+      if (!pkgReady) {
+         throw new Error("Test package did not become available in time");
       }
-      console.log(
-         `Environment resolvable via materialization path: (${lastStatus})`,
-      );
    });
 
    afterAll(async () => {

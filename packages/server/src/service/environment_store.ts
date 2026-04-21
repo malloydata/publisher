@@ -426,7 +426,8 @@ export class EnvironmentStore {
                repository,
             );
          } else {
-            logger.warn(`Failed to sync package ${pkg.name}:`, error.message);
+            logger.error(`Failed to sync package ${pkg.name}:`, error);
+            throw error;
          }
       }
    }
@@ -485,6 +486,7 @@ export class EnvironmentStore {
             `Error syncing connections for "${environmentName}":`,
             error,
          );
+         throw error;
       }
    }
 
