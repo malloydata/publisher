@@ -9,7 +9,7 @@ export interface paths {
     /**
      * Get server status and health information
      * @description Returns the current status of the Malloy Publisher server, including initialization state,
-     * available projects, and server timestamp. This endpoint is useful for health checks and
+     * available environments, and server timestamp. This endpoint is useful for health checks and
      * monitoring server availability.
      */
     get: operations["get-status"];
@@ -60,7 +60,7 @@ export interface paths {
      * Each connection includes its configuration, type, and status information. This endpoint
      * is useful for discovering available data sources within an environment.
      */
-    get: operations["list-connections-env"];
+    get: operations["list-connections"];
   };
   "/environments/{environmentName}/connections/{connectionName}": {
     /**
@@ -69,22 +69,22 @@ export interface paths {
      * This includes connection configuration, credentials (if accessible), and metadata.
      * Useful for inspecting connection settings and troubleshooting connectivity issues.
      */
-    get: operations["get-connection-env"];
+    get: operations["get-connection"];
     /**
      * Create a new database connection
      * @description Creates a new database connection in the specified environment.
      */
-    post: operations["create-connection-env"];
+    post: operations["create-connection"];
     /**
      * Delete a database connection
      * @description Permanently deletes a database connection from the environment.
      */
-    delete: operations["delete-connection-env"];
+    delete: operations["delete-connection"];
     /**
      * Update an existing database connection
      * @description Updates the configuration of an existing database connection.
      */
-    patch: operations["update-connection-env"];
+    patch: operations["update-connection"];
   };
   "/environments/{environmentName}/connections/{connectionName}/schemas": {
     /**
@@ -93,7 +93,7 @@ export interface paths {
      * Each schema includes metadata such as name, description, and whether it's the default schema.
      * This endpoint is useful for exploring the database structure and discovering available data sources.
      */
-    get: operations["list-schemas-env"];
+    get: operations["list-schemas"];
   };
   "/environments/{environmentName}/connections/{connectionName}/schemas/{schemaName}/tables": {
     /**
@@ -102,7 +102,7 @@ export interface paths {
      * This endpoint is useful for discovering available data sources and exploring the database
      * structure. The schema must exist in the connection for this operation to succeed.
      */
-    get: operations["list-tables-env"];
+    get: operations["list-tables"];
   };
   "/environments/{environmentName}/connections/{connectionName}/schemas/{schemaName}/tables/{tablePath}": {
     /**
@@ -112,7 +112,7 @@ export interface paths {
      * structure. The schema must exist in the connection for this operation to succeed.
      * The tablePath is the full path to the table, including the schema name.
      */
-    get: operations["get-table-env"];
+    get: operations["get-table"];
   };
   "/environments/{environmentName}/connections/{connectionName}/sqlSource": {
     /**
@@ -124,13 +124,13 @@ export interface paths {
      * Creates a Malloy source from a SQL statement using the specified connection.
      * The SQL statement is executed to generate a source definition that can be used in Malloy models.
      */
-    get: operations["get-sqlsource-env"];
+    get: operations["get-sqlsource"];
     /**
      * Create SQL source from statement
      * @description Creates a Malloy source from a SQL statement using the specified database connection.
      * The SQL statement is executed to generate a source definition that can be used in Malloy models.
      */
-    post: operations["post-sqlsource-env"];
+    post: operations["post-sqlsource"];
   };
   "/environments/{environmentName}/connections/{connectionName}/sqlQuery": {
     /**
@@ -138,7 +138,7 @@ export interface paths {
      * @description Executes a SQL statement against the specified database connection and returns the results.
      * The results include data, metadata, and execution information.
      */
-    post: operations["post-querydata-env"];
+    post: operations["post-querydata"];
   };
   "/environments/{environmentName}/connections/{connectionName}/sqlTemporaryTable": {
     /**
@@ -146,7 +146,7 @@ export interface paths {
      * @description Creates a temporary table from a SQL statement using the specified database connection.
      * Temporary tables are useful for storing intermediate results during complex queries and data processing workflows.
      */
-    post: operations["post-temporarytable-env"];
+    post: operations["post-temporarytable"];
   };
   "/environments/{environmentName}/connections/{connectionName}/temporaryTable": {
     /**
@@ -158,7 +158,7 @@ export interface paths {
      * Creates a temporary table from a SQL statement using the specified connection.
      * Temporary tables are useful for storing intermediate results during complex queries.
      */
-    get: operations["get-temporarytable-env"];
+    get: operations["get-temporarytable"];
   };
   "/environments/{environmentName}/connections/{connectionName}/queryData": {
     /**
@@ -170,7 +170,7 @@ export interface paths {
      * Executes a SQL statement against the specified database connection and returns the results.
      * The query results include data, metadata, and execution information.
      */
-    get: operations["get-querydata-env"];
+    get: operations["get-querydata"];
   };
   "/environments/{environmentName}/packages": {
     /**
@@ -179,14 +179,14 @@ export interface paths {
      * contains models, notebooks, databases, and other resources. This endpoint is useful
      * for discovering available packages and their basic metadata.
      */
-    get: operations["list-packages-env"];
+    get: operations["list-packages"];
     /**
      * Create a new package
      * @description Creates a new Malloy package within the specified environment. A package serves as a
      * container for models, notebooks, embedded databases, and other resources. The package
      * will be initialized with the provided metadata and can immediately accept content.
      */
-    post: operations["create-package-env"];
+    post: operations["create-package"];
   };
   "/environments/{environmentName}/packages/{packageName}": {
     /**
@@ -196,21 +196,21 @@ export interface paths {
      * from disk before returning the information. The versionId parameter allows access to
      * specific package versions.
      */
-    get: operations["get-package-env"];
+    get: operations["get-package"];
     /**
      * Delete a package
      * @description Permanently deletes a package and all its associated resources including models,
      * notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
      * The package must exist and be accessible for deletion.
      */
-    delete: operations["delete-package-env"];
+    delete: operations["delete-package"];
     /**
      * Update package configuration
      * @description Updates the configuration and metadata of an existing package. This allows you to
      * modify package settings, update the description, change the location, or update other
      * package-level properties. The package must exist and be accessible.
      */
-    patch: operations["update-package-env"];
+    patch: operations["update-package"];
   };
   "/environments/{environmentName}/packages/{packageName}/models": {
     /**
@@ -219,7 +219,7 @@ export interface paths {
      * includes the relative path, package name, and any compilation errors. This endpoint
      * is useful for discovering available models and checking their status.
      */
-    get: operations["list-models-env"];
+    get: operations["list-models"];
   };
   "/environments/{environmentName}/packages/{packageName}/models/{path}": {
     /**
@@ -228,7 +228,7 @@ export interface paths {
      * The model is compiled using the specified version of the Malloy compiler. This endpoint
      * provides access to the model's structure, sources, and named queries for use in applications.
      */
-    get: operations["get-model-env"];
+    get: operations["get-model"];
   };
   "/environments/{environmentName}/packages/{packageName}/models/{path}/query": {
     /**
@@ -238,7 +238,7 @@ export interface paths {
      * supports both ad-hoc queries and predefined model queries, making it flexible for various
      * use cases including data exploration, reporting, and application integration.
      */
-    post: operations["execute-query-model-env"];
+    post: operations["execute-query-model"];
   };
   "/environments/{environmentName}/packages/{packageName}/models/{path}/compile": {
     /**
@@ -249,7 +249,7 @@ export interface paths {
      * Relative imports resolve correctly against sibling model files.
      * Returns compilation status and any problems (errors or warnings) found.
      */
-    post: operations["compile-model-source-env"];
+    post: operations["compile-model-source"];
   };
   "/environments/{environmentName}/packages/{packageName}/notebooks": {
     /**
@@ -258,7 +258,7 @@ export interface paths {
      * includes the relative path, package name, and any compilation errors. This endpoint
      * is useful for discovering available notebooks and checking their status.
      */
-    get: operations["list-notebooks-env"];
+    get: operations["list-notebooks"];
   };
   "/environments/{environmentName}/packages/{packageName}/notebooks/{path}": {
     /**
@@ -266,7 +266,7 @@ export interface paths {
      * @description Retrieves a Malloy notebook with its raw cell contents (markdown and code).
      * Cell execution should be done separately via the execute-notebook-cell endpoint.
      */
-    get: operations["get-notebook-env"];
+    get: operations["get-notebook"];
   };
   "/environments/{environmentName}/packages/{packageName}/notebooks/{path}/cells/{cellIndex}": {
     /**
@@ -275,7 +275,7 @@ export interface paths {
      * and runs the Malloy code, returning query results and any new sources defined.
      * For markdown cells, this simply returns the cell content.
      */
-    get: operations["execute-notebook-cell-env"];
+    get: operations["execute-notebook-cell"];
   };
   "/environments/{environmentName}/packages/{packageName}/databases": {
     /**
@@ -284,14 +284,14 @@ export interface paths {
      * DuckDB databases stored as .parquet files that provide local data storage for the package.
      * Each database entry includes metadata about the database structure and content.
      */
-    get: operations["list-databases-env"];
+    get: operations["list-databases"];
   };
   "/connections/test": {
     /**
      * Test database connection configuration
-     * @description Validates a database connection configuration without adding it to any project.
+     * @description Validates a database connection configuration without adding it to any environment.
      * This endpoint allows you to test connection parameters, credentials, and network
-     * connectivity before committing the connection to a project. Useful for troubleshooting
+     * connectivity before committing the connection to an environment. Useful for troubleshooting
      * connection issues and validating configurations during setup.
      */
     post: operations["test-connection-configuration"];
@@ -300,7 +300,7 @@ export interface paths {
     /**
      * Get watch mode status
      * @description Retrieves the current status of the file watching system. This includes whether watch mode
-     * is enabled, which project is being watched, and the path being monitored. Useful for
+     * is enabled, which environment is being watched, and the path being monitored. Useful for
      * monitoring the development workflow and ensuring file changes are being detected.
      */
     get: operations["get-watch-status"];
@@ -308,9 +308,9 @@ export interface paths {
   "/watch-mode/start": {
     /**
      * Start file watching
-     * @description Initiates file watching for the specified project. This enables real-time monitoring of
-     * file changes within the project directory, allowing for automatic reloading and updates
-     * during development. Only one project can be watched at a time.
+     * @description Initiates file watching for the specified environment. This enables real-time monitoring of
+     * file changes within the environment directory, allowing for automatic reloading and updates
+     * during development. Only one environment can be watched at a time.
      */
     post: operations["start-watching"];
   };
@@ -319,11 +319,11 @@ export interface paths {
      * Stop file watching
      * @description Stops the current file watching session. This disables real-time monitoring of file changes
      * and releases system resources. Use this when development is complete or when switching
-     * to a different project.
+     * to a different environment.
      */
     post: operations["stop-watching"];
   };
-  "/projects/{projectName}/packages/{packageName}/materializations": {
+  "/environments/{environmentName}/packages/{packageName}/materializations": {
     /**
      * List materializations for a package
      * @description Returns the materialization history for the package, ordered by most recent first.
@@ -336,7 +336,7 @@ export interface paths {
      */
     post: operations["create-materialization"];
   };
-  "/projects/{projectName}/packages/{packageName}/materializations/{materializationId}": {
+  "/environments/{environmentName}/packages/{packageName}/materializations/{materializationId}": {
     /** Get a specific materialization */
     get: operations["get-materialization"];
     /**
@@ -353,7 +353,7 @@ export interface paths {
      */
     delete: operations["delete-materialization"];
   };
-  "//{projectName}/packages/{packageName}/manifest": {
+  "/environments/{environmentName}/packages/{packageName}/manifest": {
     /**
      * Get the build manifest for a package
      * @description Returns the current build manifest containing buildId-to-tableName mappings
@@ -907,19 +907,15 @@ export interface components {
     WatchStatus: {
       /** @description Whether file watching is currently active */
       enabled: boolean;
-      /** @description Name of the project being watched for file changes */
-      projectName: string;
       /** @description Name of the environment being watched for file changes */
-      environmentName?: string;
+      environmentName: string;
       /** @description The file system path being monitored for changes, null if not watching */
       watchingPath: string;
     };
-    /** @description Request to start file watching for a project or environment */
+    /** @description Request to start file watching for an environment */
     StartWatchRequest: {
-      /** @description Name of the project to start watching for file changes */
-      projectName?: string;
       /** @description Name of the environment to start watching for file changes */
-      environmentName?: string;
+      environmentName: string;
     };
     /** @description Result of testing a database connection */
     ConnectionStatus: {
@@ -988,7 +984,7 @@ export interface components {
     /** @description A record of a package materialization */
     Materialization: {
       id?: string;
-      projectId?: string;
+      environmentId?: string;
       packageName?: string;
       /** @enum {string} */
       status?: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED";
@@ -1092,7 +1088,7 @@ export interface operations {
   /**
    * Get server status and health information
    * @description Returns the current status of the Malloy Publisher server, including initialization state,
-   * available projects, and server timestamp. This endpoint is useful for health checks and
+   * available environments, and server timestamp. This endpoint is useful for health checks and
    * monitoring server availability.
    */
   "get-status": {
@@ -1241,7 +1237,7 @@ export interface operations {
    * Each connection includes its configuration, type, and status information. This endpoint
    * is useful for discovering available data sources within an environment.
    */
-  "list-connections-env": {
+  "list-connections": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1266,7 +1262,7 @@ export interface operations {
    * This includes connection configuration, credentials (if accessible), and metadata.
    * Useful for inspecting connection settings and troubleshooting connectivity issues.
    */
-  "get-connection-env": {
+  "get-connection": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1292,7 +1288,7 @@ export interface operations {
    * Create a new database connection
    * @description Creates a new database connection in the specified environment.
    */
-  "create-connection-env": {
+  "create-connection": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1334,7 +1330,7 @@ export interface operations {
    * Delete a database connection
    * @description Permanently deletes a database connection from the environment.
    */
-  "delete-connection-env": {
+  "delete-connection": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1362,7 +1358,7 @@ export interface operations {
    * Update an existing database connection
    * @description Updates the configuration of an existing database connection.
    */
-  "update-connection-env": {
+  "update-connection": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1407,7 +1403,7 @@ export interface operations {
    * Each schema includes metadata such as name, description, and whether it's the default schema.
    * This endpoint is useful for exploring the database structure and discovering available data sources.
    */
-  "list-schemas-env": {
+  "list-schemas": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1435,7 +1431,7 @@ export interface operations {
    * This endpoint is useful for discovering available data sources and exploring the database
    * structure. The schema must exist in the connection for this operation to succeed.
    */
-  "list-tables-env": {
+  "list-tables": {
     parameters: {
       query?: {
         /**
@@ -1473,7 +1469,7 @@ export interface operations {
    * structure. The schema must exist in the connection for this operation to succeed.
    * The tablePath is the full path to the table, including the schema name.
    */
-  "get-table-env": {
+  "get-table": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1508,7 +1504,7 @@ export interface operations {
    * Creates a Malloy source from a SQL statement using the specified connection.
    * The SQL statement is executed to generate a source definition that can be used in Malloy models.
    */
-  "get-sqlsource-env": {
+  "get-sqlsource": {
     parameters: {
       query?: {
         /** @description SQL statement */
@@ -1539,7 +1535,7 @@ export interface operations {
    * @description Creates a Malloy source from a SQL statement using the specified database connection.
    * The SQL statement is executed to generate a source definition that can be used in Malloy models.
    */
-  "post-sqlsource-env": {
+  "post-sqlsource": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1574,7 +1570,7 @@ export interface operations {
    * @description Executes a SQL statement against the specified database connection and returns the results.
    * The results include data, metadata, and execution information.
    */
-  "post-querydata-env": {
+  "post-querydata": {
     parameters: {
       query?: {
         /** @description Options */
@@ -1613,7 +1609,7 @@ export interface operations {
    * @description Creates a temporary table from a SQL statement using the specified database connection.
    * Temporary tables are useful for storing intermediate results during complex queries and data processing workflows.
    */
-  "post-temporarytable-env": {
+  "post-temporarytable": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1652,7 +1648,7 @@ export interface operations {
    * Creates a temporary table from a SQL statement using the specified connection.
    * Temporary tables are useful for storing intermediate results during complex queries.
    */
-  "get-temporarytable-env": {
+  "get-temporarytable": {
     parameters: {
       query?: {
         /** @description SQL statement */
@@ -1687,7 +1683,7 @@ export interface operations {
    * Executes a SQL statement against the specified database connection and returns the results.
    * The query results include data, metadata, and execution information.
    */
-  "get-querydata-env": {
+  "get-querydata": {
     parameters: {
       query?: {
         /** @description SQL statement */
@@ -1720,7 +1716,7 @@ export interface operations {
    * contains models, notebooks, databases, and other resources. This endpoint is useful
    * for discovering available packages and their basic metadata.
    */
-  "list-packages-env": {
+  "list-packages": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1746,7 +1742,7 @@ export interface operations {
    * container for models, notebooks, embedded databases, and other resources. The package
    * will be initialized with the provided metadata and can immediately accept content.
    */
-  "create-package-env": {
+  "create-package": {
     parameters: {
       query?: {
         /**
@@ -1786,7 +1782,7 @@ export interface operations {
    * from disk before returning the information. The versionId parameter allows access to
    * specific package versions.
    */
-  "get-package-env": {
+  "get-package": {
     parameters: {
       query?: {
         /** @description Version identifier for the package */
@@ -1821,7 +1817,7 @@ export interface operations {
    * notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
    * The package must exist and be accessible for deletion.
    */
-  "delete-package-env": {
+  "delete-package": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1850,7 +1846,7 @@ export interface operations {
    * modify package settings, update the description, change the location, or update other
    * package-level properties. The package must exist and be accessible.
    */
-  "update-package-env": {
+  "update-package": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1884,7 +1880,7 @@ export interface operations {
    * includes the relative path, package name, and any compilation errors. This endpoint
    * is useful for discovering available models and checking their status.
    */
-  "list-models-env": {
+  "list-models": {
     parameters: {
       query?: {
         /** @description Version identifier for the package */
@@ -1917,7 +1913,7 @@ export interface operations {
    * The model is compiled using the specified version of the Malloy compiler. This endpoint
    * provides access to the model's structure, sources, and named queries for use in applications.
    */
-  "get-model-env": {
+  "get-model": {
     parameters: {
       query?: {
         /** @description Version identifier for the package */
@@ -1953,7 +1949,7 @@ export interface operations {
    * supports both ad-hoc queries and predefined model queries, making it flexible for various
    * use cases including data exploration, reporting, and application integration.
    */
-  "execute-query-model-env": {
+  "execute-query-model": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -1992,7 +1988,7 @@ export interface operations {
    * Relative imports resolve correctly against sibling model files.
    * Returns compilation status and any problems (errors or warnings) found.
    */
-  "compile-model-source-env": {
+  "compile-model-source": {
     parameters: {
       path: {
         /** @description Name of the environment */
@@ -2027,7 +2023,7 @@ export interface operations {
    * includes the relative path, package name, and any compilation errors. This endpoint
    * is useful for discovering available notebooks and checking their status.
    */
-  "list-notebooks-env": {
+  "list-notebooks": {
     parameters: {
       query?: {
         /** @description Version identifier for the package */
@@ -2059,7 +2055,7 @@ export interface operations {
    * @description Retrieves a Malloy notebook with its raw cell contents (markdown and code).
    * Cell execution should be done separately via the execute-notebook-cell endpoint.
    */
-  "get-notebook-env": {
+  "get-notebook": {
     parameters: {
       query?: {
         /** @description Version identifier for the package */
@@ -2093,7 +2089,7 @@ export interface operations {
    * and runs the Malloy code, returning query results and any new sources defined.
    * For markdown cells, this simply returns the cell content.
    */
-  "execute-notebook-cell-env": {
+  "execute-notebook-cell": {
     parameters: {
       query?: {
         /** @description Version identifier for the package */
@@ -2135,7 +2131,7 @@ export interface operations {
    * DuckDB databases stored as .parquet files that provide local data storage for the package.
    * Each database entry includes metadata about the database structure and content.
    */
-  "list-databases-env": {
+  "list-databases": {
     parameters: {
       query?: {
         /** @description Version identifier for the package */
@@ -2164,9 +2160,9 @@ export interface operations {
   };
   /**
    * Test database connection configuration
-   * @description Validates a database connection configuration without adding it to any project.
+   * @description Validates a database connection configuration without adding it to any environment.
    * This endpoint allows you to test connection parameters, credentials, and network
-   * connectivity before committing the connection to a project. Useful for troubleshooting
+   * connectivity before committing the connection to an environment. Useful for troubleshooting
    * connection issues and validating configurations during setup.
    */
   "test-connection-configuration": {
@@ -2192,7 +2188,7 @@ export interface operations {
   /**
    * Get watch mode status
    * @description Retrieves the current status of the file watching system. This includes whether watch mode
-   * is enabled, which project is being watched, and the path being monitored. Useful for
+   * is enabled, which environment is being watched, and the path being monitored. Useful for
    * monitoring the development workflow and ensuring file changes are being detected.
    */
   "get-watch-status": {
@@ -2210,9 +2206,9 @@ export interface operations {
   };
   /**
    * Start file watching
-   * @description Initiates file watching for the specified project. This enables real-time monitoring of
-   * file changes within the project directory, allowing for automatic reloading and updates
-   * during development. Only one project can be watched at a time.
+   * @description Initiates file watching for the specified environment. This enables real-time monitoring of
+   * file changes within the environment directory, allowing for automatic reloading and updates
+   * during development. Only one environment can be watched at a time.
    */
   "start-watching": {
     requestBody: {
@@ -2234,7 +2230,7 @@ export interface operations {
    * Stop file watching
    * @description Stops the current file watching session. This disables real-time monitoring of file changes
    * and releases system resources. Use this when development is complete or when switching
-   * to a different project.
+   * to a different environment.
    */
   "stop-watching": {
     responses: {

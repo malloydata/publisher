@@ -9,23 +9,24 @@ import DialogTitle from "@mui/material/DialogTitle";
 import { useState } from "react";
 import { Edit } from "@mui/icons-material";
 import { MenuItem, ListItemIcon, ListItemText, Snackbar } from "@mui/material";
-import { Package } from "../../client";
+import { Environment } from "../../client";
+import {
+   generateEnvironmentReadme,
+   getEnvironmentDescription,
+} from "../../utils/parsing";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { useServer } from "../ServerProvider";
-import { parseResourceUri } from "../../utils/formatting";
 
-interface EditPackageDialogProps {
-   package: Package;
-   resourceUri: string;
+interface EditEnvironmentModalProps {
+   environment: Environment;
    onCloseDialog: () => void;
 }
 
-export default function EditPackageDialog({
-   package: _package,
-   resourceUri,
+export default function EditEnvironmentDialog({
+   environment,
    onCloseDialog,
-}: EditPackageDialogProps) {
+}: EditEnvironmentModalProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
@@ -40,18 +41,23 @@ export default function EditPackageDialog({
       onCloseDialog();
    };
 
-   const { packageName, projectName } = parseResourceUri(resourceUri);
-   const editPackage = useMutationWithApiError({
+   const editEnvironment = useMutationWithApiError({
       async mutationFn(variables: { description: string }) {
-         return apiClients.packages.updatePackage(projectName, packageName, {
-            name: packageName,
-            description: variables.description,
+         return apiClients.environments.updateEnvironment(environment.name, {
+            name: environment.name,
+            readme: generateEnvironmentReadme(
+               {
+                  name: environment.name,
+                  readme: environment.readme,
+               },
+               variables.description,
+            ),
          });
       },
       onSuccess() {
          handleClose();
-         setNotificationMessage("Package updated successfully");
-         queryClient.invalidateQueries({ queryKey: ["packages", projectName] });
+         queryClient.invalidateQueries({ queryKey: ["environments"] });
+         setNotificationMessage("Environment updated successfully");
       },
       onError(error) {
          setNotificationMessage(
@@ -66,7 +72,7 @@ export default function EditPackageDialog({
       event.preventDefault();
       const formData = new FormData(event.currentTarget);
       const description = formData.get("description")?.toString();
-      editPackage.mutate({ description });
+      editEnvironment.mutate({ description });
    };
 
    return (
@@ -79,45 +85,48 @@ export default function EditPackageDialog({
          </MenuItem>
 
          <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Edit Package</DialogTitle>
+            <DialogTitle>Edit Environment</DialogTitle>
             <DialogContent>
                <DialogContentText>
-                  Update the details for &quot;{_package.name}&quot;.
+                  Edit this environment&apos;s description.
                </DialogContentText>
-               <form onSubmit={handleSubmit} id="package-form">
+               <form onSubmit={handleSubmit} id="environment-form">
                   <TextField
                      autoFocus
                      required
                      margin="dense"
                      id="name"
                      name="name"
-                     label="Package Name"
+                     label="Environment Name"
                      disabled
                      type="text"
                      fullWidth
                      variant="standard"
-                     defaultValue={_package.name}
+                     defaultValue={environment.name}
                   />
                   <TextField
+                     margin="dense"
                      id="description"
                      name="description"
-                     label="Description"
-                     multiline
+                     label="Environment Description"
+                     type="text"
                      fullWidth
-                     rows={4}
-                     defaultValue={_package.description}
                      variant="standard"
+                     defaultValue={getEnvironmentDescription(environment.readme)}
                   />
                </form>
             </DialogContent>
             <DialogActions>
-               <Button disabled={editPackage.isPending} onClick={handleClose}>
+               <Button
+                  disabled={editEnvironment.isPending}
+                  onClick={handleClose}
+               >
                   Cancel
                </Button>
                <Button
                   type="submit"
-                  form="package-form"
-                  loading={editPackage.isPending}
+                  form="environment-form"
+                  loading={editEnvironment.isPending}
                >
                   Save Changes
                </Button>

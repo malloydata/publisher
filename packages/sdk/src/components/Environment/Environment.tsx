@@ -1,23 +1,23 @@
 import { Box, Grid, Typography } from "@mui/material";
+import { useEffect } from "react";
 import { parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
 import { PackageContainer } from "../styles";
 import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
 import Packages from "./Packages";
-import { useEffect } from "react";
 
-interface ProjectProps {
+interface EnvironmentProps {
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
    resourceUri: string;
 }
 
-export default function Project({
+export default function Environment({
    onSelectPackage,
    resourceUri,
-}: ProjectProps) {
+}: EnvironmentProps) {
    const { mutable } = useServer();
-   const { projectName } = parseResourceUri(resourceUri);
+   const { environmentName } = parseResourceUri(resourceUri);
 
    useEffect(() => {
       window.scrollTo({ top: 0, behavior: "auto" });
@@ -32,7 +32,7 @@ export default function Project({
                alignItems="center"
                mb={2}
             >
-               <Typography variant="h6">{projectName} packages</Typography>
+               <Typography variant="h6">{environmentName} packages</Typography>
                {mutable && <AddPackageDialog resourceUri={resourceUri} />}
             </Box>
             <Grid container spacing={3} columns={12}>

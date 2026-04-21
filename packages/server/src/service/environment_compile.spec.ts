@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
-import { extractPreamble, extractPreambleFromSource } from "./project";
+import { extractPreamble, extractPreambleFromSource } from "./environment";
 
 describe("extractPreambleFromSource", () => {
    it("should extract pragmas and imports before a source definition", () => {

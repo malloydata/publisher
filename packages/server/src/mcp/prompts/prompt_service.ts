@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { logger } from "../../logger";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import { promptHandlerMap } from "./handlers";
 import { MALLOY_PROMPTS } from "./prompt_definitions";
 
@@ -9,11 +9,11 @@ import { MALLOY_PROMPTS } from "./prompt_definitions";
  * Registers all defined Malloy prompts with the MCP server.
  *
  * @param mcpServer The McpServer instance.
- * @param projectStore The ProjectStore instance for handlers to access environment data.
+ * @param environmentStore The EnvironmentStore instance for handlers to access environment data.
  */
 export function registerPromptCapability(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    logger.info("[MCP Init] Registering prompt capability...");
    const startTime = performance.now();
@@ -24,10 +24,10 @@ export function registerPromptCapability(
       const handler = promptHandlerMap[promptDefinition.id];
 
       if (handler && promptDefinition.argsSchema instanceof z.ZodObject) {
-         // Prepare a handler that injects the projectStore
+         // Prepare a handler that injects the environmentStore
          const preparedHandler = (
             args: z.infer<typeof promptDefinition.argsSchema>,
-         ) => handler(args, projectStore);
+         ) => handler(args, environmentStore);
 
          // Register using prompt ID, the Zod schema shape, and the prepared handler.
          mcpServer.prompt(

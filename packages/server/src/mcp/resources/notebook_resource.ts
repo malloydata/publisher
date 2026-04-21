@@ -10,7 +10,7 @@ import {
    PackageNotFoundError,
 } from "../../errors";
 import { logger } from "../../logger";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import {
    getInternalError,
    getMalloyErrorDetails,
@@ -21,7 +21,7 @@ import { RESOURCE_METADATA } from "../resource_metadata";
 
 // Define the expected parameter types
 type NotebookParams = {
-   projectName?: unknown;
+   environmentName?: unknown;
    packageName?: unknown;
    notebookName?: unknown;
 };
@@ -32,12 +32,12 @@ type NotebookParams = {
  */
 export function registerNotebookResource(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    mcpServer.resource(
       "notebook",
       new ResourceTemplate(
-         "malloy://project/{projectName}/package/{packageName}/notebooks/{notebookName}",
+         "malloy://environment/{environmentName}/package/{packageName}/notebooks/{notebookName}",
          { list: undefined }, // Listing notebooks is not supported via this template
       ),
       (uri, params) =>
@@ -46,11 +46,11 @@ export function registerNotebookResource(
             params as NotebookParams,
             "notebook",
             async (
-               { projectName, packageName, notebookName }: NotebookParams,
+               { environmentName, packageName, notebookName }: NotebookParams,
                uri: URL,
             ) => {
                if (
-                  typeof projectName !== "string" ||
+                  typeof environmentName !== "string" ||
                   typeof packageName !== "string" ||
                   typeof notebookName !== "string"
                ) {
@@ -59,11 +59,11 @@ export function registerNotebookResource(
 
                let modelInstance;
                try {
-                  const project = await projectStore.getProject(
-                     projectName,
+                  const environment = await environmentStore.getEnvironment(
+                     environmentName,
                      false,
                   );
-                  const pkg = await project.getPackage(packageName, false);
+                  const pkg = await environment.getPackage(packageName, false);
                   // Get the model instance using the notebookName as the path
                   modelInstance = pkg.getModel(notebookName);
 
@@ -75,7 +75,7 @@ export function registerNotebookResource(
                      const isNotebookError =
                         modelInstance?.getModelType() !== "notebook";
                      const errorDetails = getNotFoundError(
-                        `Notebook '${notebookName}' in package '${packageName}' environment '${projectName}'${
+                        `Notebook '${notebookName}' in package '${packageName}' environment '${environmentName}'${
                            isNotebookError ? " (not a .malloynb file)" : ""
                         }`,
                      );
@@ -95,13 +95,13 @@ export function registerNotebookResource(
                   if (error instanceof PackageNotFoundError) {
                      throw new McpGetResourceError(
                         getNotFoundError(
-                           `Package '${packageName}' in environment '${projectName}'`,
+                           `Package '${packageName}' in environment '${environmentName}'`,
                         ),
                      );
                   }
                   // Handle ModelCompilationError from modelInstance.getModel()
                   if (error instanceof ModelCompilationError) {
-                     const malloyErrorContext = `${projectName}/${packageName}/${notebookName}`;
+                     const malloyErrorContext = `${environmentName}/${packageName}/${notebookName}`;
                      throw new McpGetResourceError(
                         getMalloyErrorDetails(
                            "GetResource (notebook compilation)",
@@ -114,7 +114,7 @@ export function registerNotebookResource(
                   if (error instanceof ModelNotFoundError) {
                      throw new McpGetResourceError(
                         getNotFoundError(
-                           `Notebook '${notebookName}' not found in package '${packageName}' environment '${projectName}'`,
+                           `Notebook '${notebookName}' not found in package '${packageName}' environment '${environmentName}'`,
                         ),
                      );
                   }

@@ -21,7 +21,9 @@ const HomePage = React.lazy(() => import("./components/HomePage"));
 const MainPage = React.lazy(() => import("./components/MainPage"));
 const ModelPage = React.lazy(() => import("./components/ModelPage"));
 const PackagePage = React.lazy(() => import("./components/PackagePage"));
-const ProjectPage = React.lazy(() => import("./components/ProjectPage"));
+const EnvironmentPage = React.lazy(
+   () => import("./components/EnvironmentPage"),
+);
 const RouteError = React.lazy(() => import("./components/RouteError"));
 const WorkbookPage = React.lazy(() => import("./components/WorkbookPage"));
 
@@ -51,19 +53,19 @@ export const createMalloyRouter = (
                element: <HomePage />,
             },
             {
-               path: ":projectName",
-               element: <ProjectPage />,
+               path: ":environmentName",
+               element: <EnvironmentPage />,
             },
             {
-               path: ":projectName/:packageName",
+               path: ":environmentName/:packageName",
                element: <PackagePage />,
             },
             {
-               path: ":projectName/:packageName/*",
+               path: ":environmentName/:packageName/*",
                element: <ModelPage />,
             },
             {
-               path: ":projectName/:packageName/workbook/:workspace/:workbookPath",
+               path: ":environmentName/:packageName/workbook/:workspace/:workbookPath",
                element: <WorkbookPage />,
             },
          ],

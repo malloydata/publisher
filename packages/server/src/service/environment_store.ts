@@ -11,7 +11,7 @@ import { components } from "../api";
 import {
    getProcessedPublisherConfig,
    isPublisherConfigFrozen,
-   ProcessedProject,
+   ProcessedEnvironment,
    ProcessedPublisherConfig,
 } from "../config";
 import {
@@ -21,16 +21,16 @@ import {
 } from "../constants";
 import {
    BadRequestError,
+   EnvironmentNotFoundError,
    FrozenConfigError,
    PackageNotFoundError,
-   ProjectNotFoundError,
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
-import { PackageStatus, Project } from "./project";
-type ApiProject = components["schemas"]["Project"];
+import { Environment, PackageStatus } from "./environment";
+type ApiEnvironment = components["schemas"]["Environment"];
 
 const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
 const AZURE_DATA_EXTENSIONS = [
@@ -74,8 +74,8 @@ function validateAzureUrl(url: string, fieldName: string): void {
    }
 }
 
-function validateProjectAzureUrls(project: ApiProject): void {
-   for (const conn of project.connections || []) {
+function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
+   for (const conn of environment.connections || []) {
       if (conn.type !== "duckdb") continue;
       for (const db of conn.duckdbConnection?.attachedDatabases || []) {
          if (db.type !== "azure" || !db.azureConnection) continue;
@@ -89,10 +89,10 @@ function validateProjectAzureUrls(project: ApiProject): void {
    }
 }
 
-export class ProjectStore {
+export class EnvironmentStore {
    public serverRootPath: string;
-   private projects: Map<string, Project> = new Map();
-   private projectMutexes = new Map<string, Mutex>();
+   private environments: Map<string, Environment> = new Map();
+   private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
@@ -128,69 +128,71 @@ export class ProjectStore {
             this.serverRootPath,
          );
 
-         const projectManifest = await ProjectStore.reloadProjectManifest(
-            this.serverRootPath,
-         );
+         const environmentManifest =
+            await EnvironmentStore.reloadEnvironmentManifest(
+               this.serverRootPath,
+            );
 
          await this.cleanupAndCreatePublisherPath();
 
          const repository = this.storageManager.getRepository();
 
          if (reInit) {
-            // Load projects from config file
+            // Load environments from config file
             await Promise.all(
-               projectManifest.projects.map(async (project) => {
-                  await this.addProject(
+               environmentManifest.environments.map(async (environment) => {
+                  await this.addEnvironment(
                      {
-                        name: project.name,
-                        resource: `${API_PREFIX}/environments/${project.name}`,
-                        connections: project.connections,
-                        packages: project.packages,
+                        name: environment.name,
+                        resource: `${API_PREFIX}/environments/${environment.name}`,
+                        connections: environment.connections,
+                        packages: environment.packages,
                      },
                      true,
                   );
                }),
             );
          } else {
-            // Load existing projects from database
-            const existingProjects = await repository.listProjects();
+            // Load existing environments from database
+            const existingProjects = await repository.listEnvironments();
 
             if (existingProjects.length > 0) {
-               // Load projects from database
+               // Load environments from database
                await Promise.all(
-                  existingProjects.map(async (dbProject) => {
-                     // Check if project files exist on disk
-                     const projectExists = await fs.promises
-                        .access(dbProject.path)
+                  existingProjects.map(async (dbEnvironment) => {
+                     // Check if environment files exist on disk
+                     const environmentExists = await fs.promises
+                        .access(dbEnvironment.path)
                         .then(() => true)
                         .catch(() => false);
 
-                     if (!projectExists) {
+                     if (!environmentExists) {
                         // Try to find in config and reload
-                        const projectConfig = projectManifest.projects.find(
-                           (p) => p.name === dbProject.name,
-                        );
+                        const environmentConfig =
+                           environmentManifest.environments.find(
+                              (e) => e.name === dbEnvironment.name,
+                           );
 
-                        if (projectConfig) {
-                           const projectInstance = await this.addProject(
+                        if (environmentConfig) {
+                           const environmentInstance = await this.addEnvironment(
                               {
-                                 name: projectConfig.name,
-                                 resource: `${API_PREFIX}/environments/${projectConfig.name}`,
-                                 connections: projectConfig.connections,
-                                 packages: projectConfig.packages,
+                                 name: environmentConfig.name,
+                                 resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
+                                 connections: environmentConfig.connections,
+                                 packages: environmentConfig.packages,
                               },
                               true,
                            );
 
                            // Update database with new path
-                           await repository.updateProject(dbProject.id, {
-                              path: projectInstance.metadata.location,
+                           await repository.updateEnvironment(dbEnvironment.id, {
+                              path: environmentInstance.metadata.location,
                            });
 
-                           return projectInstance.listPackages();
+                           return environmentInstance.listPackages();
                         } else {
                            logger.error(
-                              `Environment "${dbProject.name}" not found in config and files missing`,
+                              `Environment "${dbEnvironment.name}" not found in config and files missing`,
                            );
                            return;
                         }
@@ -198,12 +200,12 @@ export class ProjectStore {
 
                      // Get connections from database
                      const connections = await repository.listConnections(
-                        dbProject.id,
+                        dbEnvironment.id,
                      );
 
-                     const projectInstance = await Project.create(
-                        dbProject.name,
-                        dbProject.path,
+                     const environmentInstance = await Environment.create(
+                        dbEnvironment.name,
+                        dbEnvironment.path,
                         connections.map((conn) => ({
                            name: conn.name,
                            type: conn.type,
@@ -212,32 +214,32 @@ export class ProjectStore {
                         })),
                      );
 
-                     this.projects.set(dbProject.name, projectInstance);
+                     this.environments.set(dbEnvironment.name, environmentInstance);
 
                      // Get packages from database
                      const packages = await repository.listPackages(
-                        dbProject.id,
+                        dbEnvironment.id,
                      );
                      packages.forEach((pkg) => {
-                        projectInstance.setPackageStatus(
+                        environmentInstance.setPackageStatus(
                            pkg.name,
                            PackageStatus.SERVING,
                         );
                      });
 
-                     return projectInstance.listPackages();
+                     return environmentInstance.listPackages();
                   }),
                );
             } else {
                // Fallback to config file if database is empty
                await Promise.all(
-                  projectManifest.projects.map(async (project) => {
-                     await this.addProject(
+                  environmentManifest.environments.map(async (environment) => {
+                     await this.addEnvironment(
                         {
-                           name: project.name,
-                           resource: `${API_PREFIX}/environments/${project.name}`,
-                           connections: project.connections,
-                           packages: project.packages,
+                           name: environment.name,
+                           resource: `${API_PREFIX}/environments/${environment.name}`,
+                           connections: environment.connections,
+                           packages: environment.packages,
                         },
                         true,
                      );
@@ -260,81 +262,88 @@ export class ProjectStore {
       }
    }
 
-   public async addProjectToDatabase(project: Project): Promise<void> {
-      if (!project) {
+   public async addEnvironmentToDatabase(
+      environment: Environment,
+   ): Promise<void> {
+      if (!environment) {
          logger.error("Cannot sync: environment is null or undefined");
          return;
       }
 
-      const projectName = project.metadata?.name;
-      if (!projectName) {
+      const environmentName = environment.metadata?.name;
+      if (!environmentName) {
          throw new Error("Environment name is required but not found");
       }
 
       const repository = this.storageManager.getRepository();
 
-      // Sync project metadata
-      const dbProject = await this.addProjectMetadata(project, repository);
+      // Sync environment metadata
+      const dbEnvironment = await this.addEnvironmentMetadata(
+         environment,
+         repository,
+      );
 
       // Sync connections
-      await this.addConnections(project, dbProject.id, repository);
+      await this.addConnections(environment, dbEnvironment.id, repository);
 
       // Sync packages
-      await this.addPackages(project, dbProject.id, repository);
+      await this.addPackages(environment, dbEnvironment.id, repository);
 
-      logger.info(`Synced environment "${projectName}" to database`);
+      logger.info(`Synced environment "${environmentName}" to database`);
    }
 
-   public async deleteProjectFromDatabase(projectName: string): Promise<void> {
+   public async deleteEnvironmentFromDatabase(
+      environmentName: string,
+   ): Promise<void> {
       const repository = this.storageManager.getRepository();
 
-      // Get the project from database
-      const dbProject = await repository.getProjectByName(projectName);
+      // Get the environment from database
+      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
 
-      if (!dbProject) {
-         logger.error(`Environment "${projectName}" not found in database`);
+      if (!dbEnvironment) {
+         logger.error(`Environment "${environmentName}" not found in database`);
          return;
       }
 
-      // Delete the project (this will cascade delete connections and packages)
-      await repository.deleteProject(dbProject.id);
-      logger.info(`Deleted environment "${projectName}" from database`);
+      // Delete the environment (this will cascade delete connections and packages)
+      await repository.deleteEnvironment(dbEnvironment.id);
+      logger.info(`Deleted environment "${environmentName}" from database`);
    }
 
-   private async addProjectMetadata(
-      project: Project,
+   private async addEnvironmentMetadata(
+      environment: Environment,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<{ id: string; name: string }> {
-      const projectName = project.metadata?.name;
-      if (!projectName) {
+      const environmentName = environment.metadata?.name;
+      if (!environmentName) {
          throw new Error("Environment name is required but not found");
       }
-      const projectPath = project.metadata?.location || "";
-      const projectDescription = project.metadata?.readme;
+      const environmentPath = environment.metadata?.location || "";
+      const environmentDescription = environment.metadata?.readme;
 
-      const projectData = {
-         name: projectName,
-         path: projectPath,
-         description: projectDescription,
-         metadata: project.metadata || {},
+      const environmentData = {
+         name: environmentName,
+         path: environmentPath,
+         description: environmentDescription,
+         metadata: environment.metadata || {},
       };
-      const existingProject = await repository.getProjectByName(projectName);
+      const existingProject = await repository.getEnvironmentByName(environmentName);
 
-      let dbProject: { id: string; name: string };
+      let dbEnvironment: { id: string; name: string };
       if (existingProject) {
          const updateData = {
-            description: projectDescription,
-            metadata: project.metadata || {},
+            description: environmentDescription,
+            metadata: environment.metadata || {},
          };
 
-         await repository.updateProject(existingProject.id, updateData);
-         dbProject = { id: existingProject.id, name: projectName };
+         await repository.updateEnvironment(existingProject.id, updateData);
+         dbEnvironment = { id: existingProject.id, name: environmentName };
       } else {
-         dbProject = await repository.createProject(projectData);
+         dbEnvironment = await repository.createEnvironment(environmentData);
       }
 
-      // Initialize DuckLake manifest storage if configured on the project.
-      const materializationStorage = project.metadata
+      // Initialize DuckLake manifest storage if configured on the environment.
+      const materializationStorage = environment.metadata
          ?.materializationStorage as
          | { catalogUrl?: string; dataPath?: string }
          | undefined;
@@ -342,21 +351,21 @@ export class ProjectStore {
          materializationStorage?.catalogUrl &&
          materializationStorage?.dataPath
       ) {
-         await this.storageManager.initializeDuckLakeForProject(dbProject.id, {
+         await this.storageManager.initializeDuckLakeForEnvironment(dbEnvironment.id, {
             catalogUrl: materializationStorage.catalogUrl,
             dataPath: materializationStorage.dataPath,
          });
       }
 
-      return dbProject;
+      return dbEnvironment;
    }
 
    private async addPackages(
-      project: Project,
-      projectId: string,
+      environment: Environment,
+      environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
-      const packages = await project.listPackages();
+      const packages = await environment.listPackages();
 
       // Sync each package
       for (const pkg of packages) {
@@ -365,13 +374,13 @@ export class ProjectStore {
             continue;
          }
 
-         await this.addPackage(pkg, projectId, repository);
+         await this.addPackage(pkg, environmentId, repository);
       }
    }
 
    private async addPackage(
       pkg: components["schemas"]["Package"],
-      projectId: string,
+      environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       const pkgs = pkg as {
@@ -382,7 +391,7 @@ export class ProjectStore {
       };
 
       const packageData = {
-         projectId,
+         environmentId,
          name: pkgs.name,
          description: pkgs.description ?? undefined,
          manifestPath: pkgs.manifestPath ?? "",
@@ -400,7 +409,7 @@ export class ProjectStore {
          ) {
             await this.updatePackage(
                pkgs.name,
-               projectId,
+               environmentId,
                packageData,
                repository,
             );
@@ -412,7 +421,7 @@ export class ProjectStore {
 
    private async updatePackage(
       packageName: string,
-      projectId: string,
+      environmentId: string,
       packageData: {
          description: string | undefined;
          manifestPath: string;
@@ -421,7 +430,7 @@ export class ProjectStore {
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       const existingPackage = await repository.getPackageByName(
-         projectId,
+         environmentId,
          packageName,
       );
 
@@ -432,12 +441,12 @@ export class ProjectStore {
    }
 
    private async addConnections(
-      project: Project,
-      projectId: string,
+      environment: Environment,
+      environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       try {
-         const connections = project.listApiConnections();
+         const connections = environment.listApiConnections();
          // Add/update connections
          for (const conn of connections) {
             if (!conn.name) {
@@ -447,26 +456,29 @@ export class ProjectStore {
 
             // Check if connection exists
             const existingConn = await repository.getConnectionByName(
-               projectId,
+               environmentId,
                conn.name,
             );
 
             if (existingConn) {
-               await this.updateConnection(conn, projectId, repository);
+               await this.updateConnection(conn, environmentId, repository);
             } else {
-               await this.addConnection(conn, projectId, repository);
+               await this.addConnection(conn, environmentId, repository);
             }
          }
       } catch (err: unknown) {
          const error = err as Error;
-         const projectName = project.metadata?.name;
-         logger.error(`Error syncing connections for "${projectName}":`, error);
+         const environmentName = environment.metadata?.name;
+         logger.error(
+            `Error syncing connections for "${environmentName}":`,
+            error,
+         );
       }
    }
 
    public async addConnection(
-      conn: ReturnType<Project["listApiConnections"]>[number],
-      projectId: string,
+      conn: ReturnType<Environment["listApiConnections"]>[number],
+      environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       if (!conn.name) {
@@ -475,7 +487,7 @@ export class ProjectStore {
       }
 
       const connectionData = {
-         projectId,
+         environmentId,
          name: conn.name,
          type: conn.type as Connection["type"],
          config: conn,
@@ -492,8 +504,8 @@ export class ProjectStore {
    }
 
    public async updateConnection(
-      conn: ReturnType<Project["listApiConnections"]>[number],
-      projectId: string,
+      conn: ReturnType<Environment["listApiConnections"]>[number],
+      environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       if (!conn.name) {
@@ -501,7 +513,7 @@ export class ProjectStore {
       }
 
       const existingConn = await repository.getConnectionByName(
-         projectId,
+         environmentId,
          conn.name,
       );
 
@@ -527,22 +539,24 @@ export class ProjectStore {
    }
 
    public async addPackageToDatabase(
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ): Promise<void> {
-      const project = await this.getProject(projectName, false);
+      const environment = await this.getEnvironment(environmentName, false);
       const repository = this.storageManager.getRepository();
 
-      // Get the project ID from database
-      const dbProject = await repository.getProjectByName(projectName);
+      // Get the environment ID from database
+      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
 
-      if (!dbProject) {
-         logger.error(`Environment "${projectName}" not found in database`);
-         throw new Error(`Environment "${projectName}" not found in database`);
+      if (!dbEnvironment) {
+         logger.error(`Environment "${environmentName}" not found in database`);
+         throw new Error(
+            `Environment "${environmentName}" not found in database`,
+         );
       }
 
-      // Get the package from the project
-      const packages = await project.listPackages();
+      // Get the package from the environment
+      const packages = await environment.listPackages();
       const pkg = packages.find((p) => p.name === packageName);
 
       if (!pkg) {
@@ -551,7 +565,7 @@ export class ProjectStore {
       }
 
       // Sync the specific package
-      await this.addPackage(pkg, dbProject.id, repository);
+      await this.addPackage(pkg, dbEnvironment.id, repository);
       logger.info(`Synced package "${packageName}" to database`);
    }
 
@@ -559,22 +573,22 @@ export class ProjectStore {
     * Delete a package from the database
     */
    public async deletePackageFromDatabase(
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ): Promise<void> {
       const repository = this.storageManager.getRepository();
 
-      // Get the project ID from database
-      const dbProject = await repository.getProjectByName(projectName);
+      // Get the environment ID from database
+      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
 
-      if (!dbProject) {
-         logger.error(`Environment "${projectName}" not found in database`);
+      if (!dbEnvironment) {
+         logger.error(`Environment "${environmentName}" not found in database`);
          return;
       }
 
       // Find and delete the package
       const existingPackage = await repository.getPackageByName(
-         dbProject.id,
+         dbEnvironment.id,
          packageName,
       );
 
@@ -623,13 +637,13 @@ export class ProjectStore {
       await fs.promises.mkdir(uploadDocsPath, { recursive: true });
    }
 
-   public async listProjects(skipInitializationCheck: boolean = false) {
+   public async listEnvironments(skipInitializationCheck: boolean = false) {
       if (!skipInitializationCheck) {
          await this.finishedInitialization;
       }
       return Promise.all(
-         Array.from(this.projects.values()).map((project) =>
-            project.serialize(),
+         Array.from(this.environments.values()).map((environment) =>
+            environment.serialize(),
          ),
       );
    }
@@ -637,23 +651,23 @@ export class ProjectStore {
    public async getStatus() {
       const status = {
          timestamp: Date.now(),
-         projects: [] as Array<components["schemas"]["Project"]>,
+         environments: [] as Array<components["schemas"]["Environment"]>,
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState:
             getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
       };
 
-      const projects = await this.listProjects(true);
+      const environments = await this.listEnvironments(true);
 
       await Promise.all(
-         projects.map(async (project) => {
+         environments.map(async (environment) => {
             try {
-               const packages = project.packages;
-               const connections = project.connections;
+               const packages = environment.packages;
+               const connections = environment.connections;
 
-               logger.debug(`Environment ${project.name} status:`, {
-                  connectionsCount: project.connections?.length || 0,
+               logger.debug(`Environment ${environment.name} status:`, {
+                  connectionsCount: environment.connections?.length || 0,
                   packagesCount: packages?.length || 0,
                });
 
@@ -664,12 +678,12 @@ export class ProjectStore {
                   };
                });
 
-               const _project = {
-                  ...project,
+               const _environment = {
+                  ...environment,
                   connections: _connections,
                };
-               project.connections = _connections;
-               status.projects.push(_project);
+               environment.connections = _connections;
+               status.environments.push(_environment);
             } catch (error) {
                logger.error("Error listing packages and connections", {
                   error,
@@ -683,62 +697,63 @@ export class ProjectStore {
       return status;
    }
 
-   public async getProject(
-      projectName: string,
+   public async getEnvironment(
+      environmentName: string,
       reload: boolean = false,
-   ): Promise<Project> {
+   ): Promise<Environment> {
       await this.finishedInitialization;
 
-      // Check if project is already loaded first
-      const project = this.projects.get(projectName);
-      if (project !== undefined && !reload) {
-         return project;
+      // Check if environment is already loaded first
+      const environment = this.environments.get(environmentName);
+      if (environment !== undefined && !reload) {
+         return environment;
       }
 
       // We need to acquire the mutex to prevent concurrent requests from creating the
-      // project multiple times.
-      let projectMutex = this.projectMutexes.get(projectName);
-      if (projectMutex?.isLocked()) {
-         await projectMutex.waitForUnlock();
-         const existingProject = this.projects.get(projectName);
-         if (existingProject && !reload) {
-            return existingProject;
+      // environment multiple times.
+      let environmentMutex = this.environmentMutexes.get(environmentName);
+      if (environmentMutex?.isLocked()) {
+         await environmentMutex.waitForUnlock();
+         const existingEnvironment = this.environments.get(environmentName);
+         if (existingEnvironment && !reload) {
+            return existingEnvironment;
          }
       }
-      projectMutex = new Mutex();
-      this.projectMutexes.set(projectName, projectMutex);
+      environmentMutex = new Mutex();
+      this.environmentMutexes.set(environmentName, environmentMutex);
 
-      return projectMutex.runExclusive(async () => {
+      return environmentMutex.runExclusive(async () => {
          // Double-check after acquiring mutex
-         const existingProject = this.projects.get(projectName);
-         if (existingProject !== undefined && !reload) {
-            return existingProject;
+         const existingEnvironment = this.environments.get(environmentName);
+         if (existingEnvironment !== undefined && !reload) {
+            return existingEnvironment;
          }
 
-         const projectManifest = await ProjectStore.reloadProjectManifest(
-            this.serverRootPath,
+         const environmentManifest =
+            await EnvironmentStore.reloadEnvironmentManifest(
+               this.serverRootPath,
+            );
+         const environmentConfig = environmentManifest.environments.find(
+            (e) => e.name === environmentName,
          );
-         const projectConfig = projectManifest.projects.find(
-            (p) => p.name === projectName,
-         );
-         const projectPath =
-            existingProject?.metadata.location ||
-            projectConfig?.packages[0]?.location;
-         if (!projectPath) {
-            throw new ProjectNotFoundError(
-               `Environment "${projectName}" could not be resolved to a path.`,
+         const environmentPath =
+            existingEnvironment?.metadata.location ||
+            environmentConfig?.packages[0]?.location;
+         if (!environmentPath) {
+            throw new EnvironmentNotFoundError(
+               `Environment "${environmentName}" could not be resolved to a path.`,
             );
          }
-         return await this.addProject({
-            name: projectName,
-            resource: `${API_PREFIX}/environments/${projectName}`,
-            connections: projectConfig?.connections || [],
+         return await this.addEnvironment({
+            name: environmentName,
+            resource: `${API_PREFIX}/environments/${environmentName}`,
+            connections: environmentConfig?.connections || [],
          });
       });
    }
 
-   public async addProject(
-      project: ApiProject,
+   public async addEnvironment(
+      environment: ApiEnvironment,
       skipInitialization: boolean = false,
    ) {
       if (!skipInitialization) {
@@ -747,123 +762,136 @@ export class ProjectStore {
       if (!skipInitialization && this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
-      const projectName = project.name;
-      if (!projectName) {
+      const environmentName = environment.name;
+      if (!environmentName) {
          throw new Error("Environment name is required");
       }
-      // Check if project already exists and update it instead of creating a new one
-      const existingProject = this.projects.get(projectName);
-      if (existingProject) {
-         const updatedProject = await existingProject.update(project);
-         this.projects.set(projectName, updatedProject);
-         await this.addProjectToDatabase(updatedProject);
-         return updatedProject;
+      // Check if environment already exists and update it instead of creating a new one
+      const existingEnvironment = this.environments.get(environmentName);
+      if (existingEnvironment) {
+         const updatedEnvironment = await existingEnvironment.update(environment);
+         this.environments.set(environmentName, updatedEnvironment);
+         await this.addEnvironmentToDatabase(updatedEnvironment);
+         return updatedEnvironment;
       }
-      const projectManifest = await ProjectStore.reloadProjectManifest(
-         this.serverRootPath,
-      );
-      const projectConfig = projectManifest.projects.find(
-         (p) => p.name === projectName,
+      const environmentManifest =
+         await EnvironmentStore.reloadEnvironmentManifest(this.serverRootPath);
+      const environmentConfig = environmentManifest.environments.find(
+         (e) => e.name === environmentName,
       );
       const hasPackages =
-         (project?.packages && project.packages.length > 0) ||
-         (projectConfig?.packages && projectConfig.packages.length > 0);
-      let absoluteProjectPath: string;
+         (environment?.packages && environment.packages.length > 0) ||
+         (environmentConfig?.packages &&
+            environmentConfig.packages.length > 0);
+      let absoluteEnvironmentPath: string;
       if (hasPackages) {
          const packagesToProcess =
-            project?.packages || projectConfig?.packages || [];
-         absoluteProjectPath = await this.loadProjectIntoDisk(
-            projectName,
+            environment?.packages || environmentConfig?.packages || [];
+         absoluteEnvironmentPath = await this.loadEnvironmentIntoDisk(
+            environmentName,
             packagesToProcess,
          );
-         if (absoluteProjectPath.endsWith(".zip")) {
-            absoluteProjectPath = await this.unzipProject(absoluteProjectPath);
+         if (absoluteEnvironmentPath.endsWith(".zip")) {
+            absoluteEnvironmentPath = await this.unzipEnvironment(
+               absoluteEnvironmentPath,
+            );
          }
       } else {
-         absoluteProjectPath = await this.scaffoldProject(project);
+         absoluteEnvironmentPath = await this.scaffoldEnvironment(environment);
       }
-      const newProject = await Project.create(
-         projectName,
-         absoluteProjectPath,
-         project.connections || [],
+      const newEnvironment = await Environment.create(
+         environmentName,
+         absoluteEnvironmentPath,
+         environment.connections || [],
       );
 
-      if (!newProject.metadata) newProject.metadata = {};
-      newProject.metadata.location = absoluteProjectPath;
+      if (!newEnvironment.metadata) newEnvironment.metadata = {};
+      newEnvironment.metadata.location = absoluteEnvironmentPath;
 
-      this.projects.set(projectName, newProject);
+      this.environments.set(environmentName, newEnvironment);
 
-      project?.packages?.forEach((_package) => {
+      environment?.packages?.forEach((_package) => {
          if (_package.name) {
-            newProject.setPackageStatus(_package.name, PackageStatus.SERVING);
+            newEnvironment.setPackageStatus(
+               _package.name,
+               PackageStatus.SERVING,
+            );
          }
       });
 
-      await this.addProjectToDatabase(newProject);
+      await this.addEnvironmentToDatabase(newEnvironment);
 
-      return newProject;
+      return newEnvironment;
    }
 
-   public async unzipProject(absoluteProjectPath: string) {
+   public async unzipEnvironment(absoluteEnvironmentPath: string) {
       logger.info(
-         `Detected zip file at "${absoluteProjectPath}". Unzipping...`,
+         `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
       );
-      const unzippedProjectPath = absoluteProjectPath.replace(".zip", "");
-      await fs.promises.rm(unzippedProjectPath, {
+      const unzippedEnvironmentPath = absoluteEnvironmentPath.replace(
+         ".zip",
+         "",
+      );
+      await fs.promises.rm(unzippedEnvironmentPath, {
          recursive: true,
          force: true,
       });
-      await fs.promises.mkdir(unzippedProjectPath, { recursive: true });
+      await fs.promises.mkdir(unzippedEnvironmentPath, { recursive: true });
 
-      const zip = new AdmZip(absoluteProjectPath);
-      zip.extractAllTo(unzippedProjectPath, true);
+      const zip = new AdmZip(absoluteEnvironmentPath);
+      zip.extractAllTo(unzippedEnvironmentPath, true);
 
-      return unzippedProjectPath;
+      return unzippedEnvironmentPath;
    }
 
-   public async updateProject(project: ApiProject) {
+   public async updateEnvironment(environment: ApiEnvironment) {
       await this.finishedInitialization;
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
-      validateProjectAzureUrls(project);
-      const projectName = project.name;
-      if (!projectName) {
+      validateEnvironmentAzureUrls(environment);
+      const environmentName = environment.name;
+      if (!environmentName) {
          throw new Error("Environment name is required");
       }
-      const existingProject = this.projects.get(projectName);
-      if (!existingProject) {
-         throw new ProjectNotFoundError(`Environment ${projectName} not found`);
+      const existingEnvironment = this.environments.get(environmentName);
+      if (!existingEnvironment) {
+         throw new EnvironmentNotFoundError(
+            `Environment ${environmentName} not found`,
+         );
       }
-      const updatedProject = await existingProject.update(project);
-      this.projects.set(projectName, updatedProject);
-      await this.addProjectToDatabase(updatedProject);
-      return updatedProject;
+      const updatedEnvironment = await existingEnvironment.update(environment);
+      this.environments.set(environmentName, updatedEnvironment);
+      await this.addEnvironmentToDatabase(updatedEnvironment);
+      return updatedEnvironment;
    }
 
-   public async deleteProject(
-      projectName: string,
-   ): Promise<Project | undefined> {
+   public async deleteEnvironment(
+      environmentName: string,
+   ): Promise<Environment | undefined> {
       await this.finishedInitialization;
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
-      const project = this.projects.get(projectName);
-      if (!project) {
+      const environment = this.environments.get(environmentName);
+      if (!environment) {
          return;
       }
 
-      const projectPath = project.metadata?.location;
+      const environmentPath = environment.metadata?.location;
 
       // Close all connections before removing the environment
-      project.closeAllConnections();
+      environment.closeAllConnections();
 
-      this.projects.delete(projectName);
-      await this.deleteProjectFromDatabase(projectName);
-      if (projectPath) {
+      this.environments.delete(environmentName);
+      await this.deleteEnvironmentFromDatabase(environmentName);
+      if (environmentPath) {
          try {
-            await fs.promises.rm(projectPath, { recursive: true, force: true });
-            logger.info(`Deleted environment directory: ${projectPath}`);
+            await fs.promises.rm(environmentPath, {
+               recursive: true,
+               force: true,
+            });
+            logger.info(`Deleted environment directory: ${environmentPath}`);
          } catch (err) {
             logger.error("Error removing environment directory", {
                error: err,
@@ -871,10 +899,10 @@ export class ProjectStore {
          }
       }
 
-      return project;
+      return environment;
    }
 
-   public static async reloadProjectManifest(
+   public static async reloadEnvironmentManifest(
       serverRootPath: string,
    ): Promise<ProcessedPublisherConfig> {
       try {
@@ -885,17 +913,17 @@ export class ProjectStore {
                `Error reading ${PUBLISHER_CONFIG_NAME}. Generating from directory`,
                { error },
             );
-            return { frozenConfig: false, projects: [] };
+            return { frozenConfig: false, environments: [] };
          } else {
             // If publisher.config.json is missing, generate the manifest from directories
             try {
                const entries = await fs.promises.readdir(serverRootPath, {
                   withFileTypes: true,
                });
-               const projects: ProcessedProject[] = [];
+               const environments: ProcessedEnvironment[] = [];
                for (const entry of entries) {
                   if (entry.isDirectory()) {
-                     projects.push({
+                     environments.push({
                         name: entry.name,
                         packages: [
                            {
@@ -907,31 +935,31 @@ export class ProjectStore {
                      });
                   }
                }
-               return { frozenConfig: false, projects };
+               return { frozenConfig: false, environments };
             } catch (lsError) {
                logger.error(`Error listing directories in ${serverRootPath}`, {
                   error: lsError,
                });
-               return { frozenConfig: false, projects: [] };
+               return { frozenConfig: false, environments: [] };
             }
          }
       }
    }
 
-   private async scaffoldProject(project: ApiProject) {
-      const projectName = project.name;
-      if (!projectName) {
+   private async scaffoldEnvironment(environment: ApiEnvironment) {
+      const environmentName = environment.name;
+      if (!environmentName) {
          throw new Error("Environment name is required");
       }
-      const absoluteProjectPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${projectName}`;
-      await fs.promises.mkdir(absoluteProjectPath, { recursive: true });
-      if (project.readme) {
+      const absoluteEnvironmentPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
+      await fs.promises.mkdir(absoluteEnvironmentPath, { recursive: true });
+      if (environment.readme) {
          await fs.promises.writeFile(
-            path.join(absoluteProjectPath, "README.md"),
-            project.readme,
+            path.join(absoluteEnvironmentPath, "README.md"),
+            environment.readme,
          );
       }
-      return absoluteProjectPath;
+      return absoluteEnvironmentPath;
    }
 
    private isLocalPath(location: string) {
@@ -959,17 +987,17 @@ export class ProjectStore {
       return location.startsWith("s3://");
    }
 
-   private async loadProjectIntoDisk(
-      projectName: string,
-      packages: ApiProject["packages"],
+   private async loadEnvironmentIntoDisk(
+      environmentName: string,
+      packages: ApiEnvironment["packages"],
    ) {
-      const absoluteTargetPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${projectName}`;
+      const absoluteTargetPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
       if (!packages || packages.length === 0) {
          throw new PackageNotFoundError(
-            `No packages found for environment ${projectName}`,
+            `No packages found for environment ${environmentName}`,
          );
       }
 
@@ -1026,7 +1054,7 @@ export class ProjectStore {
             await this.downloadOrMountLocation(
                groupedLocation,
                tempDownloadPath,
-               projectName,
+               environmentName,
                "shared",
             );
             // Extract each package from the downloaded content
@@ -1125,7 +1153,7 @@ export class ProjectStore {
    private async downloadOrMountLocation(
       location: string,
       targetPath: string,
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ) {
       const isCompressedFile = location.endsWith(".zip");
@@ -1137,7 +1165,7 @@ export class ProjectStore {
             );
             await this.downloadGcsDirectory(
                location,
-               projectName,
+               environmentName,
                targetPath,
                isCompressedFile,
             );
@@ -1182,7 +1210,7 @@ export class ProjectStore {
             );
             await this.downloadS3Directory(
                location,
-               projectName,
+               environmentName,
                targetPath,
                isCompressedFile,
             );
@@ -1211,7 +1239,7 @@ export class ProjectStore {
             await this.mountLocalDirectory(
                packagePath,
                targetPath,
-               projectName,
+               environmentName,
                packageName,
             );
             return;
@@ -1229,40 +1257,40 @@ export class ProjectStore {
 
       // If we get here, the path format is not supported
       const errorMsg = `Invalid package path: "${location}". Must be an absolute mounted path or a GCS/S3/GitHub URI.`;
-      logger.error(errorMsg, { projectName, location });
+      logger.error(errorMsg, { environmentName, location });
       throw new PackageNotFoundError(errorMsg);
    }
 
    public async mountLocalDirectory(
-      projectPath: string,
+      environmentPath: string,
       absoluteTargetPath: string,
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ) {
-      if (projectPath.endsWith(".zip")) {
-         projectPath = await this.unzipProject(projectPath);
+      if (environmentPath.endsWith(".zip")) {
+         environmentPath = await this.unzipEnvironment(environmentPath);
       }
-      const projectDirExists =
-         (await fs.promises.stat(projectPath))?.isDirectory() ?? false;
-      if (projectDirExists) {
+      const environmentDirExists =
+         (await fs.promises.stat(environmentPath))?.isDirectory() ?? false;
+      if (environmentDirExists) {
          await fs.promises.rm(absoluteTargetPath, {
             recursive: true,
             force: true,
          });
          await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
-         await fs.promises.cp(projectPath, absoluteTargetPath, {
+         await fs.promises.cp(environmentPath, absoluteTargetPath, {
             recursive: true,
          });
       } else {
          throw new PackageNotFoundError(
-            `Package ${packageName} for environment ${projectName} not found in "${projectPath}"`,
+            `Package ${packageName} for environment ${environmentName} not found in "${environmentPath}"`,
          );
       }
    }
 
    async downloadGcsDirectory(
       gcsPath: string,
-      projectName: string,
+      environmentName: string,
       absoluteDirPath: string,
       isCompressedFile: boolean,
    ) {
@@ -1273,8 +1301,8 @@ export class ProjectStore {
          prefix,
       });
       if (files.length === 0) {
-         throw new ProjectNotFoundError(
-            `Environment ${projectName} not found in ${gcsPath}`,
+         throw new EnvironmentNotFoundError(
+            `Environment ${environmentName} not found in ${gcsPath}`,
          );
       }
       if (!isCompressedFile) {
@@ -1305,14 +1333,14 @@ export class ProjectStore {
          }),
       );
       if (isCompressedFile) {
-         await this.unzipProject(absoluteDirPath);
+         await this.unzipEnvironment(absoluteDirPath);
       }
       logger.info(`Downloaded GCS directory ${gcsPath} to ${absoluteDirPath}`);
    }
 
    async downloadS3Directory(
       s3Path: string,
-      projectName: string,
+      environmentName: string,
       absoluteDirPath: string,
       isCompressedFile: boolean = false,
    ) {
@@ -1333,8 +1361,8 @@ export class ProjectStore {
          });
          const item = await this.s3Client.send(command);
          if (!item.Body) {
-            throw new ProjectNotFoundError(
-               `Environment ${projectName} not found in ${s3Path}`,
+            throw new EnvironmentNotFoundError(
+               `Environment ${environmentName} not found in ${s3Path}`,
             );
          }
          const file = fs.createWriteStream(zipFilePath);
@@ -1345,7 +1373,7 @@ export class ProjectStore {
          });
 
          // Extract the zip file
-         await this.unzipProject(zipFilePath);
+         await this.unzipEnvironment(zipFilePath);
          logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
          return;
       }
@@ -1359,8 +1387,8 @@ export class ProjectStore {
       await fs.promises.mkdir(absoluteDirPath, { recursive: true });
 
       if (!objects.Contents || objects.Contents.length === 0) {
-         throw new ProjectNotFoundError(
-            `Environment ${projectName} not found in ${s3Path}`,
+         throw new EnvironmentNotFoundError(
+            `Environment ${environmentName} not found in ${s3Path}`,
          );
       }
       await Promise.all(

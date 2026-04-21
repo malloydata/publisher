@@ -8,7 +8,7 @@ info:
 
     ## Key Features
 
-    - **Project Management**: Create and manage projects with their associated packages and connections
+    - **Environment Management**: Create and manage environments with their associated packages and connections
     - **Package Lifecycle**: Full CRUD operations for Malloy packages and their versions
     - **Model & Notebook Access**: Retrieve and execute Malloy models and notebooks
     - **Connection Management**: Secure database connection configuration and testing
@@ -19,7 +19,7 @@ info:
 
     The API follows a hierarchical resource structure:
     ```
-    Projects
+    Environments
     ├── Connections
     └── Packages
         ├── Models
@@ -68,7 +68,7 @@ paths:
       summary: Get server status and health information
       description: |
         Returns the current status of the Malloy Publisher server, including initialization state,
-        available projects, and server timestamp. This endpoint is useful for health checks and
+        available environments, and server timestamp. This endpoint is useful for health checks and
         monitoring server availability.
       responses:
         "200":
@@ -242,7 +242,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: list-connections-env
+      operationId: list-connections
       summary: List environment database connections
       description: |
         Retrieves a list of all database connections configured for the specified environment.
@@ -275,7 +275,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: get-connection-env
+      operationId: get-connection
       summary: Get connection details
       description: |
         Retrieves detailed information about a specific database connection within an environment.
@@ -312,7 +312,7 @@ paths:
     post:
       tags:
         - connections
-      operationId: create-connection-env
+      operationId: create-connection
       summary: Create a new database connection
       description: |
         Creates a new database connection in the specified environment.
@@ -367,7 +367,7 @@ paths:
     patch:
       tags:
         - connections
-      operationId: update-connection-env
+      operationId: update-connection
       summary: Update an existing database connection
       description: |
         Updates the configuration of an existing database connection.
@@ -430,7 +430,7 @@ paths:
     delete:
       tags:
         - connections
-      operationId: delete-connection-env
+      operationId: delete-connection
       summary: Delete a database connection
       description: |
         Permanently deletes a database connection from the environment.
@@ -470,7 +470,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: list-schemas-env
+      operationId: list-schemas
       summary: List database schemas
       description: |
         Retrieves a list of all schemas (databases) available in the specified connection.
@@ -511,7 +511,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: list-tables-env
+      operationId: list-tables
       summary: List tables in database
       description: |
         Retrieves a list of all tables and views available in the specified database schema.
@@ -568,7 +568,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: get-table-env
+      operationId: get-table
       summary: Get table details from database
       description: |
         Retrieves a table from the specified database schema.
@@ -621,7 +621,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: get-sqlsource-env
+      operationId: get-sqlsource
       deprecated: true
       summary: Get SQL source (deprecated)
       description: |
@@ -668,7 +668,7 @@ paths:
     post:
       tags:
         - connections
-      operationId: post-sqlsource-env
+      operationId: post-sqlsource
       summary: Create SQL source from statement
       description: |
         Creates a Malloy source from a SQL statement using the specified database connection.
@@ -716,7 +716,7 @@ paths:
     post:
       tags:
         - connections
-      operationId: post-querydata-env
+      operationId: post-querydata
       summary: Execute SQL query
       description: |
         Executes a SQL statement against the specified database connection and returns the results.
@@ -770,7 +770,7 @@ paths:
     post:
       tags:
         - connections
-      operationId: post-temporarytable-env
+      operationId: post-temporarytable
       summary: Create temporary table
       description: |
         Creates a temporary table from a SQL statement using the specified database connection.
@@ -819,7 +819,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: get-temporarytable-env
+      operationId: get-temporarytable
       deprecated: true
       summary: Create temporary table (deprecated)
       description: |
@@ -868,7 +868,7 @@ paths:
     get:
       tags:
         - connections
-      operationId: get-querydata-env
+      operationId: get-querydata
       deprecated: true
       summary: Execute SQL query (deprecated)
       description: |
@@ -920,7 +920,7 @@ paths:
     get:
       tags:
         - packages
-      operationId: list-packages-env
+      operationId: list-packages
       summary: List environment packages
       description: |
         Retrieves a list of all Malloy packages within the specified environment. Each package
@@ -953,7 +953,7 @@ paths:
     post:
       tags:
         - packages
-      operationId: create-package-env
+      operationId: create-package
       summary: Create a new package
       description: |
         Creates a new Malloy package within the specified environment. A package serves as a
@@ -1002,7 +1002,7 @@ paths:
     get:
       tags:
         - packages
-      operationId: get-package-env
+      operationId: get-package
       summary: Get package details and metadata
       description: |
         Retrieves detailed information about a specific package, including its models, notebooks,
@@ -1054,7 +1054,7 @@ paths:
     patch:
       tags:
         - packages
-      operationId: update-package-env
+      operationId: update-package
       summary: Update package configuration
       description: |
         Updates the configuration and metadata of an existing package. This allows you to
@@ -1099,7 +1099,7 @@ paths:
     delete:
       tags:
         - packages
-      operationId: delete-package-env
+      operationId: delete-package
       summary: Delete a package
       description: |
         Permanently deletes a package and all its associated resources including models,
@@ -1140,7 +1140,7 @@ paths:
     get:
       tags:
         - models
-      operationId: list-models-env
+      operationId: list-models
       summary: List package models
       description: |
         Retrieves a list of all Malloy models within the specified package. Each model entry
@@ -1189,7 +1189,7 @@ paths:
     get:
       tags:
         - models
-      operationId: get-model-env
+      operationId: get-model
       summary: Get compiled Malloy model
       description: |
         Retrieves a compiled Malloy model with its source information, queries, and metadata.
@@ -1242,7 +1242,7 @@ paths:
     post:
       tags:
         - models
-      operationId: execute-query-model-env
+      operationId: execute-query-model
       summary: Execute Malloy query
       description: |
         Executes a Malloy query against a model and returns the results. The query can be specified
@@ -1298,7 +1298,7 @@ paths:
     post:
       tags:
         - models
-      operationId: compile-model-source-env
+      operationId: compile-model-source
       summary: Compile Malloy source code
       description: |
         Compiles Malloy source code in the context of a specific model file.
@@ -1352,7 +1352,7 @@ paths:
     get:
       tags:
         - notebooks
-      operationId: list-notebooks-env
+      operationId: list-notebooks
       summary: List package notebooks
       description: |
         Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
@@ -1401,7 +1401,7 @@ paths:
     get:
       tags:
         - notebooks
-      operationId: get-notebook-env
+      operationId: get-notebook
       summary: Get Malloy notebook cells
       description: |
         Retrieves a Malloy notebook with its raw cell contents (markdown and code).
@@ -1451,7 +1451,7 @@ paths:
     get:
       tags:
         - notebooks
-      operationId: execute-notebook-cell-env
+      operationId: execute-notebook-cell
       summary: Execute a specific notebook cell
       description: |
         Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
@@ -1527,7 +1527,7 @@ paths:
     get:
       tags:
         - databases
-      operationId: list-databases-env
+      operationId: list-databases
       summary: List embedded databases
       description: |
         Retrieves a list of all embedded databases within the specified package. These are typically
@@ -1579,9 +1579,9 @@ paths:
       operationId: test-connection-configuration
       summary: Test database connection configuration
       description: |
-        Validates a database connection configuration without adding it to any project.
+        Validates a database connection configuration without adding it to any environment.
         This endpoint allows you to test connection parameters, credentials, and network
-        connectivity before committing the connection to a project. Useful for troubleshooting
+        connectivity before committing the connection to an environment. Useful for troubleshooting
         connection issues and validating configurations during setup.
       requestBody:
         required: true
@@ -1615,7 +1615,7 @@ paths:
       summary: Get watch mode status
       description: |
         Retrieves the current status of the file watching system. This includes whether watch mode
-        is enabled, which project is being watched, and the path being monitored. Useful for
+        is enabled, which environment is being watched, and the path being monitored. Useful for
         monitoring the development workflow and ensuring file changes are being detected.
       responses:
         "200":
@@ -1638,9 +1638,9 @@ paths:
       operationId: start-watching
       summary: Start file watching
       description: |
-        Initiates file watching for the specified project. This enables real-time monitoring of
-        file changes within the project directory, allowing for automatic reloading and updates
-        during development. Only one project can be watched at a time.
+        Initiates file watching for the specified environment. This enables real-time monitoring of
+        file changes within the environment directory, allowing for automatic reloading and updates
+        during development. Only one environment can be watched at a time.
       requestBody:
         required: true
         content:
@@ -1666,7 +1666,7 @@ paths:
       description: |
         Stops the current file watching session. This disables real-time monitoring of file changes
         and releases system resources. Use this when development is complete or when switching
-        to a different project.
+        to a different environment.
       responses:
         "200":
           description: Watch mode stopped successfully.
@@ -1677,7 +1677,7 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /projects/{projectName}/packages/{packageName}/materializations:
+  /environments/{environmentName}/packages/{packageName}/materializations:
     post:
       tags:
         - materializations
@@ -1745,7 +1745,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /projects/{projectName}/packages/{packageName}/materializations/{materializationId}:
+  /environments/{environmentName}/packages/{packageName}/materializations/{materializationId}:
     get:
       tags:
         - materializations
@@ -1833,7 +1833,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  //{projectName}/packages/{packageName}/manifest:
+  /environments/{environmentName}/packages/{packageName}/manifest:
     get:
       tags:
         - manifests
@@ -2856,9 +2856,6 @@ components:
         enabled:
           type: boolean
           description: Whether file watching is currently active
-        projectName:
-          type: string
-          description: Name of the project being watched for file changes
         environmentName:
           type: string
           description: Name of the environment being watched for file changes
@@ -2868,19 +2865,18 @@ components:
             watching
       required:
         - enabled
-        - projectName
+        - environmentName
         - watchingPath
 
     StartWatchRequest:
       type: object
-      description: Request to start file watching for a project or environment
+      description: Request to start file watching for an environment
       properties:
-        projectName:
-          type: string
-          description: Name of the project to start watching for file changes
         environmentName:
           type: string
           description: Name of the environment to start watching for file changes
+      required:
+        - environmentName
 
     ConnectionStatus:
       type: object
@@ -2975,7 +2971,7 @@ components:
       properties:
         id:
           type: string
-        projectId:
+        environmentId:
           type: string
         packageName:
           type: string

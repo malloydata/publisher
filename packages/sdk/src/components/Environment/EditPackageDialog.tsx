@@ -1,32 +1,30 @@
-import React from "react";
+import { Edit } from "@mui/icons-material";
+import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
 import Button from "@mui/material/Button";
-import TextField from "@mui/material/TextField";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
-import { useState } from "react";
-import { Edit } from "@mui/icons-material";
-import { MenuItem, ListItemIcon, ListItemText, Snackbar } from "@mui/material";
-import { Project } from "../../client";
-import {
-   generateProjectReadme,
-   getProjectDescription,
-} from "../../utils/parsing";
+import TextField from "@mui/material/TextField";
 import { useQueryClient } from "@tanstack/react-query";
+import React, { useState } from "react";
+import { Package } from "../../client";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
 
-interface EditProjectModalProps {
-   project: Project;
+interface EditPackageDialogProps {
+   package: Package;
+   resourceUri: string;
    onCloseDialog: () => void;
 }
 
-export default function EditProjectDialog({
-   project,
+export default function EditPackageDialog({
+   package: _package,
+   resourceUri,
    onCloseDialog,
-}: EditProjectModalProps) {
+}: EditPackageDialogProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
@@ -41,23 +39,18 @@ export default function EditProjectDialog({
       onCloseDialog();
    };
 
-   const editProject = useMutationWithApiError({
+   const { packageName, environmentName } = parseResourceUri(resourceUri);
+   const editPackage = useMutationWithApiError({
       async mutationFn(variables: { description: string }) {
-         return apiClients.projects.updateProject(project.name, {
-            name: project.name,
-            readme: generateProjectReadme(
-               {
-                  name: project.name,
-                  readme: project.readme,
-               },
-               variables.description,
-            ),
+         return apiClients.packages.updatePackage(environmentName, packageName, {
+            name: packageName,
+            description: variables.description,
          });
       },
       onSuccess() {
          handleClose();
-         queryClient.invalidateQueries({ queryKey: ["projects"] });
-         setNotificationMessage("Project updated successfully");
+         setNotificationMessage("Package updated successfully");
+         queryClient.invalidateQueries({ queryKey: ["packages", environmentName] });
       },
       onError(error) {
          setNotificationMessage(
@@ -72,7 +65,7 @@ export default function EditProjectDialog({
       event.preventDefault();
       const formData = new FormData(event.currentTarget);
       const description = formData.get("description")?.toString();
-      editProject.mutate({ description });
+      editPackage.mutate({ description });
    };
 
    return (
@@ -85,46 +78,45 @@ export default function EditProjectDialog({
          </MenuItem>
 
          <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Edit Project</DialogTitle>
+            <DialogTitle>Edit Package</DialogTitle>
             <DialogContent>
                <DialogContentText>
-                  Add a new project to start exploring semantic models and
-                  analyzing data.
+                  Update the details for &quot;{_package.name}&quot;.
                </DialogContentText>
-               <form onSubmit={handleSubmit} id="project-form">
+               <form onSubmit={handleSubmit} id="package-form">
                   <TextField
                      autoFocus
                      required
                      margin="dense"
                      id="name"
                      name="name"
-                     label="Project Name"
+                     label="Package Name"
                      disabled
                      type="text"
                      fullWidth
                      variant="standard"
-                     defaultValue={project.name}
+                     defaultValue={_package.name}
                   />
                   <TextField
-                     margin="dense"
                      id="description"
                      name="description"
-                     label="Project Description"
-                     type="text"
+                     label="Description"
+                     multiline
                      fullWidth
+                     rows={4}
+                     defaultValue={_package.description}
                      variant="standard"
-                     defaultValue={getProjectDescription(project.readme)}
                   />
                </form>
             </DialogContent>
             <DialogActions>
-               <Button disabled={editProject.isPending} onClick={handleClose}>
+               <Button disabled={editPackage.isPending} onClick={handleClose}>
                   Cancel
                </Button>
                <Button
                   type="submit"
-                  form="project-form"
-                  loading={editProject.isPending}
+                  form="package-form"
+                  loading={editPackage.isPending}
                >
                   Save Changes
                </Button>

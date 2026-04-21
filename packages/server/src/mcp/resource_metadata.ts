@@ -8,7 +8,7 @@ type McpResourceType = "model" | "source" | "view" | "query" | "notebook";
 // Type assertion ensures compatibility with the SDK's ResourceMetadata,
 // which might include optional fields or an index signature.
 export const RESOURCE_METADATA: Record<
-   McpResourceType | "package" | "project",
+   McpResourceType | "package" | "environment",
    SdkResourceMetadata // Use the imported SDK type here
 > = {
    model: {
@@ -40,7 +40,7 @@ export const RESOURCE_METADATA: Record<
       description: "A folder grouping related Models and Notebooks.",
       usage: "Use `ListResources` on this Package's URI to discover the Models and Notebooks it contains. You can then use `GetResource` on those items' URIs to explore them further.",
    },
-   project: {
+   environment: {
       description: "The main workspace folder holding Packages, Models, etc.",
       usage: "Use `ListResources` on this environment's URI to see the Packages inside and begin navigating your data assets.",
    },

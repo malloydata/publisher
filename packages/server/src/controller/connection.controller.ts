@@ -9,7 +9,7 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
 } from "../service/db_utils";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -84,11 +84,11 @@ function validateAzureAttachedDatabases(connectionConfig: ApiConnection): void {
 }
 
 export class ConnectionController {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
    private connectionService: ConnectionService;
-   constructor(projectStore: ProjectStore) {
-      this.projectStore = projectStore;
-      this.connectionService = new ConnectionService(projectStore);
+   constructor(environmentStore: EnvironmentStore) {
+      this.environmentStore = environmentStore;
+      this.connectionService = new ConnectionService(environmentStore);
    }
 
    /**
@@ -96,27 +96,27 @@ export class ConnectionController {
     * For DuckDB connections, retrieves from package level; for others, from environment level.
     */
    private async getMalloyConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
    ): Promise<Connection> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getApiConnection(connectionName);
+      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const connection = environment.getApiConnection(connectionName);
 
       // For DuckDB connections, get the connection from a package
       if (connection.name === "duckdb" && connection.type === "duckdb") {
-         const packages = await project.listPackages();
+         const packages = await environment.listPackages();
          if (packages.length === 0) {
-            return project.getMalloyConnection(connectionName);
+            return environment.getMalloyConnection(connectionName);
          }
          // For now, use the first package's DuckDB connection
          const packageName = packages[0].name;
          if (!packageName) {
             throw new ConnectionError("Package name is undefined");
          }
-         const pkg = await project.getPackage(packageName);
+         const pkg = await environment.getPackage(packageName);
          return pkg.getMalloyConnection(connectionName);
       } else {
-         return project.getMalloyConnection(connectionName);
+         return environment.getMalloyConnection(connectionName);
       }
    }
 
@@ -135,11 +135,15 @@ export class ConnectionController {
                fetchTableSchema: (
                   tableKey: string,
                   tablePath: string,
-               ) => Promise<TableSourceDef | undefined>;
+               ) => Promise<TableSourceDef | string | undefined>;
             }
          ).fetchTableSchema(tableKey, tablePath);
          if (!source) {
             throw new ConnectionError(`Table ${tablePath} not found`);
+         }
+         // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
+         if (typeof source === "string") {
+            throw new ConnectionError(source);
          }
 
          return {
@@ -167,33 +171,36 @@ export class ConnectionController {
    }
 
    public async getConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
    ): Promise<ApiConnection> {
-      if (!projectName || !connectionName) {
+      if (!environmentName || !connectionName) {
          throw new BadRequestError("Connection payload is required");
       }
-      const { dbConnection } = await this.connectionService.getConnection(
-         projectName,
-         connectionName,
+      // Prefer the in-memory API connection (which was materialized by the
+      // environment on load and carries `attributes`). The DB row stores the
+      // raw config and FK columns, which aren't the ApiConnection shape.
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
       );
-      return dbConnection;
+      return environment.getApiConnection(connectionName);
    }
 
-   public async listConnections(projectName: string): Promise<ApiConnection[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      return project.listApiConnections();
+   public async listConnections(environmentName: string): Promise<ApiConnection[]> {
+      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      return environment.listApiConnections();
    }
 
    // Lists schemas (namespaces) available in a connection
    public async listSchemas(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
    ): Promise<ApiSchema[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getApiConnection(connectionName);
+      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const connection = environment.getApiConnection(connectionName);
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 
@@ -202,15 +209,15 @@ export class ConnectionController {
 
    // Lists tables available in a schema. For postgres the schema is usually "public"
    public async listTables(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       schemaName: string,
       tableNames?: string[],
    ): Promise<ApiTable[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getApiConnection(connectionName);
+      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const connection = environment.getApiConnection(connectionName);
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 
@@ -223,30 +230,33 @@ export class ConnectionController {
    }
 
    public async getConnectionSqlSource(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       sqlStatement: string,
    ): Promise<ApiSqlSource> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 
       try {
+         const schema = await (
+            malloyConnection as Connection & {
+               fetchSelectSchema: (params: {
+                  connection: string;
+                  selectStr: string;
+               }) => Promise<unknown>;
+            }
+         ).fetchSelectSchema({
+            connection: connectionName,
+            selectStr: sqlStatement,
+         });
+         // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
+         if (typeof schema === "string") {
+            throw new ConnectionError(schema);
+         }
          return {
-            source: JSON.stringify(
-               await (
-                  malloyConnection as Connection & {
-                     fetchSelectSchema: (params: {
-                        connection: string;
-                        selectStr: string;
-                     }) => Promise<unknown>;
-                  }
-               ).fetchSelectSchema({
-                  connection: connectionName,
-                  selectStr: sqlStatement,
-               }),
-            ),
+            source: JSON.stringify(schema),
          };
       } catch (error) {
          throw new ConnectionError((error as Error).message);
@@ -254,18 +264,18 @@ export class ConnectionController {
    }
 
    public async getTable(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       schemaName: string,
       tablePath: string,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
       // Use getApiConnection to get the unwrapped ApiConnection config, consistent with listSchemas and listTables.
-      const project = await this.projectStore.getProject(projectName, false);
-      const connection = project.getApiConnection(connectionName);
+      const environment = await this.environmentStore.getEnvironment(environmentName, false);
+      const connection = environment.getApiConnection(connectionName);
 
       // TODO: Move this database connection logic to the db_utils.ts file -- and
       // ultimately into a connection-specific class.
@@ -335,13 +345,13 @@ export class ConnectionController {
    }
 
    public async getConnectionQueryData(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       sqlStatement: string,
       options: string,
    ): Promise<ApiQueryData> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 
@@ -367,12 +377,12 @@ export class ConnectionController {
    }
 
    public async getConnectionTemporaryTable(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       sqlStatement: string,
    ): Promise<ApiTemporaryTable> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 
@@ -429,7 +439,7 @@ export class ConnectionController {
    }
 
    public async addConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       connectionConfig: ApiConnection,
    ): Promise<{ message: string }> {
@@ -448,11 +458,11 @@ export class ConnectionController {
       validateAzureAttachedDatabases(connectionConfig);
 
       logger.info(
-         `Creating connection "${connectionName}" in environment "${projectName}"`,
+         `Creating connection "${connectionName}" in environment "${environmentName}"`,
       );
 
       await this.connectionService.addConnection(
-         projectName,
+         environmentName,
          connectionName,
          connectionConfig,
       );
@@ -463,7 +473,7 @@ export class ConnectionController {
    }
 
    public async updateConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       connection: Partial<ApiConnection>,
    ): Promise<{ message: string }> {
@@ -474,11 +484,11 @@ export class ConnectionController {
       validateAzureAttachedDatabases(connection as ApiConnection);
 
       logger.info(
-         `Updating connection "${connectionName}" in environment "${projectName}"`,
+         `Updating connection "${connectionName}" in environment "${environmentName}"`,
       );
 
       await this.connectionService.updateConnection(
-         projectName,
+         environmentName,
          connectionName,
          connection,
       );
@@ -489,15 +499,15 @@ export class ConnectionController {
    }
 
    public async deleteConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
    ): Promise<{ message: string }> {
       logger.info(
-         `Deleting connection "${connectionName}" from environment "${projectName}"`,
+         `Deleting connection "${connectionName}" from environment "${environmentName}"`,
       );
 
       await this.connectionService.deleteConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 

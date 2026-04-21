@@ -5,8 +5,8 @@ import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
-import { Project } from "./project";
-import { ProjectStore } from "./project_store";
+import { Environment } from "./environment";
+import { EnvironmentStore } from "./environment_store";
 
 type MockData = Record<string, unknown>;
 
@@ -20,9 +20,9 @@ mock.module("../storage/StorageManager", () => {
          getRepository() {
             return {
                // ===== PROJECT METHODS =====
-               listProjects: async (): Promise<unknown[]> => [],
+               listEnvironments: async (): Promise<unknown[]> => [],
 
-               getProjectById: async (
+               getEnvironmentById: async (
                   id: string,
                ): Promise<MockData | null> => ({
                   id,
@@ -34,14 +34,14 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
 
-               getProjectByName: async (
+               getEnvironmentByName: async (
                   _name: string,
                ): Promise<MockData | null> => {
                   // Return null to simulate "project doesn't exist yet"
                   return null;
                },
 
-               createProject: async (data: MockData): Promise<MockData> => ({
+               createEnvironment: async (data: MockData): Promise<MockData> => ({
                   id: "test-project-id",
                   name: data.name,
                   path: data.path,
@@ -51,7 +51,7 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
 
-               updateProject: async (
+               updateEnvironment: async (
                   id: string,
                   data: MockData,
                ): Promise<MockData> => ({
@@ -67,18 +67,18 @@ mock.module("../storage/StorageManager", () => {
                   updatedAt: new Date(),
                }),
 
-               deleteProject: async (_id: string): Promise<void> => {},
+               deleteEnvironment: async (_id: string): Promise<void> => {},
 
                // ===== PACKAGE METHODS =====
                listPackages: async (
-                  _projectId: string,
+                  _environmentId: string,
                ): Promise<unknown[]> => [],
 
                getPackageById: async (
                   id: string,
                ): Promise<MockData | null> => ({
                   id,
-                  projectId: "test-project-id",
+                  environmentId: "test-project-id",
                   name: "test-package",
                   description: "Test package",
                   manifestPath: "/test/manifest.json",
@@ -88,13 +88,13 @@ mock.module("../storage/StorageManager", () => {
                }),
 
                getPackageByName: async (
-                  _projectId: string,
+                  _environmentId: string,
                   _name: string,
                ): Promise<MockData | null> => null,
 
                createPackage: async (data: MockData): Promise<MockData> => ({
                   id: "test-package-id",
-                  projectId: data.projectId,
+                  environmentId: data.environmentId,
                   name: data.name,
                   description: data.description,
                   manifestPath: data.manifestPath,
@@ -108,7 +108,7 @@ mock.module("../storage/StorageManager", () => {
                   data: MockData,
                ): Promise<MockData> => ({
                   id,
-                  projectId: "test-project-id",
+                  environmentId: "test-project-id",
                   name: "test-package",
                   description: data.description,
                   manifestPath: "/test/manifest.json",
@@ -121,14 +121,14 @@ mock.module("../storage/StorageManager", () => {
 
                // ===== CONNECTION METHODS =====
                listConnections: async (
-                  _projectId: string,
+                  _environmentId: string,
                ): Promise<unknown[]> => [],
 
                getConnectionById: async (
                   id: string,
                ): Promise<MockData | null> => ({
                   id,
-                  projectId: "test-project-id",
+                  environmentId: "test-project-id",
                   name: "test-connection",
                   type: "postgres",
                   config: {},
@@ -137,13 +137,13 @@ mock.module("../storage/StorageManager", () => {
                }),
 
                getConnectionByName: async (
-                  _projectId: string,
+                  _environmentId: string,
                   _name: string,
                ): Promise<MockData | null> => null,
 
                createConnection: async (data: MockData): Promise<MockData> => ({
                   id: "test-connection-id",
-                  projectId: data.projectId,
+                  environmentId: data.environmentId,
                   name: data.name,
                   type: data.type,
                   config: data.config,
@@ -156,7 +156,7 @@ mock.module("../storage/StorageManager", () => {
                   data: MockData,
                ): Promise<MockData> => ({
                   id,
-                  projectId: "test-project-id",
+                  environmentId: "test-project-id",
                   name: "test-connection",
                   type: "postgres",
                   config: data.config || {},
@@ -182,8 +182,8 @@ const projectName = "organizationName-projectName";
 
 let sandbox: sinon.SinonSandbox;
 
-describe("ProjectStore Service", () => {
-   let projectStore: ProjectStore;
+describe("EnvironmentStore Service", () => {
+   let environmentStore: EnvironmentStore;
 
    beforeEach(async () => {
       // Clean up any existing test directory
@@ -200,7 +200,7 @@ describe("ProjectStore Service", () => {
       }));
 
       // Create project store after mocking
-      projectStore = new ProjectStore(serverRootPath);
+      environmentStore = new EnvironmentStore(serverRootPath);
    });
 
    afterEach(async () => {
@@ -214,7 +214,7 @@ describe("ProjectStore Service", () => {
 
    it("should not load a package if the project does not exist", async () => {
       await expect(
-         projectStore.getProject("non-existent-project"),
+         environmentStore.getEnvironment("non-existent-project"),
       ).rejects.toThrow();
    });
 
@@ -242,7 +242,7 @@ describe("ProjectStore Service", () => {
             publisherConfigPath,
             JSON.stringify({
                frozenConfig: false,
-               projects: [
+               environments: [
                   {
                      name: projectName,
                      packages: [
@@ -263,8 +263,8 @@ describe("ProjectStore Service", () => {
          );
 
          // Test that the project can be retrieved
-         const project = await projectStore.getProject(projectName);
-         expect(project).toBeInstanceOf(Project);
+         const project = await environmentStore.getEnvironment(projectName);
+         expect(project).toBeInstanceOf(Environment);
          expect(project.metadata.name).toBe(projectName);
       },
       { timeout: 30000 },
@@ -289,7 +289,7 @@ describe("ProjectStore Service", () => {
          publisherConfigPath,
          JSON.stringify({
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: projectName1,
                   packages: [
@@ -326,11 +326,11 @@ describe("ProjectStore Service", () => {
       );
 
       // Create a new project store that will read the configuration
-      const newProjectStore = new ProjectStore(serverRootPath);
-      await newProjectStore.finishedInitialization;
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
 
       // Test that both projects can be listed
-      const projects = await newProjectStore.listProjects();
+      const projects = await newEnvironmentStore.listEnvironments();
       expect(projects).toBeInstanceOf(Array);
       expect(projects.length).toBe(2);
       expect(projects.map((p) => p.name)).toContain(projectName1);
@@ -358,7 +358,7 @@ describe("ProjectStore Service", () => {
          publisherConfigPath,
          JSON.stringify({
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: projectName,
                   packages: [
@@ -372,10 +372,10 @@ describe("ProjectStore Service", () => {
          }),
       );
 
-      await projectStore.finishedInitialization;
+      await environmentStore.finishedInitialization;
 
       // Get the project
-      const project = await projectStore.getProject(projectName);
+      const project = await environmentStore.getEnvironment(projectName);
 
       // Update the project
       await project.update({
@@ -418,7 +418,7 @@ describe("ProjectStore Service", () => {
          writeFileSync(
             publisherConfigPath,
             JSON.stringify({
-               projects: [
+               environments: [
                   {
                      name: projectName,
                      packages: [
@@ -433,13 +433,13 @@ describe("ProjectStore Service", () => {
          );
 
          // Get the project
-         const project1 = await projectStore.getProject(projectName);
+         const project1 = await environmentStore.getEnvironment(projectName);
 
          // Get the project again with reload=true
-         const project2 = await projectStore.getProject(projectName, true);
+         const project2 = await environmentStore.getEnvironment(projectName, true);
 
-         expect(project1).toBeInstanceOf(Project);
-         expect(project2).toBeInstanceOf(Project);
+         expect(project1).toBeInstanceOf(Environment);
+         expect(project2).toBeInstanceOf(Environment);
          expect(project1.metadata.name).toBe(project2.metadata.name as string);
       },
       { timeout: 30000 },
@@ -454,7 +454,7 @@ describe("ProjectStore Service", () => {
       writeFileSync(
          publisherConfigPath,
          JSON.stringify({
-            projects: [
+            environments: [
                {
                   name: projectName,
                   packages: [
@@ -469,7 +469,7 @@ describe("ProjectStore Service", () => {
       );
 
       // Test that getting the project throws an error
-      await expect(projectStore.getProject(projectName)).rejects.toThrow();
+      await expect(environmentStore.getEnvironment(projectName)).rejects.toThrow();
    });
 
    it("should handle invalid publisher config", async () => {
@@ -481,11 +481,11 @@ describe("ProjectStore Service", () => {
       writeFileSync(publisherConfigPath, "invalid json");
 
       // Create a new project store that will read the invalid config
-      const newProjectStore = new ProjectStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
 
       // Test that the project store handles invalid JSON gracefully by falling back to empty config
-      await newProjectStore.finishedInitialization;
-      const projects = await newProjectStore.listProjects();
+      await newEnvironmentStore.finishedInitialization;
+      const projects = await newEnvironmentStore.listEnvironments();
       expect(projects).toEqual([]);
    });
 
@@ -499,7 +499,7 @@ describe("ProjectStore Service", () => {
          publisherConfigPath,
          JSON.stringify({
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   invalidKey1: "malloy-samples", // Invalid: should be "name"
                   invalidKey2: [
@@ -522,11 +522,11 @@ describe("ProjectStore Service", () => {
       );
 
       // Create a new project store that will read the invalid config
-      const newProjectStore = new ProjectStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
 
       // Test that the project store handles invalid fields gracefully without crashing
-      await newProjectStore.finishedInitialization;
-      const projects = await newProjectStore.listProjects();
+      await newEnvironmentStore.finishedInitialization;
+      const projects = await newEnvironmentStore.listEnvironments();
 
       // Should not crash and should return empty array since invalid projects are filtered out
       expect(projects).toEqual([]);
@@ -552,7 +552,7 @@ describe("ProjectStore Service", () => {
          publisherConfigPath,
          JSON.stringify({
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   // Invalid project: missing "name" field
                   packages: [
@@ -597,11 +597,11 @@ describe("ProjectStore Service", () => {
       );
 
       // Create a new project store that will read the config
-      const newProjectStore = new ProjectStore(serverRootPath);
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
 
       // Test that invalid projects are filtered out
-      await newProjectStore.finishedInitialization;
-      const projects = await newProjectStore.listProjects();
+      await newEnvironmentStore.finishedInitialization;
+      const projects = await newEnvironmentStore.listEnvironments();
 
       // Should only have the valid project
       expect(projects.length).toBe(1);
@@ -631,7 +631,7 @@ describe("ProjectStore Service", () => {
             publisherConfigPath,
             JSON.stringify({
                frozenConfig: false,
-               projects: [
+               environments: [
                   {
                      name: projectName,
                      packages: [
@@ -651,18 +651,18 @@ describe("ProjectStore Service", () => {
             }),
          );
 
-         await projectStore.finishedInitialization;
+         await environmentStore.finishedInitialization;
 
          // Test concurrent access to the same project
          const promises = Array.from({ length: 5 }, () =>
-            projectStore.getProject(projectName),
+            environmentStore.getEnvironment(projectName),
          );
 
          const projects = await Promise.all(promises);
 
          expect(projects).toHaveLength(5);
          projects.forEach((project) => {
-            expect(project).toBeInstanceOf(Project);
+            expect(project).toBeInstanceOf(Environment);
             expect(project.metadata.name).toBe(projectName);
          });
       },
@@ -672,7 +672,7 @@ describe("ProjectStore Service", () => {
 
 describe("Project Service Error Recovery", () => {
    let sandbox: sinon.SinonSandbox;
-   let projectStore: ProjectStore;
+   let environmentStore: EnvironmentStore;
    const serverRootPath = path.join(
       TEMP_DIR_PATH,
       "pathways-worker-publisher-error-recovery-test",
@@ -703,7 +703,7 @@ describe("Project Service Error Recovery", () => {
       }));
 
       // Create project store after mocking
-      projectStore = new ProjectStore(serverRootPath);
+      environmentStore = new EnvironmentStore(serverRootPath);
    });
 
    afterEach(async () => {
@@ -723,7 +723,7 @@ describe("Project Service Error Recovery", () => {
          writeFileSync(
             publisherConfigPath,
             JSON.stringify({
-               projects: [
+               environments: [
                   {
                      name: projectName,
                      packages: [
@@ -741,7 +741,7 @@ describe("Project Service Error Recovery", () => {
          );
 
          // Test that the project store handles the missing directory
-         await expect(projectStore.getProject(projectName)).rejects.toThrow();
+         await expect(environmentStore.getEnvironment(projectName)).rejects.toThrow();
       });
 
       it(
@@ -774,7 +774,7 @@ describe("Project Service Error Recovery", () => {
             writeFileSync(
                publisherConfigPath,
                JSON.stringify({
-                  projects: [
+                  environments: [
                      {
                         name: projectName,
                         packages: [
@@ -790,8 +790,8 @@ describe("Project Service Error Recovery", () => {
 
             // Test that the project store handles corrupted connection files gracefully
             // (The current implementation loads the project even with corrupted connection files)
-            const project = await projectStore.getProject(projectName);
-            expect(project).toBeInstanceOf(Project);
+            const project = await environmentStore.getEnvironment(projectName);
+            expect(project).toBeInstanceOf(Environment);
             expect(project.metadata.name).toBe(projectName);
          },
          { timeout: 30000 },
@@ -825,7 +825,7 @@ describe("Project Service Error Recovery", () => {
             writeFileSync(
                publisherConfigPath,
                JSON.stringify({
-                  projects: [
+                  environments: [
                      {
                         name: projectName,
                         packages: [
@@ -840,17 +840,17 @@ describe("Project Service Error Recovery", () => {
             );
 
             // Get the project successfully
-            const project = await projectStore.getProject(projectName);
-            expect(project).toBeInstanceOf(Project);
+            const project = await environmentStore.getEnvironment(projectName);
+            expect(project).toBeInstanceOf(Environment);
 
             // Try to get a non-existent project
             await expect(
-               projectStore.getProject("non-existent"),
+               environmentStore.getEnvironment("non-existent"),
             ).rejects.toThrow();
 
             // Verify the original project is still accessible
-            const projectAgain = await projectStore.getProject(projectName);
-            expect(projectAgain).toBeInstanceOf(Project);
+            const projectAgain = await environmentStore.getEnvironment(projectName);
+            expect(projectAgain).toBeInstanceOf(Environment);
             expect(projectAgain.metadata.name).toBe(projectName);
          },
          { timeout: 30000 },

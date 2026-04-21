@@ -19,14 +19,14 @@ export function useRawQueryData({
    enabled = true,
    resourceUri,
 }: UseRawQueryDataProps) {
-   const { projectName, packageName, versionId } =
+   const { environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
    const { data, isSuccess, isError, error, isLoading } = useQueryWithApiError({
       queryKey: [
          "rawQueryData",
-         projectName,
+         environmentName,
          packageName,
          modelPath,
          versionId,
@@ -36,7 +36,7 @@ export function useRawQueryData({
       ],
       queryFn: () =>
          apiClients.models.executeQueryModel(
-            projectName,
+            environmentName,
             packageName,
             modelPath,
             {

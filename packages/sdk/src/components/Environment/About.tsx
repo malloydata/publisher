@@ -16,14 +16,14 @@ interface AboutProps {
 }
 
 export default function About({ resourceUri }: AboutProps) {
-   const { projectName } = parseResourceUri(resourceUri);
+   const { environmentName } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
    const [expanded, setExpanded] = useState(false);
    const wordLimit = 90;
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: ["about", projectName],
-      queryFn: () => apiClients.projects.getProject(projectName, false),
+      queryKey: ["about", environmentName],
+      queryFn: () => apiClients.environments.getEnvironment(environmentName, false),
    });
 
    const readmeContent = data?.data?.readme || "";
@@ -93,7 +93,7 @@ export default function About({ resourceUri }: AboutProps) {
             </PackageCard>
          )}
          {isError && (
-            <ApiErrorDisplay error={error} context={`${projectName} > About`} />
+            <ApiErrorDisplay error={error} context={`${environmentName} > About`} />
          )}
       </>
    );

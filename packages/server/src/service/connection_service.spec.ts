@@ -2,27 +2,27 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 import { FrozenConfigError, ConnectionNotFoundError } from "../errors";
 import { ConnectionService } from "./connection_service";
-import { ProjectStore } from "./project_store";
+import { EnvironmentStore } from "./environment_store";
 import { components } from "../api";
 
 type ApiConnection = components["schemas"]["Connection"];
 
 describe("service/connection_service", () => {
    let connectionService: ConnectionService;
-   let mockProjectStore: Record<string, unknown>;
+   let mockEnvironmentStore: Record<string, unknown>;
    let mockRepository: Record<string, unknown>;
 
    beforeEach(() => {
       mockRepository = {
-         getProjectByName: sinon.stub(),
+         getEnvironmentByName: sinon.stub(),
          getConnectionByName: sinon.stub(),
          deleteConnection: sinon.stub(),
       };
 
-      mockProjectStore = {
+      mockEnvironmentStore = {
          finishedInitialization: Promise.resolve(),
          publisherConfigIsFrozen: false,
-         getProject: sinon.stub(),
+         getEnvironment: sinon.stub(),
          updateConnection: sinon.stub(),
          addConnection: sinon.stub(),
          storageManager: {
@@ -31,7 +31,7 @@ describe("service/connection_service", () => {
       };
 
       connectionService = new ConnectionService(
-         mockProjectStore as unknown as ProjectStore,
+         mockEnvironmentStore as unknown as EnvironmentStore,
       );
    });
 
@@ -51,7 +51,7 @@ describe("service/connection_service", () => {
 
          const mockDbConnection = {
             id: "conn-123",
-            projectId: "project-123",
+            environmentId: "project-123",
             name: "test-connection",
             type: "postgres" as const,
             config: {},
@@ -66,7 +66,7 @@ describe("service/connection_service", () => {
             },
          };
 
-         (mockRepository.getProjectByName as sinon.SinonStub).resolves(
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(
             mockDbProject,
          );
          (mockRepository.getConnectionByName as sinon.SinonStub).resolves(
@@ -78,13 +78,13 @@ describe("service/connection_service", () => {
             "test-connection",
          );
 
-         expect(result.dbProject).toEqual(mockDbProject);
+         expect(result.dbEnvironment).toEqual(mockDbProject);
          expect(result.dbConnection).toEqual(mockDbConnection);
          expect(result.repository).toBeDefined();
       });
 
       it("should throw error when project not found", async () => {
-         (mockRepository.getProjectByName as sinon.SinonStub).resolves(null);
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(null);
 
          await expect(
             connectionService.getConnection("non-existent", "test-connection"),
@@ -100,7 +100,7 @@ describe("service/connection_service", () => {
             updatedAt: new Date(),
          };
 
-         (mockRepository.getProjectByName as sinon.SinonStub).resolves(
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(
             mockDbProject,
          );
          (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
@@ -139,11 +139,11 @@ describe("service/connection_service", () => {
             metadata: { location: "/test/path" },
          };
 
-         (mockRepository.getProjectByName as sinon.SinonStub).resolves(
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(
             mockDbProject,
          );
          (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
 
          await connectionService.addConnection(
             "test-project",
@@ -152,13 +152,13 @@ describe("service/connection_service", () => {
          );
 
          expect(
-            (mockProjectStore.addConnection as sinon.SinonStub).called,
+            (mockEnvironmentStore.addConnection as sinon.SinonStub).called,
          ).toBe(true);
          expect(mockProject.updateConnections.called).toBe(true);
       });
 
       it("should throw FrozenConfigError when config is frozen", async () => {
-         mockProjectStore.publisherConfigIsFrozen = true;
+         mockEnvironmentStore.publisherConfigIsFrozen = true;
 
          await expect(
             connectionService.addConnection("test-project", "new-connection", {
@@ -169,7 +169,7 @@ describe("service/connection_service", () => {
       });
 
       it("should throw error when project not found", async () => {
-         (mockRepository.getProjectByName as sinon.SinonStub).resolves(null);
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(null);
 
          await expect(
             connectionService.addConnection("non-existent", "new-connection", {
@@ -193,7 +193,7 @@ describe("service/connection_service", () => {
             name: "existing-connection",
          };
 
-         (mockRepository.getProjectByName as sinon.SinonStub).resolves(
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(
             mockDbProject,
          );
          (mockRepository.getConnectionByName as sinon.SinonStub).resolves(
@@ -249,11 +249,11 @@ describe("service/connection_service", () => {
             metadata: { location: "/test/path" },
          };
 
-         (mockRepository.getProjectByName as sinon.SinonStub).resolves(
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves(
             mockDbProject,
          );
          (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
 
          await connectionService.addConnection(
             "test-project",
@@ -310,14 +310,14 @@ describe("service/connection_service", () => {
             "getConnection",
          );
          getConnectionStub.resolves({
-            dbProject: mockDbProject,
+            dbEnvironment: mockDbProject,
             dbConnection: mockDbConnection,
             repository: mockRepository,
          } as unknown as Awaited<
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
 
          const updates: Partial<ApiConnection> = {
             type: "postgres",
@@ -341,7 +341,7 @@ describe("service/connection_service", () => {
          ).toBe(true);
 
          expect(
-            (mockProjectStore.getProject as sinon.SinonStub).calledWith(
+            (mockEnvironmentStore.getEnvironment as sinon.SinonStub).calledWith(
                "test-project",
                false,
             ),
@@ -350,17 +350,17 @@ describe("service/connection_service", () => {
          expect(mockProject.updateConnections.called).toBe(true);
 
          expect(
-            (mockProjectStore.updateConnection as sinon.SinonStub).called,
+            (mockEnvironmentStore.updateConnection as sinon.SinonStub).called,
          ).toBe(true);
          const updateCall = (
-            mockProjectStore.updateConnection as sinon.SinonStub
+            mockEnvironmentStore.updateConnection as sinon.SinonStub
          ).getCall(0);
          expect(updateCall.args[0].name).toBe("test-connection");
          expect(updateCall.args[1]).toBe("project-123");
       });
 
       it("should throw FrozenConfigError when config is frozen", async () => {
-         mockProjectStore.publisherConfigIsFrozen = true;
+         mockEnvironmentStore.publisherConfigIsFrozen = true;
 
          await expect(
             connectionService.updateConnection(
@@ -414,14 +414,14 @@ describe("service/connection_service", () => {
             "getConnection",
          );
          getConnectionStub.resolves({
-            dbProject: mockDbProject,
+            dbEnvironment: mockDbProject,
             dbConnection: connection1,
             repository: mockRepository,
          } as unknown as Awaited<
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
 
          await connectionService.updateConnection("test-project", "conn-1", {
             type: "postgres",
@@ -471,14 +471,14 @@ describe("service/connection_service", () => {
             "getConnection",
          );
          getConnectionStub.resolves({
-            dbProject: mockDbProject,
+            dbEnvironment: mockDbProject,
             dbConnection: existingConnection,
             repository: mockRepository,
          } as unknown as Awaited<
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
 
          const partialUpdate: Partial<ApiConnection> = {
             type: "postgres",
@@ -498,10 +498,10 @@ describe("service/connection_service", () => {
          );
 
          expect(
-            (mockProjectStore.updateConnection as sinon.SinonStub).called,
+            (mockEnvironmentStore.updateConnection as sinon.SinonStub).called,
          ).toBe(true);
          const updateCall = (
-            mockProjectStore.updateConnection as sinon.SinonStub
+            mockEnvironmentStore.updateConnection as sinon.SinonStub
          ).getCall(0);
          const updatedConn = updateCall.args[0];
 
@@ -541,14 +541,14 @@ describe("service/connection_service", () => {
             "getConnection",
          );
          getConnectionStub.resolves({
-            dbProject: mockDbProject,
+            dbEnvironment: mockDbProject,
             dbConnection: dbConnection,
             repository: mockRepository,
          } as unknown as Awaited<
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
 
          await connectionService.updateConnection("test-project", "test-conn", {
             type: "postgres",
@@ -564,7 +564,7 @@ describe("service/connection_service", () => {
          expect(getConnectionStub.calledOnce).toBe(true);
 
          const updateCall = (
-            mockProjectStore.updateConnection as sinon.SinonStub
+            mockEnvironmentStore.updateConnection as sinon.SinonStub
          ).getCall(0);
          expect(updateCall.args[0].name).toBe("test-conn");
          expect(updateCall.args[0].type).toBe("postgres");
@@ -594,7 +594,7 @@ describe("service/connection_service", () => {
             ReturnType<typeof connectionService.getConnection>
          >);
 
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(mockProject);
 
          await connectionService.deleteConnection(
             "test-project",
@@ -612,7 +612,7 @@ describe("service/connection_service", () => {
       });
 
       it("should throw FrozenConfigError when config is frozen", async () => {
-         mockProjectStore.publisherConfigIsFrozen = true;
+         mockEnvironmentStore.publisherConfigIsFrozen = true;
 
          await expect(
             connectionService.deleteConnection(

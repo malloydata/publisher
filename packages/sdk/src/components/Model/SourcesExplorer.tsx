@@ -142,7 +142,7 @@ function SourceExplorerComponentInner({
       }
    }, [onChange, query]);
    const {
-      projectName: projectName,
+      environmentName: environmentName,
       packageName: packageName,
       versionId: versionId,
    } = parseResourceUri(resourceUri);
@@ -178,7 +178,7 @@ function SourceExplorerComponentInner({
             query: malloy,
          });
          return apiClients.models.executeQueryModel(
-            projectName,
+            environmentName,
             packageName,
             sourceAndPath.modelPath,
             {

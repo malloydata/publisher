@@ -1,12 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 
 import { formatDuration, logger } from "../logger";
 import { registerPromptCapability } from "./prompts/prompt_service.js";
+import { registerEnvironmentResource } from "./resources/environment_resource";
 import { registerModelResource } from "./resources/model_resource";
 import { registerNotebookResource } from "./resources/notebook_resource";
 import { registerPackageResource } from "./resources/package_resource";
-import { registerProjectResource } from "./resources/project_resource";
 import { registerQueryResource } from "./resources/query_resource";
 import { registerSourceResource } from "./resources/source_resource";
 import { registerViewResource } from "./resources/view_resource";
@@ -20,38 +20,40 @@ export const testServerInfo = {
    description: "Provides access to Malloy models and query execution via MCP.",
 };
 
-export function initializeMcpServer(projectStore: ProjectStore): McpServer {
+export function initializeMcpServer(
+   environmentStore: EnvironmentStore,
+): McpServer {
    logger.info("[MCP Init] Starting initializeMcpServer...");
    const startTime = performance.now();
 
    const mcpServer = new McpServer(testServerInfo);
 
    logger.info("[MCP Init] Registering environment resource...");
-   registerProjectResource(mcpServer, projectStore);
+   registerEnvironmentResource(mcpServer, environmentStore);
    logger.info("[MCP Init] Registering package resource...");
-   registerPackageResource(mcpServer, projectStore);
+   registerPackageResource(mcpServer, environmentStore);
 
    // Register more specific templates first
    logger.info("[MCP Init] Registering notebook resource...");
-   registerNotebookResource(mcpServer, projectStore);
+   registerNotebookResource(mcpServer, environmentStore);
    logger.info("[MCP Init] Registering source resource...");
-   registerSourceResource(mcpServer, projectStore);
+   registerSourceResource(mcpServer, environmentStore);
    logger.info("[MCP Init] Registering query resource...");
-   registerQueryResource(mcpServer, projectStore);
+   registerQueryResource(mcpServer, environmentStore);
    logger.info("[MCP Init] Registering view resource...");
-   registerViewResource(mcpServer, projectStore);
+   registerViewResource(mcpServer, environmentStore);
 
    // Register the general model template last among resource types
    logger.info("[MCP Init] Registering model resource...");
-   registerModelResource(mcpServer, projectStore);
+   registerModelResource(mcpServer, environmentStore);
 
    logger.info("[MCP Init] Registering executeQuery tool...");
-   registerExecuteQueryTool(mcpServer, projectStore);
+   registerExecuteQueryTool(mcpServer, environmentStore);
 
-   registerTools(mcpServer, projectStore);
+   registerTools(mcpServer, environmentStore);
 
    logger.info("[MCP Init] Registering prompt capability...");
-   registerPromptCapability(mcpServer, projectStore);
+   registerPromptCapability(mcpServer, environmentStore);
 
    const endTime = performance.now();
    logger.info(`[MCP Init] Finished initializeMcpServer`, {

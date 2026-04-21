@@ -8,15 +8,15 @@ import { useServer } from "../ServerProvider";
  * useQueryWithApiError to fetch a compiled model.
  */
 export function useModelData(resourceUri: string, enabled: boolean = true) {
-   const { modelPath, projectName, packageName, versionId } =
+   const { modelPath, environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
    return useQueryWithApiError<CompiledModel>({
-      queryKey: ["package", projectName, packageName, modelPath, versionId],
+      queryKey: ["package", environmentName, packageName, modelPath, versionId],
       queryFn: async () => {
          const response = await apiClients.models.getModel(
-            projectName,
+            environmentName,
             packageName,
             modelPath,
             versionId,

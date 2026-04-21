@@ -35,10 +35,10 @@ export default function AddPackageDialog({
       setOpen(false);
    };
 
-   const { projectName } = parseResourceUri(resourceUri);
+   const { environmentName } = parseResourceUri(resourceUri);
    const addPackage = useMutationWithApiError({
       async mutationFn(variables: Package) {
-         return apiClients.packages.createPackage(projectName, {
+         return apiClients.packages.createPackage(environmentName, {
             name: variables.name,
             description: variables.description,
             location: variables.location,
@@ -47,7 +47,7 @@ export default function AddPackageDialog({
       onSuccess() {
          handleClose();
          setNotificationMessage("Package created successfully");
-         queryClient.invalidateQueries({ queryKey: ["packages", projectName] });
+         queryClient.invalidateQueries({ queryKey: ["packages", environmentName] });
       },
       onError(error) {
          setNotificationMessage(

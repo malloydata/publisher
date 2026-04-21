@@ -28,7 +28,7 @@ let originalServerRoot: string | undefined;
  */
 export async function startE2E(): Promise<E2EEnv & { stop(): Promise<void> }> {
    //--------------------------------------------------------------------------
-   // 1.  Set SERVER_ROOT so ProjectStore loader finds publisher.config.json
+   // 1.  Set SERVER_ROOT so EnvironmentStore loader finds publisher.config.json
    //--------------------------------------------------------------------------
    originalServerRoot = process.env.SERVER_ROOT;
    // Use import.meta.url for cross-platform compatibility (works on Windows)

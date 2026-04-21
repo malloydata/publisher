@@ -1,123 +1,133 @@
 import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
-import { createProjectConnections } from "./connection";
-import { ProjectStore } from "./project_store";
+import { createEnvironmentConnections } from "./connection";
+import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 
 export class ConnectionService {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
 
-   constructor(projectStore: ProjectStore) {
-      this.projectStore = projectStore;
+   constructor(environmentStore: EnvironmentStore) {
+      this.environmentStore = environmentStore;
    }
 
-   public async getConnection(projectName: string, connectionName: string) {
-      await this.projectStore.finishedInitialization;
+   public async getConnection(environmentName: string, connectionName: string) {
+      await this.environmentStore.finishedInitialization;
 
-      const repository = this.projectStore.storageManager.getRepository();
-      const dbProject = await repository.getProjectByName(projectName);
+      const repository = this.environmentStore.storageManager.getRepository();
+      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
 
-      if (!dbProject) {
-         throw new Error(`Environment "${projectName}" not found in database`);
+      if (!dbEnvironment) {
+         throw new Error(
+            `Environment "${environmentName}" not found in database`,
+         );
       }
 
       const dbConnection = await repository.getConnectionByName(
-         dbProject.id,
+         dbEnvironment.id,
          connectionName,
       );
 
       if (!dbConnection) {
          throw new ConnectionNotFoundError(
-            `Connection "${connectionName}" not found in environment "${projectName}"`,
+            `Connection "${connectionName}" not found in environment "${environmentName}"`,
          );
       }
 
-      return { dbProject, dbConnection, repository };
+      return { dbEnvironment, dbConnection, repository };
    }
 
    public async addConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       connection: ApiConnection,
    ): Promise<void> {
-      await this.projectStore.finishedInitialization;
+      await this.environmentStore.finishedInitialization;
 
-      if (this.projectStore.publisherConfigIsFrozen) {
+      if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
 
       logger.info(
-         `Adding connection "${connectionName}" to environment "${projectName}"`,
+         `Adding connection "${connectionName}" to environment "${environmentName}"`,
       );
 
       // Get database environment record and repository
-      const repository = this.projectStore.storageManager.getRepository();
-      const dbProject = await repository.getProjectByName(projectName);
+      const repository = this.environmentStore.storageManager.getRepository();
+      const dbEnvironment = await repository.getEnvironmentByName(environmentName);
 
-      if (!dbProject) {
-         throw new Error(`Environment "${projectName}" not found in database`);
+      if (!dbEnvironment) {
+         throw new Error(
+            `Environment "${environmentName}" not found in database`,
+         );
       }
 
       // Check if connection already exists in database
       const existingDbConn = await repository.getConnectionByName(
-         dbProject.id,
+         dbEnvironment.id,
          connectionName!,
       );
 
       if (existingDbConn) {
          throw new Error(
-            `Connection "${connectionName}" already exists in environment "${projectName}".`,
+            `Connection "${connectionName}" already exists in environment "${environmentName}".`,
          );
       }
 
       // Update in-memory connections
-      const project = await this.projectStore.getProject(projectName, false);
-      const existingConnections = project.listApiConnections();
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const existingConnections = environment.listApiConnections();
 
       const { malloyConnections, apiConnections } =
-         await createProjectConnections(
+         await createEnvironmentConnections(
             [...existingConnections, connection],
-            project.metadata.location || "",
+            environment.metadata.location || "",
          );
 
-      project.updateConnections(malloyConnections, apiConnections);
+      environment.updateConnections(malloyConnections, apiConnections);
 
-      await this.projectStore.addConnection(
+      await this.environmentStore.addConnection(
          connection,
-         dbProject.id,
+         dbEnvironment.id,
          repository,
       );
 
       logger.info(
-         `Successfully added connection "${connection.name}" to environment "${projectName}"`,
+         `Successfully added connection "${connection.name}" to environment "${environmentName}"`,
       );
    }
 
    public async updateConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       connection: Partial<ApiConnection>,
    ): Promise<void> {
-      await this.projectStore.finishedInitialization;
+      await this.environmentStore.finishedInitialization;
 
-      if (this.projectStore.publisherConfigIsFrozen) {
+      if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
 
       logger.info(
-         `Updating connection "${connectionName}" in environment "${projectName}"`,
+         `Updating connection "${connectionName}" in environment "${environmentName}"`,
       );
 
-      const { dbProject, dbConnection, repository } = await this.getConnection(
-         projectName,
+      const { dbEnvironment, dbConnection, repository } = await this.getConnection(
+         environmentName,
          connectionName,
       );
 
       // Update in-memory connections
-      const project = await this.projectStore.getProject(projectName, false);
-      const existingConnections = project.listApiConnections();
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const existingConnections = environment.listApiConnections();
 
       const updatedConnection = {
          ...dbConnection.config,
@@ -130,52 +140,55 @@ export class ConnectionService {
       );
 
       const { malloyConnections, apiConnections } =
-         await createProjectConnections(
+         await createEnvironmentConnections(
             updatedConnections,
-            project.metadata.location || "",
+            environment.metadata.location || "",
          );
 
-      project.updateConnections(malloyConnections, apiConnections);
+      environment.updateConnections(malloyConnections, apiConnections);
 
-      await this.projectStore.updateConnection(
+      await this.environmentStore.updateConnection(
          updatedConnection,
-         dbProject.id,
+         dbEnvironment.id,
          repository,
       );
 
       logger.info(
-         `Successfully updated connection "${connectionName}" in environment "${projectName}"`,
+         `Successfully updated connection "${connectionName}" in environment "${environmentName}"`,
       );
    }
 
    public async deleteConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
    ): Promise<void> {
-      await this.projectStore.finishedInitialization;
+      await this.environmentStore.finishedInitialization;
 
-      if (this.projectStore.publisherConfigIsFrozen) {
+      if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
 
       logger.info(
-         `Deleting connection "${connectionName}" from environment "${projectName}"`,
+         `Deleting connection "${connectionName}" from environment "${environmentName}"`,
       );
 
       const { dbConnection, repository } = await this.getConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 
       // Update in-memory connections
-      const project = await this.projectStore.getProject(projectName, false);
-      await project.deleteConnection(connectionName);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      await environment.deleteConnection(connectionName);
 
       // Delete from database
       await repository.deleteConnection(dbConnection.id);
 
       logger.info(
-         `Successfully deleted connection "${connectionName}" from environment "${projectName}"`,
+         `Successfully deleted connection "${connectionName}" from environment "${environmentName}"`,
       );
    }
 }

@@ -32,16 +32,16 @@ export function ModelPicker({
    resourceUri,
 }: ModelPickerProps) {
    const {
-      projectName: projectName,
+      environmentName: environmentName,
       packageName: packageName,
       versionId: versionId,
    } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
    const { data, isLoading, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: ["models", projectName, packageName, versionId],
+      queryKey: ["models", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.models.listModels(projectName, packageName, versionId),
+         apiClients.models.listModels(environmentName, packageName, versionId),
    });
    const [selectedModels, setSelectedModels] = React.useState<string[]>(
       initialSelectedModels || [],
@@ -76,7 +76,7 @@ export function ModelPicker({
       return (
          <ApiErrorDisplay
             error={error}
-            context={`${projectName} > ${packageName} > Model Picker`}
+            context={`${environmentName} > ${packageName} > Model Picker`}
          />
       );
    }

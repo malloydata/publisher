@@ -12,13 +12,13 @@ import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
    ConnectionNotFoundError,
+   EnvironmentNotFoundError,
    PackageNotFoundError,
-   ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
 import { URL_READER } from "../utils";
 import {
-   createProjectConnections,
+   createEnvironmentConnections,
    deleteDuckLakeConnectionFile,
    InternalConnection,
 } from "./connection";
@@ -38,68 +38,70 @@ interface PackageInfo {
 }
 
 type ApiPackage = components["schemas"]["Package"];
-type ApiProject = components["schemas"]["Project"];
+type ApiEnvironment = components["schemas"]["Environment"];
 
-export class Project {
+export class Environment {
    private packages: Map<string, Package> = new Map();
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
    private malloyConnections: Map<string, Connection>;
    private apiConnections: ApiConnection[];
-   private projectPath: string;
-   private projectName: string;
-   public metadata: ApiProject;
+   private environmentPath: string;
+   private environmentName: string;
+   public metadata: ApiEnvironment;
 
    constructor(
-      projectName: string,
-      projectPath: string,
+      environmentName: string,
+      environmentPath: string,
       malloyConnections: Map<string, Connection>,
       apiConnections: InternalConnection[],
    ) {
-      this.projectName = projectName;
-      this.projectPath = projectPath;
+      this.environmentName = environmentName;
+      this.environmentPath = environmentPath;
       this.malloyConnections = malloyConnections;
       this.apiConnections = apiConnections;
       this.metadata = {
-         resource: `${API_PREFIX}/environments/${this.projectName}`,
-         name: this.projectName,
-         location: this.projectPath,
+         resource: `${API_PREFIX}/environments/${this.environmentName}`,
+         name: this.environmentName,
+         location: this.environmentPath,
       };
-      void this.reloadProjectMetadata();
+      void this.reloadEnvironmentMetadata();
    }
 
-   private async writeProjectReadme(readme?: string): Promise<void> {
+   private async writeEnvironmentReadme(readme?: string): Promise<void> {
       if (readme === undefined) return;
 
-      const readmePath = path.join(this.projectPath, "README.md");
+      const readmePath = path.join(this.environmentPath, "README.md");
 
       try {
          await fs.promises.writeFile(readmePath, readme, "utf-8");
-         logger.info(`Updated README.md for environment ${this.projectName}`);
+         logger.info(
+            `Updated README.md for environment ${this.environmentName}`,
+         );
       } catch (err) {
          logger.error(`Failed to write README.md`, { error: err });
          throw new Error(`Failed to update environment README`);
       }
    }
 
-   public async update(payload: ApiProject) {
+   public async update(payload: ApiEnvironment) {
       if (payload.readme !== undefined) {
          this.metadata.readme = payload.readme;
-         await this.writeProjectReadme(payload.readme);
+         await this.writeEnvironmentReadme(payload.readme);
       }
 
       // Handle connections update
       // TODO: Update environment connections should have its own API endpoint
       if (payload.connections) {
          logger.info(
-            `Updating ${payload.connections.length} connections for environment ${this.projectName}`,
+            `Updating ${payload.connections.length} connections for environment ${this.environmentName}`,
          );
          const isUpdateConnectionRequest = true;
          // Reload connections with full config
          const { malloyConnections, apiConnections } =
-            await createProjectConnections(
+            await createEnvironmentConnections(
                payload.connections,
-               this.projectPath,
+               this.environmentPath,
                isUpdateConnectionRequest,
             );
 
@@ -108,7 +110,7 @@ export class Project {
          this.apiConnections = apiConnections;
 
          logger.info(
-            `Successfully updated connections for environment ${this.projectName}`,
+            `Successfully updated connections for environment ${this.environmentName}`,
             {
                malloyConnections: malloyConnections.size,
                apiConnections: apiConnections.length,
@@ -121,51 +123,53 @@ export class Project {
    }
 
    static async create(
-      projectName: string,
-      projectPath: string,
+      environmentName: string,
+      environmentPath: string,
       connections: ApiConnection[],
-   ): Promise<Project> {
-      if (!(await fs.promises.stat(projectPath))?.isDirectory()) {
-         throw new ProjectNotFoundError(
-            `Environment path ${projectPath} not found`,
+   ): Promise<Environment> {
+      if (!(await fs.promises.stat(environmentPath))?.isDirectory()) {
+         throw new EnvironmentNotFoundError(
+            `Environment path ${environmentPath} not found`,
          );
       }
 
       logger.info(`Creating environment with connection configuration`);
       const { malloyConnections, apiConnections } =
-         await createProjectConnections(connections, projectPath);
+         await createEnvironmentConnections(connections, environmentPath);
 
       logger.info(
-         `Loaded ${malloyConnections.size + apiConnections.length} connections for environment ${projectName}`,
+         `Loaded ${malloyConnections.size + apiConnections.length} connections for environment ${environmentName}`,
          {
             malloyConnections,
             apiConnections,
          },
       );
 
-      const project = new Project(
-         projectName,
-         projectPath,
+      const environment = new Environment(
+         environmentName,
+         environmentPath,
          malloyConnections,
          apiConnections,
       );
 
-      return project;
+      return environment;
    }
 
-   public async reloadProjectMetadata(): Promise<ApiProject> {
+   public async reloadEnvironmentMetadata(): Promise<ApiEnvironment> {
       let readme = "";
       try {
          readme = (
-            await fs.promises.readFile(path.join(this.projectPath, README_NAME))
+            await fs.promises.readFile(
+               path.join(this.environmentPath, README_NAME),
+            )
          ).toString();
       } catch {
          // Readme not found, so we'll just return an empty string
       }
       this.metadata = {
          ...this.metadata,
-         resource: `${API_PREFIX}/environments/${this.projectName}`,
-         name: this.projectName,
+         resource: `${API_PREFIX}/environments/${this.environmentName}`,
+         name: this.environmentName,
          readme,
       };
       return this.metadata;
@@ -179,14 +183,14 @@ export class Project {
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
       // Place the virtual file in the model's directory so relative imports resolve correctly.
       const modelDir = path.dirname(
-         path.join(this.projectPath, packageName, modelName),
+         path.join(this.environmentPath, packageName, modelName),
       );
       const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
       const virtualUrl = new URL(virtualUri);
 
       // Read the full model file so the submitted source inherits the model's
       // complete namespace — imports, source definitions, queries, etc.
-      const modelPath = path.join(this.projectPath, packageName, modelName);
+      const modelPath = path.join(this.environmentPath, packageName, modelName);
       let modelContent = "";
       try {
          modelContent = await fs.promises.readFile(modelPath, "utf8");
@@ -269,7 +273,9 @@ export class Project {
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
-      logger.debug("Listing packages", { projectPath: this.projectPath });
+      logger.debug("Listing packages", {
+         environmentPath: this.environmentPath,
+      });
       try {
          const packageMetadata = await Promise.all(
             Array.from(this.packageStatuses.keys()).map(async (packageName) => {
@@ -355,9 +361,9 @@ export class Project {
 
          try {
             logger.debug(`Loading package ${packageName}...`);
-            const packagePath = path.join(this.projectPath, packageName);
+            const packagePath = path.join(this.environmentPath, packageName);
             const _package = await Package.create(
-               this.projectName,
+               this.environmentName,
                packageName,
                packagePath,
                this.malloyConnections,
@@ -381,7 +387,7 @@ export class Project {
    }
 
    public async addPackage(packageName: string) {
-      const packagePath = path.join(this.projectPath, packageName);
+      const packagePath = path.join(this.environmentPath, packageName);
       if (
          !(await fs.promises
             .access(packagePath)
@@ -392,7 +398,7 @@ export class Project {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
       logger.info(
-         `Adding package ${packageName} to environment ${this.projectName}`,
+         `Adding package ${packageName} to environment ${this.environmentName}`,
          {
             packagePath,
             malloyConnections: this.malloyConnections,
@@ -403,7 +409,7 @@ export class Project {
          this.packages.set(
             packageName,
             await Package.create(
-               this.projectName,
+               this.environmentName,
                packageName,
                packagePath,
                this.malloyConnections,
@@ -422,7 +428,7 @@ export class Project {
       packageName: string,
       metadata: { name: string; description?: string },
    ): Promise<void> {
-      const packagePath = path.join(this.projectPath, packageName);
+      const packagePath = path.join(this.environmentPath, packageName);
       const manifestPath = path.join(packagePath, "publisher.json");
 
       try {
@@ -505,12 +511,12 @@ export class Project {
 
       if (packageStatus?.status === PackageStatus.LOADING) {
          logger.error("Package loading. Can't unload.", {
-            projectName: this.projectName,
+            environmentName: this.environmentName,
             packageName,
          });
          throw new Error(
             "Package loading. Can't unload. " +
-               this.projectName +
+               this.environmentName +
                " " +
                packageName,
          );
@@ -519,14 +525,18 @@ export class Project {
       }
 
       try {
-         await fs.promises.rm(path.join(this.projectPath, packageName), {
+         await fs.promises.rm(path.join(this.environmentPath, packageName), {
             recursive: true,
             force: true,
          });
       } catch (err) {
          logger.error(
             "Error removing package directory while unloading package",
-            { error: err, projectName: this.projectName, packageName },
+            {
+               error: err,
+               environmentName: this.environmentName,
+               packageName,
+            },
          );
       }
 
@@ -564,11 +574,11 @@ export class Project {
 
       if (isDeleted || index !== -1) {
          logger.info(
-            `Removed connection ${connectionName} from environment ${this.projectName}`,
+            `Removed connection ${connectionName} from environment ${this.environmentName}`,
          );
       } else {
          logger.warn(
-            `Connection ${connectionName} not found in environment ${this.projectName}`,
+            `Connection ${connectionName} not found in environment ${this.environmentName}`,
          );
       }
    }
@@ -579,11 +589,11 @@ export class Project {
          try {
             connection.close();
             logger.info(
-               `Closed connection ${connectionName} for environment ${this.projectName}`,
+               `Closed connection ${connectionName} for environment ${this.environmentName}`,
             );
          } catch (error) {
             logger.error(
-               `Error closing connection ${connectionName} for environment ${this.projectName}`,
+               `Error closing connection ${connectionName} for environment ${this.environmentName}`,
                { error },
             );
          }
@@ -593,10 +603,12 @@ export class Project {
       this.malloyConnections.clear();
       this.apiConnections = [];
 
-      logger.info(`Closed all connections for environment ${this.projectName}`);
+      logger.info(
+         `Closed all connections for environment ${this.environmentName}`,
+      );
    }
 
-   public async serialize(): Promise<ApiProject> {
+   public async serialize(): Promise<ApiEnvironment> {
       return {
          ...this.metadata,
          connections: this.listApiConnections(),
@@ -606,7 +618,7 @@ export class Project {
 
    public async deleteDuckDBConnection(connectionName: string): Promise<void> {
       const duckdbPath = path.join(
-         this.projectPath,
+         this.environmentPath,
          `${connectionName}.duckdb`,
       );
       fs.promises
@@ -616,19 +628,19 @@ export class Project {
                .rm(duckdbPath)
                .then(() => {
                   logger.info(
-                     `Removed DuckDB connection file ${connectionName} from environment ${this.projectName}`,
+                     `Removed DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
                   );
                })
                .catch((error) => {
                   logger.error(
-                     `Failed to remove DuckDB connection file ${connectionName} from environment ${this.projectName}`,
+                     `Failed to remove DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
                      { error },
                   );
                });
          })
          .catch((error) => {
             logger.error(
-               `Failed to remove DuckDB connection file ${connectionName} from environment ${this.projectName}`,
+               `Failed to remove DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
                { error },
             );
          });
@@ -637,9 +649,9 @@ export class Project {
    public async deleteDuckLakeConnection(
       connectionName: string,
    ): Promise<void> {
-      await deleteDuckLakeConnectionFile(connectionName, this.projectPath);
+      await deleteDuckLakeConnectionFile(connectionName, this.environmentPath);
       logger.info(
-         `Removed DuckLake connection ${connectionName} from environment ${this.projectName}`,
+         `Removed DuckLake connection ${connectionName} from environment ${this.environmentName}`,
       );
    }
 }

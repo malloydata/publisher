@@ -37,7 +37,7 @@ import { MaterializationController } from "./controller/materialization.controll
 import { initializeMcpServer } from "./mcp/server";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
-import { ProjectStore } from "./service/project_store";
+import { EnvironmentStore } from "./service/environment_store";
 
 /** Normalize an Express query param into a string[] or undefined. */
 export function normalizeQueryArray(value: unknown): string[] | undefined {
@@ -136,24 +136,27 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
-const projectStore = new ProjectStore(SERVER_ROOT);
-const manifestService = new ManifestService(projectStore);
-const watchModeController = new WatchModeController(projectStore);
-const connectionController = new ConnectionController(projectStore);
-const modelController = new ModelController(projectStore);
-const packageController = new PackageController(projectStore, manifestService);
-const databaseController = new DatabaseController(projectStore);
-const queryController = new QueryController(projectStore);
-const compileController = new CompileController(projectStore);
+const environmentStore = new EnvironmentStore(SERVER_ROOT);
+const manifestService = new ManifestService(environmentStore);
+const watchModeController = new WatchModeController(environmentStore);
+const connectionController = new ConnectionController(environmentStore);
+const modelController = new ModelController(environmentStore);
+const packageController = new PackageController(
+   environmentStore,
+   manifestService,
+);
+const databaseController = new DatabaseController(environmentStore);
+const queryController = new QueryController(environmentStore);
+const compileController = new CompileController(environmentStore);
 const materializationService = new MaterializationService(
-   projectStore,
+   environmentStore,
    manifestService,
 );
 const materializationController = new MaterializationController(
    materializationService,
 );
 const manifestController = new ManifestController(
-   projectStore,
+   environmentStore,
    manifestService,
 );
 
@@ -185,7 +188,7 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
             });
          };
 
-         const requestMcpServer = initializeMcpServer(projectStore);
+         const requestMcpServer = initializeMcpServer(environmentStore);
          await requestMcpServer.connect(transport);
 
          res.on("close", () => {
@@ -302,7 +305,7 @@ app.use(drainingGuard);
 
 app.get(`${API_PREFIX}/status`, async (_req, res) => {
    try {
-      const status = await projectStore.getStatus();
+      const status = await environmentStore.getStatus();
       res.status(200).json(status);
    } catch (error) {
       logger.error("Error getting status", { error });
@@ -317,7 +320,7 @@ app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
 
 app.get(`${API_PREFIX}/environments`, async (_req, res) => {
    try {
-      res.status(200).json(await projectStore.listProjects());
+      res.status(200).json(await environmentStore.listEnvironments());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -327,9 +330,9 @@ app.get(`${API_PREFIX}/environments`, async (_req, res) => {
 
 app.post(`${API_PREFIX}/environments`, async (req, res) => {
    try {
-      logger.info("Adding project", { body: req.body });
-      const project = await projectStore.addProject(req.body);
-      res.status(200).json(await project.serialize());
+      logger.info("Adding environment", { body: req.body });
+      const environment = await environmentStore.addEnvironment(req.body);
+      res.status(200).json(await environment.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -339,11 +342,11 @@ app.post(`${API_PREFIX}/environments`, async (req, res) => {
 
 app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
    try {
-      const project = await projectStore.getProject(
+      const environment = await environmentStore.getEnvironment(
          req.params.environmentName,
          req.query.reload === "true",
       );
-      res.status(200).json(await project.serialize());
+      res.status(200).json(await environment.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -353,8 +356,8 @@ app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
 
 app.patch(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
    try {
-      const project = await projectStore.updateProject(req.body);
-      res.status(200).json(await project.serialize());
+      const environment = await environmentStore.updateEnvironment(req.body);
+      res.status(200).json(await environment.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -364,10 +367,10 @@ app.patch(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
 
 app.delete(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
    try {
-      const project = await projectStore.deleteProject(
+      const environment = await environmentStore.deleteEnvironment(
          req.params.environmentName,
       );
-      res.status(200).json(await project?.serialize());
+      res.status(200).json(await environment?.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);

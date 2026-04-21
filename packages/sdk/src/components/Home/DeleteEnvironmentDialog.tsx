@@ -9,16 +9,16 @@ import CloseIcon from "@mui/icons-material/Close";
 import Typography from "@mui/material/Typography";
 import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
 import { Delete } from "@mui/icons-material";
+import { Environment } from "../../client";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { useServer } from "../ServerProvider";
 import { useQueryClient } from "@tanstack/react-query";
-import { parseResourceUri } from "../../utils/formatting";
 
-export default function DeletePackageDialog({
-   resourceUri,
+export default function DeleteEnvironmentDialog({
+   environment,
    onCloseDialog,
 }: {
-   resourceUri: string;
+   environment: Environment;
    onCloseDialog: () => void;
 }) {
    const [open, setOpen] = useState(false);
@@ -32,15 +32,14 @@ export default function DeletePackageDialog({
       setOpen(false);
       onCloseDialog();
    };
-   const { projectName, packageName } = parseResourceUri(resourceUri);
 
-   const deletePackage = useMutationWithApiError({
+   const deleteEnvironment = useMutationWithApiError({
       mutationFn: () =>
-         apiClients.packages.deletePackage(projectName, packageName),
+         apiClients.environments.deleteEnvironment(environment.name),
       onSuccess() {
          handleClose();
-         queryClient.invalidateQueries({ queryKey: ["packages"] });
-         setNotificationMessage("Package deleted successfully");
+         queryClient.invalidateQueries({ queryKey: ["environments"] });
+         setNotificationMessage("Environment deleted successfully");
       },
       onError(error) {
          setNotificationMessage(
@@ -65,7 +64,7 @@ export default function DeletePackageDialog({
             open={open}
          >
             <DialogTitle sx={{ m: 0, p: 2 }} id="customized-dialog-title">
-               Delete Package
+               Delete Environment
             </DialogTitle>
             <IconButton
                aria-label="close"
@@ -81,8 +80,8 @@ export default function DeletePackageDialog({
             </IconButton>
             <DialogContent dividers>
                <Typography gutterBottom>
-                  Are you sure you want to delete &quot;{packageName}&quot;?
-                  This action cannot be undone.
+                  Are you sure you want to delete &quot;{environment.name}
+                  &quot;? This action cannot be undone.
                </Typography>
             </DialogContent>
             <DialogActions>
@@ -97,11 +96,11 @@ export default function DeletePackageDialog({
                   Cancel
                </Button>
                <Button
+                  loading={deleteEnvironment.isPending}
                   variant="contained"
                   autoFocus
-                  onClick={() => deletePackage.mutate()}
+                  onClick={() => deleteEnvironment.mutate()}
                   color="error"
-                  loading={deletePackage.isPending}
                >
                   Delete
                </Button>

@@ -43,9 +43,9 @@ function escapeSQL(value: string): string {
 }
 
 /**
- * Manages the storage backend (DuckDB, Postgres, etc.) and per-project
- * manifest stores. Projects without `materializationStorage` config use
- * the default DuckDB manifest store. Projects with the config get a
+ * Manages the storage backend (DuckDB, Postgres, etc.) and per-environment
+ * manifest stores. Environments without `materializationStorage` config use
+ * the default DuckDB manifest store. Environments with the config get a
  * DuckLake-backed store attached lazily on first access.
  */
 export class StorageManager {
@@ -54,8 +54,8 @@ export class StorageManager {
    private repository: ResourceRepository | null = null;
    private defaultManifestStore: ManifestStore | null = null;
 
-   /** Per-project DuckLake manifest stores, keyed by projectId. */
-   private projectManifestStores = new Map<string, ManifestStore>();
+   /** Per-environment DuckLake manifest stores, keyed by environmentId. */
+   private environmentManifestStores = new Map<string, ManifestStore>();
 
    /** Tracks which catalogs have been attached to avoid duplicate ATTACHes. */
    private attachedCatalogs = new Set<string>();
@@ -104,19 +104,19 @@ export class StorageManager {
    }
 
    /**
-    * Lazily initializes a DuckLake manifest store for a project.
+    * Lazily initializes a DuckLake manifest store for an environment.
     * The DuckLake catalog is attached to the shared DuckDB connection
     * and persists for the lifetime of the process.
     */
-   async initializeDuckLakeForProject(
-      projectId: string,
+   async initializeDuckLakeForEnvironment(
+      environmentId: string,
       config: DuckLakeManifestConfig,
    ): Promise<void> {
       if (!this.duckDbConnection) {
          throw new Error("Storage not initialized. Call initialize() first.");
       }
 
-      const catalogName = `manifest_lake_${projectId.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+      const catalogName = `manifest_lake_${environmentId.replace(/[^a-zA-Z0-9_]/g, "_")}`;
 
       if (!this.attachedCatalogs.has(catalogName)) {
          await this.attachDuckLakeCatalog(config, catalogName);
@@ -128,9 +128,9 @@ export class StorageManager {
       );
       await store.bootstrapSchema();
 
-      this.projectManifestStores.set(projectId, store);
-      logger.info("DuckLake manifest store initialized for project", {
-         projectId,
+      this.environmentManifestStores.set(environmentId, store);
+      logger.info("DuckLake manifest store initialized for environment", {
+         environmentId,
          catalogName,
       });
    }
@@ -175,15 +175,16 @@ export class StorageManager {
    }
 
    /**
-    * Returns the manifest store for a project. If the project has a
+    * Returns the manifest store for an environment. If the environment has a
     * DuckLake store configured, returns that; otherwise returns the
     * default DuckDB-backed store.
     */
-   getManifestStore(projectId?: string): ManifestStore {
-      if (projectId) {
-         const projectStore = this.projectManifestStores.get(projectId);
-         if (projectStore) {
-            return projectStore;
+   getManifestStore(environmentId?: string): ManifestStore {
+      if (environmentId) {
+         const environmentStore =
+            this.environmentManifestStores.get(environmentId);
+         if (environmentStore) {
+            return environmentStore;
          }
       }
       if (!this.defaultManifestStore) {
@@ -199,7 +200,7 @@ export class StorageManager {
          this.duckDbConnection = null;
          this.repository = null;
          this.defaultManifestStore = null;
-         this.projectManifestStores.clear();
+         this.environmentManifestStores.clear();
          this.attachedCatalogs.clear();
       }
    }

@@ -5,6 +5,7 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { SnowflakeConnection } from "@malloydata/db-snowflake";
 import { TrinoConnection } from "@malloydata/db-trino";
 import { Connection, TableSourceDef } from "@malloydata/malloy";
+import { BaseConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import path from "path";
@@ -888,17 +889,17 @@ class DuckLakeConnection extends DuckDBConnection {
 
 export async function deleteDuckLakeConnectionFile(
    connectionName: string,
-   projectPath: string,
+   environmentPath: string,
 ): Promise<void> {
    const ducklakePath = path.join(
-      projectPath,
+      environmentPath,
       `${connectionName}_ducklake.duckdb`,
    );
    try {
       await fs.access(ducklakePath);
       await fs.rm(ducklakePath);
       logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${projectPath}`,
+         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
       );
    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -907,22 +908,22 @@ export async function deleteDuckLakeConnectionFile(
          );
       } else {
          logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${projectPath}`,
+            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
             { error },
          );
       }
    }
 }
 
-export async function createProjectConnections(
+export async function createEnvironmentConnections(
    connections: ApiConnection[] = [],
-   projectPath: string = "",
+   environmentPath: string = "",
    isUpdateConnectionRequest: boolean = false,
 ): Promise<{
-   malloyConnections: Map<string, Connection>;
+   malloyConnections: Map<string, BaseConnection>;
    apiConnections: InternalConnection[];
 }> {
-   const connectionMap = new Map<string, Connection>();
+   const connectionMap = new Map<string, BaseConnection>();
    const processedConnections = new Set<string>();
    const apiConnections: InternalConnection[] = [];
 
@@ -1159,14 +1160,14 @@ export async function createProjectConnections(
             const duckdbConnection = hasAzureAttached
                ? new AzureDuckDBConnection(
                     connection.name,
-                    path.join(projectPath, `${connection.name}.duckdb`),
-                    projectPath,
+                    path.join(environmentPath, `${connection.name}.duckdb`),
+                    environmentPath,
                     attachedDatabases,
                  )
                : new DuckDBConnection(
                     connection.name,
-                    path.join(projectPath, `${connection.name}.duckdb`),
-                    projectPath,
+                    path.join(environmentPath, `${connection.name}.duckdb`),
+                    environmentPath,
                  );
 
             // Attach databases if configured
@@ -1204,7 +1205,7 @@ export async function createProjectConnections(
                name: connection.name,
                databasePath: databasePath,
                motherDuckToken: connection.motherduckConnection.accessToken,
-               workingDirectory: projectPath,
+               workingDirectory: environmentPath,
             });
 
             connectionMap.set(connection.name, motherduckConnection);
@@ -1221,8 +1222,8 @@ export async function createProjectConnections(
             // Creating one Connection per DuckLake connection to avoid conflicts with other connections and better isolation.
             const ducklakeDuckdbConnection = new DuckLakeConnection(
                connection.name,
-               path.join(projectPath, `${connection.name}_ducklake.duckdb`),
-               projectPath,
+               path.join(environmentPath, `${connection.name}_ducklake.duckdb`),
+               environmentPath,
             );
 
             // Only attach DuckLake if it's not already attached or is it an update connection request
@@ -1408,15 +1409,15 @@ async function testDuckDBConnection(
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
-   let malloyConnections: Map<string, Connection> | null = null;
+   let malloyConnections: Map<string, BaseConnection> | null = null;
    try {
       // Validate that connection name is provided
       if (!connectionConfig.name) {
          throw new Error("Connection name is required");
       }
 
-      // Use createProjectConnections to create the connection, then test it
-      const result = await createProjectConnections(
+      // Use createEnvironmentConnections to create the connection, then test it
+      const result = await createEnvironmentConnections(
          [connectionConfig], // Pass the single connection config
       );
       malloyConnections = result.malloyConnections;

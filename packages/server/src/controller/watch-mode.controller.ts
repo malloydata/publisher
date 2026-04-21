@@ -3,7 +3,7 @@ import { RequestHandler } from "express";
 import path from "path";
 import { components } from "../api";
 import { logger } from "../logger";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 
 type StartWatchReq = components["schemas"]["StartWatchRequest"];
 type WatchStatusRes = components["schemas"]["WatchStatus"];
@@ -11,21 +11,19 @@ type Handler<Req = object, Res = void> = RequestHandler<object, Res, Req>;
 
 export class WatchModeController {
    watchingPath: string | null;
-   watchingProjectName: string | null;
+   watchingEnvironmentName: string | null;
    watcher: FSWatcher;
 
-   constructor(private projectStore: ProjectStore) {
+   constructor(private environmentStore: EnvironmentStore) {
       this.watchingPath = null;
-      this.watchingProjectName = null;
+      this.watchingEnvironmentName = null;
    }
 
    public getWatchStatus: Handler<void, WatchStatusRes> = async (_req, res) => {
-      const name = this.watchingProjectName ?? "";
       return res.json({
          enabled: !!this.watchingPath,
          watchingPath: this.watchingPath ?? "",
-         projectName: name,
-         environmentName: name,
+         environmentName: this.watchingEnvironmentName ?? "",
       });
    };
 
@@ -33,17 +31,22 @@ export class WatchModeController {
       req,
       res,
    ) => {
-      const watchName = req.body.projectName ?? req.body.environmentName ?? "";
-      const projectManifest = await ProjectStore.reloadProjectManifest(
-         this.projectStore.serverRootPath,
-      );
-      this.watchingProjectName = watchName || null;
+      const watchName = req.body.environmentName ?? "";
+      const environmentManifest =
+         await EnvironmentStore.reloadEnvironmentManifest(
+            this.environmentStore.serverRootPath,
+         );
+      this.watchingEnvironmentName = watchName || null;
 
-      // Find the environment in the manifest ("projects" array)
-      const project = projectManifest.projects.find(
-         (p) => p.name === watchName,
+      // Find the environment in the manifest
+      const environment = environmentManifest.environments.find(
+         (e) => e.name === watchName,
       );
-      if (!project || !project.packages || project.packages.length === 0) {
+      if (
+         !environment ||
+         !environment.packages ||
+         environment.packages.length === 0
+      ) {
          res.status(404).json({
             error: `Environment ${watchName} not found or has no packages`,
          });
@@ -51,7 +54,7 @@ export class WatchModeController {
       }
 
       this.watchingPath = path.join(
-         this.projectStore.serverRootPath,
+         this.environmentStore.serverRootPath,
          watchName,
       );
       this.watcher = chokidar.watch(this.watchingPath, {
@@ -61,10 +64,13 @@ export class WatchModeController {
             !path.endsWith(".md"),
          ignoreInitial: true,
       });
-      const reloadProject = async () => {
+      const reloadEnvironment = async () => {
          // Overwrite the environment with its existing metadata to trigger a re-read
-         const project = await this.projectStore.getProject(watchName, true);
-         await this.projectStore.addProject(project.metadata);
+         const environment = await this.environmentStore.getEnvironment(
+            watchName,
+            true,
+         );
+         await this.environmentStore.addEnvironment(environment.metadata);
          logger.info(`Reloaded environment ${watchName}`);
       };
 
@@ -72,19 +78,19 @@ export class WatchModeController {
          logger.info(
             `Detected new file ${path}, reloading environment ${watchName}`,
          );
-         await reloadProject();
+         await reloadEnvironment();
       });
       this.watcher.on("unlink", async (path) => {
          logger.info(
             `Detected deletion of ${path}, reloading environment ${watchName}`,
          );
-         await reloadProject();
+         await reloadEnvironment();
       });
       this.watcher.on("change", async (path) => {
          logger.info(
             `Detected change on ${path}, reloading environment ${watchName}`,
          );
-         await reloadProject();
+         await reloadEnvironment();
       });
       res.json();
    };
@@ -92,7 +98,7 @@ export class WatchModeController {
    public stopWatchMode: Handler = async (_req, res) => {
       this.watcher.close();
       this.watchingPath = null;
-      this.watchingProjectName = null;
+      this.watchingEnvironmentName = null;
       res.json();
    };
 }

@@ -96,10 +96,10 @@ export default function Packages({
    resourceUri,
 }: PackagesProps) {
    const { apiClients } = useServer();
-   const { projectName: projectName } = parseResourceUri(resourceUri);
+   const { environmentName: environmentName } = parseResourceUri(resourceUri);
    const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: ["packages", projectName],
-      queryFn: () => apiClients.packages.listPackages(projectName),
+      queryKey: ["packages", environmentName],
+      queryFn: () => apiClients.packages.listPackages(environmentName),
    });
 
    return (
@@ -113,7 +113,7 @@ export default function Packages({
                   })
                   .map((p) => {
                      const packageResourceUri = encodeResourceUri({
-                        projectName,
+                        environmentName,
                         packageName: p.name,
                      });
                      return (
@@ -183,7 +183,7 @@ export default function Packages({
          {isError && (
             <ApiErrorDisplay
                error={error}
-               context={`${projectName} > Packages`}
+               context={`${environmentName} > Packages`}
             />
          )}
       </>

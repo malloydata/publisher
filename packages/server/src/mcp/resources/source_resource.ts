@@ -6,7 +6,7 @@ import { URL } from "url";
 import type { components } from "../../api";
 import { ModelCompilationError } from "../../errors";
 import { logger } from "../../logger";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import {
    getInternalError,
    getMalloyErrorDetails,
@@ -21,7 +21,7 @@ import { RESOURCE_METADATA } from "../resource_metadata";
 
 // Define the expected parameter types for this resource
 type SourceParams = {
-   projectName?: unknown;
+   environmentName?: unknown;
    packageName?: unknown;
    modelPath?: unknown;
    sourceName?: unknown;
@@ -33,12 +33,12 @@ type SourceParams = {
  */
 export function registerSourceResource(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    mcpServer.resource(
       "source",
       new ResourceTemplate(
-         "malloy://project/{projectName}/package/{packageName}/models/{modelPath}/sources/{sourceName}",
+         "malloy://environment/{environmentName}/package/{packageName}/models/{modelPath}/sources/{sourceName}",
          { list: undefined }, // Listing sources directly is not supported via this template
       ),
       /** Handles GetResource requests for specific Sources within a Model */
@@ -50,7 +50,7 @@ export function registerSourceResource(
             // Define the getData async callback
             async (
                {
-                  projectName,
+                  environmentName,
                   packageName,
                   modelPath,
                   sourceName,
@@ -60,7 +60,7 @@ export function registerSourceResource(
             ) => {
                // Input validation
                if (
-                  typeof projectName !== "string" ||
+                  typeof environmentName !== "string" ||
                   typeof packageName !== "string" ||
                   typeof modelPath !== "string" ||
                   typeof sourceName !== "string"
@@ -72,8 +72,8 @@ export function registerSourceResource(
                try {
                   // Use the imported getModelForQuery
                   const modelResult = await getModelForQuery(
-                     projectStore,
-                     projectName,
+                     environmentStore,
+                     environmentName,
                      packageName,
                      modelPath,
                   );
@@ -96,7 +96,7 @@ export function registerSourceResource(
 
                   if (!source) {
                      const errorDetails = getNotFoundError(
-                        `Source '${sourceName}' in model '${modelPath}' package '${packageName}' environment '${projectName}'`,
+                        `Source '${sourceName}' in model '${modelPath}' package '${packageName}' environment '${environmentName}'`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }
@@ -116,7 +116,7 @@ export function registerSourceResource(
                   if (error instanceof ModelCompilationError) {
                      const errorDetails = getMalloyErrorDetails(
                         "GetResource (source - model compilation)",
-                        `${projectName}/${packageName}/${modelPath}`,
+                        `${environmentName}/${packageName}/${modelPath}`,
                         error,
                      );
                      throw new McpGetResourceError(errorDetails);

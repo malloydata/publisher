@@ -10,10 +10,10 @@ import TextField from "@mui/material/TextField";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
-import { generateProjectReadme } from "../../utils/parsing";
+import { generateEnvironmentReadme } from "../../utils/parsing";
 import { useServer } from "../ServerProvider";
 
-export default function AddProjectDialog() {
+export default function AddEnvironmentDialog() {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
    const [notificationMessage, setNotificationMessage] = useState("");
@@ -25,11 +25,11 @@ export default function AddProjectDialog() {
       setOpen(false);
    };
    const queryClient = useQueryClient();
-   const addProject = useMutationWithApiError({
+   const addEnvironment = useMutationWithApiError({
       async mutationFn(variables: { name: string; description: string }) {
-         return apiClients.projects.createProject({
+         return apiClients.environments.createEnvironment({
             name: variables.name,
-            readme: generateProjectReadme(
+            readme: generateEnvironmentReadme(
                {
                   name: variables.name,
                   readme: "",
@@ -40,8 +40,8 @@ export default function AddProjectDialog() {
       },
       onSuccess() {
          handleClose();
-         queryClient.invalidateQueries({ queryKey: ["projects"] });
-         setNotificationMessage("Project created successfully");
+         queryClient.invalidateQueries({ queryKey: ["environments"] });
+         setNotificationMessage("Environment created successfully");
       },
       onError(error) {
          setNotificationMessage(
@@ -61,7 +61,7 @@ export default function AddProjectDialog() {
       if (!name) {
          throw new Error("Name is required");
       }
-      addProject.mutate({ name, description });
+      addEnvironment.mutate({ name, description });
    };
 
    return (
@@ -72,23 +72,23 @@ export default function AddProjectDialog() {
             startIcon={<AddCircleRounded />}
             sx={{ mt: 2, color: "white" }}
          >
-            Create New Project
+            Create New Environment
          </Button>
          <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Create New Project</DialogTitle>
+            <DialogTitle>Create New Environment</DialogTitle>
             <DialogContent>
                <DialogContentText>
-                  Add a new project to start exploring semantic models and
+                  Add a new environment to start exploring semantic models and
                   analyzing data.
                </DialogContentText>
-               <form onSubmit={handleSubmit} id="project-form">
+               <form onSubmit={handleSubmit} id="environment-form">
                   <TextField
                      autoFocus
                      required
                      margin="dense"
                      id="name"
                      name="name"
-                     label="Project Name"
+                     label="Environment Name"
                      type="text"
                      fullWidth
                      variant="standard"
@@ -97,7 +97,7 @@ export default function AddProjectDialog() {
                      margin="dense"
                      id="description"
                      name="description"
-                     label="Project Description"
+                     label="Environment Description"
                      placeholder="Explore semantic models, run queries, and build dashboards"
                      type="text"
                      fullWidth
@@ -106,15 +106,18 @@ export default function AddProjectDialog() {
                </form>
             </DialogContent>
             <DialogActions>
-               <Button disabled={addProject.isPending} onClick={handleClose}>
+               <Button
+                  disabled={addEnvironment.isPending}
+                  onClick={handleClose}
+               >
                   Cancel
                </Button>
                <Button
                   type="submit"
-                  form="project-form"
-                  loading={addProject.isPending}
+                  form="environment-form"
+                  loading={addEnvironment.isPending}
                >
-                  Create Project
+                  Create Environment
                </Button>
             </DialogActions>
          </Dialog>

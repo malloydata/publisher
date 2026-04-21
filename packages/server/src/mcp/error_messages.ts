@@ -37,7 +37,7 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
    const baseMessage = `Resource not found: ${resourceUriOrContext}`;
    const suggestions: string[] = [
       `Verify the identifier or URI (${resourceUriOrContext}) is spelled correctly and exists. Check capitalization and path separators.`,
-      `If using a URI, ensure it follows the correct format (e.g., malloy://project/...) and includes the right path segments (e.g., /models/, /sources/, /queries/, /views/).`,
+      `If using a URI, ensure it follows the correct format (e.g., malloy://environment/...) and includes the right path segments (e.g., /models/, /sources/, /queries/, /views/).`,
    ];
 
    suggestions.push(

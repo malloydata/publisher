@@ -2,7 +2,7 @@ import { encodeResourceUri, Workbook } from "@malloy-publisher/sdk";
 import { useParams } from "react-router-dom";
 
 function WorkbookPage() {
-   const { workspace, workbookPath, projectName, packageName } = useParams();
+   const { workspace, workbookPath, environmentName, packageName } = useParams();
    if (!workspace) {
       return (
          <div>
@@ -15,10 +15,10 @@ function WorkbookPage() {
             <h2>Missing workbook path</h2>
          </div>
       );
-   } else if (!projectName) {
+   } else if (!environmentName) {
       return (
          <div>
-            <h2>Missing project name</h2>
+            <h2>Missing environment name</h2>
          </div>
       );
    } else if (!packageName) {
@@ -29,7 +29,7 @@ function WorkbookPage() {
       );
    } else {
       const resourceUri = encodeResourceUri({
-         projectName,
+         environmentName,
          packageName,
       });
       return (

@@ -62,7 +62,7 @@ export default function ConnectionExplorer({
    connection,
 }: ConnectionExplorerProps) {
    const { apiClients } = useServer();
-   const { projectName: projectName } = parseResourceUri(resourceUri);
+   const { environmentName: environmentName } = parseResourceUri(resourceUri);
    const [selectedTableResource, setSelectedTableResource] = React.useState<
       string | null
    >(null);
@@ -76,9 +76,9 @@ export default function ConnectionExplorer({
       isLoading: schemasLoading,
       error: schemasErrorObj,
    } = useQueryWithApiError({
-      queryKey: ["schemas", projectName, connectionName],
+      queryKey: ["schemas", environmentName, connectionName],
       queryFn: () =>
-         apiClients.connections.listSchemas(projectName, connectionName),
+         apiClients.connections.listSchemas(environmentName, connectionName),
    });
 
    const availableSchemas = schemasData?.data || [];
@@ -119,7 +119,7 @@ export default function ConnectionExplorer({
                      {schemasError && (
                         <ApiErrorDisplay
                            error={schemasErrorObj}
-                           context={`${projectName} > ${connectionName} > Schemas`}
+                           context={`${environmentName} > ${connectionName} > Schemas`}
                         />
                      )}
                      {!schemasLoading &&
@@ -181,7 +181,7 @@ export default function ConnectionExplorer({
          <Grid size={{ xs: 12, md: schema ? 6 : 4 }}>
             {selectedSchema && selectedTableResource && (
                <SelectedTableDetailPanel
-                  projectName={projectName}
+                  environmentName={environmentName}
                   connectionName={connectionName}
                   schemaName={selectedSchema}
                   tableResource={selectedTableResource}
@@ -198,12 +198,12 @@ type TableSchemaViewerProps = {
 };
 
 function SelectedTableDetailPanel({
-   projectName,
+   environmentName,
    connectionName,
    schemaName,
    tableResource,
 }: {
-   projectName: string;
+   environmentName: string;
    connectionName: string;
    schemaName: string;
    tableResource: string;
@@ -217,14 +217,14 @@ function SelectedTableDetailPanel({
    } = useQueryWithApiError({
       queryKey: [
          "connectionTableDetail",
-         projectName,
+         environmentName,
          connectionName,
          schemaName,
          tableResource,
       ],
       queryFn: () =>
          apiClients.connections.getTable(
-            projectName,
+            environmentName,
             connectionName,
             schemaName,
             tableResource,
@@ -242,7 +242,7 @@ function SelectedTableDetailPanel({
          {tableDetailError && (
             <ApiErrorDisplay
                error={tableDetailErrorObj}
-               context={`${projectName} > ${connectionName} > ${schemaName} > ${tableResource}`}
+               context={`${environmentName} > ${connectionName} > ${schemaName} > ${tableResource}`}
             />
          )}
          {!tableDetailError && (
@@ -319,14 +319,14 @@ function TablesInSchema({
    resourceUri,
    connection,
 }: TablesInSchemaProps) {
-   const { projectName: projectName } = parseResourceUri(resourceUri);
+   const { environmentName: environmentName } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
    const [searchTerm, setSearchTerm] = useState("");
    const { data, isSuccess, isError, error, isLoading } = useQueryWithApiError({
-      queryKey: ["tablesInSchema", projectName, connectionName, schemaName],
+      queryKey: ["tablesInSchema", environmentName, connectionName, schemaName],
       queryFn: () =>
          apiClients.connections.listTables(
-            projectName,
+            environmentName,
             connectionName,
             schemaName,
          ),
@@ -376,7 +376,7 @@ function TablesInSchema({
             {isError && (
                <ApiErrorDisplay
                   error={error}
-                  context={`${projectName} > ${connectionName} > ${schemaName}`}
+                  context={`${environmentName} > ${connectionName} > ${schemaName}`}
                />
             )}
             {isSuccess && filteredTables.length === 0 && (
