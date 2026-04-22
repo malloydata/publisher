@@ -282,7 +282,9 @@ app.use(
       credentials: true,
    }),
 );
-app.use(bodyParser.json());
+
+// Set body-parser JSON limit to 1Mb (default: 100kb)
+app.use(bodyParser.json({ limit: "1mb" }));
 
 // Register health check endpoints on main app:
 // - Required for production/Kubernetes monitoring (main server on PUBLISHER_PORT)
@@ -599,7 +601,7 @@ app.post(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               req.query.options as string,
+               req.body.options as string,
             ),
          );
       } catch (error) {
