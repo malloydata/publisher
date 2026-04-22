@@ -3,7 +3,7 @@
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
 
-FROM oven/bun:1.2.23-slim AS base-deps
+FROM oven/bun:1.3.13-slim AS base-deps
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates unzip git \
@@ -22,7 +22,7 @@ RUN curl -L https://install.duckdb.org | bash && \
     rm -rf /var/lib/apt/lists/*
 
 # Builder stage
-FROM oven/bun:1.2.23-slim AS builder
+FROM oven/bun:1.3.13-slim AS builder
 COPY --from=java-base /usr/lib/jvm /usr/lib/jvm
 ENV JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto
 ENV PATH=$JAVA_HOME/bin:$PATH

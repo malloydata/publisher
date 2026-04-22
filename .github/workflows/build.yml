@@ -16,15 +16,15 @@ jobs:
         uses: oven-sh/setup-bun@v2
         # Building the SDK is necessary to generate the .d.ts files used for type checking.
         with:
-          bun-version: 1.2.23
+          bun-version: ${{ env.BUN_VERSION }}
       - name: Cache Bun dependencies
         id: bun-cache
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: Typecheck
         run: |
           if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
@@ -49,9 +49,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: Install dependencies
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
@@ -75,15 +75,15 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.23
+          bun-version: ${{ env.BUN_VERSION }}
       - name: Cache Bun dependencies
         id: bun-cache
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: build server
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
