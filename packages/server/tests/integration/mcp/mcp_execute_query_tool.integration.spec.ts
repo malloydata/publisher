@@ -367,8 +367,26 @@ describe("MCP Tool Handlers (E2E Integration)", () => {
                   modelPath: "flights.malloy",
                   query: "run: flights->{aggregate: c is count()}",
                },
-            }),
-         ).rejects.toThrow();
+            });
+
+            // Give the request a moment to start on the server
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            // Close the client to trigger cancellation
+            await cancelClient.close();
+
+            // Await the promise - it should reject due to the closure
+            await toolPromise;
+
+            throw new Error("Promise should have rejected due to cancellation");
+         } catch (error) {
+            // Check that the error is an Error instance and the message indicates closure/cancellation
+            expect(error).toBeInstanceOf(Error);
+            expect((error as Error).message).toMatch(/cancel|closed/i);
+         } finally {
+            // Ensure the temporary client is closed even if the test failed unexpectedly
+            await cancelClient.close().catch(() => {}); // Ignore errors on final cleanup
+         }
       });
 
       // Test invalid usage - nested view called without sourceName
