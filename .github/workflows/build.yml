@@ -5,7 +5,10 @@ on:
     branches: [ main ]
   pull_request:
 
-    # self contained tests
+env:
+  BUN_VERSION: 1.3.13
+
+# self contained tests
 jobs:
   lint:
     name: Typecheck
