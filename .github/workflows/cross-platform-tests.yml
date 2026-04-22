@@ -11,8 +11,8 @@ permissions: {}
 
 env:
   BUN_VERSION: 1.3.13
-  WINDOWS_USERPROFILE: 'D:\'
-  WINDOWS_BUN_CACHE_DIR: 'D:\.bun\install\cache'
+  WINDOWS_USERPROFILE: "D:\\"
+  WINDOWS_BUN_CACHE_DIR: "D:\\.bun\\install\\cache"
 
 jobs:
   cross_platform_test:
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -73,6 +73,17 @@ jobs:
         run: bun run build
         shell: bash
 
-      - name: Run tests
-        run: bun run test
+      # Split into two bun-test invocations (two processes). The unit specs
+      # under src/ use `mock.module(...)` to stub out `StorageManager` and
+      # other modules; Bun does not scope those mocks to a single file —
+      # they persist in the process-wide module cache and poison any later
+      # spec that imports the real module. Running integration specs (which
+      # import src/server.ts and expect the real StorageManager) in a
+      # separate process avoids the carry-over.
+      - name: Run unit tests
+        run: bun run --cwd packages/server test:unit --serial
+        shell: bash
+
+      - name: Run integration tests
+        run: bun run --cwd packages/server test:integration --serial
         shell: bash
