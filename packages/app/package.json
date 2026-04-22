@@ -35,7 +35,10 @@
       "lint": "bunx eslint ./src --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
       "analyze": "bunx vite-bundle-visualizer",
-      "generate-api-types": ""
+      "generate-api-types": "",
+      "test:playwright:install": "bunx playwright install chromium-headless-shell chromium",
+      "test:playwright": "bunx playwright test --config=playwright.config.ts",
+      "test:playwright:headed": "bunx playwright test --config=playwright.config.ts --headed"
    },
    "dependencies": {
       "@malloy-publisher/sdk": "workspace:*",
