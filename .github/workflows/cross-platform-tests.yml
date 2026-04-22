@@ -73,6 +73,17 @@ jobs:
         run: bun run build
         shell: bash
 
-      - name: Run tests
-        run: bun run test --serial
+      # Split into two bun-test invocations (two processes). The unit specs
+      # under src/ use `mock.module(...)` to stub out `StorageManager` and
+      # other modules; Bun does not scope those mocks to a single file —
+      # they persist in the process-wide module cache and poison any later
+      # spec that imports the real module. Running integration specs (which
+      # import src/server.ts and expect the real StorageManager) in a
+      # separate process avoids the carry-over.
+      - name: Run unit tests
+        run: bun run --cwd packages/server test:unit
+        shell: bash
+
+      - name: Run integration tests
+        run: bun run --cwd packages/server test:integration
         shell: bash
