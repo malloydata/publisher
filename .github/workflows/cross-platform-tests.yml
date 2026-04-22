@@ -81,9 +81,9 @@ jobs:
       # import src/server.ts and expect the real StorageManager) in a
       # separate process avoids the carry-over.
       - name: Run unit tests
-        run: bun run --cwd packages/server test:unit
+        run: bun run --cwd packages/server test:unit --serial
         shell: bash
 
       - name: Run integration tests
-        run: bun run --cwd packages/server test:integration
+        run: bun run --cwd packages/server test:integration --serial
         shell: bash
