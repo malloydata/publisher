@@ -74,5 +74,5 @@ jobs:
         shell: bash
 
       - name: Run tests
-        run: bun run test --isolated
+        run: bun run test --serial
         shell: bash
