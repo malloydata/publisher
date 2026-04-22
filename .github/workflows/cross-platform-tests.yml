@@ -47,7 +47,7 @@ jobs:
         env:
           USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         with:
-          bun-version: 1.3.13
+          bun-version: 1.2.23
 
       - name: Cache Bun dependencies (Linux/macOS)
         if: runner.os != 'Windows'
@@ -60,28 +60,9 @@ jobs:
       - name: Install dependencies
         env:
           BUN_INSTALL_CACHE_DIR: ${{ runner.os == 'Windows' && env.WINDOWS_BUN_CACHE_DIR || '' }}
-          # Skip postinstall scripts only on Windows (bun issue #17011).
-          # On Linux/macOS, letting postinstall run downloads duckdb's
-          # prebuilt native binding during `bun install` — without this,
-          # the binding has to be fetched later via a separate `npm run
-          # install`, which picks up a prebuilt compiled for whatever
-          # Node ABI happens to be on PATH and may silently mismatch the
-          # Bun runtime that actually loads it at test time.
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: ${{ runner.os == 'Windows' && '1' || '0' }}
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
         run: bun install --frozen-lockfile --prefer-offline
         shell: bash
-
-      - name: Diagnose DuckDB native binding (Ubuntu only)
-        # One-shot diagnostic to confirm the binding landed under Linux
-        # and was picked up for the right ABI. Safe to delete once green.
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          echo "== bun =="; bun --version
-          echo "== node (if any) =="; node --version 2>/dev/null || echo "no node on PATH"
-          echo "== duckdb binding file =="
-          ls -la node_modules/duckdb/lib/binding/ 2>/dev/null || echo "no duckdb binding dir"
-          file node_modules/duckdb/lib/binding/duckdb.node 2>/dev/null || true
 
       - name: Generate API types
         run: bun run generate-api-types
