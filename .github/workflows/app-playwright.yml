@@ -65,6 +65,7 @@ jobs:
         run: bunx playwright test --config=playwright.config.ts
         env:
           CI: "true"
+          DISABLE_RESPONSE_LOGGING: true
 
       - name: Upload Playwright report
         if: always()
