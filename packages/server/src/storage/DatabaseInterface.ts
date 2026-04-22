@@ -9,20 +9,26 @@ export interface DatabaseConnection {
 }
 
 export interface ResourceRepository {
-   // Projects
-   listProjects(): Promise<Project[]>;
-   getProjectById(id: string): Promise<Project | null>;
-   getProjectByName(name: string): Promise<Project | null>;
-   createProject(
-      project: Omit<Project, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Project>;
-   updateProject(id: string, updates: Partial<Project>): Promise<Project>;
-   deleteProject(id: string): Promise<void>;
+   // Environments
+   listEnvironments(): Promise<Environment[]>;
+   getEnvironmentById(id: string): Promise<Environment | null>;
+   getEnvironmentByName(name: string): Promise<Environment | null>;
+   createEnvironment(
+      environment: Omit<Environment, "id" | "createdAt" | "updatedAt">,
+   ): Promise<Environment>;
+   updateEnvironment(
+      id: string,
+      updates: Partial<Environment>,
+   ): Promise<Environment>;
+   deleteEnvironment(id: string): Promise<void>;
 
    // Packages
-   listPackages(projectId: string): Promise<Package[]>;
+   listPackages(environmentId: string): Promise<Package[]>;
    getPackageById(id: string): Promise<Package | null>;
-   getPackageByName(projectId: string, name: string): Promise<Package | null>;
+   getPackageByName(
+      environmentId: string,
+      name: string,
+   ): Promise<Package | null>;
    createPackage(
       pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
    ): Promise<Package>;
@@ -30,10 +36,10 @@ export interface ResourceRepository {
    deletePackage(id: string): Promise<void>;
 
    // Connections
-   listConnections(projectId: string): Promise<Connection[]>;
+   listConnections(environmentId: string): Promise<Connection[]>;
    getConnectionById(id: string): Promise<Connection | null>;
    getConnectionByName(
-      projectId: string,
+      environmentId: string,
       name: string,
    ): Promise<Connection | null>;
    createConnection(
@@ -47,17 +53,17 @@ export interface ResourceRepository {
 
    // Materializations
    listMaterializations(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]>;
    getMaterializationById(id: string): Promise<Materialization | null>;
    getActiveMaterialization(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<Materialization | null>;
    createMaterialization(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       status?: MaterializationStatus,
       metadata?: Record<string, unknown> | null,
@@ -75,7 +81,7 @@ export interface ResourceRepository {
    deleteMaterialization(id: string): Promise<void>;
    // Build Manifests
    listManifestEntries(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<ManifestEntry[]>;
    upsertManifestEntry(
@@ -84,7 +90,7 @@ export interface ResourceRepository {
    deleteManifestEntry(id: string): Promise<void>;
 }
 
-export interface Project {
+export interface Environment {
    id: string;
    name: string;
    path: string;
@@ -96,7 +102,7 @@ export interface Project {
 
 export interface Package {
    id: string;
-   projectId: string;
+   environmentId: string;
    name: string;
    description?: string;
    manifestPath: string;
@@ -107,7 +113,7 @@ export interface Package {
 
 export interface Connection {
    id: string;
-   projectId: string;
+   environmentId: string;
    name: string;
    type: "bigquery" | "postgres" | "duckdb" | "mysql" | "snowflake" | "trino";
    config: Record<string, unknown>;
@@ -124,7 +130,7 @@ export type MaterializationStatus =
 
 export interface Materialization {
    id: string;
-   projectId: string;
+   environmentId: string;
    packageName: string;
    status: MaterializationStatus;
    startedAt: Date | null;
@@ -137,7 +143,7 @@ export interface Materialization {
 
 export interface ManifestEntry {
    id: string;
-   projectId: string;
+   environmentId: string;
    packageName: string;
    buildId: string;
    tableName: string;
@@ -163,9 +169,12 @@ export interface BuildManifest {
  * orchestrated mode swaps in a DuckLakeManifestStore.
  */
 export interface ManifestStore {
-   getManifest(projectId: string, packageName: string): Promise<BuildManifest>;
+   getManifest(
+      environmentId: string,
+      packageName: string,
+   ): Promise<BuildManifest>;
    writeEntry(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       buildId: string,
       tableName: string,
@@ -174,7 +183,7 @@ export interface ManifestStore {
    ): Promise<void>;
    deleteEntry(id: string): Promise<void>;
    listEntries(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<ManifestEntry[]>;
 }

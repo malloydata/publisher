@@ -1,7 +1,7 @@
-import { Project } from "../DatabaseInterface";
+import { Environment } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
-export class ProjectRepository {
+export class EnvironmentRepository {
    constructor(private db: DuckDBConnection) {}
 
    private generateId(): string {
@@ -12,85 +12,85 @@ export class ProjectRepository {
       return new Date();
    }
 
-   async listProjects(): Promise<Project[]> {
+   async listEnvironments(): Promise<Environment[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM projects ORDER BY name",
+         "SELECT * FROM environments ORDER BY name",
       );
-      return rows.map(this.mapToProject);
+      return rows.map(this.mapToEnvironment);
    }
 
-   async getProjectById(id: string): Promise<Project | null> {
+   async getEnvironmentById(id: string): Promise<Environment | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM projects WHERE id = ?",
+         "SELECT * FROM environments WHERE id = ?",
          [id],
       );
-      return row ? this.mapToProject(row) : null;
+      return row ? this.mapToEnvironment(row) : null;
    }
 
-   async getProjectByName(name: string): Promise<Project | null> {
+   async getEnvironmentByName(name: string): Promise<Environment | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM projects WHERE name = ?",
+         "SELECT * FROM environments WHERE name = ?",
          [name],
       );
-      return row ? this.mapToProject(row) : null;
+      return row ? this.mapToEnvironment(row) : null;
    }
 
-   async createProject(
-      project: Omit<Project, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Project> {
+   async createEnvironment(
+      environment: Omit<Environment, "id" | "createdAt" | "updatedAt">,
+   ): Promise<Environment> {
       const id = this.generateId();
       const now = this.now();
 
       const params = [
          id,
-         project.name,
-         project.path,
-         project.description || null,
-         project.metadata ? JSON.stringify(project.metadata) : null,
+         environment.name,
+         environment.path,
+         environment.description || null,
+         environment.metadata ? JSON.stringify(environment.metadata) : null,
          now.toISOString(),
          now.toISOString(),
       ];
 
       try {
          await this.db.run(
-            `INSERT INTO projects (id, name, path, description, metadata, created_at, updated_at)
+            `INSERT INTO environments (id, name, path, description, metadata, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`,
             params,
          );
 
          return {
             id,
-            ...project,
+            ...environment,
             createdAt: now,
             updatedAt: now,
          };
       } catch (err: unknown) {
          const error = err as Error;
-         // If unique constraint violation, return existing project
+         // If unique constraint violation, return existing environment
          if (
             error.message?.includes("UNIQUE") ||
             error.message?.includes("Constraint")
          ) {
             const existing = await this.db.get<Record<string, unknown>>(
-               "SELECT * FROM projects WHERE name = ?",
-               [project.name],
+               "SELECT * FROM environments WHERE name = ?",
+               [environment.name],
             );
             if (existing) {
-               console.log("Returning existing project");
-               return this.mapToProject(existing);
+               console.log("Returning existing environment");
+               return this.mapToEnvironment(existing);
             }
          }
          throw error;
       }
    }
 
-   async updateProject(
+   async updateEnvironment(
       id: string,
-      updates: Partial<Project>,
-   ): Promise<Project> {
-      const existing = await this.getProjectById(id);
+      updates: Partial<Environment>,
+   ): Promise<Environment> {
+      const existing = await this.getEnvironmentById(id);
       if (!existing) {
-         throw new Error(`Project with id ${id} not found`);
+         throw new Error(`Environment with id ${id} not found`);
       }
 
       const now = this.now();
@@ -121,18 +121,18 @@ export class ProjectRepository {
       params.push(id);
 
       await this.db.run(
-         `UPDATE projects SET ${setClauses.join(", ")} WHERE id = ?`,
+         `UPDATE environments SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 
-      return this.getProjectById(id) as Promise<Project>;
+      return this.getEnvironmentById(id) as Promise<Environment>;
    }
 
-   async deleteProject(id: string): Promise<void> {
-      await this.db.run("DELETE FROM projects WHERE id = ?", [id]);
+   async deleteEnvironment(id: string): Promise<void> {
+      await this.db.run("DELETE FROM environments WHERE id = ?", [id]);
    }
 
-   private mapToProject(row: Record<string, unknown>): Project {
+   private mapToEnvironment(row: Record<string, unknown>): Environment {
       return {
          id: row.id as string,
          name: row.name as string,

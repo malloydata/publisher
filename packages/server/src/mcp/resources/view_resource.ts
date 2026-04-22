@@ -6,7 +6,7 @@ import { URL } from "url";
 import type { components } from "../../api"; // Need this for View definition type
 import { ModelCompilationError } from "../../errors";
 import { logger } from "../../logger";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import {
    getInternalError,
    getMalloyErrorDetails,
@@ -21,7 +21,7 @@ import { RESOURCE_METADATA } from "../resource_metadata";
 
 // Define the expected parameter types
 type ViewParams = {
-   projectName?: unknown;
+   environmentName?: unknown;
    packageName?: unknown;
    modelPath?: unknown;
    sourceName?: unknown;
@@ -33,12 +33,12 @@ type ViewParams = {
  */
 export function registerViewResource(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    mcpServer.resource(
       "view",
       new ResourceTemplate(
-         "malloy://project/{projectName}/package/{packageName}/models/{modelPath}/sources/{sourceName}/views/{viewName}",
+         "malloy://environment/{environmentName}/package/{packageName}/models/{modelPath}/sources/{sourceName}/views/{viewName}",
          { list: undefined }, // Listing views is not supported via this template
       ),
       (uri, params) =>
@@ -48,7 +48,7 @@ export function registerViewResource(
             "view",
             async (
                {
-                  projectName,
+                  environmentName,
                   packageName,
                   modelPath,
                   sourceName,
@@ -57,7 +57,7 @@ export function registerViewResource(
                uri: URL,
             ) => {
                if (
-                  typeof projectName !== "string" ||
+                  typeof environmentName !== "string" ||
                   typeof packageName !== "string" ||
                   typeof modelPath !== "string" ||
                   typeof sourceName !== "string" ||
@@ -68,8 +68,8 @@ export function registerViewResource(
 
                try {
                   const modelResult = await getModelForQuery(
-                     projectStore,
-                     projectName,
+                     environmentStore,
+                     environmentName,
                      packageName,
                      modelPath,
                   );
@@ -89,7 +89,7 @@ export function registerViewResource(
                   if (!source) {
                      throw new McpGetResourceError(
                         getNotFoundError(
-                           `Source '${sourceName}' in model '${modelPath}' package '${packageName}' project '${projectName}'`,
+                           `Source '${sourceName}' in model '${modelPath}' package '${packageName}' environment '${environmentName}'`,
                         ),
                      );
                   }
@@ -102,7 +102,7 @@ export function registerViewResource(
                   if (!view) {
                      // Specific "View not found" error
                      const errorDetails = getNotFoundError(
-                        `View '${viewName}' in source '${sourceName}' model '${modelPath}' package '${packageName}' project '${projectName}'`,
+                        `View '${viewName}' in source '${sourceName}' model '${modelPath}' package '${packageName}' environment '${environmentName}'`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }
@@ -114,7 +114,7 @@ export function registerViewResource(
                   if (error instanceof ModelCompilationError) {
                      const errorDetails = getMalloyErrorDetails(
                         "GetResource (view - model compilation)",
-                        `${projectName}/${packageName}/${modelPath}`,
+                        `${environmentName}/${packageName}/${modelPath}`,
                         error,
                      );
                      throw new McpGetResourceError(errorDetails);

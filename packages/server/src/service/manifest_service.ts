@@ -4,7 +4,7 @@ import {
    ManifestEntry,
    ManifestStore,
 } from "../storage/DatabaseInterface";
-import { ProjectStore } from "./project_store";
+import { EnvironmentStore } from "./environment_store";
 
 /**
  * Manages build manifests that map source names to materialized table names.
@@ -23,32 +23,34 @@ import { ProjectStore } from "./project_store";
  * is either the local DuckDB store (standalone) or DuckLake (orchestrated).
  */
 export class ManifestService {
-   constructor(private projectStore: ProjectStore) {}
+   constructor(private environmentStore: EnvironmentStore) {}
 
-   private manifestStoreFor(projectId: string): ManifestStore {
-      return this.projectStore.storageManager.getManifestStore(projectId);
+   private manifestStoreFor(environmentId: string): ManifestStore {
+      return this.environmentStore.storageManager.getManifestStore(
+         environmentId,
+      );
    }
 
    async getManifest(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<BuildManifest> {
-      return this.manifestStoreFor(projectId).getManifest(
-         projectId,
+      return this.manifestStoreFor(environmentId).getManifest(
+         environmentId,
          packageName,
       );
    }
 
    async writeEntry(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       buildId: string,
       tableName: string,
       sourceName: string,
       connectionName: string,
    ): Promise<void> {
-      await this.manifestStoreFor(projectId).writeEntry(
-         projectId,
+      await this.manifestStoreFor(environmentId).writeEntry(
+         environmentId,
          packageName,
          buildId,
          tableName,
@@ -57,8 +59,8 @@ export class ManifestService {
       );
    }
 
-   async deleteEntry(projectId: string, entryId: string): Promise<void> {
-      await this.manifestStoreFor(projectId).deleteEntry(entryId);
+   async deleteEntry(environmentId: string, entryId: string): Promise<void> {
+      await this.manifestStoreFor(environmentId).deleteEntry(entryId);
    }
 
    /**
@@ -70,18 +72,21 @@ export class ManifestService {
     * storage — the worker pulls the manifest down and recompiles.
     */
    async reloadManifest(
-      projectId: string,
+      environmentId: string,
       packageName: string,
-      projectName: string,
+      environmentName: string,
    ): Promise<BuildManifest> {
-      const manifest = await this.getManifest(projectId, packageName);
+      const manifest = await this.getManifest(environmentId, packageName);
 
-      const project = await this.projectStore.getProject(projectName, false);
-      const pkg = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const pkg = await environment.getPackage(packageName, false);
       await pkg.reloadAllModels(manifest.entries);
 
       logger.info("Reloaded manifest and recompiled models", {
-         projectId,
+         environmentId,
          packageName,
          entryCount: Object.keys(manifest.entries).length,
       });
@@ -95,11 +100,11 @@ export class ManifestService {
     * catalog instead of the local DuckDB table.
     */
    async listEntries(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<ManifestEntry[]> {
-      return this.manifestStoreFor(projectId).listEntries(
-         projectId,
+      return this.manifestStoreFor(environmentId).listEntries(
+         environmentId,
          packageName,
       );
    }

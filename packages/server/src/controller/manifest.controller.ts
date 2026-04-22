@@ -1,29 +1,38 @@
+import { EnvironmentStore } from "../service/environment_store";
 import { ManifestService } from "../service/manifest_service";
-import { ProjectStore } from "../service/project_store";
-import { resolveProjectId } from "../service/resolve_project";
+import { resolveEnvironmentId } from "../service/resolve_environment";
 
 export class ManifestController {
    constructor(
-      private projectStore: ProjectStore,
+      private environmentStore: EnvironmentStore,
       private manifestService: ManifestService,
    ) {}
 
-   async getManifest(projectName: string, packageName: string) {
-      const repository = this.projectStore.storageManager.getRepository();
-      const projectId = await resolveProjectId(repository, projectName);
+   async getManifest(environmentName: string, packageName: string) {
+      const repository = this.environmentStore.storageManager.getRepository();
+      const environmentId = await resolveEnvironmentId(
+         repository,
+         environmentName,
+      );
       // Verify the package exists so we return 404 instead of an empty manifest.
-      const project = await this.projectStore.getProject(projectName, false);
-      await project.getPackage(packageName, false);
-      return this.manifestService.getManifest(projectId, packageName);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      await environment.getPackage(packageName, false);
+      return this.manifestService.getManifest(environmentId, packageName);
    }
 
-   async reloadManifest(projectName: string, packageName: string) {
-      const repository = this.projectStore.storageManager.getRepository();
-      const projectId = await resolveProjectId(repository, projectName);
+   async reloadManifest(environmentName: string, packageName: string) {
+      const repository = this.environmentStore.storageManager.getRepository();
+      const environmentId = await resolveEnvironmentId(
+         repository,
+         environmentName,
+      );
       return this.manifestService.reloadManifest(
-         projectId,
+         environmentId,
          packageName,
-         projectName,
+         environmentName,
       );
    }
 }

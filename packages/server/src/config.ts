@@ -18,7 +18,7 @@ export type Connection = {
    type: string;
 };
 
-export type Project = {
+export type Environment = {
    name: string;
    packages: Package[];
    connections?: Connection[];
@@ -26,10 +26,10 @@ export type Project = {
 
 export type PublisherConfig = {
    frozenConfig: boolean;
-   projects: Project[];
+   environments: Environment[];
 };
 
-export type ProcessedProject = {
+export type ProcessedEnvironment = {
    name: string;
    packages: Package[];
    connections: ApiConnection[];
@@ -37,7 +37,7 @@ export type ProcessedProject = {
 
 export type ProcessedPublisherConfig = {
    frozenConfig: boolean;
-   projects: ProcessedProject[];
+   environments: ProcessedEnvironment[];
 };
 
 function substituteEnvVars(value: string): string {
@@ -81,7 +81,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    if (!fs.existsSync(publisherConfigPath)) {
       return {
          frozenConfig: false,
-         projects: [],
+         environments: [],
       };
    }
 
@@ -96,7 +96,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       );
       return {
          frozenConfig: false,
-         projects: [],
+         environments: [],
       };
    }
 
@@ -106,29 +106,30 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    if (
       processedConfig &&
       typeof processedConfig === "object" &&
-      "projects" in processedConfig &&
-      processedConfig.projects &&
-      typeof processedConfig.projects === "object" &&
-      !Array.isArray(processedConfig.projects)
+      "environments" in processedConfig &&
+      processedConfig.environments &&
+      typeof processedConfig.environments === "object" &&
+      !Array.isArray(processedConfig.environments)
    ) {
       logger.error(
-         `Invalid ${PUBLISHER_CONFIG_NAME}: projects must be an array. Using default empty config.`,
+         `Invalid ${PUBLISHER_CONFIG_NAME}: the "environments" field must be a JSON array. Using default empty config.`,
       );
       return {
          frozenConfig: false,
-         projects: [],
+         environments: [],
       };
    }
 
-   // Ensure projects is an array
-   let projects: unknown[] = [];
+   // Ensure environments is an array
+   let environments: unknown[] = [];
    if (
       processedConfig &&
       typeof processedConfig === "object" &&
-      "projects" in processedConfig &&
-      Array.isArray((processedConfig as { projects: unknown }).projects)
+      "environments" in processedConfig &&
+      Array.isArray((processedConfig as { environments: unknown }).environments)
    ) {
-      projects = (processedConfig as { projects: unknown[] }).projects;
+      environments = (processedConfig as { environments: unknown[] })
+         .environments;
    }
 
    let frozenConfig = false;
@@ -144,7 +145,7 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
 
    return {
       frozenConfig,
-      projects,
+      environments,
    } as PublisherConfig;
 };
 
@@ -163,20 +164,22 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
 
 export const getConnectionsFromPublisherConfig = (
    serverRoot: string,
-   projectName: string,
+   environmentName: string,
 ): Connection[] => {
    try {
       const publisherConfig = getPublisherConfig(serverRoot);
-      if (!Array.isArray(publisherConfig.projects)) {
+      if (!Array.isArray(publisherConfig.environments)) {
          return [];
       }
-      const project = publisherConfig.projects.find(
-         (p) => p && p.name === projectName,
+      const environment = publisherConfig.environments.find(
+         (e) => e && e.name === environmentName,
       );
-      return Array.isArray(project?.connections) ? project.connections : [];
+      return Array.isArray(environment?.connections)
+         ? environment.connections
+         : [];
    } catch (error) {
       logger.error(
-         `Error getting connections for project "${projectName}" from ${PUBLISHER_CONFIG_NAME}`,
+         `Error getting connections for environment "${environmentName}" from ${PUBLISHER_CONFIG_NAME}`,
          { error },
       );
       return [];
@@ -223,59 +226,59 @@ export const getProcessedPublisherConfig = (
 ): ProcessedPublisherConfig => {
    const rawConfig = getPublisherConfig(serverRoot);
 
-   // Ensure projects is an array
-   if (!Array.isArray(rawConfig.projects)) {
+   // Ensure environments is an array
+   if (!Array.isArray(rawConfig.environments)) {
       logger.warn(
-         `Invalid ${PUBLISHER_CONFIG_NAME}: projects must be an array. Using empty array.`,
+         `Invalid ${PUBLISHER_CONFIG_NAME}: the "environments" field must be a JSON array. Using empty array.`,
       );
       return {
          frozenConfig: rawConfig.frozenConfig ?? false,
-         projects: [],
+         environments: [],
       };
    }
 
-   // Filter and validate projects, skipping invalid ones
-   const validProjects: ProcessedProject[] = [];
-   for (const project of rawConfig.projects) {
-      if (!project || typeof project !== "object") {
+   // Filter and validate environments, skipping invalid ones
+   const validEnvironments: ProcessedEnvironment[] = [];
+   for (const environment of rawConfig.environments) {
+      if (!environment || typeof environment !== "object") {
          logger.warn(
-            `Invalid project in ${PUBLISHER_CONFIG_NAME}: project must be an object. Skipping.`,
+            `Invalid environment in ${PUBLISHER_CONFIG_NAME}: entry must be an object. Skipping.`,
          );
          continue;
       }
 
-      if (!project.name || typeof project.name !== "string") {
+      if (!environment.name || typeof environment.name !== "string") {
          logger.warn(
-            `Invalid project in ${PUBLISHER_CONFIG_NAME}: missing or invalid "name" field. Skipping project.`,
-            { project },
+            `Invalid environment in ${PUBLISHER_CONFIG_NAME}: missing or invalid "name" field. Skipping entry.`,
+            { environment },
          );
          continue;
       }
 
-      if (!Array.isArray(project.packages)) {
+      if (!Array.isArray(environment.packages)) {
          logger.warn(
-            `Invalid project "${project.name}" in ${PUBLISHER_CONFIG_NAME}: missing or invalid "packages" field (must be an array). Skipping project.`,
+            `Invalid environment "${environment.name}" in ${PUBLISHER_CONFIG_NAME}: missing or invalid "packages" field (must be an array). Skipping entry.`,
          );
          continue;
       }
 
       // Validate packages have required fields
-      const validPackages = project.packages.filter((pkg) => {
+      const validPackages = environment.packages.filter((pkg) => {
          if (!pkg || typeof pkg !== "object") {
             logger.warn(
-               `Invalid package in project "${project.name}": package must be an object. Skipping.`,
+               `Invalid package in environment "${environment.name}": package must be an object. Skipping.`,
             );
             return false;
          }
          if (!pkg.name || typeof pkg.name !== "string") {
             logger.warn(
-               `Invalid package in project "${project.name}": missing or invalid "name" field. Skipping.`,
+               `Invalid package in environment "${environment.name}": missing or invalid "name" field. Skipping.`,
             );
             return false;
          }
          if (!pkg.location || typeof pkg.location !== "string") {
             logger.warn(
-               `Invalid package "${pkg.name}" in project "${project.name}": missing or invalid "location" field. Skipping.`,
+               `Invalid package "${pkg.name}" in environment "${environment.name}": missing or invalid "location" field. Skipping.`,
             );
             return false;
          }
@@ -284,22 +287,22 @@ export const getProcessedPublisherConfig = (
 
       if (validPackages.length === 0) {
          logger.warn(
-            `Project "${project.name}" has no valid packages. Skipping project.`,
+            `Environment "${environment.name}" has no valid packages. Skipping entry.`,
          );
          continue;
       }
 
-      validProjects.push({
-         name: project.name,
+      validEnvironments.push({
+         name: environment.name,
          packages: validPackages,
          connections: convertConnectionsToApiConnections(
-            project.connections || [],
+            environment.connections || [],
          ),
       });
    }
 
    return {
       frozenConfig: rawConfig.frozenConfig ?? false,
-      projects: validProjects,
+      environments: validEnvironments,
    };
 };

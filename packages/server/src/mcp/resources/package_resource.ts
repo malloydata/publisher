@@ -6,7 +6,7 @@ import { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import { URL } from "url";
 import { PackageNotFoundError } from "../../errors";
 import { logger } from "../../logger";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import {
    getInternalError,
    getNotFoundError,
@@ -22,20 +22,23 @@ import { RESOURCE_METADATA } from "../resource_metadata";
 // *** Define handleGetPackageContents function ***
 async function handleGetPackageContents(
    uri: URL,
-   params: { projectName?: string; packageName?: string },
-   projectStore: ProjectStore,
+   params: { environmentName?: string; packageName?: string },
+   environmentStore: EnvironmentStore,
 ) {
    try {
-      const { projectName, packageName } = params;
-      if (typeof projectName !== "string" || projectName === "") {
-         throw new Error("Invalid project name parameter.");
+      const { environmentName, packageName } = params;
+      if (typeof environmentName !== "string" || environmentName === "") {
+         throw new Error("Invalid environment name parameter.");
       }
       if (typeof packageName !== "string" || packageName === "") {
          throw new Error("Invalid package name parameter.");
       }
 
-      const project = await projectStore.getProject(projectName, false);
-      const packageInstance = await project.getPackage(packageName, false);
+      const environment = await environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const packageInstance = await environment.getPackage(packageName, false);
 
       // Use listModels() which returns { path: string, type: 'source' | 'notebook' }[]
       const entries = await packageInstance.listModels();
@@ -58,7 +61,7 @@ async function handleGetPackageContents(
 
          // Common components for URI building
          const baseUriComponents = {
-            project: projectName,
+            environment: environmentName,
             package: packageName,
          };
 
@@ -172,10 +175,10 @@ async function handleGetPackageContents(
       } else if (
          error instanceof Error &&
          (error.message.includes("Invalid package name") ||
-            error.message.includes("Invalid project name"))
+            error.message.includes("Invalid environment name"))
       ) {
          errorDetails = getNotFoundError(
-            `Invalid project/package identifier in URI '${uri.href}'`,
+            `Invalid environment/package identifier in URI '${uri.href}'`,
          );
       } else {
          logger.error(
@@ -197,19 +200,19 @@ async function handleGetPackageContents(
  */
 export function registerPackageResource(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    // Define the expected parameter type for the read callback
    type ReadPackageParams = {
       fsPath?: string; // Expect string
-      projectName?: string; // Expect string
+      environmentName?: string; // Expect string
       packageName?: string; // Expect string
    };
 
    mcpServer.resource(
       "package",
       new ResourceTemplate(
-         "malloy://project/{projectName}/package/{packageName}",
+         "malloy://environment/{environmentName}/package/{packageName}",
          {
             list: undefined, // TODO: Implement and add listAllPackages here if needed
          },
@@ -221,26 +224,26 @@ export function registerPackageResource(
             params as ReadPackageParams, // Cast params to the updated type
             "package",
             async ({
-               projectName,
+               environmentName,
                packageName,
             }: {
                // Keep unknown here as it reflects the raw input possibility
                // before validation inside the async function
-               projectName?: unknown;
+               environmentName?: unknown;
                packageName?: unknown;
             }) => {
                try {
-                  if (typeof projectName !== "string") {
-                     throw new Error("Invalid project name parameter.");
+                  if (typeof environmentName !== "string") {
+                     throw new Error("Invalid environment name parameter.");
                   }
                   if (typeof packageName !== "string") {
                      throw new Error("Invalid package name parameter.");
                   }
-                  const project = await projectStore.getProject(
-                     projectName,
+                  const environment = await environmentStore.getEnvironment(
+                     environmentName,
                      false,
                   );
-                  const pkg = await project.getPackage(packageName, false);
+                  const pkg = await environment.getPackage(packageName, false);
                   return pkg.getPackageMetadata();
                } catch (error) {
                   let errorDetails;
@@ -251,10 +254,10 @@ export function registerPackageResource(
                   } else if (
                      error instanceof Error &&
                      (error.message.includes("Invalid package name") ||
-                        error.message.includes("Invalid project name"))
+                        error.message.includes("Invalid environment name"))
                   ) {
                      errorDetails = getNotFoundError(
-                        `Invalid project/package identifier in URI '${uri.href}'`,
+                        `Invalid environment/package identifier in URI '${uri.href}'`,
                      );
                   } else {
                      errorDetails = getInternalError(
@@ -273,7 +276,7 @@ export function registerPackageResource(
    mcpServer.resource(
       "package-contents",
       new ResourceTemplate(
-         "malloy://project/{projectName}/package/{packageName}/contents",
+         "malloy://environment/{environmentName}/package/{packageName}/contents",
          {
             // Contents are listed via GetResource on this specific URI,
             // so no general list callback needed here.
@@ -293,7 +296,7 @@ export function registerPackageResource(
             const resourceDefinitions = await handleGetPackageContents(
                uri,
                validatedParams,
-               projectStore,
+               environmentStore,
             );
 
             // Return the array directly as JSON content
@@ -332,11 +335,11 @@ export function registerPackageResource(
             } else if (
                error instanceof Error &&
                (error.message.includes("Invalid package name") ||
-                  error.message.includes("Invalid project name"))
+                  error.message.includes("Invalid environment name"))
             ) {
                // Handle invalid identifier errors specifically
                errorDetails = getNotFoundError(
-                  `Invalid project/package identifier in URI '${uri.href}'`,
+                  `Invalid environment/package identifier in URI '${uri.href}'`,
                );
             } else {
                // Handle other unexpected errors

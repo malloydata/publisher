@@ -1,12 +1,12 @@
 import { URL } from "url";
 import type { ResourceMetadata } from "@modelcontextprotocol/sdk/server/mcp";
 import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 import {
    PackageNotFoundError,
    ModelNotFoundError,
    ModelCompilationError,
-   ProjectNotFoundError,
+   EnvironmentNotFoundError,
 } from "../errors";
 import {
    getNotFoundError,
@@ -48,7 +48,7 @@ export async function handleResourceGet<
 >(
    uri: URL,
    params: TParams,
-   resourceType: string, // e.g., 'project', 'package' for logging/errors
+   resourceType: string, // e.g., 'environment', 'package' for logging/errors
    getData: GetDataLogic<TParams, TDefinition>,
    resourceMetadata: ResourceMetadata | undefined,
 ): Promise<ReadResourceResult> {
@@ -122,19 +122,22 @@ export async function handleResourceGet<
  * @returns An object containing the Model instance or a pre-formatted ErrorDetails object.
  */
 export async function getModelForQuery(
-   projectStore: ProjectStore,
-   projectName: string,
+   environmentStore: EnvironmentStore,
+   environmentName: string,
    packageName: string,
    modelPath: string,
 ): Promise<{ model: Model } | { error: ErrorDetails }> {
    try {
-      const project = await projectStore.getProject(projectName, false);
-      const pkg = await project.getPackage(packageName, false);
+      const environment = await environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const pkg = await environment.getPackage(packageName, false);
       const model = pkg.getModel(modelPath);
       if (!model || model.getModelType() === "notebook") {
          // Ensure it's actually a model
          const details = getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for project '${projectName}'`,
+            `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
          );
          return { error: details };
       }
@@ -144,20 +147,20 @@ export async function getModelForQuery(
    } catch (error) {
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;
-      if (error instanceof ProjectNotFoundError) {
-         errorDetails = getNotFoundError(`project '${projectName}'`);
+      if (error instanceof EnvironmentNotFoundError) {
+         errorDetails = getNotFoundError(`environment '${environmentName}'`);
       } else if (error instanceof PackageNotFoundError) {
          errorDetails = getNotFoundError(
-            `package '${packageName}' in project '${projectName}'`,
+            `package '${packageName}' in environment '${environmentName}'`,
          );
       } else if (error instanceof ModelNotFoundError) {
          errorDetails = getNotFoundError(
-            `model '${modelPath}' in package '${packageName}' for project '${projectName}'`,
+            `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
          );
       } else if (error instanceof ModelCompilationError) {
          errorDetails = getMalloyErrorDetails(
             "executeQuery (load model)",
-            `${projectName}/${packageName}/${modelPath}`,
+            `${environmentName}/${packageName}/${modelPath}`,
             error,
          );
       } else {
@@ -165,7 +168,7 @@ export async function getModelForQuery(
          errorDetails = getInternalError("executeQuery (Setup)", error);
       }
       logger.error(
-         `[MCP Server Error] Error accessing package/model for query: ${projectName}/${packageName}/${modelPath}`,
+         `[MCP Server Error] Error accessing package/model for query: ${environmentName}/${packageName}/${modelPath}`,
          { error },
       );
       return { error: errorDetails };
@@ -176,13 +179,13 @@ export async function getModelForQuery(
  * Constructs a valid malloy:// URI string from its components.
  * Handles encoding of path segments.
  *
- * @param components An object containing the URI parts (project, package, model, etc.)
+ * @param components An object containing the URI parts (environment, package, model, etc.)
  * @param fragment Optional fragment identifier (e.g., #queryResult)
  * @returns A valid malloy:// URI string.
  */
 export function buildMalloyUri(
    components: {
-      project?: string;
+      environment?: string;
       package?: string;
       model?: string;
       resourceType?:
@@ -198,10 +201,10 @@ export function buildMalloyUri(
    },
    fragment?: string,
 ): string {
-   let path = "/project/";
+   let path = "/environment/";
 
-   if (components.project) {
-      path += encodeURIComponent(components.project);
+   if (components.environment) {
+      path += encodeURIComponent(components.environment);
    } else {
       // Default to 'home' if not provided, consistent with current behavior
       path += "home";
@@ -227,7 +230,7 @@ export function buildMalloyUri(
    }
 
    // The URL constructor seems to normalize malloy://path to malloy:///path
-   // which breaks the tests expecting malloy://project/...
+   // which breaks the tests expecting malloy://environment/...
    // We manually construct the string instead.
    let uriString = "malloy:/" + path; // Start with one slash after scheme
 

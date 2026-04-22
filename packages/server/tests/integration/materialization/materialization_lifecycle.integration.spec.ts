@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const PROJECT_NAME = "test-project";
 const PACKAGE_NAME = "persist-test";
-const API = `/api/v0/projects/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
+const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
 describe("Materialization & Manifest REST API (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
@@ -23,7 +23,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       // Create the test project via the REST API using an absolute
       // path to the fixture so it works regardless of SERVER_ROOT.
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
-      const createRes = await fetch(`${baseUrl}/api/v0/projects`, {
+      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
@@ -45,7 +45,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       while (!pkgReady && Date.now() < deadline) {
          try {
             const res = await fetch(
-               `${baseUrl}/api/v0/projects/${PROJECT_NAME}/packages/${PACKAGE_NAME}`,
+               `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`,
             );
             if (res.ok) {
                pkgReady = true;
@@ -65,7 +65,7 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       // Tear down the test project, then the HTTP server.
       if (baseUrl) {
          try {
-            await fetch(`${baseUrl}/api/v0/projects/${PROJECT_NAME}`, {
+            await fetch(`${baseUrl}/api/v0/environments/${PROJECT_NAME}`, {
                method: "DELETE",
             });
          } catch {

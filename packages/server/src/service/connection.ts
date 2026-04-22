@@ -889,17 +889,17 @@ class DuckLakeConnection extends DuckDBConnection {
 
 export async function deleteDuckLakeConnectionFile(
    connectionName: string,
-   projectPath: string,
+   environmentPath: string,
 ): Promise<void> {
    const ducklakePath = path.join(
-      projectPath,
+      environmentPath,
       `${connectionName}_ducklake.duckdb`,
    );
    try {
       await fs.access(ducklakePath);
       await fs.rm(ducklakePath);
       logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${projectPath}`,
+         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
       );
    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -908,16 +908,16 @@ export async function deleteDuckLakeConnectionFile(
          );
       } else {
          logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${projectPath}`,
+            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
             { error },
          );
       }
    }
 }
 
-export async function createProjectConnections(
+export async function createEnvironmentConnections(
    connections: ApiConnection[] = [],
-   projectPath: string = "",
+   environmentPath: string = "",
    isUpdateConnectionRequest: boolean = false,
 ): Promise<{
    malloyConnections: Map<string, BaseConnection>;
@@ -1149,8 +1149,8 @@ export async function createProjectConnections(
                );
             }
 
-            // Create DuckDB connection with project basePath as working directory
-            // This ensures relative paths in the project are resolved correctly
+            // Create DuckDB connection with environment basePath as working directory
+            // This ensures relative paths in the environment are resolved correctly
             // Use unique memory database path to prevent sharing across connections
             const attachedDatabases =
                connection.duckdbConnection.attachedDatabases ?? [];
@@ -1160,14 +1160,14 @@ export async function createProjectConnections(
             const duckdbConnection = hasAzureAttached
                ? new AzureDuckDBConnection(
                     connection.name,
-                    path.join(projectPath, `${connection.name}.duckdb`),
-                    projectPath,
+                    path.join(environmentPath, `${connection.name}.duckdb`),
+                    environmentPath,
                     attachedDatabases,
                  )
                : new DuckDBConnection(
                     connection.name,
-                    path.join(projectPath, `${connection.name}.duckdb`),
-                    projectPath,
+                    path.join(environmentPath, `${connection.name}.duckdb`),
+                    environmentPath,
                  );
 
             // Attach databases if configured
@@ -1205,7 +1205,7 @@ export async function createProjectConnections(
                name: connection.name,
                databasePath: databasePath,
                motherDuckToken: connection.motherduckConnection.accessToken,
-               workingDirectory: projectPath,
+               workingDirectory: environmentPath,
             });
 
             connectionMap.set(connection.name, motherduckConnection);
@@ -1222,8 +1222,8 @@ export async function createProjectConnections(
             // Creating one Connection per DuckLake connection to avoid conflicts with other connections and better isolation.
             const ducklakeDuckdbConnection = new DuckLakeConnection(
                connection.name,
-               path.join(projectPath, `${connection.name}_ducklake.duckdb`),
-               projectPath,
+               path.join(environmentPath, `${connection.name}_ducklake.duckdb`),
+               environmentPath,
             );
 
             // Only attach DuckLake if it's not already attached or is it an update connection request
@@ -1416,8 +1416,8 @@ export async function testConnectionConfig(
          throw new Error("Connection name is required");
       }
 
-      // Use createProjectConnections to create the connection, then test it
-      const result = await createProjectConnections(
+      // Use createEnvironmentConnections to create the connection, then test it
+      const result = await createEnvironmentConnections(
          [connectionConfig], // Pass the single connection config
       );
       malloyConnections = result.malloyConnections;

@@ -2,10 +2,10 @@ import type { Connection } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
+   EnvironmentNotFoundError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
-   ProjectNotFoundError,
 } from "../errors";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import {
@@ -20,14 +20,14 @@ import {
    MaterializationService,
    tablePhysicallyExists,
 } from "./materialization_service";
-import { ProjectStore } from "./project_store";
+import { EnvironmentStore } from "./environment_store";
 
 function makeExecution(
    overrides: Partial<Materialization> = {},
 ): Materialization {
    return {
       id: "exec-1",
-      projectId: "proj-1",
+      environmentId: "proj-1",
       packageName: "pkg",
       status: "PENDING",
       startedAt: null,
@@ -46,12 +46,12 @@ function createMocks() {
    const sandbox = sinon.createSandbox();
 
    const repository: MockRepo = {
-      listProjects: sandbox.stub(),
-      getProjectById: sandbox.stub(),
-      getProjectByName: sandbox.stub(),
-      createProject: sandbox.stub(),
-      updateProject: sandbox.stub(),
-      deleteProject: sandbox.stub(),
+      listEnvironments: sandbox.stub(),
+      getEnvironmentById: sandbox.stub(),
+      getEnvironmentByName: sandbox.stub(),
+      createEnvironment: sandbox.stub(),
+      updateEnvironment: sandbox.stub(),
+      deleteEnvironment: sandbox.stub(),
       listPackages: sandbox.stub(),
       getPackageById: sandbox.stub(),
       getPackageByName: sandbox.stub(),
@@ -80,10 +80,10 @@ function createMocks() {
       getManifestStore: sandbox.stub(),
    };
 
-   const projectStore = {
+   const environmentStore = {
       storageManager,
-      getProject: sandbox.stub(),
-   } as unknown as ProjectStore;
+      getEnvironment: sandbox.stub(),
+   } as unknown as EnvironmentStore;
 
    const manifestService = {
       getManifest: sandbox.stub().resolves({ entries: {}, strict: false }),
@@ -94,20 +94,20 @@ function createMocks() {
    } as unknown as sinon.SinonStubbedInstance<ManifestService>;
 
    const service = new MaterializationService(
-      projectStore,
+      environmentStore,
       manifestService as unknown as ManifestService,
    );
 
-   // Default: resolveProjectId succeeds
-   repository.getProjectByName.resolves({
+   // Default: resolveEnvironmentId succeeds
+   repository.getEnvironmentByName.resolves({
       id: "proj-1",
-      name: "my-project",
+      name: "my-environment",
       path: "/test",
       createdAt: new Date(),
       updatedAt: new Date(),
    });
 
-   return { sandbox, repository, projectStore, manifestService, service };
+   return { sandbox, repository, environmentStore, manifestService, service };
 }
 
 describe("MaterializationService", () => {
@@ -117,15 +117,15 @@ describe("MaterializationService", () => {
       ctx = createMocks();
    });
 
-   // ==================== resolveProjectId ====================
+   // ==================== resolveEnvironmentId ====================
 
-   describe("resolveProjectId (via listMaterializations)", () => {
-      it("should throw ProjectNotFoundError when project is not in DB", async () => {
-         ctx.repository.getProjectByName.resolves(null);
+   describe("resolveEnvironmentId (via listMaterializations)", () => {
+      it("should throw EnvironmentNotFoundError when environment is not in DB", async () => {
+         ctx.repository.getEnvironmentByName.resolves(null);
 
          await expect(
             ctx.service.listMaterializations("unknown", "pkg"),
-         ).rejects.toThrow(ProjectNotFoundError);
+         ).rejects.toThrow(EnvironmentNotFoundError);
       });
    });
 
@@ -137,7 +137,7 @@ describe("MaterializationService", () => {
          ctx.repository.listMaterializations.resolves(builds);
 
          const result = await ctx.service.listMaterializations(
-            "my-project",
+            "my-environment",
             "pkg",
          );
 
@@ -151,7 +151,7 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(exec);
 
          const result = await ctx.service.getMaterialization(
-            "my-project",
+            "my-environment",
             "pkg",
             "exec-1",
          );
@@ -163,7 +163,7 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(null);
 
          await expect(
-            ctx.service.getMaterialization("my-project", "pkg", "missing"),
+            ctx.service.getMaterialization("my-environment", "pkg", "missing"),
          ).rejects.toThrow(MaterializationNotFoundError);
       });
 
@@ -173,7 +173,7 @@ describe("MaterializationService", () => {
          );
 
          await expect(
-            ctx.service.getMaterialization("my-project", "pkg", "exec-1"),
+            ctx.service.getMaterialization("my-environment", "pkg", "exec-1"),
          ).rejects.toThrow(MaterializationNotFoundError);
       });
    });
@@ -216,7 +216,7 @@ describe("MaterializationService", () => {
             // Trigger via stopMaterialization for RUNNING->CANCELLED (orphaned path)
             if (from === "RUNNING" && to === "CANCELLED") {
                const result = await ctx.service.stopMaterialization(
-                  "my-project",
+                  "my-environment",
                   "pkg",
                   exec.id,
                );
@@ -242,7 +242,7 @@ describe("MaterializationService", () => {
 
    describe("createMaterialization", () => {
       it("should create a PENDING build", async () => {
-         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves({}),
          });
          ctx.repository.getActiveMaterialization.resolves(null);
@@ -253,7 +253,7 @@ describe("MaterializationService", () => {
          ctx.repository.createMaterialization.resolves(pending);
 
          const result = await ctx.service.createMaterialization(
-            "my-project",
+            "my-environment",
             "pkg",
             {
                autoLoadManifest: true,
@@ -276,7 +276,7 @@ describe("MaterializationService", () => {
       });
 
       it("should reject creation when an active materialization exists", async () => {
-         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves({}),
          });
          ctx.repository.getActiveMaterialization.resolves(
@@ -284,12 +284,12 @@ describe("MaterializationService", () => {
          );
 
          await expect(
-            ctx.service.createMaterialization("my-project", "pkg"),
+            ctx.service.createMaterialization("my-environment", "pkg"),
          ).rejects.toThrow(MaterializationConflictError);
       });
 
       it("should translate DuplicateActiveMaterializationError from a lost race", async () => {
-         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves({}),
          });
          // The pre-check finds nothing (race is still possible), but the
@@ -305,7 +305,7 @@ describe("MaterializationService", () => {
          );
 
          await expect(
-            ctx.service.createMaterialization("my-project", "pkg"),
+            ctx.service.createMaterialization("my-environment", "pkg"),
          ).rejects.toThrow(/winner/);
       });
    });
@@ -322,7 +322,7 @@ describe("MaterializationService", () => {
          ctx.repository.updateMaterialization.resolves(running);
 
          const result = await ctx.service.startMaterialization(
-            "my-project",
+            "my-environment",
             "pkg",
             "exec-1",
          );
@@ -335,7 +335,7 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(running);
 
          await expect(
-            ctx.service.startMaterialization("my-project", "pkg", "exec-1"),
+            ctx.service.startMaterialization("my-environment", "pkg", "exec-1"),
          ).rejects.toThrow(InvalidStateTransitionError);
       });
 
@@ -350,7 +350,7 @@ describe("MaterializationService", () => {
          );
 
          await expect(
-            ctx.service.startMaterialization("my-project", "pkg", "exec-1"),
+            ctx.service.startMaterialization("my-environment", "pkg", "exec-1"),
          ).rejects.toThrow(MaterializationConflictError);
       });
    });
@@ -364,7 +364,7 @@ describe("MaterializationService", () => {
          );
 
          const result = await ctx.service.stopMaterialization(
-            "my-project",
+            "my-environment",
             "pkg",
             "exec-1",
          );
@@ -380,7 +380,7 @@ describe("MaterializationService", () => {
          );
 
          const result = await ctx.service.stopMaterialization(
-            "my-project",
+            "my-environment",
             "pkg",
             "orphan",
          );
@@ -393,7 +393,7 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(succeeded);
 
          await expect(
-            ctx.service.stopMaterialization("my-project", "pkg", "exec-1"),
+            ctx.service.stopMaterialization("my-environment", "pkg", "exec-1"),
          ).rejects.toThrow(InvalidStateTransitionError);
       });
    });
@@ -406,7 +406,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(succeeded);
          ctx.repository.deleteMaterialization.resolves();
 
-         await ctx.service.deleteMaterialization("my-project", "pkg", "exec-1");
+         await ctx.service.deleteMaterialization(
+            "my-environment",
+            "pkg",
+            "exec-1",
+         );
 
          expect(ctx.repository.deleteMaterialization.calledOnce).toBe(true);
          expect(ctx.repository.deleteMaterialization.firstCall.args[0]).toBe(
@@ -419,7 +423,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(failed);
          ctx.repository.deleteMaterialization.resolves();
 
-         await ctx.service.deleteMaterialization("my-project", "pkg", "exec-1");
+         await ctx.service.deleteMaterialization(
+            "my-environment",
+            "pkg",
+            "exec-1",
+         );
 
          expect(ctx.repository.deleteMaterialization.calledOnce).toBe(true);
       });
@@ -429,7 +437,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(cancelled);
          ctx.repository.deleteMaterialization.resolves();
 
-         await ctx.service.deleteMaterialization("my-project", "pkg", "exec-1");
+         await ctx.service.deleteMaterialization(
+            "my-environment",
+            "pkg",
+            "exec-1",
+         );
 
          expect(ctx.repository.deleteMaterialization.calledOnce).toBe(true);
       });
@@ -439,7 +451,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(pending);
 
          await expect(
-            ctx.service.deleteMaterialization("my-project", "pkg", "exec-1"),
+            ctx.service.deleteMaterialization(
+               "my-environment",
+               "pkg",
+               "exec-1",
+            ),
          ).rejects.toThrow(InvalidStateTransitionError);
       });
 
@@ -448,7 +464,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(running);
 
          await expect(
-            ctx.service.deleteMaterialization("my-project", "pkg", "exec-1"),
+            ctx.service.deleteMaterialization(
+               "my-environment",
+               "pkg",
+               "exec-1",
+            ),
          ).rejects.toThrow(InvalidStateTransitionError);
       });
 
@@ -456,7 +476,11 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(null);
 
          await expect(
-            ctx.service.deleteMaterialization("my-project", "pkg", "missing"),
+            ctx.service.deleteMaterialization(
+               "my-environment",
+               "pkg",
+               "missing",
+            ),
          ).rejects.toThrow(MaterializationNotFoundError);
       });
    });
@@ -470,7 +494,7 @@ describe("MaterializationService", () => {
          );
 
          await expect(
-            ctx.service.teardownPackage("my-project", "pkg"),
+            ctx.service.teardownPackage("my-environment", "pkg"),
          ).rejects.toThrow(MaterializationConflictError);
       });
 
@@ -484,14 +508,14 @@ describe("MaterializationService", () => {
             ["conn", connection],
          ]);
          const pkg = { getConnections: () => connections };
-         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves(pkg),
          });
          ctx.repository.getActiveMaterialization.resolves(null);
          const entries: ManifestEntry[] = [
             {
                id: "entry-1",
-               projectId: "proj-1",
+               environmentId: "proj-1",
                packageName: "pkg",
                buildId: "abcdef1234567890abcdef1234567890",
                tableName: "table_a",
@@ -502,7 +526,7 @@ describe("MaterializationService", () => {
             },
             {
                id: "entry-2",
-               projectId: "proj-1",
+               environmentId: "proj-1",
                packageName: "pkg",
                buildId: "1234567890abcdef1234567890abcdef",
                tableName: "table_b",
@@ -514,7 +538,10 @@ describe("MaterializationService", () => {
          ];
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
 
-         const result = await ctx.service.teardownPackage("my-project", "pkg");
+         const result = await ctx.service.teardownPackage(
+            "my-environment",
+            "pkg",
+         );
 
          expect(result.dropped).toHaveLength(2);
          expect(result.errors).toHaveLength(0);
@@ -539,14 +566,14 @@ describe("MaterializationService", () => {
             ["live_conn", livingConn],
          ]);
          const pkg = { getConnections: () => connections };
-         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves(pkg),
          });
          ctx.repository.getActiveMaterialization.resolves(null);
          const entries: ManifestEntry[] = [
             {
                id: "entry-ghost",
-               projectId: "proj-1",
+               environmentId: "proj-1",
                packageName: "pkg",
                buildId: "abcdef1234567890abcdef1234567890",
                tableName: "table_ghost",
@@ -558,7 +585,10 @@ describe("MaterializationService", () => {
          ];
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves(entries);
 
-         const result = await ctx.service.teardownPackage("my-project", "pkg");
+         const result = await ctx.service.teardownPackage(
+            "my-environment",
+            "pkg",
+         );
 
          expect(result.dropped).toHaveLength(1);
          expect(result.dropped[0].targetDropSkipped).toBe(true);
@@ -580,13 +610,13 @@ describe("MaterializationService", () => {
             ["conn", connection],
          ]);
          const pkg = { getConnections: () => connections };
-         (ctx.projectStore.getProject as sinon.SinonStub).resolves({
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves(pkg),
          });
          ctx.repository.getActiveMaterialization.resolves(null);
          const entry: ManifestEntry = {
             id: "entry-1",
-            projectId: "proj-1",
+            environmentId: "proj-1",
             packageName: "pkg",
             buildId: "abcdef1234567890abcdef1234567890",
             tableName: "orphan",
@@ -597,9 +627,13 @@ describe("MaterializationService", () => {
          };
          (ctx.manifestService.listEntries as sinon.SinonStub).resolves([entry]);
 
-         const result = await ctx.service.teardownPackage("my-project", "pkg", {
-            dryRun: true,
-         });
+         const result = await ctx.service.teardownPackage(
+            "my-environment",
+            "pkg",
+            {
+               dryRun: true,
+            },
+         );
 
          expect(result.dropped).toHaveLength(1);
          expect(result.dropped[0].tableName).toBe("orphan");

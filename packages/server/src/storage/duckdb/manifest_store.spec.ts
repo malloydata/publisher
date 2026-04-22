@@ -6,7 +6,7 @@ import { DuckDBManifestStore } from "./DuckDBManifestStore";
 function makeEntry(overrides: Partial<ManifestEntry> = {}): ManifestEntry {
    return {
       id: "entry-1",
-      projectId: "proj-1",
+      environmentId: "proj-1",
       packageName: "pkg",
       buildId: "build-abc",
       tableName: "my_table",
@@ -83,7 +83,7 @@ describe("DuckDBManifestStore", () => {
          expect(ctx.repository.upsertManifestEntry.calledOnce).toBe(true);
          const arg = ctx.repository.upsertManifestEntry.firstCall.args[0];
          expect(arg).toEqual({
-            projectId: "proj-1",
+            environmentId: "proj-1",
             packageName: "pkg",
             buildId: "build-abc",
             tableName: "tbl",

@@ -6,7 +6,7 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(400, error.message);
    } else if (error instanceof FrozenConfigError) {
       return httpError(403, error.message);
-   } else if (error instanceof ProjectNotFoundError) {
+   } else if (error instanceof EnvironmentNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof PackageNotFoundError) {
       return httpError(404, error.message);
@@ -53,7 +53,7 @@ export class BadRequestError extends Error {
    }
 }
 
-export class ProjectNotFoundError extends Error {
+export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }

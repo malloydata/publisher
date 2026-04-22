@@ -47,7 +47,7 @@ export class DuckLakeManifestStore implements ManifestStore {
       await this.db.run(`
          CREATE TABLE IF NOT EXISTS ${this.table} (
             id VARCHAR,
-            project_id VARCHAR NOT NULL,
+            environment_id VARCHAR NOT NULL,
             package_name VARCHAR NOT NULL,
             build_id VARCHAR NOT NULL,
             table_name VARCHAR NOT NULL,
@@ -61,12 +61,12 @@ export class DuckLakeManifestStore implements ManifestStore {
    }
 
    async getManifest(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<BuildManifest> {
       const rows = await this.db.all<Record<string, unknown>>(
-         `SELECT * FROM ${this.table} WHERE project_id = ? AND package_name = ? ORDER BY created_at DESC`,
-         [projectId, packageName],
+         `SELECT * FROM ${this.table} WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC`,
+         [environmentId, packageName],
       );
       const manifest: BuildManifest = { entries: {}, strict: false };
       for (const row of rows) {
@@ -88,7 +88,7 @@ export class DuckLakeManifestStore implements ManifestStore {
     * {@link getManifest} deduplicates by build_id keeping the newest row.
     */
    async writeEntry(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       buildId: string,
       tableName: string,
@@ -99,11 +99,11 @@ export class DuckLakeManifestStore implements ManifestStore {
       const id = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
       await this.db.run(
-         `INSERT INTO ${this.table} (id, project_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
+         `INSERT INTO ${this.table} (id, environment_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
          [
             id,
-            projectId,
+            environmentId,
             packageName,
             buildId,
             tableName,
@@ -120,12 +120,12 @@ export class DuckLakeManifestStore implements ManifestStore {
    }
 
    async listEntries(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<ManifestEntry[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         `SELECT * FROM ${this.table} WHERE project_id = ? AND package_name = ? ORDER BY created_at DESC`,
-         [projectId, packageName],
+         `SELECT * FROM ${this.table} WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC`,
+         [environmentId, packageName],
       );
       return rows.map(this.mapToEntry);
    }
@@ -133,7 +133,7 @@ export class DuckLakeManifestStore implements ManifestStore {
    private mapToEntry(row: Record<string, unknown>): ManifestEntry {
       return {
          id: row.id as string,
-         projectId: row.project_id as string,
+         environmentId: row.environment_id as string,
          packageName: row.package_name as string,
          buildId: row.build_id as string,
          tableName: row.table_name as string,
