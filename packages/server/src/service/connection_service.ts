@@ -78,7 +78,6 @@ export class ConnectionService {
          );
       }
 
-      // Update in-memory connections
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -93,11 +92,25 @@ export class ConnectionService {
 
       environment.updateConnections(malloyConnections, apiConnections);
 
-      await this.environmentStore.addConnection(
-         connection,
-         dbEnvironment.id,
-         repository,
-      );
+      try {
+         await this.environmentStore.addConnection(
+            connection,
+            dbEnvironment.id,
+            repository,
+         );
+      } catch (err) {
+         // Roll back in-memory state by rebuilding the connections map
+         // from the pre-write list, so memory and DB agree on absence.
+         const {
+            malloyConnections: rolledBackMalloy,
+            apiConnections: rolledBackApi,
+         } = await createEnvironmentConnections(
+            existingConnections,
+            environment.metadata.location || "",
+         );
+         environment.updateConnections(rolledBackMalloy, rolledBackApi);
+         throw err;
+      }
 
       logger.info(
          `Successfully added connection "${connection.name}" to environment "${environmentName}"`,
@@ -147,11 +160,25 @@ export class ConnectionService {
 
       environment.updateConnections(malloyConnections, apiConnections);
 
-      await this.environmentStore.updateConnection(
-         updatedConnection,
-         dbEnvironment.id,
-         repository,
-      );
+      try {
+         await this.environmentStore.updateConnection(
+            updatedConnection,
+            dbEnvironment.id,
+            repository,
+         );
+      } catch (err) {
+         // Roll back in-memory state by rebuilding from the pre-update
+         // list so memory and DB agree.
+         const {
+            malloyConnections: rolledBackMalloy,
+            apiConnections: rolledBackApi,
+         } = await createEnvironmentConnections(
+            existingConnections,
+            environment.metadata.location || "",
+         );
+         environment.updateConnections(rolledBackMalloy, rolledBackApi);
+         throw err;
+      }
 
       logger.info(
          `Successfully updated connection "${connectionName}" in environment "${environmentName}"`,
@@ -177,15 +204,15 @@ export class ConnectionService {
          connectionName,
       );
 
-      // Update in-memory connections
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      await environment.deleteConnection(connectionName);
 
-      // Delete from database
+      // Atomicity: DB first. If the DB delete throws, in-memory state is
+      // preserved so the caller can retry without a split-state DB row.
       await repository.deleteConnection(dbConnection.id);
+      await environment.deleteConnection(connectionName);
 
       logger.info(
          `Successfully deleted connection "${connectionName}" from environment "${environmentName}"`,

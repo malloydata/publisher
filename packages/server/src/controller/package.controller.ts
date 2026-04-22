@@ -68,10 +68,22 @@ export class PackageController {
          await this.downloadPackage(environmentName, body.name, body.location);
       }
       const result = await environment.addPackage(body.name);
-      await this.environmentStore.addPackageToDatabase(
-         environmentName,
-         body.name,
-      );
+      // Atomicity: if the DB write fails, roll back the in-memory package
+      // registration so memory and DB agree. Otherwise a later handler
+      // relying on resolveEnvironmentId / getPackageByName sees a ghost.
+      try {
+         await this.environmentStore.addPackageToDatabase(
+            environmentName,
+            body.name,
+         );
+      } catch (err) {
+         try {
+            await environment.deletePackage(body.name);
+         } catch {
+            // rollback is best-effort; surface the original DB failure.
+         }
+         throw err;
+      }
 
       if (options?.autoLoadManifest === true) {
          await this.tryLoadExistingManifest(environmentName, body.name);
@@ -129,11 +141,13 @@ export class PackageController {
          environmentName,
          false,
       );
-      const result = await environment.deletePackage(packageName);
+      // Atomicity: DB first. If the DB delete throws, in-memory state is
+      // preserved so the caller can retry without a split-state DB row.
       await this.environmentStore.deletePackageFromDatabase(
          environmentName,
          packageName,
       );
+      const result = await environment.deletePackage(packageName);
 
       return result;
    }
@@ -158,6 +172,11 @@ export class PackageController {
          );
       }
       const result = await environment.updatePackage(packageName, body);
+      // In-memory already mutated (publisher.json on disk too). If the
+      // DB sync throws we can't cleanly roll back the filesystem write,
+      // so the error propagates and the caller must retry with the new
+      // state — the DB read-back verification in PackageRepository will
+      // catch a silent no-op and surface it loudly.
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,

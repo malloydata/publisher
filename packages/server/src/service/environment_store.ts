@@ -787,8 +787,12 @@ export class EnvironmentStore {
       if (existingEnvironment) {
          const updatedEnvironment =
             await existingEnvironment.update(environment);
-         this.environments.set(environmentName, updatedEnvironment);
+         // Atomicity: persist to DB first. If the DB write throws, the
+         // in-memory map keeps the PRE-update environment — caller gets a
+         // real error and subsequent reads don't see a half-synced state.
+         // Only commit to memory after DB succeeds.
          await this.addEnvironmentToDatabase(updatedEnvironment);
+         this.environments.set(environmentName, updatedEnvironment);
          return updatedEnvironment;
       }
       const environmentManifest =
@@ -824,8 +828,6 @@ export class EnvironmentStore {
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
 
-      this.environments.set(environmentName, newEnvironment);
-
       environment?.packages?.forEach((_package) => {
          if (_package.name) {
             newEnvironment.setPackageStatus(
@@ -835,7 +837,24 @@ export class EnvironmentStore {
          }
       });
 
-      await this.addEnvironmentToDatabase(newEnvironment);
+      // Atomicity: write to DuckDB first. If it throws, the in-memory
+      // `environments` map is untouched and callers see a clean failure —
+      // no split state where memory says "present" and DB says "missing".
+      // Only commit to in-memory after DB write succeeds.
+      try {
+         await this.addEnvironmentToDatabase(newEnvironment);
+      } catch (err) {
+         // Best-effort rollback: if any stale row sneaked into the DB
+         // from a previous failed attempt (same name, previous run), drop
+         // it so the next retry starts clean.
+         try {
+            await this.deleteEnvironmentFromDatabase(environmentName);
+         } catch {
+            // rollback is best-effort; surface the original failure.
+         }
+         throw err;
+      }
+      this.environments.set(environmentName, newEnvironment);
 
       return newEnvironment;
    }
@@ -877,8 +896,9 @@ export class EnvironmentStore {
          );
       }
       const updatedEnvironment = await existingEnvironment.update(environment);
-      this.environments.set(environmentName, updatedEnvironment);
+      // Atomicity: DB first, then memory. See addEnvironment for rationale.
       await this.addEnvironmentToDatabase(updatedEnvironment);
+      this.environments.set(environmentName, updatedEnvironment);
       return updatedEnvironment;
    }
 
@@ -899,8 +919,12 @@ export class EnvironmentStore {
       // Close all connections before removing the environment
       environment.closeAllConnections();
 
-      this.environments.delete(environmentName);
+      // Atomicity: drop from DB first. If it throws, in-memory state is
+      // preserved and the caller can retry. Only remove from memory after
+      // the DB delete succeeds — otherwise memory and DB disagree on
+      // whether the environment exists.
       await this.deleteEnvironmentFromDatabase(environmentName);
+      this.environments.delete(environmentName);
       if (environmentPath) {
          try {
             await fs.promises.rm(environmentPath, {
