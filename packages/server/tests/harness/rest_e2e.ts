@@ -1,11 +1,5 @@
 import http from "http";
 
-// Force a fresh storage schema on boot so REST E2E tests never inherit
-// state from a prior run's publisher.db. Set at module scope so this
-// runs before any consumer dynamically imports src/server — which is
-// when EnvironmentStore reads the env var at construction time.
-process.env.INITIALIZE_STORAGE = "true";
-
 export interface RestE2EEnv {
    httpServer: http.Server;
    baseUrl: string;
