@@ -11,8 +11,8 @@ permissions: {}
 
 env:
   BUN_VERSION: 1.3.13
-  WINDOWS_USERPROFILE: 'D:\'
-  WINDOWS_BUN_CACHE_DIR: 'D:\.bun\install\cache'
+  WINDOWS_USERPROFILE: "D:\\"
+  WINDOWS_BUN_CACHE_DIR: "D:\\.bun\\install\\cache"
 
 jobs:
   cross_platform_test:
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -74,5 +74,5 @@ jobs:
         shell: bash
 
       - name: Run tests
-        run: bun run test
+        run: bun run test --isolated
         shell: bash
