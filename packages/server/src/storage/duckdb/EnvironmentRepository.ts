@@ -139,7 +139,17 @@ export class EnvironmentRepository {
          params,
       );
 
-      return this.getEnvironmentById(id) as Promise<Environment>;
+      // Read-after-write: fail loudly if the UPDATE silently no-ops.
+      const verified = await this.getEnvironmentById(id);
+      if (!verified) {
+         logger.error(
+            `updateEnvironment(${id}): UPDATE returned success but row is not visible on read-back (id=${id}; name=${existing.name})`,
+         );
+         throw new Error(
+            `Failed to update environment (id=${id}; name=${existing.name})`,
+         );
+      }
+      return verified;
    }
 
    async deleteEnvironment(id: string): Promise<void> {

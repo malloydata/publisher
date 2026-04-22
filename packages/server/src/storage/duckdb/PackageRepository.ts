@@ -1,3 +1,4 @@
+import { logger } from "../../logger";
 import { Package } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
@@ -60,6 +61,17 @@ export class PackageRepository {
          ],
       );
 
+      // Read-after-write: fail loudly if the INSERT silently did not land.
+      const verified = await this.getPackageByName(pkg.environmentId, pkg.name);
+      if (!verified) {
+         logger.error(
+            `createPackage("${pkg.name}"): INSERT returned success but row is not visible on read-back (id=${id}; name=${pkg.name})`,
+         );
+         throw new Error(
+            `Failed to create package (id=${id}; name=${pkg.name})`,
+         );
+      }
+
       return {
          id,
          ...pkg,
@@ -107,7 +119,17 @@ export class PackageRepository {
          params,
       );
 
-      return this.getPackageById(id) as Promise<Package>;
+      // Read-after-write: fail loudly if the UPDATE silently no-ops.
+      const verified = await this.getPackageById(id);
+      if (!verified) {
+         logger.error(
+            `updatePackage(${id}): UPDATE returned success but row is not visible on read-back (id=${id}; name=${existing.name})`,
+         );
+         throw new Error(
+            `Failed to update package (id=${id}; name=${existing.name})`,
+         );
+      }
+      return verified;
    }
 
    async deletePackage(id: string): Promise<void> {

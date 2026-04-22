@@ -1,3 +1,4 @@
+import { logger } from "../../logger";
 import { Connection } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
@@ -68,6 +69,20 @@ export class ConnectionRepository {
             ],
          );
 
+         // Read-after-write: fail loudly if the INSERT silently did not land.
+         const verified = await this.getConnectionByName(
+            connection.environmentId,
+            connection.name,
+         );
+         if (!verified) {
+            logger.error(
+               `createConnection("${connection.name}"): INSERT returned success but row is not visible on read-back (id=${id}; name=${connection.name})`,
+            );
+            throw new Error(
+               `Failed to create connection (id=${id}; name=${connection.name})`,
+            );
+         }
+
          return {
             id,
             ...connection,
@@ -116,7 +131,17 @@ export class ConnectionRepository {
          params,
       );
 
-      return this.getConnectionById(id) as Promise<Connection>;
+      // Read-after-write: fail loudly if the UPDATE silently no-ops.
+      const verified = await this.getConnectionById(id);
+      if (!verified) {
+         logger.error(
+            `updateConnection(${id}): UPDATE returned success but row is not visible on read-back (id=${id}; name=${existing.name})`,
+         );
+         throw new Error(
+            `Failed to update connection (id=${id}; name=${existing.name})`,
+         );
+      }
+      return verified;
    }
 
    async deleteConnection(id: string): Promise<void> {
