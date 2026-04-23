@@ -1,0 +1,113 @@
+name: Release (NPM + Docker)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (optional — defaults to npm patch bump of current sdk version)"
+        required: false
+        type: string
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      branch_name: ${{ steps.bump.outputs.branch_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Configure git
+        run: |
+          git config --local user.email "${{ github.actor }}@users.noreply.github.com"
+          git config --local user.name "${{ github.actor }}"
+
+      - name: Bump version and create branch
+        id: bump
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            TARGET="${{ inputs.version }}"
+            echo "::notice title=Version::Using provided version $TARGET"
+            NEW_VERSION=$(npm version "$TARGET" --workspaces --no-git-tag-version | tail -1)
+          else
+            echo "::notice title=Version::No version provided — performing patch bump"
+            NEW_VERSION=$(npm version patch --workspaces --no-git-tag-version | tail -1)
+          fi
+
+          # Strip any leading 'v' and surrounding whitespace
+          NEW_VERSION="${NEW_VERSION#v}"
+          NEW_VERSION="$(echo "$NEW_VERSION" | tr -d '[:space:]')"
+
+          BRANCH_NAME="release/sdk-${NEW_VERSION}"
+          git checkout -b "$BRANCH_NAME"
+
+          git add packages/sdk/package.json packages/app/package.json packages/server/package.json
+          # package-lock.json may or may not change depending on repo setup
+          git add package-lock.json 2>/dev/null || true
+          git commit -s -m "Release SDK/App version ${NEW_VERSION}"
+
+          git push origin "$BRANCH_NAME"
+
+          echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+          echo "::notice title=Prepared Release::Version ${NEW_VERSION} on branch ${BRANCH_NAME}"
+
+  publish-npm:
+    needs: prepare
+    uses: ./.github/workflows/npm-sdk.yml
+    secrets: inherit
+    with:
+      ref: ${{ needs.prepare.outputs.branch_name }}
+
+  publish-docker:
+    needs: prepare
+    uses: ./.github/workflows/docker-image.yml
+    secrets: inherit
+    with:
+      current_version: ${{ needs.prepare.outputs.new_version }}
+      ref: ${{ needs.prepare.outputs.branch_name }}
+
+  open-pr:
+    needs: [prepare, publish-npm, publish-docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.branch_name }}
+          fetch-depth: 0
+
+      - name: Create pull request to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ needs.prepare.outputs.branch_name }}"
+          VERSION="${{ needs.prepare.outputs.new_version }}"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Release SDK/App v${VERSION}" \
+            --body "Automated release PR for version \`${VERSION}\`.
+
+          - NPM packages published: \`@malloy-publisher/sdk\`, \`@malloy-publisher/app\`, \`@malloy-publisher/server\`
+          - Docker image published: \`ms2data/malloy-publisher:${VERSION}\` (and \`latest\`)
+
+          Triggered by @${{ github.actor }} via \`release.yml\`."
+
+          echo "## 🚀 Release ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: \`${BRANCH}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- NPM + Docker published" >> $GITHUB_STEP_SUMMARY
+          echo "- PR opened against \`main\`" >> $GITHUB_STEP_SUMMARY
