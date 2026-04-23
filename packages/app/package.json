@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/app",
    "description": "Malloy Publisher App",
-   "version": "0.0.190",
+   "version": "0.0.181-dev-v1",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
