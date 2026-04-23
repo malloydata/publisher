@@ -8,6 +8,9 @@ on:
         required: false
         type: string
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -77,37 +80,50 @@ jobs:
       current_version: ${{ needs.prepare.outputs.new_version }}
       ref: ${{ needs.prepare.outputs.branch_name }}
 
-  open-pr:
+  gh-release:
     needs: [prepare, publish-npm, publish-docker]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.branch_name }}
           fetch-depth: 0
 
-      - name: Create pull request to main
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.new_version }}
+          BRANCH: ${{ needs.prepare.outputs.branch_name }}
         run: |
-          BRANCH="${{ needs.prepare.outputs.branch_name }}"
-          VERSION="${{ needs.prepare.outputs.new_version }}"
+          TAG="v${VERSION}"
 
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "Release SDK/App v${VERSION}" \
-            --body "Automated release PR for version \`${VERSION}\`.
+          NOTES_FILE="$(mktemp)"
+          cat > "$NOTES_FILE" <<EOF
+          ## Release v${VERSION}
 
-          - NPM packages published: \`@malloy-publisher/sdk\`, \`@malloy-publisher/app\`, \`@malloy-publisher/server\`
-          - Docker image published: \`ms2data/malloy-publisher:${VERSION}\` (and \`latest\`)
+          ### 📦 NPM packages
+          - [\`@malloy-publisher/sdk@${VERSION}\`](https://www.npmjs.com/package/@malloy-publisher/sdk/v/${VERSION})
+          - [\`@malloy-publisher/app@${VERSION}\`](https://www.npmjs.com/package/@malloy-publisher/app/v/${VERSION})
+          - [\`@malloy-publisher/server@${VERSION}\`](https://www.npmjs.com/package/@malloy-publisher/server/v/${VERSION})
 
-          Triggered by @${{ github.actor }} via \`release.yml\`."
+          ### 🐳 Docker image
+          \`\`\`
+          docker pull ms2data/malloy-publisher:${VERSION}
+          docker pull ms2data/malloy-publisher:latest
+          \`\`\`
 
-          echo "## 🚀 Release ${VERSION}" >> $GITHUB_STEP_SUMMARY
-          echo "- Branch: \`${BRANCH}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- NPM + Docker published" >> $GITHUB_STEP_SUMMARY
-          echo "- PR opened against \`main\`" >> $GITHUB_STEP_SUMMARY
+          ### ℹ️ Details
+          - Release branch: \`${BRANCH}\`
+          - Triggered by: @${{ github.actor }}
+          EOF
+
+          gh release create "$TAG" \
+            --target "$BRANCH" \
+            --title "v${VERSION}" \
+            --notes-file "$NOTES_FILE" \
+            --generate-notes
+
+          echo "## 🏷️ GitHub Release" >> $GITHUB_STEP_SUMMARY
+          echo "Created release [\`${TAG}\`](https://github.com/${{ github.repository }}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY

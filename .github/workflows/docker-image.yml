@@ -14,6 +14,7 @@ on:
 
 env:
   REGISTRY_IMAGE: ms2data/malloy-publisher
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -115,8 +116,17 @@ jobs:
           else
             CURRENT_VERSION=$(cat packages/sdk/package.json | grep '"version"' | sed 's/.*"version": "\(.*\)".*/\1/')
           fi
-          echo "::notice title=Current Version::Publishing SDK version $CURRENT_VERSION"
+
+          # Pre-release versions (e.g. 0.0.189-dev, 1.0.0-rc.1) must not update the "latest" tag.
+          if [[ "$CURRENT_VERSION" == *-* ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
+          fi
+
+          echo "::notice title=Current Version::Publishing SDK version $CURRENT_VERSION (prerelease=$IS_PRERELEASE)"
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
 
       - name: Docker meta
         id: meta
@@ -125,7 +135,8 @@ jobs:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=raw,value=${{ steps.version_step.outputs.current_version }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.version_step.outputs.is_prerelease == 'false' }}
+            type=raw,value=next,enable=${{ steps.version_step.outputs.is_prerelease == 'true' }}
 
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
@@ -138,7 +149,12 @@ jobs:
 
           if [ -z "${{ steps.meta.outputs.tags }}" ]; then
             echo "No tags generated, using fallback tags"
-            TAGS="-t ${{ env.REGISTRY_IMAGE }}:${{ steps.version_step.outputs.current_version }} -t ${{ env.REGISTRY_IMAGE }}:latest"
+            TAGS="-t ${{ env.REGISTRY_IMAGE }}:${{ steps.version_step.outputs.current_version }}"
+            if [ "${{ steps.version_step.outputs.is_prerelease }}" = "false" ]; then
+              TAGS="$TAGS -t ${{ env.REGISTRY_IMAGE }}:latest"
+            else
+              TAGS="$TAGS -t ${{ env.REGISTRY_IMAGE }}:next"
+            fi
           else
             TAGS=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< '${{ steps.meta.outputs.json }}')
           fi
