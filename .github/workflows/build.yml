@@ -80,6 +80,7 @@ jobs:
         with:
           submodules: "true"
       - name: Setup Node.js
+        if: matrix.runtime == 'npx'
         uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -102,21 +103,43 @@ jobs:
           bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
-      - name: Link local package
+      - name: Remove Node.js (bunx leg only)
+        if: matrix.runtime == 'bunx'
+        run: |
+          # The ubuntu-latest runner ships with Node preinstalled. Remove it so
+          # the bunx leg genuinely proves Bun-only compatibility — no Node can
+          # be shimmed in via PATH lookup or shebang resolution.
+          sudo apt-get remove -y --purge nodejs nodejs-doc npm || true
+          sudo rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
+          sudo rm -rf /opt/hostedtoolcache/node
+          hash -r
+          if command -v node >/dev/null 2>&1; then
+            echo "✗ 'node' is still on PATH at $(command -v node) — cannot prove Bun-only compatibility"
+            exit 1
+          fi
+          echo "✓ Node removed; PATH=$PATH"
+          command -v bun && bun --version
+      - name: Link local package (npx only)
+        if: matrix.runtime == 'npx'
         working-directory: packages/server
         run: |
-          if [ "${{ matrix.runtime }}" = "bunx" ]; then
-            echo "→ bun link && bun link @malloy-publisher/server"
-            bun link && bun link @malloy-publisher/server
-          else
-            echo "→ npm link"
-            npm link
-          fi
+          echo "→ npm link"
+          npm link
       - name: Start server via ${{ matrix.runtime }}
         working-directory: packages/server
         run: |
-          ${{ matrix.runtime }} malloy-publisher --port ${{ matrix.port }} --server_root ./ \
-            > /tmp/server.log 2>&1 &
+          if [ "${{ matrix.runtime }}" = "bunx" ]; then
+            # Bypass the `#!/usr/bin/env node` shebang by invoking Bun directly
+            # on the bundled entry file. This exercises the published artifact
+            # without depending on Node for shebang resolution.
+            echo "→ bun run ./dist/server.mjs"
+            bun run ./dist/server.mjs --port ${{ matrix.port }} --server_root ./ \
+              > /tmp/server.log 2>&1 &
+          else
+            echo "→ npx malloy-publisher (uses #!/usr/bin/env node shebang)"
+            npx malloy-publisher --port ${{ matrix.port }} --server_root ./ \
+              > /tmp/server.log 2>&1 &
+          fi
           echo $! > /tmp/server.pid
           echo "Server PID: $(cat /tmp/server.pid)"
       - name: Wait for server to reach 'serving' state
