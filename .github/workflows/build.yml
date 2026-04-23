@@ -73,7 +73,7 @@ jobs:
         include:
           - runtime: npx
             port: 4002
-          - runtime: bunx
+          - runtime: bun-direct
             port: 4003
     steps:
       - uses: actions/checkout@v4
@@ -103,11 +103,11 @@ jobs:
           bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
-      - name: Remove Node.js (bunx leg only)
-        if: matrix.runtime == 'bunx'
+      - name: Remove Node.js (direct Bun leg only)
+        if: matrix.runtime == 'bun-direct'
         run: |
           # The ubuntu-latest runner ships with Node preinstalled. Remove it so
-          # the bunx leg genuinely proves Bun-only compatibility — no Node can
+          # the direct Bun leg genuinely proves Bun-only compatibility — no Node can
           # be shimmed in via PATH lookup or shebang resolution.
           sudo apt-get remove -y --purge nodejs nodejs-doc npm || true
           sudo rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
@@ -128,10 +128,10 @@ jobs:
       - name: Start server via ${{ matrix.runtime }}
         working-directory: packages/server
         run: |
-          if [ "${{ matrix.runtime }}" = "bunx" ]; then
+          if [ "${{ matrix.runtime }}" = "bun-direct" ]; then
             # Bypass the `#!/usr/bin/env node` shebang by invoking Bun directly
-            # on the bundled entry file. This exercises the published artifact
-            # without depending on Node for shebang resolution.
+            # on the bundled entry file. This validates direct Bun execution of
+            # the built server artifact without depending on Node.
             echo "→ bun run ./dist/server.mjs"
             bun run ./dist/server.mjs --port ${{ matrix.port }} --server_root ./ \
               > /tmp/server.log 2>&1 &
