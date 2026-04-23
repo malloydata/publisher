@@ -106,8 +106,10 @@ jobs:
         working-directory: packages/server
         run: |
           if [ "${{ matrix.runtime }}" = "bunx" ]; then
+            echo "→ bun link && bun link @malloy-publisher/server"
             bun link && bun link @malloy-publisher/server
           else
+            echo "→ npm link"
             npm link
           fi
       - name: Start server via ${{ matrix.runtime }}
