@@ -252,7 +252,6 @@ export class ConnectionController {
          environmentName,
          connectionName,
       );
-
       try {
          const schema = await (
             malloyConnection as Connection & {
@@ -265,10 +264,12 @@ export class ConnectionController {
             connection: connectionName,
             selectStr: sqlStatement,
          });
+
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof schema === "string") {
             throw new ConnectionError(schema);
          }
+
          return {
             source: JSON.stringify(schema),
          };

@@ -734,12 +734,6 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: options
-          in: query
-          description: Options
-          required: false
-          schema:
-            type: string
       requestBody:
         description: SQL statement to execute
         required: true
@@ -750,6 +744,9 @@ paths:
               properties:
                 sqlStatement:
                   type: string
+                options:
+                  type: string
+                  description: Options
       responses:
         "200":
           description: Query execution results
@@ -2261,17 +2258,12 @@ components:
         filterParams:
           type: object
           description: Filter parameter values keyed by filter name. Used with sources
-            that declare #(filter) annotations.
-          additionalProperties:
-            oneOf:
-              - type: string
-              - type: array
-                items:
-                  type: string
+            that declare \#(filter) annotations. Each value is either a string or an array of strings.
+          additionalProperties: true
         bypassFilters:
           type: boolean
           default: false
-          description: When true, skip server-side #(filter) injection entirely.
+          description: When true, skip server-side \#(filter) injection entirely.
 
     NotebookCell:
       type: object
