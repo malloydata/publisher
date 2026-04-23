@@ -112,9 +112,34 @@ jobs:
       - name: Start server via ${{ matrix.runtime }}
         working-directory: packages/server
         run: |
-          ${{ matrix.runtime }} malloy-publisher --port ${{ matrix.port }} --server_root ./ &
-          sleep 12
-      - name: Test API endpoint
+          ${{ matrix.runtime }} malloy-publisher --port ${{ matrix.port }} --server_root ./ \
+            > /tmp/server.log 2>&1 &
+          echo $! > /tmp/server.pid
+          echo "Server PID: $(cat /tmp/server.pid)"
+      - name: Wait for server to reach 'serving' state
+        run: |
+          SERVER_PID=$(cat /tmp/server.pid)
+          for i in $(seq 1 60); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "✗ Server process died"
+              echo "--- server log ---"
+              cat /tmp/server.log
+              exit 1
+            fi
+            status=$(curl -sf http://localhost:${{ matrix.port }}/api/v0/status || true)
+            state=$(echo "$status" | jq -r '.operationalState // empty')
+            echo "[${i}s] operationalState=${state:-<no response>}"
+            if [ "$state" = "serving" ]; then
+              echo "✓ Server is serving after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "✗ Server did not reach 'serving' within 60s"
+          echo "--- server log ---"
+          cat /tmp/server.log
+          exit 1
+      - name: Test list projects
         run: |
           response=$(curl -s http://localhost:${{ matrix.port }}/api/v0/projects)
           echo "API Response: $response"
@@ -122,6 +147,8 @@ jobs:
             echo "✓ API test passed: Found 1 project"
           else
             echo "✗ API test failed: Expected 1 project, got different response"
+            echo "--- server log ---"
+            cat /tmp/server.log
             exit 1
           fi
 

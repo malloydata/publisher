@@ -22,7 +22,7 @@ import {
    MalloySQLParser,
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
-import malloyPackage from "@malloydata/malloy/package.json";
+declare const __MALLOY_VERSION__: string;
 import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
@@ -45,9 +45,9 @@ import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildFilterClause,
+   FilterValidationError,
    injectFilterRefinement,
    parseFilters,
-   FilterValidationError,
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
@@ -65,7 +65,7 @@ export type PostgresConnection = components["schemas"]["PostgresConnection"];
 export type BigqueryConnection = components["schemas"]["BigqueryConnection"];
 export type TrinoConnection = components["schemas"]["TrinoConnection"];
 
-const MALLOY_VERSION = malloyPackage.version;
+const MALLOY_VERSION = __MALLOY_VERSION__;
 
 export type ModelType = "model" | "notebook";
 
