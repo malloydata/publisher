@@ -1,7 +1,12 @@
 name: Publish SDK/APP to NPM
 
 on:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to check out (branch, tag, or SHA)"
+        required: false
+        type: string
 
 env:
   BUN_VERSION: 1.3.13
@@ -10,12 +15,13 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -28,25 +34,19 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Show current version
+      - name: Read current version
+        id: version_step
         run: |
           CURRENT_VERSION=$(cat packages/sdk/package.json | grep '"version"' | sed 's/.*"version": "\(.*\)".*/\1/')
-          echo "::notice title=Current Version::Current SDK version is $CURRENT_VERSION"
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "::notice title=Current Version::Publishing SDK version $CURRENT_VERSION"
 
       - name: Install dependencies
         run: bun install
 
-      - name: Update package version
+      - name: Resolve workspace:* for publishing (in-memory only, not committed)
         run: |
-          echo "Safe to ignore npm workspace errors"
-          NEW_VERSION=$(npm version patch --workspaces | tail -1)
-          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
-          echo "::notice title=New Version::Will update to version $NEW_VERSION"
-
-      - name: Replace workspace dependencies for publishing
-        run: |
-          # Replace workspace:* with actual version in app package.json for publishing
-          sed -i "s/\"@malloy-publisher\/sdk\": \"workspace:\*\"/\"@malloy-publisher\/sdk\": \"^${NEW_VERSION}\"/" packages/app/package.json
+          sed -i "s/\"@malloy-publisher\/sdk\": \"workspace:\*\"/\"@malloy-publisher\/sdk\": \"^${{ steps.version_step.outputs.current_version }}\"/" packages/app/package.json
 
       - name: Build SDK package
         run: |
@@ -75,38 +75,3 @@ jobs:
           cd packages/server
           NODE_ENV=production bun run build
           npm publish --access public --tag latest
-
-      - name: Revert workspace dependencies
-        run: |
-          # Revert the workspace dependency back to workspace:* for git commit
-          sed -i "s/\"@malloy-publisher\/sdk\": \"\\^${NEW_VERSION}\"/\"@malloy-publisher\/sdk\": \"workspace:*\"/" packages/app/package.json
-
-      - name: Create version update branch
-        run: |
-          git config --local user.email "${{ github.actor }}@users.noreply.github.com"
-          git config --local user.name "${{ github.actor }}"
-
-          # Create and switch to a new branch
-          BRANCH_NAME="update-sdk-version-${NEW_VERSION}"
-          git checkout -b $BRANCH_NAME
-
-          # Stage and commit the changes
-          git add packages/sdk/package.json
-          git add packages/app/package.json
-          git add packages/server/package.json
-          git commit -s -m "Update SDK/App version to ${NEW_VERSION}"
-
-          # Push the branch
-          git push origin $BRANCH_NAME
-
-          echo "::notice title=Branch Created::Created branch $BRANCH_NAME with version update"
-          echo "::notice title=Next Step::Please create a pull request from branch $BRANCH_NAME to main"
-
-          # Add to job summary
-          echo "## 🚀 SDK/App Version Update" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **Updated to version:** \`${NEW_VERSION}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📝 **Branch created:** \`$BRANCH_NAME\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🔗 **Next step:** [Create Pull Request](https://github.com/${{ github.repository }}/compare/$BRANCH_NAME)" >> $GITHUB_STEP_SUMMARY
