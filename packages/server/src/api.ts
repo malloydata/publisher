@@ -1578,10 +1578,6 @@ export interface operations {
     */
    "post-querydata": {
       parameters: {
-         query?: {
-            /** @description Options */
-            options?: string;
-         };
          path: {
             /** @description Name of the project */
             projectName: components["schemas"]["IdentifierPattern"];
@@ -1594,6 +1590,8 @@ export interface operations {
          content: {
             "application/json": {
                sqlStatement?: string;
+               /** @description Options */
+               options?: string;
             };
          };
       };
