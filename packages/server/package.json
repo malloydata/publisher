@@ -2,9 +2,9 @@
    "name": "@malloy-publisher/server",
    "description": "Malloy Publisher Server",
    "version": "0.0.190",
-   "main": "dist/server.js",
+   "main": "dist/server.mjs",
    "bin": {
-      "malloy-publisher": "dist/server.js"
+      "malloy-publisher": "dist/server.mjs"
    },
    "repository": {
       "type": "git",
@@ -19,11 +19,11 @@
       "test:integration": "bun test --timeout 100000 tests",
       "build": "bun generate-api-types && bun build:app && NODE_ENV=production bun run build.ts",
       "build:server-only": "bun generate-api-types && NODE_ENV=production bun run build.ts",
-      "start": "NODE_ENV=production bun run ./dist/server.js",
-      "start:init": "NODE_ENV=production bun run ./dist/server.js --init",
+      "start": "NODE_ENV=production bun run ./dist/server.mjs",
+      "start:init": "NODE_ENV=production bun run ./dist/server.mjs --init",
       "start:dev": "NODE_ENV=development bun --watch src/server.ts",
       "start:dev:init": "NODE_ENV=development bun --watch src/server.ts --init",
-      "start:instrumented": "bun --preload ./dist/instrumentation.js ./dist/server.js",
+      "start:instrumented": "bun --preload ./dist/instrumentation.mjs ./dist/server.mjs",
       "lint": "bunx eslint \"./src/**/*.ts\"",
       "format": "bunx prettier --write '**/*.{ts,tsx}'",
       "build:app": "cd ../app && NODE_ENV=production bunx vite build",

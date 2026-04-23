@@ -63,18 +63,25 @@ jobs:
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
         run: bun run lint
-  npx_test:
-    name: npx test
+  runtime_test:
+    name: ${{ matrix.runtime }} test
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: npx
+            port: 4002
+          - runtime: bunx
+            port: 4003
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: "true" # Fetch submodules
+          submodules: "true"
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -95,17 +102,22 @@ jobs:
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
       - name: Link local package
+        working-directory: packages/server
         run: |
-          cd packages/server && npm link
-      - name: Start npx server
+          if [ "${{ matrix.runtime }}" = "bunx" ]; then
+            bun link && bun link @malloy-publisher/server
+          else
+            npm link
+          fi
+      - name: Start server via ${{ matrix.runtime }}
+        working-directory: packages/server
         run: |
-          cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
+          ${{ matrix.runtime }} malloy-publisher --port ${{ matrix.port }} --server_root ./ &
           sleep 12
       - name: Test API endpoint
         run: |
-          response=$(curl -s http://localhost:4002/api/v0/projects)
+          response=$(curl -s http://localhost:${{ matrix.port }}/api/v0/projects)
           echo "API Response: $response"
-          # Check if response is a JSON array with 1 entry
           if echo "$response" | jq -e '. | length == 1' > /dev/null; then
             echo "✓ API test passed: Found 1 project"
           else
