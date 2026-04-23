@@ -3,1087 +3,1080 @@
  * Do not make direct changes to the file.
  */
 
+
 export interface paths {
-   "/status": {
-      /**
-       * Get server status and health information
-       * @description Returns the current status of the Malloy Publisher server, including initialization state,
-       * available projects, and server timestamp. This endpoint is useful for health checks and
-       * monitoring server availability.
-       */
-      get: operations["get-status"];
-   };
-   "/projects": {
-      /**
-       * List all available projects
-       * @description Retrieves a list of all projects currently hosted on this Malloy Publisher server.
-       * Each project contains metadata about its packages, connections, and configuration.
-       * This endpoint is typically used to discover available projects and their basic information.
-       */
-      get: operations["list-projects"];
-      /**
-       * Create a new project
-       * @description Creates a new Malloy project with the specified configuration. A project serves as a
-       * container for packages, connections, and other resources. The project will be initialized
-       * with the provided metadata and can immediately accept packages and connections.
-       */
-      post: operations["create-project"];
-   };
-   "/projects/{projectName}": {
-      /**
-       * Get project details and metadata
-       * @description Retrieves detailed information about a specific project, including its packages,
-       * connections, configuration, and metadata. The reload parameter can be used to
-       * refresh the project state from disk before returning the information.
-       */
-      get: operations["get-project"];
-      /**
-       * Delete a project
-       * @description Permanently deletes a project and all its associated resources including packages,
-       * connections, and metadata. This operation cannot be undone, so use with caution.
-       * The project must exist and be accessible for deletion.
-       */
-      delete: operations["delete-project"];
-      /**
-       * Update project configuration
-       * @description Updates the configuration and metadata of an existing project. This allows you to
-       * modify project settings, update the README, change the location, or update other
-       * project-level properties. The project must exist and be accessible.
-       */
-      patch: operations["update-project"];
-   };
-   "/projects/{projectName}/connections": {
-      /**
-       * List project database connections
-       * @description Retrieves a list of all database connections configured for the specified project.
-       * Each connection includes its configuration, type, and status information. This endpoint
-       * is useful for discovering available data sources within a project.
-       */
-      get: operations["list-connections"];
-   };
-   "/projects/{projectName}/connections/{connectionName}": {
-      /**
-       * Get connection details
-       * @description Retrieves detailed information about a specific database connection within a project.
-       * This includes connection configuration, credentials (if accessible), and metadata.
-       * Useful for inspecting connection settings and troubleshooting connectivity issues.
-       */
-      get: operations["get-connection"];
-      /**
-       * Create a new database connection
-       * @description Creates a new database connection in the specified project.
-       */
-      post: operations["create-connection"];
-      /**
-       * Delete a database connection
-       * @description Permanently deletes a database connection from the project.
-       */
-      delete: operations["delete-connection"];
-      /**
-       * Update an existing database connection
-       * @description Updates the configuration of an existing database connection.
-       */
-      patch: operations["update-connection"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/schemas": {
-      /**
-       * List database schemas
-       * @description Retrieves a list of all schemas (databases) available in the specified connection.
-       * Each schema includes metadata such as name, description, and whether it's the default schema.
-       * This endpoint is useful for exploring the database structure and discovering available data sources.
-       */
-      get: operations["list-schemas"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables": {
-      /**
-       * List tables in database
-       * @description Retrieves a list of all tables and views available in the specified database schema.
-       * This endpoint is useful for discovering available data sources and exploring the database
-       * structure. The schema must exist in the connection for this operation to succeed.
-       */
-      get: operations["list-tables"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables/{tablePath}": {
-      /**
-       * Get table details from database
-       * @description Retrieves a table from the specified database schema.
-       * This endpoint is useful for discovering available data sources and exploring the database
-       * structure. The schema must exist in the connection for this operation to succeed.
-       * The tablePath is the full path to the table, including the schema name.
-       */
-      get: operations["get-table"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/sqlSource": {
-      /**
-       * Get SQL source (deprecated)
-       * @deprecated
-       * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-       * Use the POST version instead for better security and functionality.
-       *
-       * Creates a Malloy source from a SQL statement using the specified connection.
-       * The SQL statement is executed to generate a source definition that can be used in Malloy models.
-       */
-      get: operations["get-sqlsource"];
-      /**
-       * Create SQL source from statement
-       * @description Creates a Malloy source from a SQL statement using the specified database connection.
-       * The SQL statement is executed to generate a source definition that can be used in Malloy models.
-       */
-      post: operations["post-sqlsource"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/sqlQuery": {
-      /**
-       * Execute SQL query
-       * @description Executes a SQL statement against the specified database connection and returns the results.
-       * The results include data, metadata, and execution information.
-       */
-      post: operations["post-querydata"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/sqlTemporaryTable": {
-      /**
-       * Create temporary table
-       * @description Creates a temporary table from a SQL statement using the specified database connection.
-       * Temporary tables are useful for storing intermediate results during complex queries and data processing workflows.
-       */
-      post: operations["post-temporarytable"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/temporaryTable": {
-      /**
-       * Create temporary table (deprecated)
-       * @deprecated
-       * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-       * Use the POST version instead for better security and functionality.
-       *
-       * Creates a temporary table from a SQL statement using the specified connection.
-       * Temporary tables are useful for storing intermediate results during complex queries.
-       */
-      get: operations["get-temporarytable"];
-   };
-   "/projects/{projectName}/connections/{connectionName}/queryData": {
-      /**
-       * Execute SQL query (deprecated)
-       * @deprecated
-       * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-       * Use the POST version instead for better security and functionality.
-       *
-       * Executes a SQL statement against the specified database connection and returns the results.
-       * The query results include data, metadata, and execution information.
-       */
-      get: operations["get-querydata"];
-   };
-   "/projects/{projectName}/packages": {
-      /**
-       * List project packages
-       * @description Retrieves a list of all Malloy packages within the specified project. Each package
-       * contains models, notebooks, databases, and other resources. This endpoint is useful
-       * for discovering available packages and their basic metadata.
-       */
-      get: operations["list-packages"];
-      /**
-       * Create a new package
-       * @description Creates a new Malloy package within the specified project. A package serves as a
-       * container for models, notebooks, embedded databases, and other resources. The package
-       * will be initialized with the provided metadata and can immediately accept content.
-       */
-      post: operations["create-package"];
-   };
-   "/projects/{projectName}/packages/{packageName}": {
-      /**
-       * Get package details and metadata
-       * @description Retrieves detailed information about a specific package, including its models, notebooks,
-       * databases, and metadata. The reload parameter can be used to refresh the package state
-       * from disk before returning the information. The versionId parameter allows access to
-       * specific package versions.
-       */
-      get: operations["get-package"];
-      /**
-       * Delete a package
-       * @description Permanently deletes a package and all its associated resources including models,
-       * notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
-       * The package must exist and be accessible for deletion.
-       */
-      delete: operations["delete-package"];
-      /**
-       * Update package configuration
-       * @description Updates the configuration and metadata of an existing package. This allows you to
-       * modify package settings, update the description, change the location, or update other
-       * package-level properties. The package must exist and be accessible.
-       */
-      patch: operations["update-package"];
-   };
-   "/projects/{projectName}/packages/{packageName}/models": {
-      /**
-       * List package models
-       * @description Retrieves a list of all Malloy models within the specified package. Each model entry
-       * includes the relative path, package name, and any compilation errors. This endpoint
-       * is useful for discovering available models and checking their status.
-       */
-      get: operations["list-models"];
-   };
-   "/projects/{projectName}/packages/{packageName}/models/{path}": {
-      /**
-       * Get compiled Malloy model
-       * @description Retrieves a compiled Malloy model with its source information, queries, and metadata.
-       * The model is compiled using the specified version of the Malloy compiler. This endpoint
-       * provides access to the model's structure, sources, and named queries for use in applications.
-       */
-      get: operations["get-model"];
-   };
-   "/projects/{projectName}/packages/{packageName}/models/{path}/query": {
-      /**
-       * Execute Malloy query
-       * @description Executes a Malloy query against a model and returns the results. The query can be specified
-       * as a raw Malloy query string or by referencing a named query within the model. This endpoint
-       * supports both ad-hoc queries and predefined model queries, making it flexible for various
-       * use cases including data exploration, reporting, and application integration.
-       */
-      post: operations["execute-query-model"];
-   };
-   "/projects/{projectName}/packages/{packageName}/models/{path}/compile": {
-      /**
-       * Compile Malloy source code
-       * @description Compiles Malloy source code in the context of a specific model file.
-       * The submitted source is appended to the full model content, giving it
-       * access to all sources, imports, and queries defined in the model.
-       * Relative imports resolve correctly against sibling model files.
-       * Returns compilation status and any problems (errors or warnings) found.
-       */
-      post: operations["compile-model-source"];
-   };
-   "/projects/{projectName}/packages/{packageName}/notebooks": {
-      /**
-       * List package notebooks
-       * @description Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
-       * includes the relative path, package name, and any compilation errors. This endpoint
-       * is useful for discovering available notebooks and checking their status.
-       */
-      get: operations["list-notebooks"];
-   };
-   "/projects/{projectName}/packages/{packageName}/notebooks/{path}": {
-      /**
-       * Get Malloy notebook cells
-       * @description Retrieves a Malloy notebook with its raw cell contents (markdown and code).
-       * Cell execution should be done separately via the execute-notebook-cell endpoint.
-       */
-      get: operations["get-notebook"];
-   };
-   "/projects/{projectName}/packages/{packageName}/notebooks/{path}/cells/{cellIndex}": {
-      /**
-       * Execute a specific notebook cell
-       * @description Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
-       * and runs the Malloy code, returning query results and any new sources defined.
-       * For markdown cells, this simply returns the cell content.
-       */
-      get: operations["execute-notebook-cell"];
-   };
-   "/projects/{projectName}/packages/{packageName}/databases": {
-      /**
-       * List embedded databases
-       * @description Retrieves a list of all embedded databases within the specified package. These are typically
-       * DuckDB databases stored as .parquet files that provide local data storage for the package.
-       * Each database entry includes metadata about the database structure and content.
-       */
-      get: operations["list-databases"];
-   };
-   "/connections/test": {
-      /**
-       * Test database connection configuration
-       * @description Validates a database connection configuration without adding it to any project.
-       * This endpoint allows you to test connection parameters, credentials, and network
-       * connectivity before committing the connection to a project. Useful for troubleshooting
-       * connection issues and validating configurations during setup.
-       */
-      post: operations["test-connection-configuration"];
-   };
-   "/watch-mode/status": {
-      /**
-       * Get watch mode status
-       * @description Retrieves the current status of the file watching system. This includes whether watch mode
-       * is enabled, which project is being watched, and the path being monitored. Useful for
-       * monitoring the development workflow and ensuring file changes are being detected.
-       */
-      get: operations["get-watch-status"];
-   };
-   "/watch-mode/start": {
-      /**
-       * Start file watching
-       * @description Initiates file watching for the specified project. This enables real-time monitoring of
-       * file changes within the project directory, allowing for automatic reloading and updates
-       * during development. Only one project can be watched at a time.
-       */
-      post: operations["start-watching"];
-   };
-   "/watch-mode/stop": {
-      /**
-       * Stop file watching
-       * @description Stops the current file watching session. This disables real-time monitoring of file changes
-       * and releases system resources. Use this when development is complete or when switching
-       * to a different project.
-       */
-      post: operations["stop-watching"];
-   };
-   "/projects/{projectName}/packages/{packageName}/materializations": {
-      /**
-       * List materializations for a package
-       * @description Returns the materialization history for the package, ordered by most recent first.
-       */
-      get: operations["list-materializations"];
-      /**
-       * Create a materialization
-       * @description Creates a new materialization in PENDING state for all persist sources across all
-       * models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
-       */
-      post: operations["create-materialization"];
-   };
-   "/projects/{projectName}/packages/{packageName}/materializations/{materializationId}": {
-      /** Get a specific materialization */
-      get: operations["get-materialization"];
-      /**
-       * Perform an action on a materialization
-       * @description Performs an action on a materialization. The action is specified via
-       * the `action` query parameter:
-       *   * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
-       *   * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
-       */
-      post: operations["materialization-action"];
-      /**
-       * Delete a materialization
-       * @description Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
-       */
-      delete: operations["delete-materialization"];
-   };
-   "/projects/{projectName}/packages/{packageName}/manifest": {
-      /**
-       * Get the build manifest for a package
-       * @description Returns the current build manifest containing buildId-to-tableName mappings
-       * for all materialized sources in the package.
-       */
-      get: operations["get-manifest"];
-      /**
-       * Perform an action on the package manifest
-       * @description Performs an action on the package manifest. The action is specified via
-       * the `action` query parameter:
-       *   * `reload` - Reads the build manifest from the shared store (DuckLake
-       *     in orchestrated mode, local DuckDB in standalone mode) and recompiles
-       *     every model in the package so subsequent queries resolve persisted
-       *     sources to their materialized tables. Intended for orchestrated
-       *     workers that did not themselves run the build; the endpoint does
-       *     not write anything *into* storage.
-       */
-      post: operations["manifest-action"];
-   };
+  "/status": {
+    /**
+     * Get server status and health information
+     * @description Returns the current status of the Malloy Publisher server, including initialization state,
+     * available projects, and server timestamp. This endpoint is useful for health checks and
+     * monitoring server availability.
+     */
+    get: operations["get-status"];
+  };
+  "/projects": {
+    /**
+     * List all available projects
+     * @description Retrieves a list of all projects currently hosted on this Malloy Publisher server.
+     * Each project contains metadata about its packages, connections, and configuration.
+     * This endpoint is typically used to discover available projects and their basic information.
+     */
+    get: operations["list-projects"];
+    /**
+     * Create a new project
+     * @description Creates a new Malloy project with the specified configuration. A project serves as a
+     * container for packages, connections, and other resources. The project will be initialized
+     * with the provided metadata and can immediately accept packages and connections.
+     */
+    post: operations["create-project"];
+  };
+  "/projects/{projectName}": {
+    /**
+     * Get project details and metadata
+     * @description Retrieves detailed information about a specific project, including its packages,
+     * connections, configuration, and metadata. The reload parameter can be used to
+     * refresh the project state from disk before returning the information.
+     */
+    get: operations["get-project"];
+    /**
+     * Delete a project
+     * @description Permanently deletes a project and all its associated resources including packages,
+     * connections, and metadata. This operation cannot be undone, so use with caution.
+     * The project must exist and be accessible for deletion.
+     */
+    delete: operations["delete-project"];
+    /**
+     * Update project configuration
+     * @description Updates the configuration and metadata of an existing project. This allows you to
+     * modify project settings, update the README, change the location, or update other
+     * project-level properties. The project must exist and be accessible.
+     */
+    patch: operations["update-project"];
+  };
+  "/projects/{projectName}/connections": {
+    /**
+     * List project database connections
+     * @description Retrieves a list of all database connections configured for the specified project.
+     * Each connection includes its configuration, type, and status information. This endpoint
+     * is useful for discovering available data sources within a project.
+     */
+    get: operations["list-connections"];
+  };
+  "/projects/{projectName}/connections/{connectionName}": {
+    /**
+     * Get connection details
+     * @description Retrieves detailed information about a specific database connection within a project.
+     * This includes connection configuration, credentials (if accessible), and metadata.
+     * Useful for inspecting connection settings and troubleshooting connectivity issues.
+     */
+    get: operations["get-connection"];
+    /**
+     * Create a new database connection
+     * @description Creates a new database connection in the specified project.
+     */
+    post: operations["create-connection"];
+    /**
+     * Delete a database connection
+     * @description Permanently deletes a database connection from the project.
+     */
+    delete: operations["delete-connection"];
+    /**
+     * Update an existing database connection
+     * @description Updates the configuration of an existing database connection.
+     */
+    patch: operations["update-connection"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/schemas": {
+    /**
+     * List database schemas
+     * @description Retrieves a list of all schemas (databases) available in the specified connection.
+     * Each schema includes metadata such as name, description, and whether it's the default schema.
+     * This endpoint is useful for exploring the database structure and discovering available data sources.
+     */
+    get: operations["list-schemas"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables": {
+    /**
+     * List tables in database
+     * @description Retrieves a list of all tables and views available in the specified database schema.
+     * This endpoint is useful for discovering available data sources and exploring the database
+     * structure. The schema must exist in the connection for this operation to succeed.
+     */
+    get: operations["list-tables"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/schemas/{schemaName}/tables/{tablePath}": {
+    /**
+     * Get table details from database
+     * @description Retrieves a table from the specified database schema.
+     * This endpoint is useful for discovering available data sources and exploring the database
+     * structure. The schema must exist in the connection for this operation to succeed.
+     * The tablePath is the full path to the table, including the schema name.
+     */
+    get: operations["get-table"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/sqlSource": {
+    /**
+     * Get SQL source (deprecated)
+     * @deprecated
+     * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
+     * Use the POST version instead for better security and functionality.
+     *
+     * Creates a Malloy source from a SQL statement using the specified connection.
+     * The SQL statement is executed to generate a source definition that can be used in Malloy models.
+     */
+    get: operations["get-sqlsource"];
+    /**
+     * Create SQL source from statement
+     * @description Creates a Malloy source from a SQL statement using the specified database connection.
+     * The SQL statement is executed to generate a source definition that can be used in Malloy models.
+     */
+    post: operations["post-sqlsource"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/sqlQuery": {
+    /**
+     * Execute SQL query
+     * @description Executes a SQL statement against the specified database connection and returns the results.
+     * The results include data, metadata, and execution information.
+     */
+    post: operations["post-querydata"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/sqlTemporaryTable": {
+    /**
+     * Create temporary table
+     * @description Creates a temporary table from a SQL statement using the specified database connection.
+     * Temporary tables are useful for storing intermediate results during complex queries and data processing workflows.
+     */
+    post: operations["post-temporarytable"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/temporaryTable": {
+    /**
+     * Create temporary table (deprecated)
+     * @deprecated
+     * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
+     * Use the POST version instead for better security and functionality.
+     *
+     * Creates a temporary table from a SQL statement using the specified connection.
+     * Temporary tables are useful for storing intermediate results during complex queries.
+     */
+    get: operations["get-temporarytable"];
+  };
+  "/projects/{projectName}/connections/{connectionName}/queryData": {
+    /**
+     * Execute SQL query (deprecated)
+     * @deprecated
+     * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
+     * Use the POST version instead for better security and functionality.
+     *
+     * Executes a SQL statement against the specified database connection and returns the results.
+     * The query results include data, metadata, and execution information.
+     */
+    get: operations["get-querydata"];
+  };
+  "/projects/{projectName}/packages": {
+    /**
+     * List project packages
+     * @description Retrieves a list of all Malloy packages within the specified project. Each package
+     * contains models, notebooks, databases, and other resources. This endpoint is useful
+     * for discovering available packages and their basic metadata.
+     */
+    get: operations["list-packages"];
+    /**
+     * Create a new package
+     * @description Creates a new Malloy package within the specified project. A package serves as a
+     * container for models, notebooks, embedded databases, and other resources. The package
+     * will be initialized with the provided metadata and can immediately accept content.
+     */
+    post: operations["create-package"];
+  };
+  "/projects/{projectName}/packages/{packageName}": {
+    /**
+     * Get package details and metadata
+     * @description Retrieves detailed information about a specific package, including its models, notebooks,
+     * databases, and metadata. The reload parameter can be used to refresh the package state
+     * from disk before returning the information. The versionId parameter allows access to
+     * specific package versions.
+     */
+    get: operations["get-package"];
+    /**
+     * Delete a package
+     * @description Permanently deletes a package and all its associated resources including models,
+     * notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
+     * The package must exist and be accessible for deletion.
+     */
+    delete: operations["delete-package"];
+    /**
+     * Update package configuration
+     * @description Updates the configuration and metadata of an existing package. This allows you to
+     * modify package settings, update the description, change the location, or update other
+     * package-level properties. The package must exist and be accessible.
+     */
+    patch: operations["update-package"];
+  };
+  "/projects/{projectName}/packages/{packageName}/models": {
+    /**
+     * List package models
+     * @description Retrieves a list of all Malloy models within the specified package. Each model entry
+     * includes the relative path, package name, and any compilation errors. This endpoint
+     * is useful for discovering available models and checking their status.
+     */
+    get: operations["list-models"];
+  };
+  "/projects/{projectName}/packages/{packageName}/models/{path}": {
+    /**
+     * Get compiled Malloy model
+     * @description Retrieves a compiled Malloy model with its source information, queries, and metadata.
+     * The model is compiled using the specified version of the Malloy compiler. This endpoint
+     * provides access to the model's structure, sources, and named queries for use in applications.
+     */
+    get: operations["get-model"];
+  };
+  "/projects/{projectName}/packages/{packageName}/models/{path}/query": {
+    /**
+     * Execute Malloy query
+     * @description Executes a Malloy query against a model and returns the results. The query can be specified
+     * as a raw Malloy query string or by referencing a named query within the model. This endpoint
+     * supports both ad-hoc queries and predefined model queries, making it flexible for various
+     * use cases including data exploration, reporting, and application integration.
+     */
+    post: operations["execute-query-model"];
+  };
+  "/projects/{projectName}/packages/{packageName}/models/{path}/compile": {
+    /**
+     * Compile Malloy source code
+     * @description Compiles Malloy source code in the context of a specific model file.
+     * The submitted source is appended to the full model content, giving it
+     * access to all sources, imports, and queries defined in the model.
+     * Relative imports resolve correctly against sibling model files.
+     * Returns compilation status and any problems (errors or warnings) found.
+     */
+    post: operations["compile-model-source"];
+  };
+  "/projects/{projectName}/packages/{packageName}/notebooks": {
+    /**
+     * List package notebooks
+     * @description Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
+     * includes the relative path, package name, and any compilation errors. This endpoint
+     * is useful for discovering available notebooks and checking their status.
+     */
+    get: operations["list-notebooks"];
+  };
+  "/projects/{projectName}/packages/{packageName}/notebooks/{path}": {
+    /**
+     * Get Malloy notebook cells
+     * @description Retrieves a Malloy notebook with its raw cell contents (markdown and code).
+     * Cell execution should be done separately via the execute-notebook-cell endpoint.
+     */
+    get: operations["get-notebook"];
+  };
+  "/projects/{projectName}/packages/{packageName}/notebooks/{path}/cells/{cellIndex}": {
+    /**
+     * Execute a specific notebook cell
+     * @description Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
+     * and runs the Malloy code, returning query results and any new sources defined.
+     * For markdown cells, this simply returns the cell content.
+     */
+    get: operations["execute-notebook-cell"];
+  };
+  "/projects/{projectName}/packages/{packageName}/databases": {
+    /**
+     * List embedded databases
+     * @description Retrieves a list of all embedded databases within the specified package. These are typically
+     * DuckDB databases stored as .parquet files that provide local data storage for the package.
+     * Each database entry includes metadata about the database structure and content.
+     */
+    get: operations["list-databases"];
+  };
+  "/connections/test": {
+    /**
+     * Test database connection configuration
+     * @description Validates a database connection configuration without adding it to any project.
+     * This endpoint allows you to test connection parameters, credentials, and network
+     * connectivity before committing the connection to a project. Useful for troubleshooting
+     * connection issues and validating configurations during setup.
+     */
+    post: operations["test-connection-configuration"];
+  };
+  "/watch-mode/status": {
+    /**
+     * Get watch mode status
+     * @description Retrieves the current status of the file watching system. This includes whether watch mode
+     * is enabled, which project is being watched, and the path being monitored. Useful for
+     * monitoring the development workflow and ensuring file changes are being detected.
+     */
+    get: operations["get-watch-status"];
+  };
+  "/watch-mode/start": {
+    /**
+     * Start file watching
+     * @description Initiates file watching for the specified project. This enables real-time monitoring of
+     * file changes within the project directory, allowing for automatic reloading and updates
+     * during development. Only one project can be watched at a time.
+     */
+    post: operations["start-watching"];
+  };
+  "/watch-mode/stop": {
+    /**
+     * Stop file watching
+     * @description Stops the current file watching session. This disables real-time monitoring of file changes
+     * and releases system resources. Use this when development is complete or when switching
+     * to a different project.
+     */
+    post: operations["stop-watching"];
+  };
+  "/projects/{projectName}/packages/{packageName}/materializations": {
+    /**
+     * List materializations for a package
+     * @description Returns the materialization history for the package, ordered by most recent first.
+     */
+    get: operations["list-materializations"];
+    /**
+     * Create a materialization
+     * @description Creates a new materialization in PENDING state for all persist sources across all
+     * models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
+     */
+    post: operations["create-materialization"];
+  };
+  "/projects/{projectName}/packages/{packageName}/materializations/{materializationId}": {
+    /** Get a specific materialization */
+    get: operations["get-materialization"];
+    /**
+     * Perform an action on a materialization
+     * @description Performs an action on a materialization. The action is specified via
+     * the `action` query parameter:
+     *   * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
+     *   * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+     */
+    post: operations["materialization-action"];
+    /**
+     * Delete a materialization
+     * @description Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
+     */
+    delete: operations["delete-materialization"];
+  };
+  "/projects/{projectName}/packages/{packageName}/manifest": {
+    /**
+     * Get the build manifest for a package
+     * @description Returns the current build manifest containing buildId-to-tableName mappings
+     * for all materialized sources in the package.
+     */
+    get: operations["get-manifest"];
+    /**
+     * Perform an action on the package manifest
+     * @description Performs an action on the package manifest. The action is specified via
+     * the `action` query parameter:
+     *   * `reload` - Reads the build manifest from the shared store (DuckLake
+     *     in orchestrated mode, local DuckDB in standalone mode) and recompiles
+     *     every model in the package so subsequent queries resolve persisted
+     *     sources to their materialized tables. Intended for orchestrated
+     *     workers that did not themselves run the build; the endpoint does
+     *     not write anything *into* storage.
+     */
+    post: operations["manifest-action"];
+  };
 }
 
 export type webhooks = Record<string, never>;
 
 export interface components {
-   schemas: {
-      /** @description Standard identifier pattern for resource names */
-      IdentifierPattern: string;
-      /** @description Version identifier pattern supporting dots and dashes */
-      VersionIdPattern: string;
-      /** @description Path pattern supporting slashes, dots, and dashes */
-      PathPattern: string;
-      /** @description Current server status and health information */
-      ServerStatus: {
-         /** @description Unix timestamp of the status check */
-         timestamp?: number;
-         /** @description List of available projects */
-         projects?: components["schemas"]["Project"][];
-         /** @description Whether the server is fully initialized and ready to serve requests */
-         initialized?: boolean;
-         /**
-          * @description Status of the server; initializing when the server is loading projects, packages and connections, serving when the server is initialized and ready to serve requests, and draining when the server is going to shut down
-          * @enum {string}
-          */
-         operationalState?: "initializing" | "serving" | "draining";
-         /** @description Whether the server configuration is frozen (read-only mode). When true, all mutation operations are disabled. */
-         frozenConfig?: boolean;
+  schemas: {
+    /** @description Standard identifier pattern for resource names */
+    IdentifierPattern: string;
+    /** @description Version identifier pattern supporting dots and dashes */
+    VersionIdPattern: string;
+    /** @description Path pattern supporting slashes, dots, and dashes */
+    PathPattern: string;
+    /** @description Current server status and health information */
+    ServerStatus: {
+      /** @description Unix timestamp of the status check */
+      timestamp?: number;
+      /** @description List of available projects */
+      projects?: components["schemas"]["Project"][];
+      /** @description Whether the server is fully initialized and ready to serve requests */
+      initialized?: boolean;
+      /**
+       * @description Status of the server; initializing when the server is loading projects, packages and connections, serving when the server is initialized and ready to serve requests, and draining when the server is going to shut down
+       * @enum {string}
+       */
+      operationalState?: "initializing" | "serving" | "draining";
+      /** @description Whether the server configuration is frozen (read-only mode). When true, all mutation operations are disabled. */
+      frozenConfig?: boolean;
+    };
+    /** @description Represents a Malloy project containing packages, connections, and other resources */
+    Project: {
+      /** @description Resource path to the project */
+      resource?: string;
+      /** @description Project name */
+      name?: string;
+      /** @description Project README content */
+      readme?: string;
+      /** @description Project location, can be an absolute path or URI (e.g. github, s3, gcs, etc.) */
+      location?: string;
+      /** @description List of database connections configured for this project */
+      connections?: components["schemas"]["Connection"][];
+      /** @description List of Malloy packages in this project */
+      packages?: components["schemas"]["Package"][];
+      /** @description Optional DuckLake-backed storage for materialization manifests (orchestrated mode). When set, manifests are stored in a shared DuckLake catalog instead of the local DuckDB database. */
+      materializationStorage?: {
+        /** @description PostgreSQL connection URL for the DuckLake catalog metadata store */
+        catalogUrl?: string;
+        /** @description Cloud storage path (s3:// or gs://) for DuckLake data files */
+        dataPath?: string;
+      } | null;
+    };
+    /** @description Represents a Malloy package containing models, notebooks, and embedded databases */
+    Package: {
+      /** @description Resource path to the package */
+      resource?: string;
+      /** @description Package name */
+      name?: string;
+      /** @description Package description */
+      description?: string;
+      /** @description Package location, can be an absolute path or URI (e.g. github, s3, gcs, etc.) */
+      location?: string;
+    };
+    /** @description Malloy model metadata and status information */
+    Model: {
+      /** @description Resource path to the model */
+      resource?: string;
+      /** @description Name of the package containing this model */
+      packageName?: string;
+      /** @description Relative path to the model file within its package directory */
+      path?: string;
+      /** @description Error message if the model failed to compile or load */
+      error?: string;
+    };
+    /** @description Malloy notebook metadata and status information */
+    Notebook: {
+      /** @description Resource path to the notebook */
+      resource?: string;
+      /** @description Name of the package containing this notebook */
+      packageName?: string;
+      /** @description Relative path to the notebook file within its package directory */
+      path?: string;
+      /** @description Error message if the notebook failed to compile or load */
+      error?: string;
+    };
+    /** @description Raw Malloy notebook with unexecuted cell contents */
+    RawNotebook: {
+      /** @description Resource path to the notebook */
+      resource?: string;
+      /** @description Name of the package containing this notebook */
+      packageName?: string;
+      /** @description Relative path to the notebook file within its package directory */
+      path?: string;
+      /** @description Version of the Malloy compiler used to generate the notebook data */
+      malloyVersion?: string;
+      /** @description Array of notebook cells containing raw markdown and code content */
+      notebookCells?: components["schemas"]["NotebookCell"][];
+      /** @description Array of file-level (##) annotations attached to the notebook */
+      annotations?: string[];
+      /** @description Sources defined in the notebook's model */
+      sources?: components["schemas"]["Source"][];
+    };
+    /** @description Compiled Malloy model with sources, queries, and metadata */
+    CompiledModel: {
+      /** @description Resource path to the model */
+      resource?: string;
+      /** @description Name of the package containing this model */
+      packageName?: string;
+      /** @description Relative path to the model file within its package directory */
+      path?: string;
+      /** @description Version of the Malloy compiler used to generate the model data */
+      malloyVersion?: string;
+      /** @description JSON string containing model metadata and structure information */
+      modelInfo?: string;
+      /** @description Array of JSON strings containing source information for each data source */
+      sourceInfos?: string[];
+      /** @description Array of named queries defined in the model */
+      queries?: components["schemas"]["Query"][];
+      /** @description Sources defined in this model */
+      sources?: components["schemas"]["Source"][];
+    };
+    /** @description Named model view definition */
+    View: {
+      /** @description Name of the view */
+      name?: string;
+      /** @description Annotations attached to the view */
+      annotations?: string[];
+    };
+    /** @description Named model query definition */
+    Query: {
+      /** @description Name of the query */
+      name?: string;
+      /** @description Name of the source this query operates on */
+      sourceName?: string;
+      /** @description Annotations attached to the query */
+      annotations?: string[];
+    };
+    /** @description A filter declared via */
+    Filter: {
+      /** @description Display name of the filter */
+      name?: string;
+      /** @description Dimension this filter targets */
+      dimension?: string;
+      /**
+       * @description Comparator type
+       * @enum {string}
+       */
+      type?: "equal" | "in" | "like" | "greater_than" | "less_than";
+      /** @description Whether this filter is hidden from users */
+      implicit?: boolean;
+      /** @description Whether a value must be provided */
+      required?: boolean;
+      /** @description Malloy data type of the dimension (e.g. string, number, boolean, date, timestamp) */
+      dimensionType?: string;
+    };
+    /** @description A Malloy source defined in a model */
+    Source: {
+      /** @description Name of the source */
+      name?: string;
+      /** @description Annotations attached to the source */
+      annotations?: string[];
+      /** @description Views defined in this source */
+      views?: components["schemas"]["View"][];
+      /** @description Filters declared on this source via */
+      filters?: components["schemas"]["Filter"][];
+    };
+    /** @description Request body for executing a Malloy query */
+    QueryRequest: {
+      /** @description Query string to execute on the model. If the query parameter is set, the queryName parameter must be empty. */
+      query?: string;
+      /** @description Name of the source in the model to use for queryName, search, and topValue requests. */
+      sourceName?: string;
+      /** @description Name of a query to execute on a source in the model. Requires the sourceName parameter is set. If the queryName parameter is set, the query parameter must be empty. */
+      queryName?: string;
+      /**
+       * @description If true, returns a simple JSON array of row objects in the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.
+       * @default false
+       */
+      compactJson?: boolean;
+      /** @description Version ID */
+      versionId?: string;
+      /** @description Filter parameter values keyed by filter name. Used with sources that declare \#(filter) annotations. Each value is either a string or an array of strings. */
+      filterParams?: {
+        [key: string]: unknown;
       };
-      /** @description Represents a Malloy project containing packages, connections, and other resources */
-      Project: {
-         /** @description Resource path to the project */
-         resource?: string;
-         /** @description Project name */
-         name?: string;
-         /** @description Project README content */
-         readme?: string;
-         /** @description Project location, can be an absolute path or URI (e.g. github, s3, gcs, etc.) */
-         location?: string;
-         /** @description List of database connections configured for this project */
-         connections?: components["schemas"]["Connection"][];
-         /** @description List of Malloy packages in this project */
-         packages?: components["schemas"]["Package"][];
-         /** @description Optional DuckLake-backed storage for materialization manifests (orchestrated mode). When set, manifests are stored in a shared DuckLake catalog instead of the local DuckDB database. */
-         materializationStorage?: {
-            /** @description PostgreSQL connection URL for the DuckLake catalog metadata store */
-            catalogUrl?: string;
-            /** @description Cloud storage path (s3:// or gs://) for DuckLake data files */
-            dataPath?: string;
-         } | null;
+      /**
+       * @description When true, skip server-side \#(filter) injection entirely.
+       * @default false
+       */
+      bypassFilters?: boolean;
+    };
+    /** @description Individual cell within a Malloy notebook */
+    NotebookCell: {
+      /**
+       * @description Type of notebook cell
+       * @enum {string}
+       */
+      type?: "markdown" | "code";
+      /** @description Text contents of the notebook cell (either markdown or Malloy code) */
+      text?: string;
+      /** @description Array of JSON strings containing SourceInfo objects made available in this cell */
+      newSources?: string[];
+      /** @description JSON string containing QueryInfo object for the query in this cell (if the cell contains a query) */
+      queryInfo?: string;
+    };
+    /** @description Result of executing a notebook cell */
+    NotebookCellResult: {
+      /**
+       * @description Type of notebook cell
+       * @enum {string}
+       */
+      type?: "markdown" | "code";
+      /** @description Text contents of the notebook cell */
+      text?: string;
+      /** @description JSON string containing the execution result for this cell */
+      result?: string;
+      /** @description Array of JSON strings containing SourceInfo objects made available in this cell */
+      newSources?: string[];
+    };
+    /** @description Results from executing a Malloy query */
+    QueryResult: {
+      /** @description JSON string containing the query results, metadata, and execution information */
+      result?: string;
+      /** @description Resource path to the query result */
+      resource?: string;
+      /** @description Render tag validation messages (errors, warnings) detected during query preparation */
+      renderLogs?: components["schemas"]["LogMessage"][];
+    };
+    /** @description A log message from render tag validation */
+    LogMessage: {
+      /** @description URL of the source file related to this message */
+      url?: string;
+      /** @description Source location range for this message */
+      range?: {
+        start?: {
+          line?: number;
+          character?: number;
+        };
+        end?: {
+          line?: number;
+          character?: number;
+        };
       };
-      /** @description Represents a Malloy package containing models, notebooks, and embedded databases */
-      Package: {
-         /** @description Resource path to the package */
-         resource?: string;
-         /** @description Package name */
-         name?: string;
-         /** @description Package description */
-         description?: string;
-         /** @description Package location, can be an absolute path or URI (e.g. github, s3, gcs, etc.) */
-         location?: string;
+      /**
+       * @description Severity level of the log message
+       * @enum {string}
+       */
+      severity?: "debug" | "info" | "warn" | "error";
+      /** @description Human-readable log message */
+      message?: string;
+    };
+    /** @description Embedded database within a Malloy package */
+    Database: {
+      /** @description Resource path to the database */
+      resource?: string;
+      /** @description Relative path to the database file within its package directory */
+      path?: string;
+      info?: components["schemas"]["TableDescription"];
+      /**
+       * @description Type of embedded database
+       * @enum {string}
+       */
+      type?: "embedded" | "materialized";
+    };
+    /** @description A schema name in a Connection. */
+    Schema: {
+      /** @description Name of the schema */
+      name?: string;
+      /** @description Description of the schema */
+      description?: string;
+      /** @description Whether this schema is the default schema */
+      isDefault?: boolean;
+      /** @description Whether this schema is hidden */
+      isHidden?: boolean;
+    };
+    /** @description Database connection configuration and metadata */
+    Connection: {
+      /** @description Resource path to the connection */
+      resource?: string;
+      /** @description Name of the connection */
+      name?: string;
+      /**
+       * @description Type of database connection
+       * @enum {string}
+       */
+      type?: "postgres" | "bigquery" | "snowflake" | "trino" | "mysql" | "duckdb" | "motherduck" | "ducklake";
+      attributes?: components["schemas"]["ConnectionAttributes"];
+      postgresConnection?: components["schemas"]["PostgresConnection"];
+      bigqueryConnection?: components["schemas"]["BigqueryConnection"];
+      snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+      trinoConnection?: components["schemas"]["TrinoConnection"];
+      mysqlConnection?: components["schemas"]["MysqlConnection"];
+      duckdbConnection?: components["schemas"]["DuckdbConnection"];
+      motherduckConnection?: components["schemas"]["MotherDuckConnection"];
+      ducklakeConnection?: components["schemas"]["DucklakeConnection"];
+    };
+    /** @description Connection capabilities and configuration attributes */
+    ConnectionAttributes: {
+      /** @description SQL dialect name for the connection */
+      dialectName?: string;
+      /** @description Whether the connection uses connection pooling */
+      isPool?: boolean;
+      /** @description Whether the connection supports persistent storage operations */
+      canPersist?: boolean;
+      /** @description Whether the connection supports streaming query results */
+      canStream?: boolean;
+    };
+    /** @description PostgreSQL database connection configuration */
+    PostgresConnection: {
+      /** @description PostgreSQL server hostname or IP address */
+      host?: string;
+      /** @description PostgreSQL server port number */
+      port?: number;
+      /** @description Name of the PostgreSQL database */
+      databaseName?: string;
+      /** @description PostgreSQL username for authentication */
+      userName?: string;
+      /** @description PostgreSQL password for authentication */
+      password?: string;
+      /** @description Complete PostgreSQL connection string (alternative to individual parameters) */
+      connectionString?: string;
+    };
+    /** @description MySQL database connection configuration */
+    MysqlConnection: {
+      /** @description MySQL server hostname or IP address */
+      host?: string;
+      /** @description MySQL server port number */
+      port?: number;
+      /** @description Name of the MySQL database */
+      database?: string;
+      /** @description MySQL username for authentication */
+      user?: string;
+      /** @description MySQL password for authentication */
+      password?: string;
+    };
+    /** @description Google Cloud Storage connection configuration for DuckDB */
+    GCSConnection: {
+      /** @description GCS HMAC access key ID */
+      keyId: string;
+      /** @description GCS HMAC secret key */
+      secret: string;
+    };
+    /** @description AWS S3 connection configuration for DuckDB */
+    S3Connection: {
+      /** @description AWS access key ID */
+      accessKeyId: string;
+      /** @description AWS secret access key */
+      secretAccessKey: string;
+      /**
+       * @description AWS region (e.g., us-east-1)
+       * @default us-east-1
+       */
+      region?: string;
+      /** @description Custom S3-compatible endpoint URL (optional, for MinIO, etc.) */
+      endpoint?: string;
+      /** @description AWS session token for temporary credentials (optional) */
+      sessionToken?: string;
+    };
+    /** @description Azure Data Lake Storage (ADLS Gen2) / Blob Storage connection configuration Supports https://, http://, abfss://, and az:// URL schemes. */
+    AzureConnection: {
+      /**
+       * @description Authentication method for Azure Storage
+       * @enum {string}
+       */
+      authType: "service_principal" | "sas_token";
+      /** @description Full SAS URL including token; required for sas_token auth. Supports single file, directory glob (*.ext), or recursive (**) patterns. Example: https://account.blob.core.windows.net/container/path/*.parquet?sp=rl&st=... */
+      sasUrl?: string;
+      /** @description Azure AD tenant ID (required for service_principal) */
+      tenantId?: string;
+      /** @description Azure AD application (client) ID (required for service_principal) */
+      clientId?: string;
+      /** @description Azure AD client secret (required for service_principal) */
+      clientSecret?: string;
+      /** @description Azure Storage account name (required for service_principal) */
+      accountName?: string;
+      /** @description Azure file URL to query; required for service_principal auth. Supports single file, directory glob (*.ext), or recursive (**) patterns. Example: https://account.blob.core.windows.net/container/path/** */
+      fileUrl?: string;
+    };
+    /** @description DuckLake lakehouse connection configuration */
+    DucklakeConnection: {
+      /** @description Data storage connection configuration (S3 or GCS) */
+      storage: {
+        /** @description URL of the storage bucket (e.g. s3://my-bucket/path or gs://my-bucket/path) */
+        bucketUrl: string;
+        /** @description AWS S3 connection configuration for data storage */
+        s3Connection?: components["schemas"]["S3Connection"];
+        /** @description Google Cloud Storage connection configuration for data storage */
+        gcsConnection?: components["schemas"]["GCSConnection"];
       };
-      /** @description Malloy model metadata and status information */
-      Model: {
-         /** @description Resource path to the model */
-         resource?: string;
-         /** @description Name of the package containing this model */
-         packageName?: string;
-         /** @description Relative path to the model file within its package directory */
-         path?: string;
-         /** @description Error message if the model failed to compile or load */
-         error?: string;
+      /** @description Catalog metadata connection configuration */
+      catalog: {
+        /** @description PostgreSQL connection for DuckLake metadata catalog */
+        postgresConnection: components["schemas"]["PostgresConnection"];
       };
-      /** @description Malloy notebook metadata and status information */
-      Notebook: {
-         /** @description Resource path to the notebook */
-         resource?: string;
-         /** @description Name of the package containing this notebook */
-         packageName?: string;
-         /** @description Relative path to the notebook file within its package directory */
-         path?: string;
-         /** @description Error message if the notebook failed to compile or load */
-         error?: string;
-      };
-      /** @description Raw Malloy notebook with unexecuted cell contents */
-      RawNotebook: {
-         /** @description Resource path to the notebook */
-         resource?: string;
-         /** @description Name of the package containing this notebook */
-         packageName?: string;
-         /** @description Relative path to the notebook file within its package directory */
-         path?: string;
-         /** @description Version of the Malloy compiler used to generate the notebook data */
-         malloyVersion?: string;
-         /** @description Array of notebook cells containing raw markdown and code content */
-         notebookCells?: components["schemas"]["NotebookCell"][];
-         /** @description Array of file-level (##) annotations attached to the notebook */
-         annotations?: string[];
-         /** @description Sources defined in the notebook's model */
-         sources?: components["schemas"]["Source"][];
-      };
-      /** @description Compiled Malloy model with sources, queries, and metadata */
-      CompiledModel: {
-         /** @description Resource path to the model */
-         resource?: string;
-         /** @description Name of the package containing this model */
-         packageName?: string;
-         /** @description Relative path to the model file within its package directory */
-         path?: string;
-         /** @description Version of the Malloy compiler used to generate the model data */
-         malloyVersion?: string;
-         /** @description JSON string containing model metadata and structure information */
-         modelInfo?: string;
-         /** @description Array of JSON strings containing source information for each data source */
-         sourceInfos?: string[];
-         /** @description Array of named queries defined in the model */
-         queries?: components["schemas"]["Query"][];
-         /** @description Sources defined in this model */
-         sources?: components["schemas"]["Source"][];
-      };
-      /** @description Named model view definition */
-      View: {
-         /** @description Name of the view */
-         name?: string;
-         /** @description Annotations attached to the view */
-         annotations?: string[];
-      };
-      /** @description Named model query definition */
-      Query: {
-         /** @description Name of the query */
-         name?: string;
-         /** @description Name of the source this query operates on */
-         sourceName?: string;
-         /** @description Annotations attached to the query */
-         annotations?: string[];
-      };
-      /** @description A filter declared via */
-      Filter: {
-         /** @description Display name of the filter */
-         name?: string;
-         /** @description Dimension this filter targets */
-         dimension?: string;
-         /**
-          * @description Comparator type
-          * @enum {string}
-          */
-         type?: "equal" | "in" | "like" | "greater_than" | "less_than";
-         /** @description Whether this filter is hidden from users */
-         implicit?: boolean;
-         /** @description Whether a value must be provided */
-         required?: boolean;
-         /** @description Malloy data type of the dimension (e.g. string, number, boolean, date, timestamp) */
-         dimensionType?: string;
-      };
-      /** @description A Malloy source defined in a model */
-      Source: {
-         /** @description Name of the source */
-         name?: string;
-         /** @description Annotations attached to the source */
-         annotations?: string[];
-         /** @description Views defined in this source */
-         views?: components["schemas"]["View"][];
-         /** @description Filters declared on this source via */
-         filters?: components["schemas"]["Filter"][];
-      };
-      /** @description Request body for executing a Malloy query */
-      QueryRequest: {
-         /** @description Query string to execute on the model. If the query parameter is set, the queryName parameter must be empty. */
-         query?: string;
-         /** @description Name of the source in the model to use for queryName, search, and topValue requests. */
-         sourceName?: string;
-         /** @description Name of a query to execute on a source in the model. Requires the sourceName parameter is set. If the queryName parameter is set, the query parameter must be empty. */
-         queryName?: string;
-         /**
-          * @description If true, returns a simple JSON array of row objects in the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.
-          * @default false
-          */
-         compactJson?: boolean;
-         /** @description Version ID */
-         versionId?: string;
-         /** @description Filter parameter values keyed by filter name. Used with sources that declare */
-         filterParams?: {
-            [key: string]: string | string[];
-         };
-         /**
-          * @description When true, skip server-side
-          * @default false
-          */
-         bypassFilters?: boolean;
-      };
-      /** @description Individual cell within a Malloy notebook */
-      NotebookCell: {
-         /**
-          * @description Type of notebook cell
-          * @enum {string}
-          */
-         type?: "markdown" | "code";
-         /** @description Text contents of the notebook cell (either markdown or Malloy code) */
-         text?: string;
-         /** @description Array of JSON strings containing SourceInfo objects made available in this cell */
-         newSources?: string[];
-         /** @description JSON string containing QueryInfo object for the query in this cell (if the cell contains a query) */
-         queryInfo?: string;
-      };
-      /** @description Result of executing a notebook cell */
-      NotebookCellResult: {
-         /**
-          * @description Type of notebook cell
-          * @enum {string}
-          */
-         type?: "markdown" | "code";
-         /** @description Text contents of the notebook cell */
-         text?: string;
-         /** @description JSON string containing the execution result for this cell */
-         result?: string;
-         /** @description Array of JSON strings containing SourceInfo objects made available in this cell */
-         newSources?: string[];
-      };
-      /** @description Results from executing a Malloy query */
-      QueryResult: {
-         /** @description JSON string containing the query results, metadata, and execution information */
-         result?: string;
-         /** @description Resource path to the query result */
-         resource?: string;
-         /** @description Render tag validation messages (errors, warnings) detected during query preparation */
-         renderLogs?: components["schemas"]["LogMessage"][];
-      };
-      /** @description A log message from render tag validation */
-      LogMessage: {
-         /** @description URL of the source file related to this message */
-         url?: string;
-         /** @description Source location range for this message */
-         range?: {
-            start?: {
-               line?: number;
-               character?: number;
-            };
-            end?: {
-               line?: number;
-               character?: number;
-            };
-         };
-         /**
-          * @description Severity level of the log message
-          * @enum {string}
-          */
-         severity?: "debug" | "info" | "warn" | "error";
-         /** @description Human-readable log message */
-         message?: string;
-      };
-      /** @description Embedded database within a Malloy package */
-      Database: {
-         /** @description Resource path to the database */
-         resource?: string;
-         /** @description Relative path to the database file within its package directory */
-         path?: string;
-         info?: components["schemas"]["TableDescription"];
-         /**
-          * @description Type of embedded database
-          * @enum {string}
-          */
-         type?: "embedded" | "materialized";
-      };
-      /** @description A schema name in a Connection. */
-      Schema: {
-         /** @description Name of the schema */
-         name?: string;
-         /** @description Description of the schema */
-         description?: string;
-         /** @description Whether this schema is the default schema */
-         isDefault?: boolean;
-         /** @description Whether this schema is hidden */
-         isHidden?: boolean;
-      };
-      /** @description Database connection configuration and metadata */
-      Connection: {
-         /** @description Resource path to the connection */
-         resource?: string;
-         /** @description Name of the connection */
-         name?: string;
-         /**
-          * @description Type of database connection
-          * @enum {string}
-          */
-         type?:
-            | "postgres"
-            | "bigquery"
-            | "snowflake"
-            | "trino"
-            | "mysql"
-            | "duckdb"
-            | "motherduck"
-            | "ducklake";
-         attributes?: components["schemas"]["ConnectionAttributes"];
-         postgresConnection?: components["schemas"]["PostgresConnection"];
-         bigqueryConnection?: components["schemas"]["BigqueryConnection"];
-         snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
-         trinoConnection?: components["schemas"]["TrinoConnection"];
-         mysqlConnection?: components["schemas"]["MysqlConnection"];
-         duckdbConnection?: components["schemas"]["DuckdbConnection"];
-         motherduckConnection?: components["schemas"]["MotherDuckConnection"];
-         ducklakeConnection?: components["schemas"]["DucklakeConnection"];
-      };
-      /** @description Connection capabilities and configuration attributes */
-      ConnectionAttributes: {
-         /** @description SQL dialect name for the connection */
-         dialectName?: string;
-         /** @description Whether the connection uses connection pooling */
-         isPool?: boolean;
-         /** @description Whether the connection supports persistent storage operations */
-         canPersist?: boolean;
-         /** @description Whether the connection supports streaming query results */
-         canStream?: boolean;
-      };
-      /** @description PostgreSQL database connection configuration */
-      PostgresConnection: {
-         /** @description PostgreSQL server hostname or IP address */
-         host?: string;
-         /** @description PostgreSQL server port number */
-         port?: number;
-         /** @description Name of the PostgreSQL database */
-         databaseName?: string;
-         /** @description PostgreSQL username for authentication */
-         userName?: string;
-         /** @description PostgreSQL password for authentication */
-         password?: string;
-         /** @description Complete PostgreSQL connection string (alternative to individual parameters) */
-         connectionString?: string;
-      };
-      /** @description MySQL database connection configuration */
-      MysqlConnection: {
-         /** @description MySQL server hostname or IP address */
-         host?: string;
-         /** @description MySQL server port number */
-         port?: number;
-         /** @description Name of the MySQL database */
-         database?: string;
-         /** @description MySQL username for authentication */
-         user?: string;
-         /** @description MySQL password for authentication */
-         password?: string;
-      };
-      /** @description Google Cloud Storage connection configuration for DuckDB */
-      GCSConnection: {
-         /** @description GCS HMAC access key ID */
-         keyId: string;
-         /** @description GCS HMAC secret key */
-         secret: string;
-      };
-      /** @description AWS S3 connection configuration for DuckDB */
-      S3Connection: {
-         /** @description AWS access key ID */
-         accessKeyId: string;
-         /** @description AWS secret access key */
-         secretAccessKey: string;
-         /**
-          * @description AWS region (e.g., us-east-1)
-          * @default us-east-1
-          */
-         region?: string;
-         /** @description Custom S3-compatible endpoint URL (optional, for MinIO, etc.) */
-         endpoint?: string;
-         /** @description AWS session token for temporary credentials (optional) */
-         sessionToken?: string;
-      };
-      /** @description Azure Data Lake Storage (ADLS Gen2) / Blob Storage connection configuration Supports https://, http://, abfss://, and az:// URL schemes. */
-      AzureConnection: {
-         /**
-          * @description Authentication method for Azure Storage
-          * @enum {string}
-          */
-         authType: "service_principal" | "sas_token";
-         /** @description Full SAS URL including token; required for sas_token auth. Supports single file, directory glob (*.ext), or recursive (**) patterns. Example: https://account.blob.core.windows.net/container/path/*.parquet?sp=rl&st=... */
-         sasUrl?: string;
-         /** @description Azure AD tenant ID (required for service_principal) */
-         tenantId?: string;
-         /** @description Azure AD application (client) ID (required for service_principal) */
-         clientId?: string;
-         /** @description Azure AD client secret (required for service_principal) */
-         clientSecret?: string;
-         /** @description Azure Storage account name (required for service_principal) */
-         accountName?: string;
-         /** @description Azure file URL to query; required for service_principal auth. Supports single file, directory glob (*.ext), or recursive (**) patterns. Example: https://account.blob.core.windows.net/container/path/** */
-         fileUrl?: string;
-      };
-      /** @description DuckLake lakehouse connection configuration */
-      DucklakeConnection: {
-         /** @description Data storage connection configuration (S3 or GCS) */
-         storage: {
-            /** @description URL of the storage bucket (e.g. s3://my-bucket/path or gs://my-bucket/path) */
-            bucketUrl: string;
-            /** @description AWS S3 connection configuration for data storage */
-            s3Connection?: components["schemas"]["S3Connection"];
-            /** @description Google Cloud Storage connection configuration for data storage */
-            gcsConnection?: components["schemas"]["GCSConnection"];
-         };
-         /** @description Catalog metadata connection configuration */
-         catalog: {
-            /** @description PostgreSQL connection for DuckLake metadata catalog */
-            postgresConnection: components["schemas"]["PostgresConnection"];
-         };
-      };
-      /** @description Google BigQuery database connection configuration */
-      BigqueryConnection: {
-         /** @description Default BigQuery project ID for queries */
-         defaultProjectId?: string;
-         /** @description BigQuery project ID for billing purposes */
-         billingProjectId?: string;
-         /** @description BigQuery dataset location/region */
-         location?: string;
-         /** @description JSON string containing Google Cloud service account credentials */
-         serviceAccountKeyJson?: string;
-         /** @description Maximum bytes to bill for query execution (prevents runaway costs) */
-         maximumBytesBilled?: string;
-         /** @description Query timeout in milliseconds */
-         queryTimeoutMilliseconds?: string;
-      };
-      /** @description Snowflake database connection configuration */
-      SnowflakeConnection: {
-         /** @description Snowflake account identifier */
-         account?: string;
-         /** @description Snowflake username for authentication */
-         username?: string;
-         /** @description Snowflake password for authentication */
-         password?: string;
-         /** @description Snowflake private key for authentication */
-         privateKey?: string;
-         /** @description Passphrase for the Snowflake private key */
-         privateKeyPass?: string;
-         /** @description Snowflake warehouse name */
-         warehouse?: string;
-         /** @description Snowflake database name */
-         database?: string;
-         /** @description Snowflake schema name */
-         schema?: string;
-         /** @description Snowflake role name */
-         role?: string;
-         /** @description Query response timeout in milliseconds */
-         responseTimeoutMilliseconds?: number;
-      };
-      /** @description Trino database connection configuration */
-      TrinoConnection: {
-         /** @description Trino server hostname or IP address */
-         server?: string;
-         /** @description Trino server port number */
-         port?: number;
-         /** @description Trino catalog name */
-         catalog?: string;
-         /** @description Trino schema name */
-         schema?: string;
-         /** @description Trino username for authentication */
-         user?: string;
-         /** @description Trino password for authentication */
-         password?: string;
-         /** @description Peaka API key for authentication with Peaka-hosted Trino clusters */
-         peakaKey?: string;
-      };
-      /** @description MotherDuck database connection configuration */
-      MotherDuckConnection: {
-         /** @description MotherDuck access token */
-         accessToken?: string;
-         /** @description MotherDuck database name */
-         database?: string;
-      };
-      /** @description DuckDB database connection configuration */
-      DuckdbConnection: {
-         attachedDatabases?: components["schemas"]["AttachedDatabase"][];
-      };
-      /** @description Attached DuckDB database */
-      AttachedDatabase: {
-         /** @example test_connection, _connection, test_connection_1 */
-         name?: string;
-         /**
-          * @description Type of database connection
-          * @enum {string}
-          */
-         type?: "bigquery" | "snowflake" | "postgres" | "gcs" | "s3" | "azure";
-         attributes?: components["schemas"]["ConnectionAttributes"];
-         bigqueryConnection?: components["schemas"]["BigqueryConnection"];
-         snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
-         postgresConnection?: components["schemas"]["PostgresConnection"];
-         gcsConnection?: components["schemas"]["GCSConnection"];
-         s3Connection?: components["schemas"]["S3Connection"];
-         azureConnection?: components["schemas"]["AzureConnection"];
-      };
-      SqlSource: {
-         /** @description Resource path to the sql source. */
-         resource?: string;
-         source?: string;
-      };
-      Table: {
-         /** @description Resource path to the table. */
-         resource?: string;
-         /** @description Table source as a JSON string. */
-         source?: string;
-         /** @description Table fields */
-         columns?: components["schemas"]["Column"][];
-      };
-      /** @deprecated */
-      TableSource: {
-         /** @description Resource path to the table source. */
-         resource?: string;
-         source?: string;
-         /** @description Table fields */
-         columns?: components["schemas"]["Column"][];
-      };
-      TemporaryTable: {
-         /** @description Resource path to the temporary table. */
-         resource?: string;
-         table?: string;
-      };
-      QueryData: {
-         /** @description Resource path to the query data. */
-         resource?: string;
-         data?: string;
-      };
-      /** @description Standard error response format */
-      Error: {
-         /** @description Human-readable error message describing what went wrong */
-         message: string;
-         /** @description Additional error details or context */
-         details?: string;
-      };
-      /** @description Database column definition */
-      Column: {
-         /** @description Name of the column */
-         name?: string;
-         /** @description Data type of the column */
-         type?: string;
-      };
-      /** @description Database table structure and metadata */
-      TableDescription: {
-         /** @description Name of the table */
-         name?: string;
-         /** @description Number of rows in the table */
-         rowCount?: number;
-         /** @description List of columns in the table */
-         columns?: components["schemas"]["Column"][];
-      };
-      /** @description Current file watching status and configuration */
-      WatchStatus: {
-         /** @description Whether file watching is currently active */
-         enabled: boolean;
-         /** @description Name of the project being watched for file changes */
-         projectName: string;
-         /** @description The file system path being monitored for changes, null if not watching */
-         watchingPath: string;
-      };
-      /** @description Request to start file watching for a project */
-      StartWatchRequest: {
-         /** @description Name of the project to start watching for file changes */
-         projectName: string;
-      };
-      /** @description Result of testing a database connection */
-      ConnectionStatus: {
-         /**
-          * @description Connection test result status
-          * @enum {string}
-          */
-         status?: "ok" | "failed";
-         /** @description Error message if the connection test failed, null if successful */
-         errorMessage?: string;
-      };
-      /** @description Request body for compiling Malloy source code */
-      CompileRequest: {
-         /** @description Malloy source code to compile */
-         source: string;
-         /**
-          * @description If true, returns the generated SQL alongside compilation results (only available when compilation succeeds and the source contains a runnable query).
-          * @default false
-          */
-         includeSql?: boolean;
-      };
-      /** @description Result of a Malloy source compilation check */
-      CompileResult: {
-         /**
-          * @description Overall compilation status — "error" if any problems have error severity
-          * @enum {string}
-          */
-         status?: "success" | "error";
-         /** @description List of compilation problems (errors and warnings) */
-         problems?: components["schemas"]["CompileProblem"][];
-         /** @description Generated SQL for the compiled query. Only present when includeSql is true and compilation succeeds with a runnable query. */
-         sql?: string;
-      };
-      /** @description A compilation problem reported by the Malloy compiler */
-      CompileProblem: {
-         /** @description Human-readable problem description */
-         message?: string;
-         /**
-          * @description Severity level of the problem
-          * @enum {string}
-          */
-         severity?: "error" | "warn" | "debug";
-         /** @description Machine-readable error code */
-         code?: string;
-         /** @description Source location of the problem */
-         at?: {
-            /** @description URL of the source file */
-            url?: string;
-            /** @description Character range within the source file */
-            range?: Record<string, never>;
-         };
-      };
-      /** @description Options for creating a materialization */
-      CreateMaterializationRequest: {
-         /**
-          * @description If true, forces rebuild of all sources even if their BuildID is unchanged
-          * @default false
-          */
-         forceRefresh?: boolean;
-         /**
-          * @description If true, automatically reloads the manifest into the Malloy Runtime after a successful materialization
-          * @default false
-          */
-         autoLoadManifest?: boolean;
-      };
-      /** @description A record of a package materialization */
-      Materialization: {
-         id?: string;
-         projectId?: string;
-         packageName?: string;
-         /** @enum {string} */
-         status?: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED";
-         /** Format: date-time */
-         startedAt?: string | null;
-         /** Format: date-time */
-         completedAt?: string | null;
-         /** @description Error message if the materialization failed */
-         error?: string | null;
-         /** @description Materialization metadata including build options, source counts, and durations */
-         metadata?: Record<string, never> | null;
-         /** Format: date-time */
-         createdAt?: string;
-         /** Format: date-time */
-         updatedAt?: string;
-      };
-      /** @description Manifest mapping BuildIDs to materialized table names */
-      BuildManifest: {
-         /** @description Map of BuildID to manifest entry */
-         entries?: {
-            [key: string]: components["schemas"]["ManifestEntry"];
-         };
-         /** @description Whether the manifest is in strict mode */
-         strict?: boolean;
-      };
-      /** @description A single entry in the build manifest */
-      ManifestEntry: {
-         /** @description Name of the materialized table */
-         tableName?: string;
-      };
-   };
-   responses: {
-      /** @description The request was malformed or cannot be performed given the current state of the system */
-      BadRequest: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-      /** @description Unauthorized - authentication required */
-      Unauthorized: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-      /** @description Forbidden - insufficient permissions to perform the operation */
-      Forbidden: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-      /** @description The specified resource was not found */
-      NotFound: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-      /** @description The server encountered an internal error */
-      InternalServerError: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-      /** @description The requested operation is not implemented */
-      NotImplemented: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-      /** @description Model compilation failed due to syntax or semantic errors */
-      ModelCompilationError: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-      /** @description The service is temporarily unavailable, typically due to initialization, or draining state (Rolling updates, etc.) */
-      ServiceUnavailable: {
-         content: {
-            "application/json": components["schemas"]["Error"];
-         };
-      };
-   };
-   parameters: {
-      /** @description Name of the project */
+    };
+    /** @description Google BigQuery database connection configuration */
+    BigqueryConnection: {
+      /** @description Default BigQuery project ID for queries */
+      defaultProjectId?: string;
+      /** @description BigQuery project ID for billing purposes */
+      billingProjectId?: string;
+      /** @description BigQuery dataset location/region */
+      location?: string;
+      /** @description JSON string containing Google Cloud service account credentials */
+      serviceAccountKeyJson?: string;
+      /** @description Maximum bytes to bill for query execution (prevents runaway costs) */
+      maximumBytesBilled?: string;
+      /** @description Query timeout in milliseconds */
+      queryTimeoutMilliseconds?: string;
+    };
+    /** @description Snowflake database connection configuration */
+    SnowflakeConnection: {
+      /** @description Snowflake account identifier */
+      account?: string;
+      /** @description Snowflake username for authentication */
+      username?: string;
+      /** @description Snowflake password for authentication */
+      password?: string;
+      /** @description Snowflake private key for authentication */
+      privateKey?: string;
+      /** @description Passphrase for the Snowflake private key */
+      privateKeyPass?: string;
+      /** @description Snowflake warehouse name */
+      warehouse?: string;
+      /** @description Snowflake database name */
+      database?: string;
+      /** @description Snowflake schema name */
+      schema?: string;
+      /** @description Snowflake role name */
+      role?: string;
+      /** @description Query response timeout in milliseconds */
+      responseTimeoutMilliseconds?: number;
+    };
+    /** @description Trino database connection configuration */
+    TrinoConnection: {
+      /** @description Trino server hostname or IP address */
+      server?: string;
+      /** @description Trino server port number */
+      port?: number;
+      /** @description Trino catalog name */
+      catalog?: string;
+      /** @description Trino schema name */
+      schema?: string;
+      /** @description Trino username for authentication */
+      user?: string;
+      /** @description Trino password for authentication */
+      password?: string;
+      /** @description Peaka API key for authentication with Peaka-hosted Trino clusters */
+      peakaKey?: string;
+    };
+    /** @description MotherDuck database connection configuration */
+    MotherDuckConnection: {
+      /** @description MotherDuck access token */
+      accessToken?: string;
+      /** @description MotherDuck database name */
+      database?: string;
+    };
+    /** @description DuckDB database connection configuration */
+    DuckdbConnection: {
+      attachedDatabases?: components["schemas"]["AttachedDatabase"][];
+    };
+    /** @description Attached DuckDB database */
+    AttachedDatabase: {
+      /** @example test_connection, _connection, test_connection_1 */
+      name?: string;
+      /**
+       * @description Type of database connection
+       * @enum {string}
+       */
+      type?: "bigquery" | "snowflake" | "postgres" | "gcs" | "s3" | "azure";
+      attributes?: components["schemas"]["ConnectionAttributes"];
+      bigqueryConnection?: components["schemas"]["BigqueryConnection"];
+      snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+      postgresConnection?: components["schemas"]["PostgresConnection"];
+      gcsConnection?: components["schemas"]["GCSConnection"];
+      s3Connection?: components["schemas"]["S3Connection"];
+      azureConnection?: components["schemas"]["AzureConnection"];
+    };
+    SqlSource: {
+      /** @description Resource path to the sql source. */
+      resource?: string;
+      source?: string;
+    };
+    Table: {
+      /** @description Resource path to the table. */
+      resource?: string;
+      /** @description Table source as a JSON string. */
+      source?: string;
+      /** @description Table fields */
+      columns?: components["schemas"]["Column"][];
+    };
+    /** @deprecated */
+    TableSource: {
+      /** @description Resource path to the table source. */
+      resource?: string;
+      source?: string;
+      /** @description Table fields */
+      columns?: components["schemas"]["Column"][];
+    };
+    TemporaryTable: {
+      /** @description Resource path to the temporary table. */
+      resource?: string;
+      table?: string;
+    };
+    QueryData: {
+      /** @description Resource path to the query data. */
+      resource?: string;
+      data?: string;
+    };
+    /** @description Standard error response format */
+    Error: {
+      /** @description Human-readable error message describing what went wrong */
+      message: string;
+      /** @description Additional error details or context */
+      details?: string;
+    };
+    /** @description Database column definition */
+    Column: {
+      /** @description Name of the column */
+      name?: string;
+      /** @description Data type of the column */
+      type?: string;
+    };
+    /** @description Database table structure and metadata */
+    TableDescription: {
+      /** @description Name of the table */
+      name?: string;
+      /** @description Number of rows in the table */
+      rowCount?: number;
+      /** @description List of columns in the table */
+      columns?: components["schemas"]["Column"][];
+    };
+    /** @description Current file watching status and configuration */
+    WatchStatus: {
+      /** @description Whether file watching is currently active */
+      enabled: boolean;
+      /** @description Name of the project being watched for file changes */
       projectName: string;
-      /** @description Name of the package */
-      packageName: string;
-      /** @description ID of the materialization */
-      materializationId: string;
-   };
-   requestBodies: never;
-   headers: never;
-   pathItems: never;
+      /** @description The file system path being monitored for changes, null if not watching */
+      watchingPath: string;
+    };
+    /** @description Request to start file watching for a project */
+    StartWatchRequest: {
+      /** @description Name of the project to start watching for file changes */
+      projectName: string;
+    };
+    /** @description Result of testing a database connection */
+    ConnectionStatus: {
+      /**
+       * @description Connection test result status
+       * @enum {string}
+       */
+      status?: "ok" | "failed";
+      /** @description Error message if the connection test failed, null if successful */
+      errorMessage?: string;
+    };
+    /** @description Request body for compiling Malloy source code */
+    CompileRequest: {
+      /** @description Malloy source code to compile */
+      source: string;
+      /**
+       * @description If true, returns the generated SQL alongside compilation results (only available when compilation succeeds and the source contains a runnable query).
+       * @default false
+       */
+      includeSql?: boolean;
+    };
+    /** @description Result of a Malloy source compilation check */
+    CompileResult: {
+      /**
+       * @description Overall compilation status — "error" if any problems have error severity
+       * @enum {string}
+       */
+      status?: "success" | "error";
+      /** @description List of compilation problems (errors and warnings) */
+      problems?: components["schemas"]["CompileProblem"][];
+      /** @description Generated SQL for the compiled query. Only present when includeSql is true and compilation succeeds with a runnable query. */
+      sql?: string;
+    };
+    /** @description A compilation problem reported by the Malloy compiler */
+    CompileProblem: {
+      /** @description Human-readable problem description */
+      message?: string;
+      /**
+       * @description Severity level of the problem
+       * @enum {string}
+       */
+      severity?: "error" | "warn" | "debug";
+      /** @description Machine-readable error code */
+      code?: string;
+      /** @description Source location of the problem */
+      at?: {
+        /** @description URL of the source file */
+        url?: string;
+        /** @description Character range within the source file */
+        range?: Record<string, never>;
+      };
+    };
+    /** @description Options for creating a materialization */
+    CreateMaterializationRequest: {
+      /**
+       * @description If true, forces rebuild of all sources even if their BuildID is unchanged
+       * @default false
+       */
+      forceRefresh?: boolean;
+      /**
+       * @description If true, automatically reloads the manifest into the Malloy Runtime after a successful materialization
+       * @default false
+       */
+      autoLoadManifest?: boolean;
+    };
+    /** @description A record of a package materialization */
+    Materialization: {
+      id?: string;
+      projectId?: string;
+      packageName?: string;
+      /** @enum {string} */
+      status?: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED";
+      /** Format: date-time */
+      startedAt?: string | null;
+      /** Format: date-time */
+      completedAt?: string | null;
+      /** @description Error message if the materialization failed */
+      error?: string | null;
+      /** @description Materialization metadata including build options, source counts, and durations */
+      metadata?: Record<string, never> | null;
+      /** Format: date-time */
+      createdAt?: string;
+      /** Format: date-time */
+      updatedAt?: string;
+    };
+    /** @description Manifest mapping BuildIDs to materialized table names */
+    BuildManifest: {
+      /** @description Map of BuildID to manifest entry */
+      entries?: {
+        [key: string]: components["schemas"]["ManifestEntry"];
+      };
+      /** @description Whether the manifest is in strict mode */
+      strict?: boolean;
+    };
+    /** @description A single entry in the build manifest */
+    ManifestEntry: {
+      /** @description Name of the materialized table */
+      tableName?: string;
+    };
+  };
+  responses: {
+    /** @description The request was malformed or cannot be performed given the current state of the system */
+    BadRequest: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description Unauthorized - authentication required */
+    Unauthorized: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description Forbidden - insufficient permissions to perform the operation */
+    Forbidden: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The specified resource was not found */
+    NotFound: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The server encountered an internal error */
+    InternalServerError: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The requested operation is not implemented */
+    NotImplemented: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description Model compilation failed due to syntax or semantic errors */
+    ModelCompilationError: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The service is temporarily unavailable, typically due to initialization, or draining state (Rolling updates, etc.) */
+    ServiceUnavailable: {
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+  };
+  parameters: {
+    /** @description Name of the project */
+    projectName: string;
+    /** @description Name of the package */
+    packageName: string;
+    /** @description ID of the materialization */
+    materializationId: string;
+  };
+  requestBodies: never;
+  headers: never;
+  pathItems: never;
 }
 
 export type $defs = Record<string, never>;
@@ -1091,1362 +1084,1363 @@ export type $defs = Record<string, never>;
 export type external = Record<string, never>;
 
 export interface operations {
-   /**
-    * Get server status and health information
-    * @description Returns the current status of the Malloy Publisher server, including initialization state,
-    * available projects, and server timestamp. This endpoint is useful for health checks and
-    * monitoring server availability.
-    */
-   "get-status": {
-      responses: {
-         /** @description Returns server status */
-         200: {
-            content: {
-               "application/json": components["schemas"]["ServerStatus"];
-            };
-         };
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List all available projects
-    * @description Retrieves a list of all projects currently hosted on this Malloy Publisher server.
-    * Each project contains metadata about its packages, connections, and configuration.
-    * This endpoint is typically used to discover available projects and their basic information.
-    */
-   "list-projects": {
-      responses: {
-         /** @description A list of all available projects */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Project"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Create a new project
-    * @description Creates a new Malloy project with the specified configuration. A project serves as a
-    * container for packages, connections, and other resources. The project will be initialized
-    * with the provided metadata and can immediately accept packages and connections.
-    */
-   "create-project": {
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["Project"];
-         };
-      };
-      responses: {
-         /** @description Returns the project created */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Project"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get project details and metadata
-    * @description Retrieves detailed information about a specific project, including its packages,
-    * connections, configuration, and metadata. The reload parameter can be used to
-    * refresh the project state from disk before returning the information.
-    */
-   "get-project": {
-      parameters: {
-         query?: {
-            /** @description Load / reload the project before returning result */
-            reload?: boolean;
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description Project details and metadata */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Project"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Delete a project
-    * @description Permanently deletes a project and all its associated resources including packages,
-    * connections, and metadata. This operation cannot be undone, so use with caution.
-    * The project must exist and be accessible for deletion.
-    */
-   "delete-project": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description Returns the project deleted */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Project"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Update project configuration
-    * @description Updates the configuration and metadata of an existing project. This allows you to
-    * modify project settings, update the README, change the location, or update other
-    * project-level properties. The project must exist and be accessible.
-    */
-   "update-project": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["Project"];
-         };
-      };
-      responses: {
-         /** @description Returns the project updated */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Project"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List project database connections
-    * @description Retrieves a list of all database connections configured for the specified project.
-    * Each connection includes its configuration, type, and status information. This endpoint
-    * is useful for discovering available data sources within a project.
-    */
-   "list-connections": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description A list of database connections in the project */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Connection"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get connection details
-    * @description Retrieves detailed information about a specific database connection within a project.
-    * This includes connection configuration, credentials (if accessible), and metadata.
-    * Useful for inspecting connection settings and troubleshooting connectivity issues.
-    */
-   "get-connection": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description Connection details and configuration */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Connection"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Create a new database connection
-    * @description Creates a new database connection in the specified project.
-    */
-   "create-connection": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["Connection"];
-         };
-      };
-      responses: {
-         /** @description Connection created successfully */
-         201: {
-            content: {
-               "application/json": {
-                  message?: string;
-               };
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         /** @description Connection already exists */
-         409: {
-            content: {
-               "application/json": {
-                  error?: string;
-               };
-            };
-         };
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Delete a database connection
-    * @description Permanently deletes a database connection from the project.
-    */
-   "delete-connection": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection to delete */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description Connection deleted successfully */
-         200: {
-            content: {
-               "application/json": {
-                  message?: string;
-               };
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Update an existing database connection
-    * @description Updates the configuration of an existing database connection.
-    */
-   "update-connection": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection to update */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      requestBody: {
-         content: {
-            "application/json": {
-               postgresConnection?: components["schemas"]["PostgresConnection"];
-               mysqlConnection?: components["schemas"]["MysqlConnection"];
-               bigqueryConnection?: components["schemas"]["BigqueryConnection"];
-               snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
-               duckdbConnection?: components["schemas"]["DuckdbConnection"];
-               motherduckConnection?: components["schemas"]["MotherDuckConnection"];
-               trinoConnection?: components["schemas"]["TrinoConnection"];
-               ducklakeConnection?: components["schemas"]["DucklakeConnection"];
-            };
-         };
-      };
-      responses: {
-         /** @description Connection updated successfully */
-         200: {
-            content: {
-               "application/json": {
-                  message?: string;
-               };
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List database schemas
-    * @description Retrieves a list of all schemas (databases) available in the specified connection.
-    * Each schema includes metadata such as name, description, and whether it's the default schema.
-    * This endpoint is useful for exploring the database structure and discovering available data sources.
-    */
-   "list-schemas": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description A list of schemas available in the connection with metadata */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Schema"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List tables in database
-    * @description Retrieves a list of all tables and views available in the specified database schema.
-    * This endpoint is useful for discovering available data sources and exploring the database
-    * structure. The schema must exist in the connection for this operation to succeed.
-    */
-   "list-tables": {
-      parameters: {
-         query?: {
-            /**
-             * @description List of table names to filter results. When provided, only returns metadata
-             * for the specified tables. When omitted, returns all tables in the schema.
-             */
-            tableNames?: string[];
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the schema */
-            schemaName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description A list of table names available in the specified schema */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Table"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get table details from database
-    * @description Retrieves a table from the specified database schema.
-    * This endpoint is useful for discovering available data sources and exploring the database
-    * structure. The schema must exist in the connection for this operation to succeed.
-    * The tablePath is the full path to the table, including the schema name.
-    */
-   "get-table": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the schema */
-            schemaName: components["schemas"]["IdentifierPattern"];
-            /** @description Full path to the table */
-            tablePath: components["schemas"]["PathPattern"];
-         };
-      };
-      responses: {
-         /** @description Table information */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Table"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get SQL source (deprecated)
-    * @deprecated
-    * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-    * Use the POST version instead for better security and functionality.
-    *
-    * Creates a Malloy source from a SQL statement using the specified connection.
-    * The SQL statement is executed to generate a source definition that can be used in Malloy models.
-    */
-   "get-sqlsource": {
-      parameters: {
-         query?: {
-            /** @description SQL statement */
-            sqlStatement?: string;
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description SQL source information */
-         200: {
-            content: {
-               "application/json": components["schemas"]["SqlSource"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Create SQL source from statement
-    * @description Creates a Malloy source from a SQL statement using the specified database connection.
-    * The SQL statement is executed to generate a source definition that can be used in Malloy models.
-    */
-   "post-sqlsource": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      /** @description SQL statement to fetch the SQL source */
-      requestBody: {
-         content: {
-            "application/json": {
-               sqlStatement?: string;
-            };
-         };
-      };
-      responses: {
-         /** @description SQL source information */
-         200: {
-            content: {
-               "application/json": components["schemas"]["SqlSource"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Execute SQL query
-    * @description Executes a SQL statement against the specified database connection and returns the results.
-    * The results include data, metadata, and execution information.
-    */
-   "post-querydata": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      /** @description SQL statement to execute */
-      requestBody: {
-         content: {
-            "application/json": {
-               sqlStatement?: string;
-               /** @description Options */
-               options?: string;
-            };
-         };
-      };
-      responses: {
-         /** @description Query execution results */
-         200: {
-            content: {
-               "application/json": components["schemas"]["QueryData"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Create temporary table
-    * @description Creates a temporary table from a SQL statement using the specified database connection.
-    * Temporary tables are useful for storing intermediate results during complex queries and data processing workflows.
-    */
-   "post-temporarytable": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      /** @description SQL statement to create the temporary table */
-      requestBody: {
-         content: {
-            "application/json": {
-               sqlStatement?: string;
-            };
-         };
-      };
-      responses: {
-         /** @description Temporary table information */
-         200: {
-            content: {
-               "application/json": components["schemas"]["TemporaryTable"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Create temporary table (deprecated)
-    * @deprecated
-    * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-    * Use the POST version instead for better security and functionality.
-    *
-    * Creates a temporary table from a SQL statement using the specified connection.
-    * Temporary tables are useful for storing intermediate results during complex queries.
-    */
-   "get-temporarytable": {
-      parameters: {
-         query?: {
-            /** @description SQL statement */
-            sqlStatement?: string;
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description Temporary table information */
-         200: {
-            content: {
-               "application/json": components["schemas"]["TemporaryTable"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Execute SQL query (deprecated)
-    * @deprecated
-    * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-    * Use the POST version instead for better security and functionality.
-    *
-    * Executes a SQL statement against the specified database connection and returns the results.
-    * The query results include data, metadata, and execution information.
-    */
-   "get-querydata": {
-      parameters: {
-         query?: {
-            /** @description SQL statement */
-            sqlStatement?: string;
-            /** @description Options */
-            options?: string;
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the connection */
-            connectionName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description Query execution results */
-         200: {
-            content: {
-               "application/json": components["schemas"]["QueryData"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-      };
-   };
-   /**
-    * List project packages
-    * @description Retrieves a list of all Malloy packages within the specified project. Each package
-    * contains models, notebooks, databases, and other resources. This endpoint is useful
-    * for discovering available packages and their basic metadata.
-    */
-   "list-packages": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description A list of all packages in the project */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Package"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Create a new package
-    * @description Creates a new Malloy package within the specified project. A package serves as a
-    * container for models, notebooks, embedded databases, and other resources. The package
-    * will be initialized with the provided metadata and can immediately accept content.
-    */
-   "create-package": {
-      parameters: {
-         query?: {
-            /**
-             * @description When true, automatically loads any existing build manifest
-             * for the package so materialized table references resolve immediately.
-             * Defaults to false.
-             */
-            autoLoadManifest?: boolean;
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["Package"];
-         };
-      };
-      responses: {
-         /** @description Returns the package created */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Package"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get package details and metadata
-    * @description Retrieves detailed information about a specific package, including its models, notebooks,
-    * databases, and metadata. The reload parameter can be used to refresh the package state
-    * from disk before returning the information. The versionId parameter allows access to
-    * specific package versions.
-    */
-   "get-package": {
-      parameters: {
-         query?: {
-            /** @description Version identifier for the package */
-            versionId?: components["schemas"]["VersionIdPattern"];
-            /** @description Load / reload the package before returning result */
-            reload?: boolean;
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Package name */
-            packageName: string;
-         };
-      };
-      responses: {
-         /** @description Package details and metadata */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Package"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Delete a package
-    * @description Permanently deletes a package and all its associated resources including models,
-    * notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
-    * The package must exist and be accessible for deletion.
-    */
-   "delete-package": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description Returns the package deleted */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Package"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Update package configuration
-    * @description Updates the configuration and metadata of an existing package. This allows you to
-    * modify package settings, update the description, change the location, or update other
-    * package-level properties. The package must exist and be accessible.
-    */
-   "update-package": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["Package"];
-         };
-      };
-      responses: {
-         /** @description Returns the package updated */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Package"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List package models
-    * @description Retrieves a list of all Malloy models within the specified package. Each model entry
-    * includes the relative path, package name, and any compilation errors. This endpoint
-    * is useful for discovering available models and checking their status.
-    */
-   "list-models": {
-      parameters: {
-         query?: {
-            /** @description Version identifier for the package */
-            versionId?: components["schemas"]["VersionIdPattern"];
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description A list of models in the package */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Model"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get compiled Malloy model
-    * @description Retrieves a compiled Malloy model with its source information, queries, and metadata.
-    * The model is compiled using the specified version of the Malloy compiler. This endpoint
-    * provides access to the model's structure, sources, and named queries for use in applications.
-    */
-   "get-model": {
-      parameters: {
-         query?: {
-            /** @description Version identifier for the package */
-            versionId?: components["schemas"]["VersionIdPattern"];
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: string;
-            /** @description Path to the model within the package */
-            path: components["schemas"]["PathPattern"];
-         };
-      };
-      responses: {
-         /** @description Compiled Malloy model */
-         200: {
-            content: {
-               "application/json": components["schemas"]["CompiledModel"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         424: components["responses"]["ModelCompilationError"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-      };
-   };
-   /**
-    * Execute Malloy query
-    * @description Executes a Malloy query against a model and returns the results. The query can be specified
-    * as a raw Malloy query string or by referencing a named query within the model. This endpoint
-    * supports both ad-hoc queries and predefined model queries, making it flexible for various
-    * use cases including data exploration, reporting, and application integration.
-    */
-   "execute-query-model": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: components["schemas"]["VersionIdPattern"];
-            /** @description Path to the model within the package */
-            path: components["schemas"]["PathPattern"];
-         };
-      };
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["QueryRequest"];
-         };
-      };
-      responses: {
-         /** @description Query execution results */
-         200: {
-            content: {
-               "application/json": components["schemas"]["QueryResult"];
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Compile Malloy source code
-    * @description Compiles Malloy source code in the context of a specific model file.
-    * The submitted source is appended to the full model content, giving it
-    * access to all sources, imports, and queries defined in the model.
-    * Relative imports resolve correctly against sibling model files.
-    * Returns compilation status and any problems (errors or warnings) found.
-    */
-   "compile-model-source": {
-      parameters: {
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: string;
-            /** @description Path to the model within the package (used to resolve relative imports) */
-            path: components["schemas"]["PathPattern"];
-         };
-      };
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["CompileRequest"];
-         };
-      };
-      responses: {
-         /** @description Compilation result with status and any problems */
-         200: {
-            content: {
-               "application/json": components["schemas"]["CompileResult"];
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List package notebooks
-    * @description Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
-    * includes the relative path, package name, and any compilation errors. This endpoint
-    * is useful for discovering available notebooks and checking their status.
-    */
-   "list-notebooks": {
-      parameters: {
-         query?: {
-            /** @description Version identifier for the package */
-            versionId?: components["schemas"]["VersionIdPattern"];
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description A list of models in the package */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Notebook"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get Malloy notebook cells
-    * @description Retrieves a Malloy notebook with its raw cell contents (markdown and code).
-    * Cell execution should be done separately via the execute-notebook-cell endpoint.
-    */
-   "get-notebook": {
-      parameters: {
-         query?: {
-            /** @description Version identifier for the package */
-            versionId?: components["schemas"]["VersionIdPattern"];
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: string;
-            /** @description Path to notebook within the package. */
-            path: string;
-         };
-      };
-      responses: {
-         /** @description A Malloy notebook with raw cell contents. */
-         200: {
-            content: {
-               "application/json": components["schemas"]["RawNotebook"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-      };
-   };
-   /**
-    * Execute a specific notebook cell
-    * @description Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
-    * and runs the Malloy code, returning query results and any new sources defined.
-    * For markdown cells, this simply returns the cell content.
-    */
-   "execute-notebook-cell": {
-      parameters: {
-         query?: {
-            /** @description Version identifier for the package */
-            versionId?: components["schemas"]["VersionIdPattern"];
-            /** @description JSON-encoded filter parameter values keyed by filter name */
-            filter_params?: string;
-            /** @description When true, skip filter injection entirely */
-            bypass_filters?: "true" | "false";
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: string;
-            /** @description Path to notebook within the package */
-            path: string;
-            /** @description Index of the cell to execute (0-based) */
-            cellIndex: number;
-         };
-      };
-      responses: {
-         /** @description Cell execution result */
-         200: {
-            content: {
-               "application/json": components["schemas"]["NotebookCellResult"];
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List embedded databases
-    * @description Retrieves a list of all embedded databases within the specified package. These are typically
-    * DuckDB databases stored as .parquet files that provide local data storage for the package.
-    * Each database entry includes metadata about the database structure and content.
-    */
-   "list-databases": {
-      parameters: {
-         query?: {
-            /** @description Version identifier for the package */
-            versionId?: components["schemas"]["VersionIdPattern"];
-         };
-         path: {
-            /** @description Name of the project */
-            projectName: components["schemas"]["IdentifierPattern"];
-            /** @description Name of the package */
-            packageName: components["schemas"]["IdentifierPattern"];
-         };
-      };
-      responses: {
-         /** @description A list of embedded databases in the package */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Database"][];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         501: components["responses"]["NotImplemented"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Test database connection configuration
-    * @description Validates a database connection configuration without adding it to any project.
-    * This endpoint allows you to test connection parameters, credentials, and network
-    * connectivity before committing the connection to a project. Useful for troubleshooting
-    * connection issues and validating configurations during setup.
-    */
-   "test-connection-configuration": {
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["Connection"];
-         };
-      };
-      responses: {
-         /** @description Connection test result */
-         200: {
-            content: {
-               "application/json": components["schemas"]["ConnectionStatus"];
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         401: components["responses"]["Unauthorized"];
-         404: components["responses"]["NotFound"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Get watch mode status
-    * @description Retrieves the current status of the file watching system. This includes whether watch mode
-    * is enabled, which project is being watched, and the path being monitored. Useful for
-    * monitoring the development workflow and ensuring file changes are being detected.
-    */
-   "get-watch-status": {
-      responses: {
-         /** @description The current watch mode status. */
-         200: {
-            content: {
-               "application/json": components["schemas"]["WatchStatus"];
-            };
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Start file watching
-    * @description Initiates file watching for the specified project. This enables real-time monitoring of
-    * file changes within the project directory, allowing for automatic reloading and updates
-    * during development. Only one project can be watched at a time.
-    */
-   "start-watching": {
-      requestBody: {
-         content: {
-            "application/json": components["schemas"]["StartWatchRequest"];
-         };
-      };
-      responses: {
-         /** @description Watch mode started successfully. */
-         200: {
-            content: never;
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * Stop file watching
-    * @description Stops the current file watching session. This disables real-time monitoring of file changes
-    * and releases system resources. Use this when development is complete or when switching
-    * to a different project.
-    */
-   "stop-watching": {
-      responses: {
-         /** @description Watch mode stopped successfully. */
-         200: {
-            content: never;
-         };
-         401: components["responses"]["Unauthorized"];
-         500: components["responses"]["InternalServerError"];
-         503: components["responses"]["ServiceUnavailable"];
-      };
-   };
-   /**
-    * List materializations for a package
-    * @description Returns the materialization history for the package, ordered by most recent first.
-    */
-   "list-materializations": {
-      parameters: {
-         query?: {
-            /** @description Maximum number of materializations to return */
-            limit?: number;
-            /** @description Number of materializations to skip */
-            offset?: number;
-         };
-         path: {
-            projectName: components["parameters"]["projectName"];
-            packageName: components["parameters"]["packageName"];
-         };
-      };
-      responses: {
-         /** @description List of materializations */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Materialization"][];
-            };
-         };
-         404: components["responses"]["NotFound"];
-      };
-   };
-   /**
-    * Create a materialization
-    * @description Creates a new materialization in PENDING state for all persist sources across all
-    * models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
-    */
-   "create-materialization": {
-      parameters: {
-         path: {
-            projectName: components["parameters"]["projectName"];
-            packageName: components["parameters"]["packageName"];
-         };
-      };
-      requestBody?: {
-         content: {
-            "application/json": components["schemas"]["CreateMaterializationRequest"];
-         };
-      };
-      responses: {
-         /** @description Materialization created */
-         201: {
-            content: {
-               "application/json": components["schemas"]["Materialization"];
-            };
-         };
-         404: components["responses"]["NotFound"];
-         /** @description Package already has an active materialization */
-         409: {
-            content: {
-               "application/json": components["schemas"]["Error"];
-            };
-         };
-      };
-   };
-   /** Get a specific materialization */
-   "get-materialization": {
-      parameters: {
-         path: {
-            projectName: components["parameters"]["projectName"];
-            packageName: components["parameters"]["packageName"];
-            materializationId: components["parameters"]["materializationId"];
-         };
-      };
-      responses: {
-         /** @description Materialization details */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Materialization"];
-            };
-         };
-         404: components["responses"]["NotFound"];
-      };
-   };
-   /**
-    * Perform an action on a materialization
-    * @description Performs an action on a materialization. The action is specified via
-    * the `action` query parameter:
-    *   * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
-    *   * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
-    */
-   "materialization-action": {
-      parameters: {
-         query: {
-            /** @description Action to perform on the materialization */
-            action: "start" | "stop";
-         };
-         path: {
-            projectName: components["parameters"]["projectName"];
-            packageName: components["parameters"]["packageName"];
-            materializationId: components["parameters"]["materializationId"];
-         };
-      };
-      responses: {
-         /** @description Materialization cancelled (action=stop) */
-         200: {
-            content: {
-               "application/json": components["schemas"]["Materialization"];
-            };
-         };
-         /** @description Materialization started (action=start) */
-         202: {
-            content: {
-               "application/json": components["schemas"]["Materialization"];
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         404: components["responses"]["NotFound"];
-         /** @description Materialization cannot transition to the requested state */
-         409: {
-            content: {
-               "application/json": components["schemas"]["Error"];
-            };
-         };
-      };
-   };
-   /**
-    * Delete a materialization
-    * @description Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
-    */
-   "delete-materialization": {
-      parameters: {
-         path: {
-            projectName: components["parameters"]["projectName"];
-            packageName: components["parameters"]["packageName"];
-            materializationId: components["parameters"]["materializationId"];
-         };
-      };
-      responses: {
-         /** @description Materialization deleted */
-         204: {
-            content: never;
-         };
-         404: components["responses"]["NotFound"];
-         /** @description Materialization cannot be deleted (PENDING or RUNNING) */
-         409: {
-            content: {
-               "application/json": components["schemas"]["Error"];
-            };
-         };
-      };
-   };
-   /**
-    * Get the build manifest for a package
-    * @description Returns the current build manifest containing buildId-to-tableName mappings
-    * for all materialized sources in the package.
-    */
-   "get-manifest": {
-      parameters: {
-         path: {
-            projectName: components["parameters"]["projectName"];
-            packageName: components["parameters"]["packageName"];
-         };
-      };
-      responses: {
-         /** @description Build manifest */
-         200: {
-            content: {
-               "application/json": components["schemas"]["BuildManifest"];
-            };
-         };
-         404: components["responses"]["NotFound"];
-      };
-   };
-   /**
-    * Perform an action on the package manifest
-    * @description Performs an action on the package manifest. The action is specified via
-    * the `action` query parameter:
-    *   * `reload` - Reads the build manifest from the shared store (DuckLake
-    *     in orchestrated mode, local DuckDB in standalone mode) and recompiles
-    *     every model in the package so subsequent queries resolve persisted
-    *     sources to their materialized tables. Intended for orchestrated
-    *     workers that did not themselves run the build; the endpoint does
-    *     not write anything *into* storage.
-    */
-   "manifest-action": {
-      parameters: {
-         query: {
-            /** @description Action to perform on the manifest */
-            action: "reload";
-         };
-         path: {
-            projectName: components["parameters"]["projectName"];
-            packageName: components["parameters"]["packageName"];
-         };
-      };
-      responses: {
-         /** @description Manifest loaded */
-         200: {
-            content: {
-               "application/json": components["schemas"]["BuildManifest"];
-            };
-         };
-         400: components["responses"]["BadRequest"];
-         404: components["responses"]["NotFound"];
-      };
-   };
+
+  /**
+   * Get server status and health information
+   * @description Returns the current status of the Malloy Publisher server, including initialization state,
+   * available projects, and server timestamp. This endpoint is useful for health checks and
+   * monitoring server availability.
+   */
+  "get-status": {
+    responses: {
+      /** @description Returns server status */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ServerStatus"];
+        };
+      };
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List all available projects
+   * @description Retrieves a list of all projects currently hosted on this Malloy Publisher server.
+   * Each project contains metadata about its packages, connections, and configuration.
+   * This endpoint is typically used to discover available projects and their basic information.
+   */
+  "list-projects": {
+    responses: {
+      /** @description A list of all available projects */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Project"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Create a new project
+   * @description Creates a new Malloy project with the specified configuration. A project serves as a
+   * container for packages, connections, and other resources. The project will be initialized
+   * with the provided metadata and can immediately accept packages and connections.
+   */
+  "create-project": {
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["Project"];
+      };
+    };
+    responses: {
+      /** @description Returns the project created */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get project details and metadata
+   * @description Retrieves detailed information about a specific project, including its packages,
+   * connections, configuration, and metadata. The reload parameter can be used to
+   * refresh the project state from disk before returning the information.
+   */
+  "get-project": {
+    parameters: {
+      query?: {
+        /** @description Load / reload the project before returning result */
+        reload?: boolean;
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description Project details and metadata */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Delete a project
+   * @description Permanently deletes a project and all its associated resources including packages,
+   * connections, and metadata. This operation cannot be undone, so use with caution.
+   * The project must exist and be accessible for deletion.
+   */
+  "delete-project": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description Returns the project deleted */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Update project configuration
+   * @description Updates the configuration and metadata of an existing project. This allows you to
+   * modify project settings, update the README, change the location, or update other
+   * project-level properties. The project must exist and be accessible.
+   */
+  "update-project": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["Project"];
+      };
+    };
+    responses: {
+      /** @description Returns the project updated */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Project"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List project database connections
+   * @description Retrieves a list of all database connections configured for the specified project.
+   * Each connection includes its configuration, type, and status information. This endpoint
+   * is useful for discovering available data sources within a project.
+   */
+  "list-connections": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description A list of database connections in the project */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Connection"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get connection details
+   * @description Retrieves detailed information about a specific database connection within a project.
+   * This includes connection configuration, credentials (if accessible), and metadata.
+   * Useful for inspecting connection settings and troubleshooting connectivity issues.
+   */
+  "get-connection": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description Connection details and configuration */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Connection"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Create a new database connection
+   * @description Creates a new database connection in the specified project.
+   */
+  "create-connection": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["Connection"];
+      };
+    };
+    responses: {
+      /** @description Connection created successfully */
+      201: {
+        content: {
+          "application/json": {
+            message?: string;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      /** @description Connection already exists */
+      409: {
+        content: {
+          "application/json": {
+            error?: string;
+          };
+        };
+      };
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Delete a database connection
+   * @description Permanently deletes a database connection from the project.
+   */
+  "delete-connection": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection to delete */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description Connection deleted successfully */
+      200: {
+        content: {
+          "application/json": {
+            message?: string;
+          };
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Update an existing database connection
+   * @description Updates the configuration of an existing database connection.
+   */
+  "update-connection": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection to update */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          postgresConnection?: components["schemas"]["PostgresConnection"];
+          mysqlConnection?: components["schemas"]["MysqlConnection"];
+          bigqueryConnection?: components["schemas"]["BigqueryConnection"];
+          snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+          duckdbConnection?: components["schemas"]["DuckdbConnection"];
+          motherduckConnection?: components["schemas"]["MotherDuckConnection"];
+          trinoConnection?: components["schemas"]["TrinoConnection"];
+          ducklakeConnection?: components["schemas"]["DucklakeConnection"];
+        };
+      };
+    };
+    responses: {
+      /** @description Connection updated successfully */
+      200: {
+        content: {
+          "application/json": {
+            message?: string;
+          };
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List database schemas
+   * @description Retrieves a list of all schemas (databases) available in the specified connection.
+   * Each schema includes metadata such as name, description, and whether it's the default schema.
+   * This endpoint is useful for exploring the database structure and discovering available data sources.
+   */
+  "list-schemas": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description A list of schemas available in the connection with metadata */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Schema"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List tables in database
+   * @description Retrieves a list of all tables and views available in the specified database schema.
+   * This endpoint is useful for discovering available data sources and exploring the database
+   * structure. The schema must exist in the connection for this operation to succeed.
+   */
+  "list-tables": {
+    parameters: {
+      query?: {
+        /**
+         * @description List of table names to filter results. When provided, only returns metadata
+         * for the specified tables. When omitted, returns all tables in the schema.
+         */
+        tableNames?: string[];
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the schema */
+        schemaName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description A list of table names available in the specified schema */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Table"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get table details from database
+   * @description Retrieves a table from the specified database schema.
+   * This endpoint is useful for discovering available data sources and exploring the database
+   * structure. The schema must exist in the connection for this operation to succeed.
+   * The tablePath is the full path to the table, including the schema name.
+   */
+  "get-table": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the schema */
+        schemaName: components["schemas"]["IdentifierPattern"];
+        /** @description Full path to the table */
+        tablePath: components["schemas"]["PathPattern"];
+      };
+    };
+    responses: {
+      /** @description Table information */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Table"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get SQL source (deprecated)
+   * @deprecated
+   * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
+   * Use the POST version instead for better security and functionality.
+   *
+   * Creates a Malloy source from a SQL statement using the specified connection.
+   * The SQL statement is executed to generate a source definition that can be used in Malloy models.
+   */
+  "get-sqlsource": {
+    parameters: {
+      query?: {
+        /** @description SQL statement */
+        sqlStatement?: string;
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description SQL source information */
+      200: {
+        content: {
+          "application/json": components["schemas"]["SqlSource"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Create SQL source from statement
+   * @description Creates a Malloy source from a SQL statement using the specified database connection.
+   * The SQL statement is executed to generate a source definition that can be used in Malloy models.
+   */
+  "post-sqlsource": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    /** @description SQL statement to fetch the SQL source */
+    requestBody: {
+      content: {
+        "application/json": {
+          sqlStatement?: string;
+        };
+      };
+    };
+    responses: {
+      /** @description SQL source information */
+      200: {
+        content: {
+          "application/json": components["schemas"]["SqlSource"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Execute SQL query
+   * @description Executes a SQL statement against the specified database connection and returns the results.
+   * The results include data, metadata, and execution information.
+   */
+  "post-querydata": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    /** @description SQL statement to execute */
+    requestBody: {
+      content: {
+        "application/json": {
+          sqlStatement?: string;
+          /** @description Options */
+          options?: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Query execution results */
+      200: {
+        content: {
+          "application/json": components["schemas"]["QueryData"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Create temporary table
+   * @description Creates a temporary table from a SQL statement using the specified database connection.
+   * Temporary tables are useful for storing intermediate results during complex queries and data processing workflows.
+   */
+  "post-temporarytable": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    /** @description SQL statement to create the temporary table */
+    requestBody: {
+      content: {
+        "application/json": {
+          sqlStatement?: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Temporary table information */
+      200: {
+        content: {
+          "application/json": components["schemas"]["TemporaryTable"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Create temporary table (deprecated)
+   * @deprecated
+   * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
+   * Use the POST version instead for better security and functionality.
+   *
+   * Creates a temporary table from a SQL statement using the specified connection.
+   * Temporary tables are useful for storing intermediate results during complex queries.
+   */
+  "get-temporarytable": {
+    parameters: {
+      query?: {
+        /** @description SQL statement */
+        sqlStatement?: string;
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description Temporary table information */
+      200: {
+        content: {
+          "application/json": components["schemas"]["TemporaryTable"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Execute SQL query (deprecated)
+   * @deprecated
+   * @description **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
+   * Use the POST version instead for better security and functionality.
+   *
+   * Executes a SQL statement against the specified database connection and returns the results.
+   * The query results include data, metadata, and execution information.
+   */
+  "get-querydata": {
+    parameters: {
+      query?: {
+        /** @description SQL statement */
+        sqlStatement?: string;
+        /** @description Options */
+        options?: string;
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the connection */
+        connectionName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description Query execution results */
+      200: {
+        content: {
+          "application/json": components["schemas"]["QueryData"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+    };
+  };
+  /**
+   * List project packages
+   * @description Retrieves a list of all Malloy packages within the specified project. Each package
+   * contains models, notebooks, databases, and other resources. This endpoint is useful
+   * for discovering available packages and their basic metadata.
+   */
+  "list-packages": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description A list of all packages in the project */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Package"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Create a new package
+   * @description Creates a new Malloy package within the specified project. A package serves as a
+   * container for models, notebooks, embedded databases, and other resources. The package
+   * will be initialized with the provided metadata and can immediately accept content.
+   */
+  "create-package": {
+    parameters: {
+      query?: {
+        /**
+         * @description When true, automatically loads any existing build manifest
+         * for the package so materialized table references resolve immediately.
+         * Defaults to false.
+         */
+        autoLoadManifest?: boolean;
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["Package"];
+      };
+    };
+    responses: {
+      /** @description Returns the package created */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Package"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get package details and metadata
+   * @description Retrieves detailed information about a specific package, including its models, notebooks,
+   * databases, and metadata. The reload parameter can be used to refresh the package state
+   * from disk before returning the information. The versionId parameter allows access to
+   * specific package versions.
+   */
+  "get-package": {
+    parameters: {
+      query?: {
+        /** @description Version identifier for the package */
+        versionId?: components["schemas"]["VersionIdPattern"];
+        /** @description Load / reload the package before returning result */
+        reload?: boolean;
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Package name */
+        packageName: string;
+      };
+    };
+    responses: {
+      /** @description Package details and metadata */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Package"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Delete a package
+   * @description Permanently deletes a package and all its associated resources including models,
+   * notebooks, databases, and metadata. This operation cannot be undone, so use with caution.
+   * The package must exist and be accessible for deletion.
+   */
+  "delete-package": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description Returns the package deleted */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Package"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Update package configuration
+   * @description Updates the configuration and metadata of an existing package. This allows you to
+   * modify package settings, update the description, change the location, or update other
+   * package-level properties. The package must exist and be accessible.
+   */
+  "update-package": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["Package"];
+      };
+    };
+    responses: {
+      /** @description Returns the package updated */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Package"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List package models
+   * @description Retrieves a list of all Malloy models within the specified package. Each model entry
+   * includes the relative path, package name, and any compilation errors. This endpoint
+   * is useful for discovering available models and checking their status.
+   */
+  "list-models": {
+    parameters: {
+      query?: {
+        /** @description Version identifier for the package */
+        versionId?: components["schemas"]["VersionIdPattern"];
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description A list of models in the package */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Model"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get compiled Malloy model
+   * @description Retrieves a compiled Malloy model with its source information, queries, and metadata.
+   * The model is compiled using the specified version of the Malloy compiler. This endpoint
+   * provides access to the model's structure, sources, and named queries for use in applications.
+   */
+  "get-model": {
+    parameters: {
+      query?: {
+        /** @description Version identifier for the package */
+        versionId?: components["schemas"]["VersionIdPattern"];
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: string;
+        /** @description Path to the model within the package */
+        path: components["schemas"]["PathPattern"];
+      };
+    };
+    responses: {
+      /** @description Compiled Malloy model */
+      200: {
+        content: {
+          "application/json": components["schemas"]["CompiledModel"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      424: components["responses"]["ModelCompilationError"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+    };
+  };
+  /**
+   * Execute Malloy query
+   * @description Executes a Malloy query against a model and returns the results. The query can be specified
+   * as a raw Malloy query string or by referencing a named query within the model. This endpoint
+   * supports both ad-hoc queries and predefined model queries, making it flexible for various
+   * use cases including data exploration, reporting, and application integration.
+   */
+  "execute-query-model": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: components["schemas"]["VersionIdPattern"];
+        /** @description Path to the model within the package */
+        path: components["schemas"]["PathPattern"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["QueryRequest"];
+      };
+    };
+    responses: {
+      /** @description Query execution results */
+      200: {
+        content: {
+          "application/json": components["schemas"]["QueryResult"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Compile Malloy source code
+   * @description Compiles Malloy source code in the context of a specific model file.
+   * The submitted source is appended to the full model content, giving it
+   * access to all sources, imports, and queries defined in the model.
+   * Relative imports resolve correctly against sibling model files.
+   * Returns compilation status and any problems (errors or warnings) found.
+   */
+  "compile-model-source": {
+    parameters: {
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: string;
+        /** @description Path to the model within the package (used to resolve relative imports) */
+        path: components["schemas"]["PathPattern"];
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CompileRequest"];
+      };
+    };
+    responses: {
+      /** @description Compilation result with status and any problems */
+      200: {
+        content: {
+          "application/json": components["schemas"]["CompileResult"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List package notebooks
+   * @description Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
+   * includes the relative path, package name, and any compilation errors. This endpoint
+   * is useful for discovering available notebooks and checking their status.
+   */
+  "list-notebooks": {
+    parameters: {
+      query?: {
+        /** @description Version identifier for the package */
+        versionId?: components["schemas"]["VersionIdPattern"];
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description A list of models in the package */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Notebook"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get Malloy notebook cells
+   * @description Retrieves a Malloy notebook with its raw cell contents (markdown and code).
+   * Cell execution should be done separately via the execute-notebook-cell endpoint.
+   */
+  "get-notebook": {
+    parameters: {
+      query?: {
+        /** @description Version identifier for the package */
+        versionId?: components["schemas"]["VersionIdPattern"];
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: string;
+        /** @description Path to notebook within the package. */
+        path: string;
+      };
+    };
+    responses: {
+      /** @description A Malloy notebook with raw cell contents. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["RawNotebook"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+    };
+  };
+  /**
+   * Execute a specific notebook cell
+   * @description Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
+   * and runs the Malloy code, returning query results and any new sources defined.
+   * For markdown cells, this simply returns the cell content.
+   */
+  "execute-notebook-cell": {
+    parameters: {
+      query?: {
+        /** @description Version identifier for the package */
+        versionId?: components["schemas"]["VersionIdPattern"];
+        /** @description JSON-encoded filter parameter values keyed by filter name */
+        filter_params?: string;
+        /** @description When true, skip filter injection entirely */
+        bypass_filters?: "true" | "false";
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: string;
+        /** @description Path to notebook within the package */
+        path: string;
+        /** @description Index of the cell to execute (0-based) */
+        cellIndex: number;
+      };
+    };
+    responses: {
+      /** @description Cell execution result */
+      200: {
+        content: {
+          "application/json": components["schemas"]["NotebookCellResult"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List embedded databases
+   * @description Retrieves a list of all embedded databases within the specified package. These are typically
+   * DuckDB databases stored as .parquet files that provide local data storage for the package.
+   * Each database entry includes metadata about the database structure and content.
+   */
+  "list-databases": {
+    parameters: {
+      query?: {
+        /** @description Version identifier for the package */
+        versionId?: components["schemas"]["VersionIdPattern"];
+      };
+      path: {
+        /** @description Name of the project */
+        projectName: components["schemas"]["IdentifierPattern"];
+        /** @description Name of the package */
+        packageName: components["schemas"]["IdentifierPattern"];
+      };
+    };
+    responses: {
+      /** @description A list of embedded databases in the package */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Database"][];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      501: components["responses"]["NotImplemented"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Test database connection configuration
+   * @description Validates a database connection configuration without adding it to any project.
+   * This endpoint allows you to test connection parameters, credentials, and network
+   * connectivity before committing the connection to a project. Useful for troubleshooting
+   * connection issues and validating configurations during setup.
+   */
+  "test-connection-configuration": {
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["Connection"];
+      };
+    };
+    responses: {
+      /** @description Connection test result */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ConnectionStatus"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Get watch mode status
+   * @description Retrieves the current status of the file watching system. This includes whether watch mode
+   * is enabled, which project is being watched, and the path being monitored. Useful for
+   * monitoring the development workflow and ensuring file changes are being detected.
+   */
+  "get-watch-status": {
+    responses: {
+      /** @description The current watch mode status. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["WatchStatus"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Start file watching
+   * @description Initiates file watching for the specified project. This enables real-time monitoring of
+   * file changes within the project directory, allowing for automatic reloading and updates
+   * during development. Only one project can be watched at a time.
+   */
+  "start-watching": {
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StartWatchRequest"];
+      };
+    };
+    responses: {
+      /** @description Watch mode started successfully. */
+      200: {
+        content: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * Stop file watching
+   * @description Stops the current file watching session. This disables real-time monitoring of file changes
+   * and releases system resources. Use this when development is complete or when switching
+   * to a different project.
+   */
+  "stop-watching": {
+    responses: {
+      /** @description Watch mode stopped successfully. */
+      200: {
+        content: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      500: components["responses"]["InternalServerError"];
+      503: components["responses"]["ServiceUnavailable"];
+    };
+  };
+  /**
+   * List materializations for a package
+   * @description Returns the materialization history for the package, ordered by most recent first.
+   */
+  "list-materializations": {
+    parameters: {
+      query?: {
+        /** @description Maximum number of materializations to return */
+        limit?: number;
+        /** @description Number of materializations to skip */
+        offset?: number;
+      };
+      path: {
+        projectName: components["parameters"]["projectName"];
+        packageName: components["parameters"]["packageName"];
+      };
+    };
+    responses: {
+      /** @description List of materializations */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Materialization"][];
+        };
+      };
+      404: components["responses"]["NotFound"];
+    };
+  };
+  /**
+   * Create a materialization
+   * @description Creates a new materialization in PENDING state for all persist sources across all
+   * models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
+   */
+  "create-materialization": {
+    parameters: {
+      path: {
+        projectName: components["parameters"]["projectName"];
+        packageName: components["parameters"]["packageName"];
+      };
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["CreateMaterializationRequest"];
+      };
+    };
+    responses: {
+      /** @description Materialization created */
+      201: {
+        content: {
+          "application/json": components["schemas"]["Materialization"];
+        };
+      };
+      404: components["responses"]["NotFound"];
+      /** @description Package already has an active materialization */
+      409: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  /** Get a specific materialization */
+  "get-materialization": {
+    parameters: {
+      path: {
+        projectName: components["parameters"]["projectName"];
+        packageName: components["parameters"]["packageName"];
+        materializationId: components["parameters"]["materializationId"];
+      };
+    };
+    responses: {
+      /** @description Materialization details */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Materialization"];
+        };
+      };
+      404: components["responses"]["NotFound"];
+    };
+  };
+  /**
+   * Perform an action on a materialization
+   * @description Performs an action on a materialization. The action is specified via
+   * the `action` query parameter:
+   *   * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
+   *   * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+   */
+  "materialization-action": {
+    parameters: {
+      query: {
+        /** @description Action to perform on the materialization */
+        action: "start" | "stop";
+      };
+      path: {
+        projectName: components["parameters"]["projectName"];
+        packageName: components["parameters"]["packageName"];
+        materializationId: components["parameters"]["materializationId"];
+      };
+    };
+    responses: {
+      /** @description Materialization cancelled (action=stop) */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Materialization"];
+        };
+      };
+      /** @description Materialization started (action=start) */
+      202: {
+        content: {
+          "application/json": components["schemas"]["Materialization"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      404: components["responses"]["NotFound"];
+      /** @description Materialization cannot transition to the requested state */
+      409: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  /**
+   * Delete a materialization
+   * @description Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization record.
+   */
+  "delete-materialization": {
+    parameters: {
+      path: {
+        projectName: components["parameters"]["projectName"];
+        packageName: components["parameters"]["packageName"];
+        materializationId: components["parameters"]["materializationId"];
+      };
+    };
+    responses: {
+      /** @description Materialization deleted */
+      204: {
+        content: never;
+      };
+      404: components["responses"]["NotFound"];
+      /** @description Materialization cannot be deleted (PENDING or RUNNING) */
+      409: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  /**
+   * Get the build manifest for a package
+   * @description Returns the current build manifest containing buildId-to-tableName mappings
+   * for all materialized sources in the package.
+   */
+  "get-manifest": {
+    parameters: {
+      path: {
+        projectName: components["parameters"]["projectName"];
+        packageName: components["parameters"]["packageName"];
+      };
+    };
+    responses: {
+      /** @description Build manifest */
+      200: {
+        content: {
+          "application/json": components["schemas"]["BuildManifest"];
+        };
+      };
+      404: components["responses"]["NotFound"];
+    };
+  };
+  /**
+   * Perform an action on the package manifest
+   * @description Performs an action on the package manifest. The action is specified via
+   * the `action` query parameter:
+   *   * `reload` - Reads the build manifest from the shared store (DuckLake
+   *     in orchestrated mode, local DuckDB in standalone mode) and recompiles
+   *     every model in the package so subsequent queries resolve persisted
+   *     sources to their materialized tables. Intended for orchestrated
+   *     workers that did not themselves run the build; the endpoint does
+   *     not write anything *into* storage.
+   */
+  "manifest-action": {
+    parameters: {
+      query: {
+        /** @description Action to perform on the manifest */
+        action: "reload";
+      };
+      path: {
+        projectName: components["parameters"]["projectName"];
+        packageName: components["parameters"]["packageName"];
+      };
+    };
+    responses: {
+      /** @description Manifest loaded */
+      200: {
+        content: {
+          "application/json": components["schemas"]["BuildManifest"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      404: components["responses"]["NotFound"];
+    };
+  };
 }

@@ -8,7 +8,7 @@ await build({
    entrypoints: ["./src/server.ts", "./src/instrumentation.ts"],
    outdir: "./dist",
    target: "node",
-   format: "cjs",
+   format: "esm",
    external: [
       "@malloydata/db-duckdb",
       "duckdb",
