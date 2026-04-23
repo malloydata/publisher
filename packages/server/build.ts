@@ -28,10 +28,10 @@ await build({
 
 fs.cpSync("../app/dist", "./dist/app", { recursive: true });
 
-// Add shebang to server.js for npx compatibility
+// Add shebang to server.js for npx/bunx compatibility
 const serverJsPath = "./dist/server.js";
 const serverJsContent = fs.readFileSync(serverJsPath, "utf8");
-const shebangContent = "#!/usr/bin/env node\n" + serverJsContent;
+const shebangContent = "#!/usr/bin/env bun\n" + serverJsContent;
 fs.writeFileSync(serverJsPath, shebangContent);
 
 // Make the file executable
