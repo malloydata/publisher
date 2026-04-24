@@ -64,18 +64,25 @@ jobs:
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
         run: bun run lint
-  # Smoke-tests the built server under two runtime scenarios:
+  # Smoke-tests the built server under two invocation scenarios.
   #
-  #   npx        — Simulates an end user who installs the published npm package
-  #                and runs `npx malloy-publisher`. Exercises the `bin` entry,
-  #                the `#!/usr/bin/env node` shebang, and Node's ESM execution
-  #                of the bundled `dist/server.mjs`. Requires Node on PATH.
+  # Note on scope: the published `bin` entry uses `#!/usr/bin/env node`, so the
+  # CLI install paths (`npx malloy-publisher` and `bunx malloy-publisher`) both
+  # require Node on PATH to resolve the shebang. Bun as a runtime works fine,
+  # but the CLI wrapper currently goes through Node. These two legs test the
+  # two layers separately:
   #
-  #   bun-direct — Simulates running the built artifact under Bun only, with
-  #                Node removed from the runner entirely. Invokes Bun directly
-  #                on `dist/server.mjs`, bypassing the shebang. Proves that the
-  #                ESM bundle executes correctly under the Bun runtime and does
-  #                not depend on Node being installed.
+  #   npx        — End-user install path. Runs `npx malloy-publisher` against
+  #                the locally linked package. Exercises bin resolution, the
+  #                `#!/usr/bin/env node` shebang, and Node's ESM execution of
+  #                the bundled `dist/server.mjs`. Node is required.
+  #
+  #   bun-direct — Runtime-level Bun compatibility. Removes Node from the
+  #                runner and invokes `bun run ./dist/server.mjs` directly —
+  #                bypassing the shebang. Proves that the ESM bundle itself
+  #                executes correctly under Bun without any Node dependency
+  #                at runtime. Does NOT prove `bunx malloy-publisher` works
+  #                on a Node-less machine (the shebang would fail there).
   runtime_test:
     name: ${{ matrix.runtime }} test
     runs-on: ubuntu-latest
@@ -83,10 +90,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Node-user path: shebang-driven `npx` invocation.
+          # Node-user install path: shebang-driven `npx` invocation.
           - runtime: npx
             port: 4002
-          # Bun-only path: no Node on runner, `bun run` on the built bundle.
+          # Bun runtime compatibility: Node stripped from runner, `bun run` on
+          # the built bundle. See the block comment above for why `bunx` is
+          # not tested here.
           - runtime: bun-direct
             port: 4003
     steps:
