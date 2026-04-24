@@ -1,10 +1,4 @@
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
-import "./instrumentation";
-import {
-   getPrometheusMetricsHandler,
-   httpMetricsMiddleware,
-} from "./instrumentation";
-
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -13,6 +7,7 @@ import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
+import { ParsedQs } from "qs";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -31,6 +26,11 @@ import {
    registerHealthEndpoints,
    registerSignalHandlers,
 } from "./health";
+import "./instrumentation";
+import {
+   getPrometheusMetricsHandler,
+   httpMetricsMiddleware,
+} from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 
 import { ManifestController } from "./controller/manifest.controller";
@@ -592,12 +592,21 @@ app.post(
    `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlQuery`,
    async (req, res) => {
       try {
+         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
+
+         // Support both body and query parameters for options for backwards compatibility
+         // TODO: To be removed in the future
+         if (req.body?.options) {
+            options = req.body.options;
+         } else {
+            options = req.query.options;
+         }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               req.body.options as string,
+               options as string,
             ),
          );
       } catch (error) {
