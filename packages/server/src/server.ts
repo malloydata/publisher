@@ -1,26 +1,52 @@
+// Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
+import "./instrumentation";
+import {
+   getPrometheusMetricsHandler,
+   httpMetricsMiddleware,
+} from "./instrumentation";
+
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import * as bodyParser from "body-parser";
+import bodyParser from "body-parser";
 import cors from "cors";
 import express from "express";
 import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
+import { fileURLToPath } from "url";
+import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
-import { internalErrorToHttpError, NotImplementedError } from "./errors";
+import {
+   BadRequestError,
+   internalErrorToHttpError,
+   NotImplementedError,
+} from "./errors";
 import {
    drainingGuard,
    registerHealthEndpoints,
    registerSignalHandlers,
 } from "./health";
 import { logger, loggerMiddleware } from "./logger";
+
+import { ManifestController } from "./controller/manifest.controller";
+import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { ManifestService } from "./service/manifest_service";
+import { MaterializationService } from "./service/materialization_service";
 import { ProjectStore } from "./service/project_store";
+
+/** Normalize an Express query param into a string[] or undefined. */
+export function normalizeQueryArray(value: unknown): string[] | undefined {
+   if (value === undefined || value === null) return undefined;
+   if (Array.isArray(value)) return value.map(String);
+   return [String(value)];
+}
+
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
@@ -95,31 +121,42 @@ const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
 const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
    process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
 );
-// Find the app directory - handle NPX vs local execution
-let ROOT: string;
-if (require.main) {
-   // Use the main module's directory (works for NPX and direct execution)
-   ROOT = path.join(path.dirname(require.main.filename), "app");
-} else {
-   // Fallback to current script directory
-   ROOT = path.join(path.dirname(process.argv[1] || __filename), "app");
-}
+// Find the app directory relative to this bundled server file.
+// Works under both ESM (import.meta.url) and when invoked via NPX.
+const __filename_esm = fileURLToPath(import.meta.url);
+const ROOT = path.join(path.dirname(__filename_esm), "app");
 const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
 const API_PREFIX = "/api/v0";
 const isDevelopment = process.env["NODE_ENV"] === "development";
 
-const app = express();
+export const app = express();
 app.use(loggerMiddleware);
-
+app.use(httpMetricsMiddleware);
 const projectStore = new ProjectStore(SERVER_ROOT);
+const manifestService = new ManifestService(projectStore);
 const watchModeController = new WatchModeController(projectStore);
 const connectionController = new ConnectionController(projectStore);
 const modelController = new ModelController(projectStore);
-const packageController = new PackageController(projectStore);
+const packageController = new PackageController(projectStore, manifestService);
 const databaseController = new DatabaseController(projectStore);
 const queryController = new QueryController(projectStore);
+const compileController = new CompileController(projectStore);
+const materializationService = new MaterializationService(
+   projectStore,
+   manifestService,
+);
+const materializationController = new MaterializationController(
+   materializationService,
+);
+const manifestController = new ManifestController(
+   projectStore,
+   manifestService,
+);
 
 export const mcpApp = express();
+
+// Register health endpoints on mcpApp (for E2E tests)
+registerHealthEndpoints(mcpApp);
 
 mcpApp.use(MCP_ENDPOINT, express.json());
 mcpApp.use(MCP_ENDPOINT, cors());
@@ -220,7 +257,10 @@ if (!isDevelopment) {
          target: "http://localhost:5173",
          changeOrigin: true,
          ws: true,
-         pathFilter: (path) => !path.startsWith("/api/"),
+         pathFilter: (path) =>
+            !path.startsWith("/api/") &&
+            !path.startsWith("/metrics") &&
+            !path.startsWith("/health"),
       }),
    );
 }
@@ -238,10 +278,22 @@ app.use(
       credentials: true,
    }),
 );
-app.use(bodyParser.json());
 
-// Register health check endpoints
+// Set body-parser JSON limit to 1Mb (default: 100kb)
+app.use(bodyParser.json({ limit: "1mb" }));
+
+// Register health check endpoints on main app:
+// - Required for production/Kubernetes monitoring (main server on PUBLISHER_PORT)
 registerHealthEndpoints(app);
+
+// Register Prometheus metrics endpoint
+try {
+   const metricsHandler = getPrometheusMetricsHandler();
+   app.get("/metrics", metricsHandler);
+   logger.info("Prometheus metrics endpoint registered at /metrics");
+} catch (error) {
+   logger.warn("Failed to register Prometheus metrics endpoint", { error });
+}
 
 // Register draining guard middleware - must be after health endpoints but before other routes
 app.use(drainingGuard);
@@ -441,6 +493,7 @@ app.get(
             req.params.projectName,
             req.params.connectionName,
             req.params.schemaName,
+            normalizeQueryArray(req.query.tableNames),
          );
          res.status(200).json(results);
       } catch (error) {
@@ -512,26 +565,6 @@ app.post(
    },
 );
 
-app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/tableSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTableSource(
-               req.params.projectName,
-               req.params.connectionName,
-               req.query.tableKey as string,
-               req.query.tablePath as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 /**
  * @deprecated Use /projects/:projectName/connections/:connectionName/queryData POST method instead
  */
@@ -564,7 +597,7 @@ app.post(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               req.query.options as string,
+               req.body.options as string,
             ),
          );
       } catch (error) {
@@ -635,9 +668,11 @@ app.get(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
 
 app.post(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
    try {
+      const autoLoadManifest = req.query.autoLoadManifest === "true";
       const _package = await packageController.addPackage(
          req.params.projectName,
          req.body,
+         { autoLoadManifest },
       );
       res.status(200).json(_package?.getPackageMetadata());
    } catch (error) {
@@ -802,12 +837,29 @@ app.get(
          // Express stores wildcard matches in params['0']
          const notebookPath = (req.params as Record<string, string>)["0"];
 
+         // Parse optional filter_params (JSON query string) and bypass_filters
+         let filterParams: Record<string, string | string[]> | undefined;
+         if (typeof req.query.filter_params === "string") {
+            try {
+               filterParams = JSON.parse(req.query.filter_params);
+            } catch {
+               res.status(400).json({
+                  error: "Invalid filter_params: must be valid JSON",
+               });
+               return;
+            }
+         }
+         const bypassFilters =
+            req.query.bypass_filters === "true" ? true : undefined;
+
          res.status(200).json(
             await modelController.executeNotebookCell(
                req.params.projectName,
                req.params.packageName,
                notebookPath,
                cellIndex,
+               filterParams,
+               bypassFilters,
             ),
          );
       } catch (error) {
@@ -864,6 +916,10 @@ app.post(
                req.body.queryName as string,
                req.body.query as string,
                req.body.compactJson === true,
+               (req.body.filterParams ?? req.body.sourceFilters) as
+                  | Record<string, string | string[]>
+                  | undefined,
+               req.body.bypassFilters === true ? true : undefined,
             ),
          );
       } catch (error) {
@@ -891,6 +947,193 @@ app.get(
          );
       } catch (error) {
          logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
+   async (req, res) => {
+      try {
+         const result = await compileController.compile(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.modelName,
+            req.body.source,
+            req.body.includeSql === true,
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         logger.error("Compilation error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// ==================== MATERIALIZATION ROUTES ====================
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   async (req, res) => {
+      try {
+         const build = await materializationController.createMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.body || {},
+         );
+         res.status(201).json(build);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   async (req, res) => {
+      try {
+         const limit = req.query.limit
+            ? parseInt(req.query.limit as string, 10)
+            : undefined;
+         const offset = req.query.offset
+            ? parseInt(req.query.offset as string, 10)
+            : undefined;
+         const builds = await materializationController.listMaterializations(
+            req.params.projectName,
+            req.params.packageName,
+            { limit, offset },
+         );
+         res.status(200).json(builds);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         const build = await materializationController.getMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.materializationId,
+         );
+         res.status(200).json(build);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/teardown`,
+   async (req, res) => {
+      try {
+         const result = await materializationController.teardownPackage(
+            req.params.projectName,
+            req.params.packageName,
+            req.body || {},
+         );
+         res.status(200).json(result);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         const action = req.query.action;
+         if (action === "start") {
+            const build = await materializationController.startMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            );
+            res.status(202).json(build);
+         } else if (action === "stop") {
+            const build = await materializationController.stopMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            );
+            res.status(200).json(build);
+         } else {
+            throw new BadRequestError(
+               `Unsupported action '${String(action ?? "")}'. Expected 'start' or 'stop'.`,
+            );
+         }
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.delete(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         await materializationController.deleteMaterialization(
+            req.params.projectName,
+            req.params.packageName,
+            req.params.materializationId,
+         );
+         res.status(204).send();
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// ==================== MANIFEST ROUTES ====================
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   async (req, res) => {
+      try {
+         const manifest = await manifestController.getManifest(
+            req.params.projectName,
+            req.params.packageName,
+         );
+         res.status(200).json(manifest);
+      } catch (error) {
+         logger.error("Get manifest error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   async (req, res) => {
+      try {
+         const action = req.query.action;
+         if (action === "reload") {
+            const manifest = await manifestController.reloadManifest(
+               req.params.projectName,
+               req.params.packageName,
+            );
+            res.status(200).json(manifest);
+         } else {
+            throw new BadRequestError(
+               `Unsupported action '${String(action ?? "")}'. Expected 'reload'.`,
+            );
+         }
+      } catch (error) {
+         logger.error("Manifest action error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }

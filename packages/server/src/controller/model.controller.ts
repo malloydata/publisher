@@ -1,13 +1,12 @@
 import { components } from "../api";
 import { ModelNotFoundError } from "../errors";
 import { ProjectStore } from "../service/project_store";
+import type { FilterParams } from "../service/filter";
 
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
-export type ListModelsFilterEnum =
-   components["parameters"]["ListModelsFilterEnum"];
 export class ModelController {
    private projectStore: ProjectStore;
 
@@ -38,16 +37,27 @@ export class ModelController {
       packageName: string,
       modelPath: string,
    ): Promise<ApiCompiledModel> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
-      const model = p.getModel(modelPath);
-      if (!model) {
-         throw new ModelNotFoundError(`${modelPath} does not exist`);
+      try {
+         const project = await this.projectStore.getProject(projectName, false);
+         const p = await project.getPackage(packageName, false);
+         const model = p.getModel(modelPath);
+         if (!model) {
+            throw new ModelNotFoundError(`${modelPath} does not exist`);
+         }
+         if (model.getType() === "notebook") {
+            throw new ModelNotFoundError(`${modelPath} is a notebook`);
+         }
+         return await model.getModel();
+      } catch (error) {
+         // Re-throw ModelNotFoundError as-is
+         if (error instanceof ModelNotFoundError) {
+            throw error;
+         }
+         // Wrap other errors with more context
+         throw new Error(
+            `Failed to get model ${modelPath} from package ${packageName} in project ${projectName}: ${error}`,
+         );
       }
-      if (model.getType() === "notebook") {
-         throw new ModelNotFoundError(`${modelPath} is a notebook`);
-      }
-      return model.getModel();
    }
 
    public async getNotebook(
@@ -73,6 +83,8 @@ export class ModelController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -90,6 +102,6 @@ export class ModelController {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
-      return model.executeNotebookCell(cellIndex);
+      return model.executeNotebookCell(cellIndex, filterParams, bypassFilters);
    }
 }

@@ -20,6 +20,12 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
       return httpError(502, error.message);
+   } else if (error instanceof MaterializationNotFoundError) {
+      return httpError(404, error.message);
+   } else if (error instanceof MaterializationConflictError) {
+      return httpError(409, error.message);
+   } else if (error instanceof InvalidStateTransitionError) {
+      return httpError(409, error.message);
    } else {
       return httpError(500, error.message);
    }
@@ -87,6 +93,24 @@ export class FrozenConfigError extends Error {
    constructor(
       message = `Publisher config can't be updated when ${PUBLISHER_CONFIG_NAME} has { "frozenConfig": true }`,
    ) {
+      super(message);
+   }
+}
+
+export class MaterializationNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+export class MaterializationConflictError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+export class InvalidStateTransitionError extends Error {
+   constructor(message: string) {
       super(message);
    }
 }

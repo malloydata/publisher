@@ -8,7 +8,7 @@ await build({
    entrypoints: ["./src/server.ts", "./src/instrumentation.ts"],
    outdir: "./dist",
    target: "node",
-   format: "cjs",
+   format: "esm",
    external: [
       "@malloydata/db-duckdb",
       "duckdb",
@@ -21,13 +21,19 @@ await build({
       "@malloydata/db-snowflake",
       "@malloydata/db-trino",
       "@google-cloud/storage",
+      "@azure/identity",
+      "@azure/storage-blob",
    ],
 });
 
 fs.cpSync("../app/dist", "./dist/app", { recursive: true });
 
-// Add shebang to server.js for npx compatibility
-const serverJsPath = "./dist/server.js";
+// Rename ESM outputs to .mjs so both Node and Bun can execute them
+fs.renameSync("./dist/server.js", "./dist/server.mjs");
+fs.renameSync("./dist/instrumentation.js", "./dist/instrumentation.mjs");
+
+// Add shebang to server.mjs for npx/bunx compatibility
+const serverJsPath = "./dist/server.mjs";
 const serverJsContent = fs.readFileSync(serverJsPath, "utf8");
 const shebangContent = "#!/usr/bin/env node\n" + serverJsContent;
 fs.writeFileSync(serverJsPath, shebangContent);
