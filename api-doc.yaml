@@ -735,6 +735,13 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: options
+          in: query
+          description: Options (deprecated; pass in body instead)
+          deprecated: true
+          required: false
+          schema:
+            type: string
       requestBody:
         description: SQL statement to execute
         required: true
@@ -2259,7 +2266,8 @@ components:
         filterParams:
           type: object
           description: Filter parameter values keyed by filter name. Used with sources
-            that declare \#(filter) annotations. Each value is either a string or an array of strings.
+            that declare \#(filter) annotations. Each value is either a string
+            or an array of strings.
           additionalProperties: true
         bypassFilters:
           type: boolean
