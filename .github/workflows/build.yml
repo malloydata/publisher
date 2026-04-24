@@ -81,8 +81,12 @@ jobs:
   #                runner and invokes `bun run ./dist/server.mjs` directly —
   #                bypassing the shebang. Proves that the ESM bundle itself
   #                executes correctly under Bun without any Node dependency
-  #                at runtime. Does NOT prove `bunx malloy-publisher` works
-  #                on a Node-less machine (the shebang would fail there).
+  #                at runtime.
+  #
+  # Future work: if the community asks for it, add support for
+  # `bunx malloy-publisher` on a Node-less machine (would require a different
+  # shebang strategy, e.g. a runtime-selecting shell launcher or a dedicated
+  # Bun bin entry).
   runtime_test:
     name: ${{ matrix.runtime }} test
     runs-on: ubuntu-latest
