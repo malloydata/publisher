@@ -6,13 +6,14 @@ import {
 } from "./instrumentation";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import * as bodyParser from "body-parser";
+import bodyParser from "body-parser";
 import cors from "cors";
 import express from "express";
 import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
@@ -120,15 +121,10 @@ const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
 const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
    process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
 );
-// Find the app directory - handle NPX vs local execution
-let ROOT: string;
-if (require.main) {
-   // Use the main module's directory (works for NPX and direct execution)
-   ROOT = path.join(path.dirname(require.main.filename), "app");
-} else {
-   // Fallback to current script directory
-   ROOT = path.join(path.dirname(process.argv[1] || __filename), "app");
-}
+// Find the app directory relative to this bundled server file.
+// Works under both ESM (import.meta.url) and when invoked via NPX.
+const __filename_esm = fileURLToPath(import.meta.url);
+const ROOT = path.join(path.dirname(__filename_esm), "app");
 const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
 const API_PREFIX = "/api/v0";
 const isDevelopment = process.env["NODE_ENV"] === "development";
