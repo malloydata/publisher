@@ -64,6 +64,18 @@ jobs:
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
         run: bun run lint
+  # Smoke-tests the built server under two runtime scenarios:
+  #
+  #   npx        — Simulates an end user who installs the published npm package
+  #                and runs `npx malloy-publisher`. Exercises the `bin` entry,
+  #                the `#!/usr/bin/env node` shebang, and Node's ESM execution
+  #                of the bundled `dist/server.mjs`. Requires Node on PATH.
+  #
+  #   bun-direct — Simulates running the built artifact under Bun only, with
+  #                Node removed from the runner entirely. Invokes Bun directly
+  #                on `dist/server.mjs`, bypassing the shebang. Proves that the
+  #                ESM bundle executes correctly under the Bun runtime and does
+  #                not depend on Node being installed.
   runtime_test:
     name: ${{ matrix.runtime }} test
     runs-on: ubuntu-latest
@@ -71,8 +83,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Node-user path: shebang-driven `npx` invocation.
           - runtime: npx
             port: 4002
+          # Bun-only path: no Node on runner, `bun run` on the built bundle.
           - runtime: bun-direct
             port: 4003
     steps:
