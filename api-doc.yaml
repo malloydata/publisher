@@ -738,6 +738,7 @@ paths:
         - name: options
           in: query
           description: Options (deprecated; pass in body instead)
+          deprecated: true
           required: false
           schema:
             type: string
