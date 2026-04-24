@@ -205,6 +205,77 @@ jobs:
             exit 1
           fi
 
+  # Smoke-tests the production Docker image: builds it locally with the same
+  # Dockerfile used for releases, runs it with the publisher port exposed, and
+  # polls /api/v0/status until the server reports operationalState=serving.
+  # This proves the image produced by `docker build` actually boots — not just
+  # that the bundled .mjs executes under Bun (which runtime_test covers).
+  docker_smoke_test:
+    name: Docker smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: malloy-publisher:smoke-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start container
+        run: |
+          docker run -d --name malloy-publisher-smoke \
+            -p 4000:4000 \
+            malloy-publisher:smoke-test
+          echo "Container ID: $(docker ps -q -f name=malloy-publisher-smoke)"
+      - name: Wait for server to reach 'serving' state
+        run: |
+          for i in $(seq 1 90); do
+            if ! docker ps -q -f name=malloy-publisher-smoke | grep -q .; then
+              echo "✗ Container exited"
+              echo "--- container logs ---"
+              docker logs malloy-publisher-smoke || true
+              exit 1
+            fi
+            status=$(curl -sf http://localhost:4000/api/v0/status || true)
+            state=$(echo "$status" | jq -r '.operationalState // empty')
+            echo "[${i}s] operationalState=${state:-<no response>}"
+            if [ "$state" = "serving" ]; then
+              echo "✓ Server is serving after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "✗ Server did not reach 'serving' within 90s"
+          echo "--- container logs ---"
+          docker logs malloy-publisher-smoke || true
+          exit 1
+      - name: Test /api/v0/projects
+        run: |
+          response=$(curl -s http://localhost:4000/api/v0/projects)
+          echo "API Response: $response"
+          if echo "$response" | jq -e '. | type == "array"' > /dev/null; then
+            echo "✓ /api/v0/projects returned a JSON array"
+          else
+            echo "✗ /api/v0/projects did not return a JSON array"
+            echo "--- container logs ---"
+            docker logs malloy-publisher-smoke || true
+            exit 1
+          fi
+      - name: Container logs (always)
+        if: always()
+        run: docker logs malloy-publisher-smoke || true
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f malloy-publisher-smoke || true
+
   cross_platform_test:
     name: Cross Platform Tests
     uses: ./.github/workflows/cross-platform-tests.yml
