@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "useDefineForClassFields": true,
+    
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,  // CLI uses bun build, not tsc emit
+    "esModuleInterop": true,  // CLI needs this for axios compatibility
+    
+    /* Linting */
+    "strict": true,  // CLI can be strict (no malloy renderer dependency)
+    "allowJs": false,
+    "allowSyntheticDefaultImports": true,
+    "noUnusedLocals": false,  // Consistent with other packages (due to openapi client)
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "declaration": true,
+    "forceConsistentCasingInFileNames": true,
+    
+    /* CLI specific */
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "types": ["node", "bun"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/api/generated"]
+}

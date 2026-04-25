@@ -21,6 +21,14 @@ import {
 import { Configuration } from "../client/configuration";
 import { globalQueryClient } from "../utils/queryClient";
 
+// There's a bug in the OpenAPI generator that causes it to ignore baseURL in
+// the axios request if axios.defaults.baseURL is not set. The per-instance
+// baseURL on the custom axios instance below is the real value we use; this
+// sentinel exists only to satisfy the generated client's code path.
+if (!axios.defaults.baseURL) {
+   axios.defaults.baseURL = "IfYouAreSeeingThis_baseURL_IsNotSet";
+}
+
 export interface ServerContextValue {
    server: string;
    getAccessToken?: () => Promise<string>;
@@ -48,6 +56,7 @@ export interface ServerProviderProps {
     * When false, users can only view and explore existing projects and packages.
     * @default true
     */
+   mutable?: boolean;
 }
 
 const getApiClients = (
@@ -89,6 +98,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
    children,
    getAccessToken,
    baseURL,
+   mutable: mutableProp,
 }) => {
    const apiClients = useMemo(
       () => getApiClients(baseURL, getAccessToken),
@@ -98,7 +108,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
    const server =
       baseURL || `${window.location.protocol}//${window.location.host}/api/v0`;
 
-   const [mutable, setMutable] = useState(true);
+   const [mutable, setMutable] = useState(mutableProp);
    const [isLoadingStatus, setIsLoadingStatus] = useState(true);
 
    // Fetch status on mount
@@ -112,13 +122,23 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
             if (isMounted) {
                const data = response.data as { frozenConfig?: boolean };
                const frozenConfig = data?.frozenConfig;
-               setMutable(!frozenConfig);
+               let finalMutable: boolean;
+               if (frozenConfig) {
+                  finalMutable = false;
+               } else {
+                  if (mutableProp === undefined) {
+                     finalMutable = true;
+                  } else {
+                     finalMutable = mutableProp;
+                  }
+               }
+               setMutable(finalMutable);
                setIsLoadingStatus(false);
             }
          } catch (error) {
             console.error("Failed to fetch publisher status:", error);
             if (isMounted) {
-               setMutable(true); // Default to mutable on error
+               setMutable(mutableProp);
                setIsLoadingStatus(false);
             }
          }
@@ -129,7 +149,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
       return () => {
          isMounted = false;
       };
-   }, [apiClients]);
+   }, [apiClients, mutableProp]);
 
    const value: ServerContextValue = {
       server,

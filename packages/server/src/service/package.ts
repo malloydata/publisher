@@ -18,9 +18,9 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
-import { logger } from "../logger";
-import { createPackageDuckDBConnections } from "./connection";
-import { ApiConnection, Model } from "./model";
+import { formatDuration, logger } from "../logger";
+import { BuildManifest } from "../storage/DatabaseInterface";
+import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
@@ -70,15 +70,13 @@ export class Package {
       packageName: string,
       packagePath: string,
       projectConnections: Map<string, Connection>,
-      packageConnections: ApiConnection[],
    ): Promise<Package> {
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
       const manifestValidationTime = performance.now();
       logger.info("Package manifest validation completed", {
          packageName,
-         duration: manifestValidationTime - startTime,
-         unit: "ms",
+         duration: formatDuration(manifestValidationTime - startTime),
       });
 
       try {
@@ -86,8 +84,9 @@ export class Package {
          const packageConfigTime = performance.now();
          logger.info("Package config read completed", {
             packageName,
-            duration: packageConfigTime - manifestValidationTime,
-            unit: "ms",
+            duration: formatDuration(
+               packageConfigTime - manifestValidationTime,
+            ),
          });
          packageConfig.resource = `${API_PREFIX}/projects/${projectName}/packages/${packageName}`;
 
@@ -96,19 +95,17 @@ export class Package {
          logger.info("Databases read completed", {
             packageName,
             databaseCount: databases.length,
-            duration: databasesTime - packageConfigTime,
-            unit: "ms",
+            duration: formatDuration(databasesTime - packageConfigTime),
          });
          const connections = new Map<string, Connection>(projectConnections);
 
          // Add a duckdb connection for the package.
-         const duckdbConnections = await createPackageDuckDBConnections(
-            packageConnections,
+         const duckdbConnection = new DuckDBConnection(
+            "duckdb",
+            ":memory:",
             packagePath,
          );
-         duckdbConnections.malloyConnections.forEach((connection, name) => {
-            connections.set(name, connection);
-         });
+         connections.set("duckdb", duckdbConnection);
 
          const models = await Package.loadModels(
             packageName,
@@ -119,8 +116,7 @@ export class Package {
          logger.info("Models loaded", {
             packageName,
             modelCount: models.size,
-            duration: modelsTime - databasesTime,
-            unit: "ms",
+            duration: formatDuration(modelsTime - databasesTime),
          });
          for (const [modelPath, model] of models.entries()) {
             const maybeModel = model as unknown as {
@@ -154,8 +150,7 @@ export class Package {
          });
          logger.info(`Successfully loaded package ${packageName}`, {
             packageName,
-            duration: executionTime,
-            unit: "ms",
+            duration: formatDuration(executionTime),
          });
          return new Package(
             projectName,
@@ -175,12 +170,28 @@ export class Package {
             malloy_package_name: packageName,
             status: "error",
          });
+         // Clean up package directory on failure
+         try {
+            await fs.rm(packagePath, {
+               recursive: true,
+               force: true,
+            });
+            logger.info(`Cleaned up failed package directory: ${packagePath}`);
+         } catch (cleanupError) {
+            logger.warn(`Failed to clean up package directory ${packagePath}`, {
+               error: cleanupError,
+            });
+         }
          throw error;
       }
    }
 
    public getPackageName(): string {
       return this.packageName;
+   }
+
+   public getPackagePath(): string {
+      return this.packagePath;
    }
 
    public getPackageMetadata(): ApiPackage {
@@ -193,6 +204,51 @@ export class Package {
 
    public getModel(modelPath: string): Model | undefined {
       return this.models.get(modelPath);
+   }
+
+   public getModelPaths(): string[] {
+      return Array.from(this.models.keys());
+   }
+
+   /**
+    * Recompile every model in the package with the given build manifest
+    * so queries resolve persist references to materialized tables.
+    *
+    * Builds a fresh map off to the side and swaps it in at the end. If any
+    * recompile fails the whole call rejects before the swap and the live
+    * `this.models` reference remains untouched — no half-loaded state is
+    * ever observable to concurrent readers.
+    */
+   public async reloadAllModels(
+      buildManifest: BuildManifest["entries"],
+   ): Promise<void> {
+      const modelPaths = Array.from(this.models.keys());
+      logger.info("Reloading all models with build manifest", {
+         packageName: this.packageName,
+         modelCount: modelPaths.length,
+         manifestEntryCount: Object.keys(buildManifest).length,
+      });
+
+      const reloaded = await Promise.all(
+         modelPaths.map((modelPath) =>
+            Model.create(
+               this.packageName,
+               this.packagePath,
+               modelPath,
+               this.connections,
+               { buildManifest },
+            ),
+         ),
+      );
+      const nextModels = new Map<string, Model>();
+      for (const model of reloaded) {
+         nextModels.set(model.getPath(), model);
+      }
+      this.models = nextModels;
+   }
+
+   public getConnections(): Map<string, Connection> {
+      return this.connections;
    }
 
    public getMalloyConnection(connectionName: string): Connection {
@@ -374,13 +430,11 @@ export class Package {
          urlReader: new EmptyURLReader(),
          connections: [new DuckDBConnection("duckdb")],
       });
-      // Escape backslashes for Windows paths in the Malloy model string
-      const escapedPath =
-         process.platform === "win32"
-            ? fullPath.replace(/\\/g, "\\\\")
-            : fullPath;
+      // Normalize path to use forward slashes for cross-platform compatibility
+      // DuckDB on Windows supports forward slashes, and this avoids escaping issues
+      const normalizedPath = fullPath.replace(/\\/g, "/");
       const model = runtime.loadModel(
-         `source: temp is duckdb.table('${escapedPath}')`,
+         `source: temp is duckdb.table('${normalizedPath}')`,
       );
       const modelDef = await model.getModel();
       const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;

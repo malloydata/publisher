@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ProjectStore } from "../service/project_store";
 
-import { logger } from "../logger";
+import { formatDuration, logger } from "../logger";
 import { registerPromptCapability } from "./prompts/prompt_service.js";
 import { registerModelResource } from "./resources/model_resource";
 import { registerNotebookResource } from "./resources/notebook_resource";
@@ -55,7 +55,7 @@ export function initializeMcpServer(projectStore: ProjectStore): McpServer {
 
    const endTime = performance.now();
    logger.info(`[MCP Init] Finished initializeMcpServer`, {
-      duration: endTime - startTime,
+      duration: formatDuration(endTime - startTime),
    });
 
    return mcpServer;

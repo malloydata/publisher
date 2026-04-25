@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, rmSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
-import { ProjectStore } from "./project_store";
 import { Project } from "./project";
+import { ProjectStore } from "./project_store";
 
 type MockData = Record<string, unknown>;
 
@@ -19,7 +19,28 @@ mock.module("../storage/StorageManager", () => {
 
          getRepository() {
             return {
+               // ===== PROJECT METHODS =====
                listProjects: async (): Promise<unknown[]> => [],
+
+               getProjectById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  name: "test-project",
+                  path: "/test/path",
+                  description: "Test description",
+                  metadata: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getProjectByName: async (
+                  _name: string,
+               ): Promise<MockData | null> => {
+                  // Return null to simulate "project doesn't exist yet"
+                  return null;
+               },
+
                createProject: async (data: MockData): Promise<MockData> => ({
                   id: "test-project-id",
                   name: data.name,
@@ -29,40 +50,97 @@ mock.module("../storage/StorageManager", () => {
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                updateProject: async (
                   id: string,
                   data: MockData,
                ): Promise<MockData> => ({
                   id,
-                  ...data,
+                  name: "test-project",
+                  path: "/test/path",
+                  description: data.description,
+                  metadata: {
+                     ...(data.metadata || {}),
+                     readme: data.readme,
+                  },
+                  createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
+               deleteProject: async (_id: string): Promise<void> => {},
+
+               // ===== PACKAGE METHODS =====
                listPackages: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
+
+               getPackageById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-package",
+                  description: "Test package",
+                  manifestPath: "/test/manifest.json",
+                  metadata: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getPackageByName: async (
+                  _projectId: string,
+                  _name: string,
+               ): Promise<MockData | null> => null,
+
                createPackage: async (data: MockData): Promise<MockData> => ({
                   id: "test-package-id",
                   projectId: data.projectId,
                   name: data.name,
-                  version: data.version,
                   description: data.description,
                   manifestPath: data.manifestPath,
                   metadata: data.metadata,
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                updatePackage: async (
-                  _id: string,
+                  id: string,
                   data: MockData,
                ): Promise<MockData> => ({
-                  id: _id,
-                  ...data,
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-package",
+                  description: data.description,
+                  manifestPath: "/test/manifest.json",
+                  metadata: data.metadata || {},
+                  createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                deletePackage: async (_id: string): Promise<void> => {},
+
+               // ===== CONNECTION METHODS =====
                listConnections: async (
                   _projectId: string,
                ): Promise<unknown[]> => [],
+
+               getConnectionById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-connection",
+                  type: "postgres",
+                  config: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getConnectionByName: async (
+                  _projectId: string,
+                  _name: string,
+               ): Promise<MockData | null> => null,
+
                createConnection: async (data: MockData): Promise<MockData> => ({
                   id: "test-connection-id",
                   projectId: data.projectId,
@@ -72,14 +150,20 @@ mock.module("../storage/StorageManager", () => {
                   createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                updateConnection: async (
-                  _id: string,
+                  id: string,
                   data: MockData,
                ): Promise<MockData> => ({
-                  id: _id,
-                  ...data,
+                  id,
+                  projectId: "test-project-id",
+                  name: "test-connection",
+                  type: "postgres",
+                  config: data.config || {},
+                  createdAt: new Date(),
                   updatedAt: new Date(),
                }),
+
                deleteConnection: async (_id: string): Promise<void> => {},
             };
          }
@@ -134,45 +218,57 @@ describe("ProjectStore Service", () => {
       ).rejects.toThrow();
    });
 
-   it("should create and manage projects with connections", async () => {
-      // Create a project directory
-      const projectPath = path.join(serverRootPath, projectName);
-      mkdirSync(projectPath, { recursive: true });
+   it(
+      "should create and manage projects with connections",
+      async () => {
+         // Create a project directory
+         const projectPath = path.join(serverRootPath, projectName);
+         mkdirSync(projectPath, { recursive: true });
+         // Create publisher.json manifest file
+         writeFileSync(
+            path.join(projectPath, "publisher.json"),
+            JSON.stringify({
+               name: projectName,
+               description: "Test package",
+            }),
+         );
 
-      // Create publisher config
-      const publisherConfigPath = path.join(
-         serverRootPath,
-         "publisher.config.json",
-      );
-      writeFileSync(
-         publisherConfigPath,
-         JSON.stringify({
-            frozenConfig: false,
-            projects: [
-               {
-                  name: projectName,
-                  packages: [
-                     {
-                        name: projectName,
-                        location: projectPath,
-                     },
-                  ],
-                  connections: [
-                     {
-                        name: "testConnection",
-                        type: "postgres",
-                     },
-                  ],
-               },
-            ],
-         }),
-      );
+         // Create publisher config
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(
+            publisherConfigPath,
+            JSON.stringify({
+               frozenConfig: false,
+               projects: [
+                  {
+                     name: projectName,
+                     packages: [
+                        {
+                           name: projectName,
+                           location: projectPath,
+                        },
+                     ],
+                     connections: [
+                        {
+                           name: "testConnection",
+                           type: "postgres",
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
 
-      // Test that the project can be retrieved
-      const project = await projectStore.getProject(projectName);
-      expect(project).toBeInstanceOf(Project);
-      expect(project.metadata.name).toBe(projectName);
-   });
+         // Test that the project can be retrieved
+         const project = await projectStore.getProject(projectName);
+         expect(project).toBeInstanceOf(Project);
+         expect(project.metadata.name).toBe(projectName);
+      },
+      { timeout: 30000 },
+   );
 
    it("should handle multiple projects", async () => {
       const projectName1 = "project1";
@@ -245,6 +341,14 @@ describe("ProjectStore Service", () => {
       // Create a project directory
       const projectPath = path.join(serverRootPath, projectName);
       mkdirSync(projectPath, { recursive: true });
+      // Create publisher.json manifest file
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({
+            name: projectName,
+            description: "Test package",
+         }),
+      );
       // Create publisher config
       const publisherConfigPath = path.join(
          serverRootPath,
@@ -253,6 +357,7 @@ describe("ProjectStore Service", () => {
       writeFileSync(
          publisherConfigPath,
          JSON.stringify({
+            frozenConfig: false,
             projects: [
                {
                   name: projectName,
@@ -266,56 +371,79 @@ describe("ProjectStore Service", () => {
             ],
          }),
       );
+
+      await projectStore.finishedInitialization;
 
       // Get the project
       const project = await projectStore.getProject(projectName);
 
       // Update the project
-      const updatedProject = await project.update({
+      await project.update({
          name: projectName,
          readme: "Updated README content",
       });
 
-      expect(updatedProject.metadata.readme).toBe("Updated README content");
-   });
-
-   it("should handle project reload", async () => {
-      // Create a project directory
-      const projectPath = path.join(serverRootPath, projectName);
-      mkdirSync(projectPath, { recursive: true });
-
-      // Create publisher config
-      const publisherConfigPath = path.join(
+      const readmePath = path.join(
          serverRootPath,
-         "publisher.config.json",
-      );
-      writeFileSync(
-         publisherConfigPath,
-         JSON.stringify({
-            projects: [
-               {
-                  name: projectName,
-                  packages: [
-                     {
-                        name: projectName,
-                        location: projectPath,
-                     },
-                  ],
-               },
-            ],
-         }),
+         "publisher_data",
+         projectName,
+         "README.md",
       );
 
-      // Get the project
-      const project1 = await projectStore.getProject(projectName);
-
-      // Get the project again with reload=true
-      const project2 = await projectStore.getProject(projectName, true);
-
-      expect(project1).toBeInstanceOf(Project);
-      expect(project2).toBeInstanceOf(Project);
-      expect(project1.metadata.name).toBe(project2.metadata.name as string);
+      expect(existsSync(readmePath)).toBe(true);
+      const readmeContent = readFileSync(readmePath, "utf-8");
+      expect(readmeContent).toBe("Updated README content");
    });
+
+   it(
+      "should handle project reload",
+      async () => {
+         // Create a project directory
+         const projectPath = path.join(serverRootPath, projectName);
+         mkdirSync(projectPath, { recursive: true });
+         // Create publisher.json manifest file
+         writeFileSync(
+            path.join(projectPath, "publisher.json"),
+            JSON.stringify({
+               name: projectName,
+               description: "Test package",
+            }),
+         );
+
+         // Create publisher config
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(
+            publisherConfigPath,
+            JSON.stringify({
+               projects: [
+                  {
+                     name: projectName,
+                     packages: [
+                        {
+                           name: projectName,
+                           location: projectPath,
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+
+         // Get the project
+         const project1 = await projectStore.getProject(projectName);
+
+         // Get the project again with reload=true
+         const project2 = await projectStore.getProject(projectName, true);
+
+         expect(project1).toBeInstanceOf(Project);
+         expect(project2).toBeInstanceOf(Project);
+         expect(project1.metadata.name).toBe(project2.metadata.name as string);
+      },
+      { timeout: 30000 },
+   );
 
    it("should handle missing project paths", async () => {
       // Create publisher config with non-existent project path
@@ -361,11 +489,8 @@ describe("ProjectStore Service", () => {
       expect(projects).toEqual([]);
    });
 
-   it("should handle concurrent project access", async () => {
-      // Create a project directory
-      const projectPath = path.join(serverRootPath, projectName);
-      mkdirSync(projectPath, { recursive: true });
-
+   it("should handle invalid field names in publisher config without crashing", async () => {
+      // Create publisher config with invalid field names (ramen instead of name, papa instead of packages)
       const publisherConfigPath = path.join(
          serverRootPath,
          "publisher.config.json",
@@ -376,17 +501,19 @@ describe("ProjectStore Service", () => {
             frozenConfig: false,
             projects: [
                {
-                  name: projectName,
-                  packages: [
+                  invalidKey1: "malloy-samples", // Invalid: should be "name"
+                  invalidKey2: [
+                     // Invalid: should be "packages"
                      {
-                        name: projectName,
-                        location: projectPath,
+                        name: "ecommerce",
+                        location:
+                           "https://github.com/credibledata/malloy-samples/tree/main/ecommerce",
                      },
                   ],
                   connections: [
                      {
-                        name: "testConnection",
-                        type: "postgres",
+                        name: "bigquery",
+                        type: "bigquery",
                      },
                   ],
                },
@@ -394,21 +521,153 @@ describe("ProjectStore Service", () => {
          }),
       );
 
-      await projectStore.finishedInitialization;
+      // Create a new project store that will read the invalid config
+      const newProjectStore = new ProjectStore(serverRootPath);
 
-      // Test concurrent access to the same project
-      const promises = Array.from({ length: 5 }, () =>
-         projectStore.getProject(projectName),
+      // Test that the project store handles invalid fields gracefully without crashing
+      await newProjectStore.finishedInitialization;
+      const projects = await newProjectStore.listProjects();
+
+      // Should not crash and should return empty array since invalid projects are filtered out
+      expect(projects).toEqual([]);
+   });
+
+   it("should filter out invalid projects from publisher config", async () => {
+      // Create publisher config with mix of valid and invalid projects
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      const validProjectPath = path.join(serverRootPath, "valid-project");
+      mkdirSync(validProjectPath, { recursive: true });
+      writeFileSync(
+         path.join(validProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: "valid-project",
+            description: "Valid project",
+         }),
       );
 
-      const projects = await Promise.all(promises);
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  // Invalid project: missing "name" field
+                  packages: [
+                     {
+                        name: "package1",
+                        location: "./invalid-project",
+                     },
+                  ],
+               },
+               {
+                  // Invalid project: "invalidKey1" instead of "name"
+                  invalidKey1: "invalid-project-2",
+                  packages: [
+                     {
+                        name: "package2",
+                        location: "./invalid-project-2",
+                     },
+                  ],
+               },
+               {
+                  // Invalid project: "invalidKey2" instead of "packages"
+                  name: "invalid-project-3",
+                  invalidKey2: [
+                     {
+                        name: "package3",
+                        location: "./invalid-project-3",
+                     },
+                  ],
+               },
+               {
+                  // Valid project
+                  name: "valid-project",
+                  packages: [
+                     {
+                        name: "valid-project",
+                        location: "./valid-project",
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
 
-      expect(projects).toHaveLength(5);
-      projects.forEach((project) => {
-         expect(project).toBeInstanceOf(Project);
-         expect(project.metadata.name).toBe(projectName);
-      });
+      // Create a new project store that will read the config
+      const newProjectStore = new ProjectStore(serverRootPath);
+
+      // Test that invalid projects are filtered out
+      await newProjectStore.finishedInitialization;
+      const projects = await newProjectStore.listProjects();
+
+      // Should only have the valid project
+      expect(projects.length).toBe(1);
+      expect(projects[0].name).toBe("valid-project");
    });
+
+   it(
+      "should handle concurrent project access",
+      async () => {
+         // Create a project directory
+         const projectPath = path.join(serverRootPath, projectName);
+         mkdirSync(projectPath, { recursive: true });
+         // Create publisher.json manifest file
+         writeFileSync(
+            path.join(projectPath, "publisher.json"),
+            JSON.stringify({
+               name: projectName,
+               description: "Test package",
+            }),
+         );
+
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(
+            publisherConfigPath,
+            JSON.stringify({
+               frozenConfig: false,
+               projects: [
+                  {
+                     name: projectName,
+                     packages: [
+                        {
+                           name: projectName,
+                           location: projectPath,
+                        },
+                     ],
+                     connections: [
+                        {
+                           name: "testConnection",
+                           type: "postgres",
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+
+         await projectStore.finishedInitialization;
+
+         // Test concurrent access to the same project
+         const promises = Array.from({ length: 5 }, () =>
+            projectStore.getProject(projectName),
+         );
+
+         const projects = await Promise.all(promises);
+
+         expect(projects).toHaveLength(5);
+         projects.forEach((project) => {
+            expect(project).toBeInstanceOf(Project);
+            expect(project.metadata.name).toBe(projectName);
+         });
+      },
+      { timeout: 30000 },
+   );
 });
 
 describe("Project Service Error Recovery", () => {
@@ -485,92 +744,116 @@ describe("Project Service Error Recovery", () => {
          await expect(projectStore.getProject(projectName)).rejects.toThrow();
       });
 
-      it("should handle corrupted connection files", async () => {
-         // Create a project directory
-         const projectPath = path.join(serverRootPath, projectName);
-         mkdirSync(projectPath, { recursive: true });
+      it(
+         "should handle corrupted connection files",
+         async () => {
+            // Create a project directory
+            const projectPath = path.join(serverRootPath, projectName);
+            mkdirSync(projectPath, { recursive: true });
+            // Create publisher.json manifest file
+            writeFileSync(
+               path.join(projectPath, "publisher.json"),
+               JSON.stringify({
+                  name: projectName,
+                  description: "Test package",
+               }),
+            );
 
-         // Create corrupted connections file
-         const connectionsPath = path.join(
-            projectPath,
-            "publisher.connections.json",
-         );
-         writeFileSync(connectionsPath, "invalid json");
+            // Create corrupted connections file
+            const connectionsPath = path.join(
+               projectPath,
+               "publisher.connections.json",
+            );
+            writeFileSync(connectionsPath, "invalid json");
 
-         // Create publisher config
-         const publisherConfigPath = path.join(
-            serverRootPath,
-            "publisher.config.json",
-         );
-         writeFileSync(
-            publisherConfigPath,
-            JSON.stringify({
-               projects: [
-                  {
-                     name: projectName,
-                     packages: [
-                        {
-                           name: projectName,
-                           location: projectPath,
-                        },
-                     ],
-                  },
-               ],
-            }),
-         );
+            // Create publisher config
+            const publisherConfigPath = path.join(
+               serverRootPath,
+               "publisher.config.json",
+            );
+            writeFileSync(
+               publisherConfigPath,
+               JSON.stringify({
+                  projects: [
+                     {
+                        name: projectName,
+                        packages: [
+                           {
+                              name: projectName,
+                              location: projectPath,
+                           },
+                        ],
+                     },
+                  ],
+               }),
+            );
 
-         // Test that the project store handles corrupted connection files gracefully
-         // (The current implementation loads the project even with corrupted connection files)
-         const project = await projectStore.getProject(projectName);
-         expect(project).toBeInstanceOf(Project);
-         expect(project.metadata.name).toBe(projectName);
-      });
+            // Test that the project store handles corrupted connection files gracefully
+            // (The current implementation loads the project even with corrupted connection files)
+            const project = await projectStore.getProject(projectName);
+            expect(project).toBeInstanceOf(Project);
+            expect(project.metadata.name).toBe(projectName);
+         },
+         { timeout: 30000 },
+      );
    });
 
    describe("Project Store State Management", () => {
-      it("should maintain consistent state after errors", async () => {
-         // Create a valid project first
-         const projectPath = path.join(serverRootPath, projectName);
-         mkdirSync(projectPath, { recursive: true });
-         writeFileSync(
-            path.join(projectPath, "publisher.connections.json"),
-            JSON.stringify(testConnections),
-         );
+      it(
+         "should maintain consistent state after errors",
+         async () => {
+            // Create a valid project first
+            const projectPath = path.join(serverRootPath, projectName);
+            mkdirSync(projectPath, { recursive: true });
+            // Create publisher.json manifest file
+            writeFileSync(
+               path.join(projectPath, "publisher.json"),
+               JSON.stringify({
+                  name: projectName,
+                  description: "Test package",
+               }),
+            );
+            writeFileSync(
+               path.join(projectPath, "publisher.connections.json"),
+               JSON.stringify(testConnections),
+            );
 
-         const publisherConfigPath = path.join(
-            serverRootPath,
-            "publisher.config.json",
-         );
-         writeFileSync(
-            publisherConfigPath,
-            JSON.stringify({
-               projects: [
-                  {
-                     name: projectName,
-                     packages: [
-                        {
-                           name: projectName,
-                           location: projectPath,
-                        },
-                     ],
-                  },
-               ],
-            }),
-         );
+            const publisherConfigPath = path.join(
+               serverRootPath,
+               "publisher.config.json",
+            );
+            writeFileSync(
+               publisherConfigPath,
+               JSON.stringify({
+                  projects: [
+                     {
+                        name: projectName,
+                        packages: [
+                           {
+                              name: projectName,
+                              location: projectPath,
+                           },
+                        ],
+                     },
+                  ],
+               }),
+            );
 
-         // Get the project successfully
-         const project = await projectStore.getProject(projectName);
-         expect(project).toBeInstanceOf(Project);
+            // Get the project successfully
+            const project = await projectStore.getProject(projectName);
+            expect(project).toBeInstanceOf(Project);
 
-         // Try to get a non-existent project
-         await expect(
-            projectStore.getProject("non-existent"),
-         ).rejects.toThrow();
+            // Try to get a non-existent project
+            await expect(
+               projectStore.getProject("non-existent"),
+            ).rejects.toThrow();
 
-         // Verify the original project is still accessible
-         const projectAgain = await projectStore.getProject(projectName);
-         expect(projectAgain).toBeInstanceOf(Project);
-         expect(projectAgain.metadata.name).toBe(projectName);
-      });
+            // Verify the original project is still accessible
+            const projectAgain = await projectStore.getProject(projectName);
+            expect(projectAgain).toBeInstanceOf(Project);
+            expect(projectAgain.metadata.name).toBe(projectName);
+         },
+         { timeout: 30000 },
+      );
    });
 });

@@ -263,16 +263,20 @@ export function extractDimensionSpecs(
  */
 export function generateFilterClause(
    activeFilters: FilterSelection[],
-   dimensionToSourceMap: Map<string, string>,
+   _dimensionToSourceMap: Map<string, string>,
    querySourceName: string | null,
 ): string {
    if (activeFilters.length === 0) return "";
 
    const conditions = activeFilters
       .map((selection) => {
-         const { dimensionName, matchType, value, value2 } = selection;
-         // Get the source name for this dimension
-         const filterSourceName = dimensionToSourceMap.get(dimensionName);
+         const {
+            dimensionName,
+            source: filterSourceName,
+            matchType,
+            value,
+            value2,
+         } = selection;
          // Only use source.dimension format if the filter's source is different from the query's source
          // (i.e., it's a joined source, not the main source)
          const needsSourcePrefix =

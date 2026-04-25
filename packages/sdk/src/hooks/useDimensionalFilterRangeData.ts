@@ -28,10 +28,39 @@ export interface DimensionSpec {
    model: string;
    /** Label to display in the UI (derived from # label="..." annotation) */
    label?: string;
+   /**
+    * Server-side filter identifier used as the API param key.
+    * Defaults to dimensionName when not set. Needed when the #(filter)
+    * annotation specifies name=X where X differs from the dimension field name.
+    */
+   filterName?: string;
    /** Minimum similarity score for Retrieval filter type (default: 0.1) */
    minSimilarityScore?: number;
    /** Optional list of static values to use for the dropdown instead of querying */
    values?: string[];
+   /** Preferred initial match type (e.g. "After" for date greater_than filters) */
+   defaultMatchType?: import("./useDimensionFilters").MatchType;
+   /** Whether a value must be provided before queries execute */
+   required?: boolean;
+}
+
+/**
+ * Generates a unique key from source and an identifier string.
+ * Used to prevent collisions across sources and across multiple
+ * filters that target the same dimension.
+ */
+export function makeDimensionKey(source: string, identifier: string): string {
+   return `${source}:${identifier}`;
+}
+
+/**
+ * Generates a unique key for a DimensionSpec.
+ * Prefers filterName (unique per filter) over dimensionName so that
+ * two filters on the same dimension (e.g. date before/after) get
+ * distinct keys.
+ */
+export function getDimensionKey(spec: DimensionSpec): string {
+   return makeDimensionKey(spec.source, spec.filterName ?? spec.dimensionName);
 }
 
 /**
@@ -43,7 +72,7 @@ export interface DimensionValue {
 }
 
 /**
- * Result type mapping dimension names to their values
+ * Result type mapping dimension keys (source:dimensionName) to their values
  */
 export type DimensionValues = Map<string, DimensionValue[]>;
 
@@ -229,20 +258,16 @@ function buildDimensionalIndexQuery(
       return "";
    }
 
-   // Build list of dimensions to index
-   const dimensionsToIndex = specsToFetch
-      .map((spec) => `\`${spec.dimensionName}\``)
-      .join(", ");
+   // Build list of dimensions to index (deduplicate when multiple filters
+   // target the same dimension, e.g. date before & after)
+   const uniqueDimensions = [
+      ...new Set(specsToFetch.map((spec) => spec.dimensionName)),
+   ];
+   const dimensionsToIndex = uniqueDimensions.map((d) => `\`${d}\``).join(", ");
 
    // Filter activeFilters to only include those for this source
    const filtersForSource =
-      activeFilters?.filter((f) => {
-         // Find the spec for this filter's dimension
-         const spec = dimensionSpecs.find(
-            (s) => s.dimensionName === f.dimensionName,
-         );
-         return spec?.source === source;
-      }) || [];
+      activeFilters?.filter((f) => f.source === source) || [];
 
    // Generate WHERE conditions from active filters (without 'where' keyword)
    const whereConditions =
@@ -332,9 +357,10 @@ function parseIndexQueryResult(
 ): { values: DimensionValues; noRowsMatchedFilter: boolean } {
    const dimensionValues = new Map<string, DimensionValue[]>();
 
-   // Initialize empty arrays for all dimensions
+   // Initialize empty arrays for all dimensions using composite keys
    for (const spec of dimensionSpecs) {
-      dimensionValues.set(spec.dimensionName, []);
+      const key = getDimensionKey(spec);
+      dimensionValues.set(key, []);
    }
 
    // Parse the result JSON if it's a string
@@ -460,6 +486,8 @@ function parseIndexQueryResult(
          continue;
       }
 
+      const specKey = getDimensionKey(spec);
+
       if (spec.filterType === "Star") {
          // For Star filter, we want all distinct values with their weights
          // String fields return individual fieldValue entries
@@ -474,7 +502,7 @@ function parseIndexQueryResult(
                   (b.count ?? 0) - (a.count ?? 0),
             ); // Sort by count descending
 
-         dimensionValues.set(spec.dimensionName, values);
+         dimensionValues.set(specKey, values);
       } else if (spec.filterType === "MinMax") {
          // For MinMax filter, numeric fields return a range in fieldValue
          // Format is typically "min to max"
@@ -504,7 +532,7 @@ function parseIndexQueryResult(
                   { value: parseFloat(rangeParts[0]) },
                   { value: parseFloat(rangeParts[1]) },
                ];
-               dimensionValues.set(spec.dimensionName, values);
+               dimensionValues.set(specKey, values);
             } else {
                console.warn(
                   `Could not parse numeric range for ${spec.dimensionName}: ${rangeString}`,
@@ -546,7 +574,7 @@ function parseIndexQueryResult(
                   { value: new Date(rangeParts[0].trim()) },
                   { value: new Date(rangeParts[1].trim()) },
                ];
-               dimensionValues.set(spec.dimensionName, values);
+               dimensionValues.set(specKey, values);
             } else {
                console.warn(
                   `Could not parse date range for ${spec.dimensionName}: ${rangeString}`,
@@ -675,10 +703,11 @@ export function useDimensionalFilterRangeData(
       ],
       queryFn: async () => {
          if (!shouldExecuteQuery) {
-            // Return empty map if no query needed
+            // Return empty map if no query needed (using composite keys)
             const emptyMap = new Map<string, DimensionValue[]>();
             for (const spec of dimensionSpecs) {
-               emptyMap.set(spec.dimensionName, []);
+               const key = getDimensionKey(spec);
+               emptyMap.set(key, []);
             }
             return { values: emptyMap, noRowsMatchedFilter: false };
          }
@@ -693,6 +722,7 @@ export function useDimensionalFilterRangeData(
                   {
                      query: config.query,
                      versionId: versionId,
+                     bypassFilters: true,
                   },
                );
                return {
@@ -728,15 +758,16 @@ export function useDimensionalFilterRangeData(
    const mergedData = useMemo(() => {
       const result = new Map<string, DimensionValue[]>();
 
-      // Initialize with static values or empty arrays
+      // Initialize with static values or empty arrays using composite keys
       for (const spec of dimensionSpecs) {
+         const key = getDimensionKey(spec);
          if (spec.values) {
             result.set(
-               spec.dimensionName,
+               key,
                spec.values.map((v) => ({ value: v })),
             );
          } else {
-            result.set(spec.dimensionName, []);
+            result.set(key, []);
          }
       }
 

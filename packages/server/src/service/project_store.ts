@@ -1,6 +1,8 @@
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import AdmZip from "adm-zip";
+import { Mutex } from "async-mutex";
+import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import simpleGit from "simple-git";
@@ -18,23 +20,83 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
+   BadRequestError,
    FrozenConfigError,
    PackageNotFoundError,
    ProjectNotFoundError,
 } from "../errors";
-import { logger } from "../logger";
+import { getOperationalState, markNotReady, markReady } from "../health";
+import { formatDuration, logger } from "../logger";
+import { Connection } from "../storage/DatabaseInterface";
+import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
-import { StorageManager, StorageConfig } from "../storage/StorageManager";
-import { Connection } from "../storage/DatabaseInterface";
+
+const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
+const AZURE_DATA_EXTENSIONS = [
+   ".parquet",
+   ".csv",
+   ".json",
+   ".jsonl",
+   ".ndjson",
+];
+
+function validateAzureUrl(url: string, fieldName: string): void {
+   if (!AZURE_SUPPORTED_SCHEMES.some((s) => url.startsWith(s))) {
+      throw new BadRequestError(
+         `Azure ${fieldName} must use one of: ${AZURE_SUPPORTED_SCHEMES.join(", ")}`,
+      );
+   }
+   const pathWithoutQuery = url.split("?")[0];
+   const stars = (pathWithoutQuery.match(/\*/g) || []).length;
+
+   if (stars === 0) {
+      const lower = pathWithoutQuery.toLowerCase();
+      if (!AZURE_DATA_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: a single-file URL must end with a data file extension (${AZURE_DATA_EXTENSIONS.join(", ")})`,
+         );
+      }
+   } else if (pathWithoutQuery.endsWith("**")) {
+      // recursive — valid
+      // includes all data files in the container and all subdirectories
+   } else {
+      const lastSegment = pathWithoutQuery.split("/").pop() || "";
+      if (stars !== 1 || !lastSegment.startsWith("*")) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: only three URL patterns are supported:\n` +
+               `  • Single file:    path/file.parquet\n` +
+               `  • Directory glob: path/*.ext  (direct children only)\n` +
+               `  • Recursive:      path/**     (includes all data files in the container and all subdirectories)\n` +
+               `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
+         );
+      }
+   }
+}
+
+function validateProjectAzureUrls(project: ApiProject): void {
+   for (const conn of project.connections || []) {
+      if (conn.type !== "duckdb") continue;
+      for (const db of conn.duckdbConnection?.attachedDatabases || []) {
+         if (db.type !== "azure" || !db.azureConnection) continue;
+         const { authType, sasUrl, fileUrl } = db.azureConnection;
+         if (authType === "sas_token" && sasUrl) {
+            validateAzureUrl(sasUrl, `"${db.name}" sasUrl`);
+         } else if (authType === "service_principal" && fileUrl) {
+            validateAzureUrl(fileUrl, `"${db.name}" fileUrl`);
+         }
+      }
+   }
+}
 
 export class ProjectStore {
    public serverRootPath: string;
    private projects: Map<string, Project> = new Map();
+   private projectMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
-   private storageManager: StorageManager;
+   public storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
    });
@@ -185,11 +247,15 @@ export class ProjectStore {
          }
 
          this.isInitialized = true;
+         markReady();
+         const initializationDuration = performance.now() - initialTime;
          logger.info(
-            `Project store successfully initialized in ${performance.now() - initialTime}ms`,
+            `Project store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
       } catch (error) {
-         logger.error("Error initializing project store", { error });
+         markNotReady();
+         const errorData = this.extractErrorDataFromError(error);
+         logger.error("Error initializing project store", errorData);
          process.exit(1);
       }
    }
@@ -219,6 +285,22 @@ export class ProjectStore {
       logger.info(`Synced project "${projectName}" to database`);
    }
 
+   public async deleteProjectFromDatabase(projectName: string): Promise<void> {
+      const repository = this.storageManager.getRepository();
+
+      // Get the project from database
+      const dbProject = await repository.getProjectByName(projectName);
+
+      if (!dbProject) {
+         logger.error(`Project "${projectName}" not found in database`);
+         return;
+      }
+
+      // Delete the project (this will cascade delete connections and packages)
+      await repository.deleteProject(dbProject.id);
+      logger.info(`Deleted project "${projectName}" from database`);
+   }
+
    private async addProjectMetadata(
       project: Project,
       repository: ReturnType<typeof this.storageManager.getRepository>,
@@ -228,9 +310,7 @@ export class ProjectStore {
          throw new Error("Project name is required but not found");
       }
       const projectPath = project.metadata?.location || "";
-      const projectDescription =
-         (project.metadata as { description?: string })?.description ??
-         undefined;
+      const projectDescription = project.metadata?.readme;
 
       const projectData = {
          name: projectName,
@@ -238,17 +318,37 @@ export class ProjectStore {
          description: projectDescription,
          metadata: project.metadata || {},
       };
+      const existingProject = await repository.getProjectByName(projectName);
 
-      try {
-         return await repository.createProject(projectData);
-      } catch (err) {
-         // If project exists, update it
-         const existingProject = await repository.getProjectByName(projectName);
-         if (existingProject) {
-            return repository.updateProject(existingProject.id, projectData);
-         }
-         throw err;
+      let dbProject: { id: string; name: string };
+      if (existingProject) {
+         const updateData = {
+            description: projectDescription,
+            metadata: project.metadata || {},
+         };
+
+         await repository.updateProject(existingProject.id, updateData);
+         dbProject = { id: existingProject.id, name: projectName };
+      } else {
+         dbProject = await repository.createProject(projectData);
       }
+
+      // Initialize DuckLake manifest storage if configured on the project.
+      const materializationStorage = project.metadata
+         ?.materializationStorage as
+         | { catalogUrl?: string; dataPath?: string }
+         | undefined;
+      if (
+         materializationStorage?.catalogUrl &&
+         materializationStorage?.dataPath
+      ) {
+         await this.storageManager.initializeDuckLakeForProject(dbProject.id, {
+            catalogUrl: materializationStorage.catalogUrl,
+            dataPath: materializationStorage.dataPath,
+         });
+      }
+
+      return dbProject;
    }
 
    private async addPackages(
@@ -338,9 +438,6 @@ export class ProjectStore {
    ): Promise<void> {
       try {
          const connections = project.listApiConnections();
-         const existingConnections =
-            await repository.listConnections(projectId);
-
          // Add/update connections
          for (const conn of connections) {
             if (!conn.name) {
@@ -348,12 +445,17 @@ export class ProjectStore {
                continue;
             }
 
-            await this.addConnection(
-               conn,
+            // Check if connection exists
+            const existingConn = await repository.getConnectionByName(
                projectId,
-               existingConnections,
-               repository,
+               conn.name,
             );
+
+            if (existingConn) {
+               await this.updateConnection(conn, projectId, repository);
+            } else {
+               await this.addConnection(conn, projectId, repository);
+            }
          }
       } catch (err: unknown) {
          const error = err as Error;
@@ -362,20 +464,15 @@ export class ProjectStore {
       }
    }
 
-   private async addConnection(
+   public async addConnection(
       conn: ReturnType<Project["listApiConnections"]>[number],
       projectId: string,
-      existingConnections: Connection[],
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       if (!conn.name) {
          logger.warn("Skipping connection with undefined name");
          return;
       }
-
-      const existingConn = existingConnections.find(
-         (c) => c.name === conn.name,
-      );
 
       const connectionData = {
          projectId,
@@ -385,21 +482,46 @@ export class ProjectStore {
       };
 
       try {
-         if (existingConn) {
-            // Update existing connection
-            await repository.updateConnection(existingConn.id, {
-               type: connectionData.type,
-               config: connectionData.config,
-            });
-            logger.info(`Updated existing connection: ${conn.name}`);
-         } else {
-            // Create new connection
-            await repository.createConnection(connectionData);
-            logger.info(`Created connection: ${conn.name}`);
-         }
+         await repository.createConnection(connectionData);
+         logger.info(`Created connection: ${conn.name}`);
       } catch (err: unknown) {
          const error = err as Error;
-         logger.error(`Failed to sync connection ${conn.name}:`, error);
+         logger.error(`Failed to create connection ${conn.name}:`, error);
+         throw error;
+      }
+   }
+
+   public async updateConnection(
+      conn: ReturnType<Project["listApiConnections"]>[number],
+      projectId: string,
+      repository: ReturnType<typeof this.storageManager.getRepository>,
+   ): Promise<void> {
+      if (!conn.name) {
+         throw new Error("Connection name is required for update");
+      }
+
+      const existingConn = await repository.getConnectionByName(
+         projectId,
+         conn.name,
+      );
+
+      if (!existingConn) {
+         logger.error(`Connection "${conn.name}" not found in project`);
+      }
+
+      const connectionData = {
+         type: conn.type as Connection["type"],
+         config: conn,
+      };
+
+      try {
+         if (existingConn) {
+            await repository.updateConnection(existingConn.id, connectionData);
+         }
+         logger.info(`Updated connection: ${conn.name}`);
+      } catch (err: unknown) {
+         const error = err as Error;
+         logger.error(`Failed to update connection ${conn.name}:`, error);
          throw error;
       }
    }
@@ -465,13 +587,18 @@ export class ProjectStore {
    private async cleanupAndCreatePublisherPath() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
 
+      // Ensure serverRootPath exists as a directory (mkdir recursive is a
+      // no-op when the directory already exists and avoids a Bun-on-Windows
+      // bug where fs.promises.stat resolves to undefined instead of throwing)
+      await fs.promises.mkdir(this.serverRootPath, { recursive: true });
+
       if (reInit) {
          const uploadDocsPath = path.join(
             this.serverRootPath,
             PUBLISHER_DATA_DIR,
          );
          logger.info(
-            `Re init: Cleaning up upload documents path ${uploadDocsPath}`,
+            `Reinitialization mode: Cleaning up upload documents path ${uploadDocsPath}`,
          );
          try {
             await fs.promises.rm(uploadDocsPath, {
@@ -513,6 +640,8 @@ export class ProjectStore {
          projects: [] as Array<components["schemas"]["Project"]>,
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
+         operationalState:
+            getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
       };
 
       const projects = await this.listProjects(true);
@@ -523,7 +652,7 @@ export class ProjectStore {
                const packages = project.packages;
                const connections = project.connections;
 
-               logger.info(`Project ${project.name} status:`, {
+               logger.debug(`Project ${project.name} status:`, {
                   connectionsCount: project.connections?.length || 0,
                   packagesCount: packages?.length || 0,
                });
@@ -559,8 +688,33 @@ export class ProjectStore {
       reload: boolean = false,
    ): Promise<Project> {
       await this.finishedInitialization;
-      let project = this.projects.get(projectName);
-      if (project === undefined || reload) {
+
+      // Check if project is already loaded first
+      const project = this.projects.get(projectName);
+      if (project !== undefined && !reload) {
+         return project;
+      }
+
+      // We need to acquire the mutex to prevent concurrent requests from creating the
+      // project multiple times.
+      let projectMutex = this.projectMutexes.get(projectName);
+      if (projectMutex?.isLocked()) {
+         await projectMutex.waitForUnlock();
+         const existingProject = this.projects.get(projectName);
+         if (existingProject && !reload) {
+            return existingProject;
+         }
+      }
+      projectMutex = new Mutex();
+      this.projectMutexes.set(projectName, projectMutex);
+
+      return projectMutex.runExclusive(async () => {
+         // Double-check after acquiring mutex
+         const existingProject = this.projects.get(projectName);
+         if (existingProject !== undefined && !reload) {
+            return existingProject;
+         }
+
          const projectManifest = await ProjectStore.reloadProjectManifest(
             this.serverRootPath,
          );
@@ -568,19 +722,19 @@ export class ProjectStore {
             (p) => p.name === projectName,
          );
          const projectPath =
-            project?.metadata.location || projectConfig?.packages[0]?.location;
+            existingProject?.metadata.location ||
+            projectConfig?.packages[0]?.location;
          if (!projectPath) {
             throw new ProjectNotFoundError(
                `Project "${projectName}" could not be resolved to a path.`,
             );
          }
-         project = await this.addProject({
+         return await this.addProject({
             name: projectName,
             resource: `${API_PREFIX}/projects/${projectName}`,
             connections: projectConfig?.connections || [],
          });
-      }
-      return project;
+      });
    }
 
    public async addProject(
@@ -672,6 +826,7 @@ export class ProjectStore {
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      validateProjectAzureUrls(project);
       const projectName = project.name;
       if (!projectName) {
          throw new Error("Project name is required");
@@ -686,7 +841,9 @@ export class ProjectStore {
       return updatedProject;
    }
 
-   public async deleteProject(projectName: string) {
+   public async deleteProject(
+      projectName: string,
+   ): Promise<Project | undefined> {
       await this.finishedInitialization;
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
@@ -695,7 +852,23 @@ export class ProjectStore {
       if (!project) {
          return;
       }
+
+      const projectPath = project.metadata?.location;
+
+      // Close all connections before removing the project
+      project.closeAllConnections();
+
       this.projects.delete(projectName);
+      await this.deleteProjectFromDatabase(projectName);
+      if (projectPath) {
+         try {
+            await fs.promises.rm(projectPath, { recursive: true, force: true });
+            logger.info(`Deleted project directory: ${projectPath}`);
+         } catch (err) {
+            logger.error("Error removing project directory", { error: err });
+         }
+      }
+
       return project;
    }
 
@@ -762,6 +935,7 @@ export class ProjectStore {
    private isLocalPath(location: string) {
       return (
          location.startsWith("./") ||
+         location.startsWith("../") ||
          location.startsWith("~/") ||
          location.startsWith("/") ||
          path.isAbsolute(location)
@@ -835,12 +1009,14 @@ export class ProjectStore {
 
       // Processing by each unique location
       for (const [groupedLocation, packagesForLocation] of locationGroups) {
-         // Create a temporary directory for the shared download
-         const tempDownloadPath = `${absoluteTargetPath}/.temp_${Buffer.from(
-            groupedLocation,
-         )
-            .toString("base64")
-            .replace(/[^a-zA-Z0-9]/g, "")}`;
+         // Use a hash instead of base64 to keep paths short (Windows MAX_PATH limit)
+         // This works for both local and remote paths
+         const locationHash = crypto
+            .createHash("sha256")
+            .update(groupedLocation)
+            .digest("hex")
+            .substring(0, 16); // Use first 16 chars for shorter paths
+         const tempDownloadPath = `${absoluteTargetPath}/.temp_${locationHash}`;
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
          try {
@@ -916,11 +1092,10 @@ export class ProjectStore {
                }
             }
          } catch (error) {
+            const errorData = this.extractErrorDataFromError(error);
             logger.error(
                `Failed to download or mount location "${groupedLocation}"`,
-               {
-                  error,
-               },
+               errorData,
             );
             throw new PackageNotFoundError(
                `Failed to download or mount location: ${groupedLocation}`,
@@ -966,9 +1141,11 @@ export class ProjectStore {
             );
             return;
          } catch (error) {
-            logger.error(`Failed to download GCS directory "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to download GCS directory "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to download GCS directory: ${location}`,
             );
@@ -984,9 +1161,11 @@ export class ProjectStore {
             await this.downloadGitHubDirectory(location, targetPath);
             return;
          } catch (error) {
-            logger.error(`Failed to clone GitHub repository "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to clone GitHub repository "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to clone GitHub repository: ${location}`,
             );
@@ -999,12 +1178,19 @@ export class ProjectStore {
             logger.info(
                `Downloading S3 directory from "${location}" to "${targetPath}"`,
             );
-            await this.downloadS3Directory(location, projectName, targetPath);
+            await this.downloadS3Directory(
+               location,
+               projectName,
+               targetPath,
+               isCompressedFile,
+            );
             return;
          } catch (error) {
-            logger.error(`Failed to download S3 directory "${location}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to download S3 directory "${location}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to download S3 directory: ${location}`,
             );
@@ -1028,9 +1214,11 @@ export class ProjectStore {
             );
             return;
          } catch (error) {
-            logger.error(`Failed to mount local directory "${packagePath}"`, {
-               error,
-            });
+            const errorData = this.extractErrorDataFromError(error);
+            logger.error(
+               `Failed to mount local directory "${packagePath}"`,
+               errorData,
+            );
             throw new PackageNotFoundError(
                `Failed to mount local directory: ${packagePath}`,
             );
@@ -1052,9 +1240,8 @@ export class ProjectStore {
       if (projectPath.endsWith(".zip")) {
          projectPath = await this.unzipProject(projectPath);
       }
-      const projectDirExists = (
-         await fs.promises.stat(projectPath)
-      ).isDirectory();
+      const projectDirExists =
+         (await fs.promises.stat(projectPath))?.isDirectory() ?? false;
       if (projectDirExists) {
          await fs.promises.rm(absoluteTargetPath, {
             recursive: true,
@@ -1125,10 +1312,43 @@ export class ProjectStore {
       s3Path: string,
       projectName: string,
       absoluteDirPath: string,
+      isCompressedFile: boolean = false,
    ) {
       const trimmedPath = s3Path.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
+
+      if (isCompressedFile) {
+         // Download the single zip file
+         const zipFilePath = `${absoluteDirPath}.zip`;
+         await fs.promises.mkdir(path.dirname(zipFilePath), {
+            recursive: true,
+         });
+
+         const command = new GetObjectCommand({
+            Bucket: bucketName,
+            Key: prefix,
+         });
+         const item = await this.s3Client.send(command);
+         if (!item.Body) {
+            throw new ProjectNotFoundError(
+               `Project ${projectName} not found in ${s3Path}`,
+            );
+         }
+         const file = fs.createWriteStream(zipFilePath);
+         item.Body.transformToWebStream().pipeTo(Writable.toWeb(file));
+         await new Promise<void>((resolve, reject) => {
+            file.on("error", reject);
+            file.on("finish", resolve);
+         });
+
+         // Extract the zip file
+         await this.unzipProject(zipFilePath);
+         logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
+         return;
+      }
+
+      // Original behavior: download directory contents
       const objects = await this.s3Client.listObjectsV2({
          Bucket: bucketName,
          Prefix: prefix,
@@ -1174,6 +1394,7 @@ export class ProjectStore {
             });
          }),
       );
+      logger.info(`Downloaded S3 directory ${s3Path} to ${absoluteDirPath}`);
    }
 
    private parseGitHubUrl(
@@ -1223,10 +1444,11 @@ export class ProjectStore {
       await new Promise<void>((resolve, reject) => {
          simpleGit().clone(repoUrl, absoluteDirPath, {}, (err) => {
             if (err) {
-               console.error(err);
-               logger.error(`Failed to clone GitHub repository "${repoUrl}"`, {
-                  error: err,
-               });
+               const errorData = this.extractErrorDataFromError(err);
+               logger.error(
+                  `Failed to clone GitHub repository "${repoUrl}"`,
+                  errorData,
+               );
                reject(err);
             }
             resolve();
@@ -1286,5 +1508,24 @@ export class ProjectStore {
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
 
       // https://github.com/credibledata/malloy-samples/imdb/publisher.json -> ${absoluteDirPath}/publisher.json
+   }
+
+   private extractErrorDataFromError(error: unknown): {
+      error: string;
+      stack?: string;
+      task?: unknown;
+   } {
+      const errorMessage =
+         error instanceof Error ? error.message : String(error);
+      const errorData: { error: string; stack?: string; task?: unknown } = {
+         error: errorMessage,
+      };
+      if (error instanceof Error && logger.level === "debug") {
+         errorData.stack = error.stack;
+      }
+      if (error && typeof error === "object" && "task" in error) {
+         errorData.task = (error as { task?: unknown }).task;
+      }
+      return errorData;
    }
 }

@@ -93,27 +93,26 @@ export class ConnectionRepository {
       const now = this.now();
       const setClauses: string[] = [];
       const params: unknown[] = [];
-      let paramIndex = 1;
 
       if (updates.name !== undefined) {
-         setClauses.push(`name = $${paramIndex++}`);
+         setClauses.push(`name = ?`);
          params.push(updates.name);
       }
       if (updates.type !== undefined) {
-         setClauses.push(`type = $${paramIndex++}`);
+         setClauses.push(`type = ?`);
          params.push(updates.type);
       }
       if (updates.config !== undefined) {
-         setClauses.push(`config = $${paramIndex++}`);
+         setClauses.push(`config = ?`);
          params.push(JSON.stringify(updates.config));
       }
 
-      setClauses.push(`updated_at = $${paramIndex++}`);
+      setClauses.push(`updated_at = ?`);
       params.push(now.toISOString());
       params.push(id);
 
       await this.db.run(
-         `UPDATE connections SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`,
+         `UPDATE connections SET ${setClauses.join(", ")} WHERE id = ?`,
          params,
       );
 

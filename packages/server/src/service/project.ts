@@ -1,3 +1,5 @@
+import type { LogMessage } from "@malloydata/malloy";
+import { FixedConnectionMap, MalloyError, Runtime } from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
@@ -10,7 +12,12 @@ import {
    ProjectNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
-import { createProjectConnections, InternalConnection } from "./connection";
+import { URL_READER } from "../utils";
+import {
+   createProjectConnections,
+   deleteDuckLakeConnectionFile,
+   InternalConnection,
+} from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 
@@ -57,9 +64,24 @@ export class Project {
       void this.reloadProjectMetadata();
    }
 
+   private async writeProjectReadme(readme?: string): Promise<void> {
+      if (readme === undefined) return;
+
+      const readmePath = path.join(this.projectPath, "README.md");
+
+      try {
+         await fs.promises.writeFile(readmePath, readme, "utf-8");
+         logger.info(`Updated README.md for project ${this.projectName}`);
+      } catch (err) {
+         logger.error(`Failed to write README.md`, { error: err });
+         throw new Error(`Failed to update project README`);
+      }
+   }
+
    public async update(payload: ApiProject) {
       if (payload.readme !== undefined) {
          this.metadata.readme = payload.readme;
+         await this.writeProjectReadme(payload.readme);
       }
 
       // Handle connections update
@@ -68,12 +90,13 @@ export class Project {
          logger.info(
             `Updating ${payload.connections.length} connections for project ${this.projectName}`,
          );
-
+         const isUpdateConnectionRequest = true;
          // Reload connections with full config
          const { malloyConnections, apiConnections } =
             await createProjectConnections(
                payload.connections,
                this.projectPath,
+               isUpdateConnectionRequest,
             );
 
          // Update the project's connection maps
@@ -98,7 +121,7 @@ export class Project {
       projectPath: string,
       connections: ApiConnection[],
    ): Promise<Project> {
-      if (!(await fs.promises.stat(projectPath)).isDirectory()) {
+      if (!(await fs.promises.stat(projectPath))?.isDirectory()) {
          throw new ProjectNotFoundError(
             `Project path ${projectPath} not found`,
          );
@@ -123,9 +146,6 @@ export class Project {
          apiConnections,
       );
 
-      // // Scan filesystem for packages
-      await project.scanForPackages();
-
       return project;
    }
 
@@ -145,6 +165,77 @@ export class Project {
          readme,
       };
       return this.metadata;
+   }
+
+   public async compileSource(
+      packageName: string,
+      modelName: string,
+      source: string,
+      includeSql: boolean = false,
+   ): Promise<{ problems: LogMessage[]; sql?: string }> {
+      // Place the virtual file in the model's directory so relative imports resolve correctly.
+      const modelDir = path.dirname(
+         path.join(this.projectPath, packageName, modelName),
+      );
+      const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
+      const virtualUrl = new URL(virtualUri);
+
+      // Read the full model file so the submitted source inherits the model's
+      // complete namespace — imports, source definitions, queries, etc.
+      const modelPath = path.join(this.projectPath, packageName, modelName);
+      let modelContent = "";
+      try {
+         modelContent = await fs.promises.readFile(modelPath, "utf8");
+      } catch {
+         // If the model file can't be read, proceed with empty content
+         // and let compilation surface any errors naturally.
+      }
+      const fullSource = modelContent ? `${modelContent}\n${source}` : source;
+
+      // Create a URL Reader that serves the source string for the virtual file,
+      // but falls back to the disk for everything else (imports).
+      const interceptingReader = {
+         readURL: async (url: URL) => {
+            if (url.toString() === virtualUri) {
+               return fullSource;
+            }
+            return URL_READER.readURL(url);
+         },
+      };
+
+      // Initialize Runtime with the project's active connections
+      const runtime = new Runtime({
+         urlReader: interceptingReader,
+         connections: new FixedConnectionMap(this.malloyConnections, "duckdb"),
+      });
+
+      // Attempt to compile
+      try {
+         const modelMaterializer = runtime.loadModel(virtualUrl);
+         const model = await modelMaterializer.getModel();
+
+         // If includeSql is requested and compilation succeeded, attempt to extract SQL
+         let sql: string | undefined;
+         if (includeSql) {
+            try {
+               const queryMaterializer = modelMaterializer.loadFinalQuery();
+               sql = await queryMaterializer.getSQL();
+            } catch {
+               // Source may not contain a runnable query (e.g. only source definitions),
+               // in which case we simply omit the sql field.
+            }
+         }
+
+         // If successful, return any non-fatal warnings
+         return { problems: model.problems, sql };
+      } catch (error) {
+         // If parsing/compilation fails, return the errors
+         if (error instanceof MalloyError) {
+            return { problems: error.problems };
+         }
+         // If it's a system error (e.g. file not found), throw it up
+         throw error;
+      }
    }
 
    public listApiConnections(): ApiConnection[] {
@@ -173,39 +264,8 @@ export class Project {
       return connection;
    }
 
-   public async scanForPackages(): Promise<void> {
-      try {
-         const entries = await fs.promises.readdir(this.projectPath, {
-            withFileTypes: true,
-         });
-
-         for (const entry of entries) {
-            if (entry.isDirectory()) {
-               const packagePath = path.join(this.projectPath, entry.name);
-               const publisherJsonPath = path.join(
-                  packagePath,
-                  "publisher.json",
-               );
-
-               // Check if this directory contains a publisher.json file
-               try {
-                  await fs.promises.access(publisherJsonPath);
-                  // This is a valid package - add it to packageStatuses
-                  this.setPackageStatus(entry.name, PackageStatus.SERVING);
-               } catch {
-                  // Not a package directory, skip it
-               }
-            }
-         }
-      } catch (error) {
-         logger.error(`Error scanning for packages in ${this.projectPath}`, {
-            error,
-         });
-      }
-   }
-
    public async listPackages(): Promise<ApiPackage[]> {
-      logger.info("Listing packages", { projectPath: this.projectPath });
+      logger.debug("Listing packages", { projectPath: this.projectPath });
       try {
          const packageMetadata = await Promise.all(
             Array.from(this.packageStatuses.keys()).map(async (packageName) => {
@@ -263,11 +323,18 @@ export class Project {
       // package multiple times.
       let packageMutex = this.packageMutexes.get(packageName);
       if (packageMutex?.isLocked()) {
+         logger.debug(
+            `Package ${packageName} is being loaded, waiting for unlock...`,
+         );
          await packageMutex.waitForUnlock();
+         logger.debug(`Package ${packageName} unlocked`);
          const existingPackage = this.packages.get(packageName);
          if (existingPackage) {
+            logger.debug(`Package ${packageName} loaded by another request`);
             return existingPackage;
          }
+         // If package still doesn't exist after unlock, it might have failed to load
+         // Continue to try loading it ourselves
       }
       packageMutex = new Mutex();
       this.packageMutexes.set(packageName, packageMutex);
@@ -283,20 +350,23 @@ export class Project {
          this.setPackageStatus(packageName, PackageStatus.LOADING);
 
          try {
+            logger.debug(`Loading package ${packageName}...`);
+            const packagePath = path.join(this.projectPath, packageName);
             const _package = await Package.create(
                this.projectName,
                packageName,
-               path.join(this.projectPath, packageName),
+               packagePath,
                this.malloyConnections,
-               this.apiConnections,
             );
             this.packages.set(packageName, _package);
 
             // Set package status to serving
             this.setPackageStatus(packageName, PackageStatus.SERVING);
+            logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
          } catch (error) {
+            logger.error(`Failed to load package ${packageName}`, { error });
             // Clean up on error - mutex will be automatically released by runExclusive
             this.packages.delete(packageName);
             this.packageStatuses.delete(packageName);
@@ -313,7 +383,7 @@ export class Project {
             .access(packagePath)
             .then(() => true)
             .catch(() => false)) ||
-         !(await fs.promises.stat(packagePath)).isDirectory()
+         !(await fs.promises.stat(packagePath))?.isDirectory()
       ) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
@@ -333,7 +403,6 @@ export class Project {
                packageName,
                packagePath,
                this.malloyConnections,
-               this.apiConnections,
             ),
          );
       } catch (error) {
@@ -343,6 +412,44 @@ export class Project {
       }
       this.setPackageStatus(packageName, PackageStatus.SERVING);
       return this.packages.get(packageName);
+   }
+
+   private async writePackageManifest(
+      packageName: string,
+      metadata: { name: string; description?: string },
+   ): Promise<void> {
+      const packagePath = path.join(this.projectPath, packageName);
+      const manifestPath = path.join(packagePath, "publisher.json");
+
+      try {
+         // Read existing manifest
+         let existingManifest: Record<string, unknown> = {};
+         try {
+            const content = await fs.promises.readFile(manifestPath, "utf-8");
+            existingManifest = JSON.parse(content);
+         } catch (_err) {
+            logger.warn(`Could not read manifest for ${packageName}`);
+         }
+
+         // Update with new metadata
+         const updatedManifest = {
+            ...existingManifest,
+            name: metadata.name,
+            description: metadata.description,
+         };
+
+         // Write back to file
+         await fs.promises.writeFile(
+            manifestPath,
+            JSON.stringify(updatedManifest, null, 2),
+            "utf-8",
+         );
+
+         logger.info(`Updated publisher.json for ${packageName}`);
+      } catch (error) {
+         logger.error(`Failed to update publisher.json`, { error });
+         throw new Error(`Failed to update package manifest`);
+      }
    }
 
    public async updatePackage(packageName: string, body: ApiPackage) {
@@ -359,6 +466,12 @@ export class Project {
          resource: body.resource,
          location: body.location,
       });
+
+      await this.writePackageManifest(packageName, {
+         name: packageName,
+         description: body.description,
+      });
+
       return _package.getPackageMetadata();
    }
 
@@ -418,6 +531,67 @@ export class Project {
       this.packageStatuses.delete(packageName);
    }
 
+   public updateConnections(
+      malloyConnections: Map<string, BaseConnection>,
+      apiConnections: ApiConnection[],
+   ): void {
+      this.malloyConnections = malloyConnections;
+      this.apiConnections = apiConnections;
+   }
+
+   public async deleteConnection(connectionName: string): Promise<void> {
+      this.malloyConnections.get(connectionName)?.close();
+      const isDeleted = this.malloyConnections.delete(connectionName);
+
+      const index = this.apiConnections.findIndex(
+         (conn) => conn.name === connectionName,
+      );
+
+      const connectionType = this.apiConnections[index]?.type;
+      if (connectionType === "duckdb") {
+         await this.deleteDuckDBConnection(connectionName);
+      } else if (connectionType === "ducklake") {
+         await this.deleteDuckLakeConnection(connectionName);
+      }
+
+      if (index !== -1) {
+         this.apiConnections.splice(index, 1);
+      }
+
+      if (isDeleted || index !== -1) {
+         logger.info(
+            `Removed connection ${connectionName} from project ${this.projectName}`,
+         );
+      } else {
+         logger.warn(
+            `Connection ${connectionName} not found in project ${this.projectName}`,
+         );
+      }
+   }
+
+   public closeAllConnections(): void {
+      // Close all Malloy connections
+      for (const [connectionName, connection] of this.malloyConnections) {
+         try {
+            connection.close();
+            logger.info(
+               `Closed connection ${connectionName} for project ${this.projectName}`,
+            );
+         } catch (error) {
+            logger.error(
+               `Error closing connection ${connectionName} for project ${this.projectName}`,
+               { error },
+            );
+         }
+      }
+
+      // Clear connection maps
+      this.malloyConnections.clear();
+      this.apiConnections = [];
+
+      logger.info(`Closed all connections for project ${this.projectName}`);
+   }
+
    public async serialize(): Promise<ApiProject> {
       return {
          ...this.metadata,
@@ -425,4 +599,83 @@ export class Project {
          packages: await this.listPackages(),
       };
    }
+
+   public async deleteDuckDBConnection(connectionName: string): Promise<void> {
+      const duckdbPath = path.join(
+         this.projectPath,
+         `${connectionName}.duckdb`,
+      );
+      fs.promises
+         .access(duckdbPath)
+         .then(() => {
+            fs.promises
+               .rm(duckdbPath)
+               .then(() => {
+                  logger.info(
+                     `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                  );
+               })
+               .catch((error) => {
+                  logger.error(
+                     `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+                     { error },
+                  );
+               });
+         })
+         .catch((error) => {
+            logger.error(
+               `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+               { error },
+            );
+         });
+   }
+
+   public async deleteDuckLakeConnection(
+      connectionName: string,
+   ): Promise<void> {
+      await deleteDuckLakeConnectionFile(connectionName, this.projectPath);
+      logger.info(
+         `Removed DuckLake connection ${connectionName} from project ${this.projectName}`,
+      );
+   }
+}
+
+/**
+ * Extracts the preamble from a Malloy model file — the leading block of
+ * `##!` pragmas, `import` statements, blank lines, and comments that appear
+ * before any `source:`, `query:`, or `run:` definition. This allows a
+ * submitted query to inherit the model's import context.
+ */
+export async function extractPreamble(modelPath: string): Promise<string> {
+   try {
+      const content = await fs.promises.readFile(modelPath, "utf8");
+      return extractPreambleFromSource(content);
+   } catch {
+      // If the model file can't be read, return empty preamble
+      // and let the compilation surface any import errors naturally.
+      return "";
+   }
+}
+
+/**
+ * Extracts the preamble from Malloy source text. Exported for testing.
+ */
+export function extractPreambleFromSource(content: string): string {
+   const lines = content.split("\n");
+   const preambleLines: string[] = [];
+
+   for (const line of lines) {
+      const trimmed = line.trim();
+      // Stop at the first source/query/run definition
+      if (
+         trimmed.startsWith("source:") ||
+         trimmed.startsWith("query:") ||
+         trimmed.startsWith("run:")
+      ) {
+         break;
+      }
+      preambleLines.push(line);
+   }
+
+   return preambleLines.join("\n").trimEnd();
 }
