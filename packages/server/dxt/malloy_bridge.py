@@ -8,10 +8,17 @@ import logging
 import time
 import signal
 from typing import Dict, Any, Optional
+import os
+
+# Define log file path
+log_file = '/tmp/malloy_bridge.log'
+
+# Create directory if it doesn't exist
+os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
 # Set up logging with more detailed format
 logging.basicConfig(
-    filename='/tmp/malloy_bridge.log', 
+    filename=log_file, 
     level=logging.DEBUG, 
     format='%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
 )
