@@ -483,6 +483,15 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: A list of schemas available in the connection with metadata
@@ -540,6 +549,15 @@ paths:
             type: array
             items:
               type: string
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: A list of table names available in the specified schema
@@ -594,6 +612,15 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: Table information
@@ -643,6 +670,15 @@ paths:
           required: false
           schema:
             type: string
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: SQL source information
@@ -678,6 +714,15 @@ paths:
           in: path
           description: Name of the connection
           required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
       requestBody:
@@ -734,6 +779,15 @@ paths:
           required: false
           schema:
             type: string
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       requestBody:
         description: SQL statement to execute
         required: true
@@ -780,6 +834,15 @@ paths:
           in: path
           description: Name of the connection
           required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
       requestBody:
@@ -841,6 +904,15 @@ paths:
           required: false
           schema:
             type: string
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: Temporary table information
@@ -896,6 +968,15 @@ paths:
           required: false
           schema:
             type: string
+        - name: packageName
+          in: query
+          description: |
+            Disambiguates per-package "duckdb" lookups in multi-package projects.
+            Required when connectionName is "duckdb" and the project has more
+            than one package; ignored otherwise.
+          required: false
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: Query execution results

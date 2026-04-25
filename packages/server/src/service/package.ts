@@ -31,7 +31,14 @@ type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
-type PackageConnectionInput = MalloyConfig | Map<string, Connection>;
+// A thunk lets callers pass a live reference to the *current* project
+// MalloyConfig so the package wrapper resolves project connections against the
+// generation that's active at lookup time, not the one that was current when
+// the package was first loaded.
+type PackageConnectionInput =
+   | MalloyConfig
+   | Map<string, Connection>
+   | (() => MalloyConfig);
 
 const ENABLE_LIST_MODEL_COMPILATION = true;
 export class Package {
@@ -103,7 +110,9 @@ export class Package {
          });
          const malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
-            Package.toMalloyConfig(projectMalloyConfig),
+            typeof projectMalloyConfig === "function"
+               ? projectMalloyConfig
+               : () => Package.toMalloyConfig(projectMalloyConfig),
          );
 
          const models = await Package.loadModels(
@@ -201,7 +210,9 @@ export class Package {
       return this.models.get(modelPath);
    }
 
-   public async getMalloyConnection(connectionName: string): Promise<Connection> {
+   public async getMalloyConnection(
+      connectionName: string,
+   ): Promise<Connection> {
       return this.malloyConfig.connections.lookupConnection(connectionName);
    }
 
@@ -283,7 +294,7 @@ export class Package {
 
    private static buildPackageMalloyConfig(
       packagePath: string,
-      projectMalloyConfig: MalloyConfig,
+      getProjectMalloyConfig: () => MalloyConfig,
    ): MalloyConfig {
       const malloyConfig = new MalloyConfig(
          {
@@ -304,14 +315,19 @@ export class Package {
             if (!name || name === "duckdb") {
                return base.lookupConnection(name);
             }
-            return projectMalloyConfig.connections.lookupConnection(name);
+            // Resolve against the *current* project MalloyConfig so a
+            // connection-generation swap on Project propagates without a
+            // package reload.
+            return getProjectMalloyConfig().connections.lookupConnection(name);
          },
       }));
 
       return malloyConfig;
    }
 
-   private static toMalloyConfig(input: PackageConnectionInput): MalloyConfig {
+   private static toMalloyConfig(
+      input: MalloyConfig | Map<string, Connection>,
+   ): MalloyConfig {
       if (input instanceof MalloyConfig) {
          return input;
       }

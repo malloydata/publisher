@@ -45,11 +45,17 @@ const RETIRED_CONNECTION_DRAIN_MS = 30_000;
 
 export class Project {
    private packages: Map<string, Package> = new Map();
+   // Lock ordering: connectionMutex (project) MUST be acquired before any
+   // packageMutex. Connection updates may invalidate cached package
+   // MalloyConfigs and force reloads, so the project lock is the outer one.
+   // Never acquire connectionMutex while holding a packageMutex — that's the
+   // AB/BA deadlock path.
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
    private malloyConfig: ProjectMalloyConfig;
    private connectionMutex = new Mutex();
-   private retiredConnectionGenerations = new Set<RetiredConnectionGeneration>();
+   private retiredConnectionGenerations =
+      new Set<RetiredConnectionGeneration>();
    private apiConnections: ApiConnection[];
    private projectPath: string;
    private projectName: string;
@@ -417,12 +423,11 @@ export class Project {
                this.projectName,
                packageName,
                packagePath,
-               this.malloyConfig.malloyConfig,
+               () => this.malloyConfig.malloyConfig,
             );
             if (existingPackage !== undefined && reload) {
-               this.retireConnectionGeneration(
-                  `package ${packageName}`,
-                  () => existingPackage.getMalloyConfig().releaseConnections(),
+               this.retireConnectionGeneration(`package ${packageName}`, () =>
+                  existingPackage.getMalloyConfig().releaseConnections(),
                );
             }
             this.packages.set(packageName, _package);
@@ -469,7 +474,7 @@ export class Project {
                this.projectName,
                packageName,
                packagePath,
-               this.malloyConfig.malloyConfig,
+               () => this.malloyConfig.malloyConfig,
             ),
          );
       } catch (error) {
@@ -643,6 +648,25 @@ export class Project {
    }
 
    public async closeAllConnections(): Promise<void> {
+      // Release the package-scoped MalloyConfigs (each holds the package's own
+      // sandbox `duckdb` connection) before tearing down the project config
+      // they wrap. Without this, hard unload leaks per-package DuckDB handles.
+      const packageReleases = await Promise.allSettled(
+         Array.from(this.packages.values(), (pkg) =>
+            pkg.getMalloyConfig().releaseConnections(),
+         ),
+      );
+      for (const result of packageReleases) {
+         if (result.status === "rejected") {
+            logger.error(
+               `Error closing package connections for project ${this.projectName}`,
+               { error: result.reason },
+            );
+         }
+      }
+      this.packages.clear();
+      this.packageStatuses.clear();
+
       try {
          await this.malloyConfig.releaseConnections();
       } catch (error) {

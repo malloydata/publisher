@@ -131,22 +131,42 @@ export class ConnectionController {
    private async getMalloyConnection(
       projectName: string,
       connectionName: string,
+      packageName?: string,
    ): Promise<Connection> {
       const project = await this.projectStore.getProject(projectName, false);
 
-      // For DuckDB connections, get the connection from a package
+      // "duckdb" is the per-package sandbox; its rootDirectory is the
+      // package's directory. There is no project-level "duckdb" — the name is
+      // reserved at config time. So the lookup is intrinsically per-package
+      // and the caller must say which package to use.
       if (connectionName === "duckdb") {
          const packages = await project.listPackages();
          if (packages.length === 0) {
+            // Fall through to project; this will surface the standard
+            // "connection not found" rather than silently inventing one.
             return await project.getMalloyConnection(connectionName);
          }
-         // For now, use the first package's DuckDB connection
-         const packageName = packages[0].name;
-         if (!packageName) {
-            throw new ConnectionError("Package name is undefined");
+         if (packageName) {
+            const known = packages.some((p) => p.name === packageName);
+            if (!known) {
+               throw new BadRequestError(
+                  `Package "${packageName}" not found in project "${projectName}"`,
+               );
+            }
+            const pkg = await project.getPackage(packageName);
+            return await pkg.getMalloyConnection(connectionName);
          }
-         const pkg = await project.getPackage(packageName);
-         return await pkg.getMalloyConnection(connectionName);
+         if (packages.length === 1) {
+            const onlyPackage = packages[0].name;
+            if (!onlyPackage) {
+               throw new ConnectionError("Package name is undefined");
+            }
+            const pkg = await project.getPackage(onlyPackage);
+            return await pkg.getMalloyConnection(connectionName);
+         }
+         throw new BadRequestError(
+            `Ambiguous "duckdb" connection lookup: project "${projectName}" has multiple packages; specify ?packageName=<name>`,
+         );
       } else {
          return await project.getMalloyConnection(connectionName);
       }
@@ -217,33 +237,46 @@ export class ConnectionController {
       return project.listApiConnections();
    }
 
-   // Lists schemas (namespaces) available in a connection
+   // Lists schemas (namespaces) available in a connection.
+   // For "duckdb", the per-package sandbox, packageName disambiguates which
+   // package's DuckDB to browse in a multi-package project.
    public async listSchemas(
       projectName: string,
       connectionName: string,
+      packageName?: string,
    ): Promise<ApiSchema[]> {
       const project = await this.projectStore.getProject(projectName, false);
-      const connection = this.getApiConnectionForLookup(project, connectionName);
+      const connection = this.getApiConnectionForLookup(
+         project,
+         connectionName,
+      );
       const malloyConnection = await this.getMalloyConnection(
          projectName,
          connectionName,
+         packageName,
       );
 
       return getSchemasForConnection(connection, malloyConnection);
    }
 
-   // Lists tables available in a schema. For postgres the schema is usually "public"
+   // Lists tables available in a schema. For postgres the schema is usually "public".
+   // packageName disambiguates per-package "duckdb" lookups (see listSchemas).
    public async listTables(
       projectName: string,
       connectionName: string,
       schemaName: string,
       tableNames?: string[],
+      packageName?: string,
    ): Promise<ApiTable[]> {
       const project = await this.projectStore.getProject(projectName, false);
-      const connection = this.getApiConnectionForLookup(project, connectionName);
+      const connection = this.getApiConnectionForLookup(
+         project,
+         connectionName,
+      );
       const malloyConnection = await this.getMalloyConnection(
          projectName,
          connectionName,
+         packageName,
       );
 
       return listTablesForSchema(
@@ -258,10 +291,12 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
       sqlStatement: string,
+      packageName?: string,
    ): Promise<ApiSqlSource> {
       const malloyConnection = await this.getMalloyConnection(
          projectName,
          connectionName,
+         packageName,
       );
 
       try {
@@ -290,14 +325,19 @@ export class ConnectionController {
       connectionName: string,
       schemaName: string,
       tablePath: string,
+      packageName?: string,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
          projectName,
          connectionName,
+         packageName,
       );
       // Use getApiConnection to get the unwrapped ApiConnection config, consistent with listSchemas and listTables.
       const project = await this.projectStore.getProject(projectName, false);
-      const connection = this.getApiConnectionForLookup(project, connectionName);
+      const connection = this.getApiConnectionForLookup(
+         project,
+         connectionName,
+      );
 
       // TODO: Move this database connection logic to the db_utils.ts file -- and
       // ultimately into a connection-specific class.
@@ -371,10 +411,12 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       options: string,
+      packageName?: string,
    ): Promise<ApiQueryData> {
       const malloyConnection = await this.getMalloyConnection(
          projectName,
          connectionName,
+         packageName,
       );
 
       let runSQLOptions: RunSQLOptions = {};
@@ -402,10 +444,12 @@ export class ConnectionController {
       projectName: string,
       connectionName: string,
       sqlStatement: string,
+      packageName?: string,
    ): Promise<ApiTemporaryTable> {
       const malloyConnection = await this.getMalloyConnection(
          projectName,
          connectionName,
+         packageName,
       );
 
       try {
@@ -505,7 +549,10 @@ export class ConnectionController {
       }
 
       validateAzureAttachedDatabases(connection as ApiConnection);
-      validateAdminAuthoredConnection(connectionName, connection as ApiConnection);
+      validateAdminAuthoredConnection(
+         connectionName,
+         connection as ApiConnection,
+      );
 
       logger.info(
          `Updating connection "${connectionName}" in project "${projectName}"`,

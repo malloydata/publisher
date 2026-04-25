@@ -76,6 +76,14 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
    return privateKeyContent;
 }
 
+// NOTE: This narrows the project-author API surface (it rejects securityPolicy,
+// allowedDirectories, setupSQL, etc.). It is NOT a filesystem isolation
+// boundary: attachedDatabases[].path is not normalized or constrained to stay
+// under the project root, and DuckDB's local-file access is unchanged.
+// Adversarial filesystem isolation is explicit non-goal of the MalloyConfig
+// adoption — see PR #682 release notes ("DuckDB hardening knobs are not
+// exposed", "no adversarial DuckDB filesystem isolation"). Future work owns
+// any path-traversal/allowlist enforcement.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
@@ -163,12 +171,7 @@ type ServiceAccountKey = {
 function parseServiceAccountKey(json?: string): ServiceAccountKey | undefined {
    if (!json) return undefined;
    const keyData = JSON.parse(json) as ServiceAccountKey;
-   const requiredFields = [
-      "type",
-      "project_id",
-      "private_key",
-      "client_email",
-   ];
+   const requiredFields = ["type", "project_id", "private_key", "client_email"];
    for (const field of requiredFields) {
       if (!keyData[field]) {
          throw new Error(
@@ -223,12 +226,29 @@ function validateConnectionShape(connection: ApiConnection): void {
       case "postgres":
       case "mysql":
       case "bigquery":
+         break;
+      case "duckdb":
+         if (!connection.duckdbConnection) {
+            throw new Error("DuckDB connection configuration is missing.");
+         }
+         break;
+      case "motherduck":
+         if (!connection.motherduckConnection) {
+            throw new Error("MotherDuck connection configuration is missing.");
+         }
+         if (!connection.motherduckConnection.accessToken) {
+            throw new Error("MotherDuck access token is required.");
+         }
+         break;
       case "trino":
+         if (!connection.trinoConnection) {
+            throw new Error("Trino connection configuration is missing.");
+         }
          break;
       case "snowflake": {
          const snowflakeConnection = connection.snowflakeConnection;
          if (!snowflakeConnection) {
-            break;
+            throw new Error("Snowflake connection configuration is missing.");
          }
          if (!snowflakeConnection.account) {
             throw new Error("Snowflake account is required.");
@@ -236,10 +256,7 @@ function validateConnectionShape(connection: ApiConnection): void {
          if (!snowflakeConnection.username) {
             throw new Error("Snowflake username is required.");
          }
-         if (
-            !snowflakeConnection.password &&
-            !snowflakeConnection.privateKey
-         ) {
+         if (!snowflakeConnection.password && !snowflakeConnection.privateKey) {
             throw new Error(
                "Snowflake password or private key or private key path is required.",
             );
@@ -375,8 +392,7 @@ export function assembleProjectConnections(
                schema: connection.snowflakeConnection?.schema,
                role: connection.snowflakeConnection?.role,
                timeoutMs:
-                  connection.snowflakeConnection
-                     ?.responseTimeoutMilliseconds,
+                  connection.snowflakeConnection?.responseTimeoutMilliseconds,
             };
             break;
          }

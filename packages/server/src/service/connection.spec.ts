@@ -1227,9 +1227,9 @@ describe("connection integration tests", () => {
                testProjectPath,
             );
 
-            expect(assembled.pojo.connections.trino_peaka.extraCredential).toEqual(
-               { peakaKey: "peaka-secret" },
-            );
+            expect(
+               assembled.pojo.connections.trino_peaka.extraCredential,
+            ).toEqual({ peakaKey: "peaka-secret" });
             expect(
                assembled.pojo.connections.trino_peaka.extraConfig,
             ).toBeUndefined();
@@ -1244,7 +1244,7 @@ describe("connection integration tests", () => {
                         type: "bigquery",
                         bigqueryConnection: {
                            defaultProjectId: "test-project",
-                           serviceAccountKeyJson: "{\"invalid\":\"key\"}",
+                           serviceAccountKeyJson: '{"invalid":"key"}',
                         },
                      },
                   ],

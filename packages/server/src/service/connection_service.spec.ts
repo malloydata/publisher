@@ -643,9 +643,7 @@ describe("service/connection_service", () => {
          } as unknown as Awaited<
             ReturnType<typeof connectionService.getConnection>
          >);
-         (mockProjectStore.getProject as sinon.SinonStub).resolves(
-            mockProject,
-         );
+         (mockProjectStore.getProject as sinon.SinonStub).resolves(mockProject);
 
          await connectionService.deleteConnection(
             "test-project",

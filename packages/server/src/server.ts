@@ -456,6 +456,9 @@ app.get(
             await connectionController.listSchemas(
                req.params.projectName,
                req.params.connectionName,
+               typeof req.query.packageName === "string"
+                  ? req.query.packageName
+                  : undefined,
             ),
          );
       } catch (error) {
@@ -476,6 +479,9 @@ app.get(
             req.params.connectionName,
             req.params.schemaName,
             normalizeQueryArray(req.query.tableNames),
+            typeof req.query.packageName === "string"
+               ? req.query.packageName
+               : undefined,
          );
          res.status(200).json(results);
       } catch (error) {
@@ -496,6 +502,9 @@ app.get(
             req.params.connectionName,
             req.params.schemaName,
             req.params.tablePath,
+            typeof req.query.packageName === "string"
+               ? req.query.packageName
+               : undefined,
          );
          res.status(200).json(results);
       } catch (error) {
@@ -518,6 +527,9 @@ app.get(
                req.params.projectName,
                req.params.connectionName,
                req.query.sqlStatement as string,
+               typeof req.query.packageName === "string"
+                  ? req.query.packageName
+                  : undefined,
             ),
          );
       } catch (error) {
@@ -537,6 +549,9 @@ app.post(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
+               typeof req.query.packageName === "string"
+                  ? req.query.packageName
+                  : undefined,
             ),
          );
       } catch (error) {
@@ -560,6 +575,9 @@ app.get(
                req.params.connectionName,
                req.query.sqlStatement as string,
                req.query.options as string,
+               typeof req.query.packageName === "string"
+                  ? req.query.packageName
+                  : undefined,
             ),
          );
       } catch (error) {
@@ -580,6 +598,9 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.query.options as string,
+               typeof req.query.packageName === "string"
+                  ? req.query.packageName
+                  : undefined,
             ),
          );
       } catch (error) {
@@ -602,6 +623,9 @@ app.get(
                req.params.projectName,
                req.params.connectionName,
                req.query.sqlStatement as string,
+               typeof req.query.packageName === "string"
+                  ? req.query.packageName
+                  : undefined,
             ),
          );
       } catch (error) {
@@ -621,6 +645,9 @@ app.post(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
+               typeof req.query.packageName === "string"
+                  ? req.query.packageName
+                  : undefined,
             ),
          );
       } catch (error) {

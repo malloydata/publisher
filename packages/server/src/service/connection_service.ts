@@ -186,9 +186,13 @@ export class ConnectionService {
             conn.name === connectionName ? updatedConnection : conn,
          );
 
+         // Pass isUpdateConnectionRequest=true so the DuckLake wrapper
+         // re-attaches against the updated catalog/storage settings instead
+         // of trusting the prior generation's persisted attach state.
          const nextMalloyConfig = buildProjectMalloyConfig(
             updatedConnections,
             project.metadata.location || "",
+            true,
          );
 
          await this.projectStore.updateConnection(

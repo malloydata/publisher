@@ -273,9 +273,7 @@ describe("service/package", () => {
                      (outsideResults.compactResult as { c: number }[])[0]?.c,
                   ).toBe(1);
                } finally {
-                  await packageInstance
-                     ?.getMalloyConfig()
-                     .releaseConnections();
+                  await packageInstance?.getMalloyConfig().releaseConnections();
                   await fs.rm(outsidePath, { force: true });
                }
             },

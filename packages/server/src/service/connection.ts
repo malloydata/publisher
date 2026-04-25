@@ -850,9 +850,13 @@ function entryToDuckDBOptions(
    return removeUndefined({ ...rest, name }) as PublisherDuckDBOptions;
 }
 
-function removeUndefined(value: Record<string, unknown>): Record<string, unknown> {
+function removeUndefined(
+   value: Record<string, unknown>,
+): Record<string, unknown> {
    return Object.fromEntries(
-      Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined),
+      Object.entries(value).filter(
+         ([, fieldValue]) => fieldValue !== undefined,
+      ),
    );
 }
 
@@ -917,17 +921,32 @@ function getMetadataForLookup(
    return name ? metadata.get(name) : undefined;
 }
 
-function isDuckDBConnection(connection: Connection): connection is DuckDBConnection {
+function isDuckDBConnection(
+   connection: Connection,
+): connection is DuckDBConnection {
    return connection instanceof DuckDBConnection;
 }
 
+/**
+ * @param isUpdateConnectionRequest Forces a re-ATTACH on the DuckLake wrapper
+ *   even when its catalog database is already attached on the cached
+ *   connection. Set true when this build is replacing a prior generation due
+ *   to a connection-config change, so the new generation rebinds against the
+ *   updated DuckLake settings (catalog DSN, storage secrets) rather than
+ *   trusting whatever attach state the prior generation left behind. On a
+ *   fresh project the existing-attach check fails anyway, so the flag is a
+ *   no-op there. Only the DuckLake branch consults it today.
+ */
 export function buildProjectMalloyConfig(
    connections: ApiConnection[] = [],
    projectPath: string = "",
    isUpdateConnectionRequest: boolean = false,
 ): ProjectMalloyConfig {
    const assembled = assembleProjectConnections(connections, projectPath);
-   const wrapperConnections = new Map<string, Connection>();
+   // Cache the build Promise rather than the resolved Connection so two
+   // concurrent lookupConnection() calls for the same name share one build
+   // and we never leak a losing-instance pool/handle.
+   const wrapperConnections = new Map<string, Promise<Connection>>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
@@ -958,22 +977,26 @@ export function buildProjectMalloyConfig(
    }
 
    malloyConfig.wrapConnections(
-      (
-         base: LookupConnection<Connection>,
-      ): LookupConnection<Connection> => ({
+      (base: LookupConnection<Connection>): LookupConnection<Connection> => ({
          lookupConnection: async (name?: string): Promise<Connection> => {
             const metadata = getMetadataForLookup(assembled.metadata, name);
 
             if (metadata?.isDuckLake) {
-               let connection = wrapperConnections.get(name!);
-               if (!connection) {
+               let connectionPromise = wrapperConnections.get(name!);
+               if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connection = buildDuckLakeConnection(metadata, entry);
-                  wrapperConnections.set(name!, connection);
+                  connectionPromise = Promise.resolve(
+                     buildDuckLakeConnection(metadata, entry),
+                  );
+                  wrapperConnections.set(name!, connectionPromise);
                }
+               const connection = await connectionPromise;
                if (
                   isUpdateConnectionRequest ||
-                  !(await isDatabaseAttached(connection as DuckDBConnection, name!))
+                  !(await isDatabaseAttached(
+                     connection as DuckDBConnection,
+                     name!,
+                  ))
                ) {
                   await attachDuckLake(
                      connection as DuckDBConnection,
@@ -985,21 +1008,26 @@ export function buildProjectMalloyConfig(
             }
 
             if (metadata?.hasSnowflakePrivateKey) {
-               let connection = wrapperConnections.get(name!);
-               if (!connection) {
-                  connection = buildSnowflakePrivateKeyConnection(metadata);
-                  wrapperConnections.set(name!, connection);
+               let connectionPromise = wrapperConnections.get(name!);
+               if (!connectionPromise) {
+                  connectionPromise = Promise.resolve(
+                     buildSnowflakePrivateKeyConnection(metadata),
+                  );
+                  wrapperConnections.set(name!, connectionPromise);
                }
-               return connection;
+               return connectionPromise;
             }
 
             if (metadata?.hasAzureAttachment) {
-               let connection = wrapperConnections.get(name!);
-               if (!connection) {
+               let connectionPromise = wrapperConnections.get(name!);
+               if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
-                  connection = buildAzureDuckDBConnection(metadata, entry);
-                  wrapperConnections.set(name!, connection);
+                  connectionPromise = Promise.resolve(
+                     buildAzureDuckDBConnection(metadata, entry),
+                  );
+                  wrapperConnections.set(name!, connectionPromise);
                }
+               const connection = await connectionPromise;
                await attachOnce(connection, metadata);
                return connection;
             }
@@ -1019,9 +1047,10 @@ export function buildProjectMalloyConfig(
       releaseConnections: async () => {
          const closeResults = await Promise.allSettled([
             malloyConfig.releaseConnections(),
-            ...Array.from(wrapperConnections.values(), (connection) =>
-               connection.close(),
-            ),
+            ...Array.from(wrapperConnections.values(), async (promise) => {
+               const connection = await promise;
+               await connection.close();
+            }),
          ]);
          wrapperConnections.clear();
 
@@ -1029,6 +1058,14 @@ export function buildProjectMalloyConfig(
             (result): result is PromiseRejectedResult =>
                result.status === "rejected",
          );
+         // Log every failure individually before throwing — Promise.allSettled
+         // already let every branch run, and a single AggregateError otherwise
+         // hides per-branch detail from callers that just log the error.
+         for (const failure of failures) {
+            logger.error("Failed to release project connection", {
+               error: failure.reason,
+            });
+         }
          if (failures.length > 0) {
             throw new AggregateError(
                failures.map((failure) => failure.reason),
@@ -1296,7 +1333,10 @@ export async function testConnectionConfig(
       }
 
       if (connectionConfig.type === "ducklake" && connectionConfig.name) {
-         await deleteDuckLakeConnectionFile(connectionConfig.name, process.cwd());
+         await deleteDuckLakeConnectionFile(
+            connectionConfig.name,
+            process.cwd(),
+         );
       }
    }
 }
