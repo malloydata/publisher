@@ -92,7 +92,7 @@ describe("DuckDB Attached Databases", () => {
                message.includes("Extension")
             ) {
                console.error(
-                  `\n⚠️  BigQuery extension not available for this DuckDB version/platform.`,
+                  `\nBigQuery extension not available for this DuckDB version/platform.`,
                );
                console.error(`Error: ${message}\n`);
             }
@@ -115,7 +115,30 @@ describe("DuckDB Attached Databases", () => {
                message.includes("Extension")
             ) {
                console.error(
-                  `\n⚠️  Snowflake extension not available for this DuckDB version/platform.`,
+                  `\nSnowflake extension not available for this DuckDB version/platform.`,
+               );
+               console.error(`Error: ${message}\n`);
+            }
+            throw error;
+         }
+      });
+
+      it("should load ducklake extension", async () => {
+         try {
+            await connection.runSQL("INSTALL ducklake;");
+            await connection.runSQL("LOAD ducklake;");
+            const result = await connection.runSQL(
+               "SELECT * FROM duckdb_extensions() WHERE extension_name = 'ducklake';",
+            );
+            expect(result.rows.length).toBeGreaterThan(0);
+         } catch (error) {
+            const message = (error as Error).message;
+            if (
+               message.includes("not found") ||
+               message.includes("Extension")
+            ) {
+               console.error(
+                  `\nDuckLake extension not available for this DuckDB version/platform.`,
                );
                console.error(`Error: ${message}\n`);
             }
@@ -707,6 +730,41 @@ describe("createProjectConnections - DuckDB", () => {
          ).rejects.toThrow("accessKeyId and secretAccessKey are required");
       });
 
+      it("should throw on DuckLake without catalog connection", async () => {
+         const connections = [
+            {
+               name: "ducklake_no_catalog",
+               type: "ducklake",
+               ducklakeConnection: {
+                  storage: {
+                     bucketUrl: "s3://test-bucket",
+                     s3Connection: {
+                        accessKeyId: "test",
+                        secretAccessKey: "test",
+                     },
+                  },
+               },
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("PostgreSQL connection configuration is required");
+      });
+
+      it("should throw on DuckLake without connection config", async () => {
+         const connections = [
+            {
+               name: "ducklake_no_config",
+               type: "ducklake",
+            },
+         ] as ApiConnection[];
+
+         await expect(
+            createProjectConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow("DuckLake connection configuration is missing");
+      });
+
       it("should throw on Snowflake attach without credentials", async () => {
          const connections: ApiConnection[] = [
             {
@@ -892,7 +950,7 @@ describe("createProjectConnections - Other Connection Types", () => {
       os.tmpdir(),
       "connection-validation-tests",
    );
-   let createdConnections: Map<string, unknown> = new Map();
+   const createdConnections: Map<string, unknown> = new Map();
 
    beforeEach(async () => {
       await fs.mkdir(PROJECT_TEST_DIR, { recursive: true });

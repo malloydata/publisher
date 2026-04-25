@@ -1,7 +1,9 @@
+import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
 import { ProjectStore } from "../service/project_store";
+import type { FilterParams } from "../service/filter";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -28,6 +30,8 @@ export class QueryController {
       queryName: string,
       query: string,
       compactJson: boolean = false,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
    ): Promise<ApiQuery> {
       const project = await this.projectStore.getProject(projectName, false);
       const p = await project.getPackage(packageName, false);
@@ -40,12 +44,16 @@ export class QueryController {
             sourceName,
             queryName,
             query,
+            filterParams,
+            bypassFilters,
          );
+         const renderLogs = validateRenderTags(result);
          return {
             result: compactJson
                ? JSON.stringify(compactResult, bigIntReplacer)
                : JSON.stringify(result),
             resource: `${API_PREFIX}/projects/${projectName}/packages/${packageName}/models/${modelPath}/query`,
+            renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
          } as ApiQuery;
       }
    }

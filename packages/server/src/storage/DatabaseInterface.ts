@@ -34,7 +34,7 @@ export interface ResourceRepository {
    getConnectionById(id: string): Promise<Connection | null>;
    getConnectionByName(
       projectId: string,
-      id: string,
+      name: string,
    ): Promise<Connection | null>;
    createConnection(
       connection: Omit<Connection, "id" | "createdAt" | "updatedAt">,
@@ -44,6 +44,44 @@ export interface ResourceRepository {
       updates: Partial<Connection>,
    ): Promise<Connection>;
    deleteConnection(id: string): Promise<void>;
+
+   // Materializations
+   listMaterializations(
+      projectId: string,
+      packageName: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]>;
+   getMaterializationById(id: string): Promise<Materialization | null>;
+   getActiveMaterialization(
+      projectId: string,
+      packageName: string,
+   ): Promise<Materialization | null>;
+   createMaterialization(
+      projectId: string,
+      packageName: string,
+      status?: MaterializationStatus,
+      metadata?: Record<string, unknown> | null,
+   ): Promise<Materialization>;
+   updateMaterialization(
+      id: string,
+      updates: {
+         status?: MaterializationStatus;
+         startedAt?: Date;
+         completedAt?: Date;
+         error?: string | null;
+         metadata?: Record<string, unknown> | null;
+      },
+   ): Promise<Materialization>;
+   deleteMaterialization(id: string): Promise<void>;
+   // Build Manifests
+   listManifestEntries(
+      projectId: string,
+      packageName: string,
+   ): Promise<ManifestEntry[]>;
+   upsertManifestEntry(
+      entry: Omit<ManifestEntry, "id" | "createdAt" | "updatedAt">,
+   ): Promise<ManifestEntry>;
+   deleteManifestEntry(id: string): Promise<void>;
 }
 
 export interface Project {
@@ -75,4 +113,68 @@ export interface Connection {
    config: Record<string, unknown>;
    createdAt: Date;
    updatedAt: Date;
+}
+
+export type MaterializationStatus =
+   | "PENDING"
+   | "RUNNING"
+   | "SUCCESS"
+   | "FAILED"
+   | "CANCELLED";
+
+export interface Materialization {
+   id: string;
+   projectId: string;
+   packageName: string;
+   status: MaterializationStatus;
+   startedAt: Date | null;
+   completedAt: Date | null;
+   error: string | null;
+   metadata: Record<string, unknown> | null;
+   createdAt: Date;
+   updatedAt: Date;
+}
+
+export interface ManifestEntry {
+   id: string;
+   projectId: string;
+   packageName: string;
+   buildId: string;
+   tableName: string;
+   sourceName: string;
+   connectionName: string;
+   createdAt: Date;
+   updatedAt: Date;
+}
+
+// ==================== MANIFEST STORE ====================
+
+export interface BuildManifestEntry {
+   tableName: string;
+}
+
+export interface BuildManifest {
+   entries: Record<string, BuildManifestEntry>;
+   strict?: boolean;
+}
+
+/**
+ * Abstraction for manifest storage. Standalone mode uses DuckDB;
+ * orchestrated mode swaps in a DuckLakeManifestStore.
+ */
+export interface ManifestStore {
+   getManifest(projectId: string, packageName: string): Promise<BuildManifest>;
+   writeEntry(
+      projectId: string,
+      packageName: string,
+      buildId: string,
+      tableName: string,
+      sourceName: string,
+      connectionName: string,
+   ): Promise<void>;
+   deleteEntry(id: string): Promise<void>;
+   listEntries(
+      projectId: string,
+      packageName: string,
+   ): Promise<ManifestEntry[]>;
 }

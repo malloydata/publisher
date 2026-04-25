@@ -18,6 +18,7 @@ import {
    Typography,
 } from "@mui/material";
 import React, { useState } from "react";
+import { Connection as ApiConnection, Column } from "../../client/api";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -28,19 +29,43 @@ interface ConnectionExplorerProps {
    connectionName: string;
    schema?: string;
    resourceUri: string;
+   connection?: ApiConnection;
+}
+
+/** Check if a schema name corresponds to an Azure attached database */
+function isAzureSchema(
+   connection: ApiConnection | undefined,
+   schemaName: string,
+): boolean {
+   if (!connection || connection.type !== "duckdb") return false;
+   const attachedDbs = connection.duckdbConnection?.attachedDatabases || [];
+   return attachedDbs.some(
+      (db) => db.type === "azure" && db.name === schemaName,
+   );
+}
+
+/** Check if a schema name corresponds to a cloud storage path */
+function isCloudStorageSchema(schemaName: string): boolean {
+   return (
+      schemaName.startsWith("gs://") ||
+      schemaName.startsWith("s3://") ||
+      schemaName.startsWith("https://") ||
+      schemaName.startsWith("abfss://") ||
+      schemaName.startsWith("az://")
+   );
 }
 
 export default function ConnectionExplorer({
    connectionName,
    resourceUri,
    schema,
+   connection,
 }: ConnectionExplorerProps) {
    const { apiClients } = useServer();
    const { projectName: projectName } = parseResourceUri(resourceUri);
-   const [selectedTable, setSelectedTable] = React.useState<
-      | { resource: string; columns: Array<{ name: string; type: string }> }
-      | undefined
-   >(undefined);
+   const [selectedTableResource, setSelectedTableResource] = React.useState<
+      string | null
+   >(null);
    const [selectedSchema, setSelectedSchema] = React.useState<string | null>(
       schema || null,
    );
@@ -123,10 +148,8 @@ export default function ConnectionExplorer({
                                           key={schemaName}
                                           selected={isSelected}
                                           onClick={() => {
-                                             {
-                                                setSelectedSchema(schemaName);
-                                                setSelectedTable(undefined);
-                                             }
+                                             setSelectedSchema(schemaName);
+                                             setSelectedTableResource(null);
                                           }}
                                        >
                                           <ListItemText primary={schemaName} />
@@ -146,19 +169,23 @@ export default function ConnectionExplorer({
                   <TablesInSchema
                      connectionName={connectionName}
                      schemaName={selectedSchema}
-                     onTableClick={(table) => {
-                        setSelectedTable(table);
+                     onTableSelect={(resource) => {
+                        setSelectedTableResource(resource);
                      }}
                      resourceUri={resourceUri}
+                     connection={connection}
                   />
                </Paper>
             )}
          </Grid>
          <Grid size={{ xs: 12, md: schema ? 6 : 4 }}>
-            {selectedTable && (
-               <Paper sx={{ p: 1, m: 0 }}>
-                  <TableSchemaViewer table={selectedTable} />
-               </Paper>
+            {selectedSchema && selectedTableResource && (
+               <SelectedTableDetailPanel
+                  projectName={projectName}
+                  connectionName={connectionName}
+                  schemaName={selectedSchema}
+                  tableResource={selectedTableResource}
+               />
             )}
          </Grid>
       </Grid>
@@ -166,10 +193,69 @@ export default function ConnectionExplorer({
 }
 
 type TableSchemaViewerProps = {
-   table: { resource: string; columns: Array<{ name: string; type: string }> };
+   table: { resource: string; columns: Column[] };
+   loading?: boolean;
 };
 
-function TableSchemaViewer({ table }: TableSchemaViewerProps) {
+function SelectedTableDetailPanel({
+   projectName,
+   connectionName,
+   schemaName,
+   tableResource,
+}: {
+   projectName: string;
+   connectionName: string;
+   schemaName: string;
+   tableResource: string;
+}) {
+   const { apiClients } = useServer();
+   const {
+      data: tableDetailRes,
+      isLoading: tableDetailLoading,
+      isError: tableDetailError,
+      error: tableDetailErrorObj,
+   } = useQueryWithApiError({
+      queryKey: [
+         "connectionTableDetail",
+         projectName,
+         connectionName,
+         schemaName,
+         tableResource,
+      ],
+      queryFn: () =>
+         apiClients.connections.getTable(
+            projectName,
+            connectionName,
+            schemaName,
+            tableResource,
+         ),
+      enabled: Boolean(schemaName) && Boolean(tableResource),
+   });
+
+   const table = {
+      resource: tableDetailRes?.data?.resource ?? tableResource,
+      columns: tableDetailRes?.data?.columns ?? [],
+   };
+
+   return (
+      <Paper sx={{ p: 1, m: 0 }}>
+         {tableDetailError && (
+            <ApiErrorDisplay
+               error={tableDetailErrorObj}
+               context={`${projectName} > ${connectionName} > ${schemaName} > ${tableResource}`}
+            />
+         )}
+         {!tableDetailError && (
+            <TableSchemaViewer table={table} loading={tableDetailLoading} />
+         )}
+      </Paper>
+   );
+}
+
+function TableSchemaViewer({ table, loading }: TableSchemaViewerProps) {
+   if (loading) {
+      return <Loading text="Loading columns..." />;
+   }
    return (
       <>
          <Typography
@@ -180,7 +266,11 @@ function TableSchemaViewer({ table }: TableSchemaViewerProps) {
                wordBreak: "break-all",
             }}
          >
-            Schema: {table.resource}
+            {table.resource.includes("://") ||
+            /\.(parquet|csv|json|tsv|ndjson)$/i.test(table.resource)
+               ? "File"
+               : "Table"}
+            : {table.resource}
          </Typography>
          <Divider />
          <Box sx={{ mt: "10px", maxHeight: "600px", overflowY: "auto" }}>
@@ -217,18 +307,17 @@ function TableSchemaViewer({ table }: TableSchemaViewerProps) {
 interface TablesInSchemaProps {
    connectionName: string;
    schemaName: string;
-   onTableClick: (table: {
-      resource: string;
-      columns: Array<{ name: string; type: string }>;
-   }) => void;
+   onTableSelect: (tableResource: string) => void;
    resourceUri: string;
+   connection?: ApiConnection;
 }
 
 function TablesInSchema({
    connectionName,
    schemaName,
-   onTableClick,
+   onTableSelect,
    resourceUri,
+   connection,
 }: TablesInSchemaProps) {
    const { projectName: projectName } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -243,26 +332,31 @@ function TablesInSchema({
          ),
    });
 
+   const isAzure = isAzureSchema(connection, schemaName);
+   const getDisplayName = (resource: string) =>
+      isAzure ? resource : resource.split(".").pop() || resource;
+
    const filteredTables =
       isSuccess && data?.data
          ? data.data
               .filter((table: { resource: string }) => {
-                 const tableName =
-                    table.resource.split(".").pop()?.toLowerCase() || "";
-                 return tableName.includes(searchTerm.toLowerCase());
+                 return getDisplayName(table.resource)
+                    .toLowerCase()
+                    .includes(searchTerm.toLowerCase());
               })
               .sort((a: { resource: string }, b: { resource: string }) => {
-                 const tableNameA = a.resource.split(".").pop() || a.resource;
-                 const tableNameB = b.resource.split(".").pop() || b.resource;
-                 return tableNameA.localeCompare(tableNameB);
+                 return getDisplayName(a.resource).localeCompare(
+                    getDisplayName(b.resource),
+                 );
               })
          : [];
 
    return (
       <>
          <Typography variant="overline" fontWeight="bold">
-            {schemaName.includes("gs") || schemaName.includes("s3")
-               ? `Table Files in ${schemaName}`
+            {isCloudStorageSchema(schemaName) ||
+            isAzureSchema(connection, schemaName)
+               ? `Files in ${schemaName}`
                : `Tables in ${schemaName}`}
          </Typography>
          <Divider />
@@ -295,26 +389,23 @@ function TablesInSchema({
                         resource: string;
                         columns: Array<{ name: string; type: string }>;
                      }) => {
-                        let tableName = "";
-                        if (
-                           table.resource.includes("gs://") ||
-                           table.resource.includes("s3://")
-                        ) {
+                        let tableName = getDisplayName(table.resource);
+                        if (!isAzure && table.resource.includes("://")) {
                            tableName =
                               table.resource.split("/").pop() || table.resource;
-                        } else {
-                           // Extract table name from resource path (e.g., "schema.table_name" -> "table_name")
-                           tableName =
-                              table.resource.split(".").pop() || table.resource;
                         }
                         return (
                            <ListItemButton
                               key={table.resource}
-                              onClick={() => onTableClick(table)}
+                              onClick={() => onTableSelect(table.resource)}
                            >
                               <ListItemText
                                  primary={tableName}
-                                 secondary={`${table.columns.length} columns`}
+                                 secondary={
+                                    table.columns.length > 0
+                                       ? `${table.columns.length} columns`
+                                       : undefined
+                                 }
                               />
                            </ListItemButton>
                         );

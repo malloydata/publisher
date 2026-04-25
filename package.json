@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "engines": {
-    "bun": ">=1.2.2"
+    "bun": ">=1.3.1"
   },
   "scripts": {
     "clean": "bunx rimraf -g **/node_modules **/dist",
@@ -14,7 +14,7 @@
     "build:app": "cd packages/app && bun run build ",
     "build:app:server": "cd packages/app && bun run build:server",
     "build:server": "cd packages/server && bun run build",
-    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server && bun run install-duckdb-snowflake",
+    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server && bun run install-duckdb-bindings && bun run install-duckdb-snowflake",
     "build:cli": "cd packages/cli && bun run build",
     "build:server-deploy": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:app:server && NODE_ENV=production bun run build:server",
     "start": "cd packages/server && bun run start",
@@ -43,7 +43,10 @@
     "format:server": "cd packages/server && bun run format",
     "format": "bun run format:sdk && bun run format:app && bun run format:server",
     "format:cli": "cd packages/cli && bun run format",
+    "prettier:check": "bunx prettier './packages/**/*.{ts,tsx}' --check",
+    "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
+    "install-duckdb-bindings": "node scripts/install-duckdb-bindings.js",
     "install-duckdb-snowflake": "node scripts/install-duckdb-snowflake.js"
   },
   "devDependencies": {
@@ -60,7 +63,7 @@
     "speccy": "^0.11.0"
   },
   "dependencies": {
-    "duckdb": "1.4.3",
+    "duckdb": "1.4.4",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.0",
     "fn": "^0.2.0",
@@ -68,8 +71,8 @@
     "react-dom": "^19.1.0"
   },
   "resolutions": {
-    "duckdb": "1.4.3",
+    "duckdb": "1.4.4",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.333"
+    "@malloydata/malloy-interfaces": "^0.0.377"
   }
 }
