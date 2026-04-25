@@ -6,5 +6,5 @@ export type { MalloyPublisherAppProps } from "./App";
 export * from "./components/layout/Header";
 export { default as theme } from "./theme";
 // Additional component exports for advanced usage
-export { default as BreadcrumbNav } from "./components/layout/BreadcrumNav/BreadcrumbNav";
+export { default as BreadcrumbNav } from "./components/layout/BreadcrumbNav/BreadcrumbNav";
 export { default as ToggleColorMode } from "./components/theme/ToggleColorMode/ToggleColorMode";
