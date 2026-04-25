@@ -22,8 +22,8 @@ export class WatchModeController {
    public getWatchStatus: Handler<void, WatchStatusRes> = async (_req, res) => {
       return res.json({
          enabled: !!this.watchingPath,
-         watchingPath: this.watchingPath,
-         projectName: this.watchingProjectName ?? undefined,
+         watchingPath: this.watchingPath ?? "",
+         projectName: this.watchingProjectName ?? "",
       });
    };
 

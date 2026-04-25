@@ -1,0 +1,5 @@
+{
+  "name": "persist-test",
+  "version": "1.0.0",
+  "description": "DuckDB persist test fixture"
+}

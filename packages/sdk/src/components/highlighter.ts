@@ -1,12 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createHighlighterCore } from "shiki/core";
-import { createOnigurumaEngine } from "shiki/engine/oniguruma";
-
-// Fine-grained imports - only the languages and theme we actually need
-import langJson from "@shikijs/langs/json";
-import langSql from "@shikijs/langs/sql";
-import langTypescript from "@shikijs/langs/typescript";
-import themeGithubLight from "@shikijs/themes/github-light";
+import type { HighlighterCore } from "shiki/core";
 
 const malloyTMGrammar = {
    scopeName: "source.malloy",
@@ -625,33 +618,62 @@ const malloySQLTMGrammar = {
 };
 
 const THEME = "github-light";
-const HIGHLIGHTER = createHighlighterCore({
-   engine: createOnigurumaEngine(import("shiki/wasm")),
-   themes: [themeGithubLight],
-   langs: [
-      langSql,
-      langJson,
-      langTypescript,
-      {
-         name: "malloy",
-         scopeName: "source.malloy",
-         embeddedLangs: ["sql"],
-         ...(malloyDocsTMGrammar as any),
-      },
-      {
-         name: "malloysql",
-         scopeName: "source.malloy-sql",
-         embeddedLangs: ["sql"],
-         ...(malloySQLTMGrammar as any),
-      },
-   ],
-});
+
+// Lazy, cached highlighter factory. The heavy Shiki WASM engine, grammars, and
+// themes are only pulled into the module graph the first time `highlight()` is
+// actually called, so consumers that import the SDK but never render Malloy
+// code don't pay for the ~600KB Oniguruma WASM chunk.
+let highlighterPromise: Promise<HighlighterCore> | undefined;
+
+function getHighlighter(): Promise<HighlighterCore> {
+   if (!highlighterPromise) {
+      highlighterPromise = (async () => {
+         const [
+            { createHighlighterCore },
+            { createOnigurumaEngine },
+            { default: langSql },
+            { default: langJson },
+            { default: langTypescript },
+            { default: themeGithubLight },
+         ] = await Promise.all([
+            import("shiki/core"),
+            import("shiki/engine/oniguruma"),
+            import("@shikijs/langs/sql"),
+            import("@shikijs/langs/json"),
+            import("@shikijs/langs/typescript"),
+            import("@shikijs/themes/github-light"),
+         ]);
+
+         return createHighlighterCore({
+            engine: createOnigurumaEngine(import("shiki/wasm")),
+            themes: [themeGithubLight],
+            langs: [
+               langSql,
+               langJson,
+               langTypescript,
+               {
+                  name: "malloy",
+                  scopeName: "source.malloy",
+                  embeddedLangs: ["sql"],
+                  ...(malloyDocsTMGrammar as any),
+               },
+               {
+                  name: "malloysql",
+                  scopeName: "source.malloy-sql",
+                  embeddedLangs: ["sql"],
+                  ...(malloySQLTMGrammar as any),
+               },
+            ],
+         });
+      })();
+   }
+   return highlighterPromise;
+}
 
 export async function highlight(code: string, lang: string): Promise<string> {
-   const highlighter = await HIGHLIGHTER;
-   const highlightedRaw = highlighter.codeToHtml(code, {
+   const highlighter = await getHighlighter();
+   return highlighter.codeToHtml(code, {
       lang: lang,
       theme: THEME,
    });
-   return highlightedRaw;
 }

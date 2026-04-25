@@ -21,6 +21,14 @@ import {
 import { Configuration } from "../client/configuration";
 import { globalQueryClient } from "../utils/queryClient";
 
+// There's a bug in the OpenAPI generator that causes it to ignore baseURL in
+// the axios request if axios.defaults.baseURL is not set. The per-instance
+// baseURL on the custom axios instance below is the real value we use; this
+// sentinel exists only to satisfy the generated client's code path.
+if (!axios.defaults.baseURL) {
+   axios.defaults.baseURL = "IfYouAreSeeingThis_baseURL_IsNotSet";
+}
+
 export interface ServerContextValue {
    server: string;
    getAccessToken?: () => Promise<string>;

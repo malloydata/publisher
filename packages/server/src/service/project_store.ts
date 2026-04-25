@@ -20,6 +20,7 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
+   BadRequestError,
    FrozenConfigError,
    PackageNotFoundError,
    ProjectNotFoundError,
@@ -30,6 +31,63 @@ import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
+
+const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
+const AZURE_DATA_EXTENSIONS = [
+   ".parquet",
+   ".csv",
+   ".json",
+   ".jsonl",
+   ".ndjson",
+];
+
+function validateAzureUrl(url: string, fieldName: string): void {
+   if (!AZURE_SUPPORTED_SCHEMES.some((s) => url.startsWith(s))) {
+      throw new BadRequestError(
+         `Azure ${fieldName} must use one of: ${AZURE_SUPPORTED_SCHEMES.join(", ")}`,
+      );
+   }
+   const pathWithoutQuery = url.split("?")[0];
+   const stars = (pathWithoutQuery.match(/\*/g) || []).length;
+
+   if (stars === 0) {
+      const lower = pathWithoutQuery.toLowerCase();
+      if (!AZURE_DATA_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: a single-file URL must end with a data file extension (${AZURE_DATA_EXTENSIONS.join(", ")})`,
+         );
+      }
+   } else if (pathWithoutQuery.endsWith("**")) {
+      // recursive — valid
+      // includes all data files in the container and all subdirectories
+   } else {
+      const lastSegment = pathWithoutQuery.split("/").pop() || "";
+      if (stars !== 1 || !lastSegment.startsWith("*")) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: only three URL patterns are supported:\n` +
+               `  • Single file:    path/file.parquet\n` +
+               `  • Directory glob: path/*.ext  (direct children only)\n` +
+               `  • Recursive:      path/**     (includes all data files in the container and all subdirectories)\n` +
+               `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
+         );
+      }
+   }
+}
+
+function validateProjectAzureUrls(project: ApiProject): void {
+   for (const conn of project.connections || []) {
+      if (conn.type !== "duckdb") continue;
+      for (const db of conn.duckdbConnection?.attachedDatabases || []) {
+         if (db.type !== "azure" || !db.azureConnection) continue;
+         const { authType, sasUrl, fileUrl } = db.azureConnection;
+         if (authType === "sas_token" && sasUrl) {
+            validateAzureUrl(sasUrl, `"${db.name}" sasUrl`);
+         } else if (authType === "service_principal" && fileUrl) {
+            validateAzureUrl(fileUrl, `"${db.name}" fileUrl`);
+         }
+      }
+   }
+}
 
 export class ProjectStore {
    public serverRootPath: string;
@@ -262,6 +320,7 @@ export class ProjectStore {
       };
       const existingProject = await repository.getProjectByName(projectName);
 
+      let dbProject: { id: string; name: string };
       if (existingProject) {
          const updateData = {
             description: projectDescription,
@@ -269,10 +328,27 @@ export class ProjectStore {
          };
 
          await repository.updateProject(existingProject.id, updateData);
-         return { id: existingProject.id, name: projectName };
+         dbProject = { id: existingProject.id, name: projectName };
       } else {
-         return await repository.createProject(projectData);
+         dbProject = await repository.createProject(projectData);
       }
+
+      // Initialize DuckLake manifest storage if configured on the project.
+      const materializationStorage = project.metadata
+         ?.materializationStorage as
+         | { catalogUrl?: string; dataPath?: string }
+         | undefined;
+      if (
+         materializationStorage?.catalogUrl &&
+         materializationStorage?.dataPath
+      ) {
+         await this.storageManager.initializeDuckLakeForProject(dbProject.id, {
+            catalogUrl: materializationStorage.catalogUrl,
+            dataPath: materializationStorage.dataPath,
+         });
+      }
+
+      return dbProject;
    }
 
    private async addPackages(
@@ -511,22 +587,10 @@ export class ProjectStore {
    private async cleanupAndCreatePublisherPath() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
 
-      // Ensure serverRootPath exists and is a directory
-      try {
-         const stats = await fs.promises.stat(this.serverRootPath);
-         if (!stats.isDirectory()) {
-            throw new Error(
-               `Server root path ${this.serverRootPath} exists but is not a directory`,
-            );
-         }
-      } catch (error) {
-         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            // Directory doesn't exist, create it
-            await fs.promises.mkdir(this.serverRootPath, { recursive: true });
-         } else {
-            throw error;
-         }
-      }
+      // Ensure serverRootPath exists as a directory (mkdir recursive is a
+      // no-op when the directory already exists and avoids a Bun-on-Windows
+      // bug where fs.promises.stat resolves to undefined instead of throwing)
+      await fs.promises.mkdir(this.serverRootPath, { recursive: true });
 
       if (reInit) {
          const uploadDocsPath = path.join(
@@ -762,6 +826,7 @@ export class ProjectStore {
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      validateProjectAzureUrls(project);
       const projectName = project.name;
       if (!projectName) {
          throw new Error("Project name is required");
@@ -870,6 +935,7 @@ export class ProjectStore {
    private isLocalPath(location: string) {
       return (
          location.startsWith("./") ||
+         location.startsWith("../") ||
          location.startsWith("~/") ||
          location.startsWith("/") ||
          path.isAbsolute(location)
@@ -1112,7 +1178,12 @@ export class ProjectStore {
             logger.info(
                `Downloading S3 directory from "${location}" to "${targetPath}"`,
             );
-            await this.downloadS3Directory(location, projectName, targetPath);
+            await this.downloadS3Directory(
+               location,
+               projectName,
+               targetPath,
+               isCompressedFile,
+            );
             return;
          } catch (error) {
             const errorData = this.extractErrorDataFromError(error);
@@ -1169,9 +1240,8 @@ export class ProjectStore {
       if (projectPath.endsWith(".zip")) {
          projectPath = await this.unzipProject(projectPath);
       }
-      const projectDirExists = (
-         await fs.promises.stat(projectPath)
-      ).isDirectory();
+      const projectDirExists =
+         (await fs.promises.stat(projectPath))?.isDirectory() ?? false;
       if (projectDirExists) {
          await fs.promises.rm(absoluteTargetPath, {
             recursive: true,
@@ -1242,10 +1312,43 @@ export class ProjectStore {
       s3Path: string,
       projectName: string,
       absoluteDirPath: string,
+      isCompressedFile: boolean = false,
    ) {
       const trimmedPath = s3Path.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
+
+      if (isCompressedFile) {
+         // Download the single zip file
+         const zipFilePath = `${absoluteDirPath}.zip`;
+         await fs.promises.mkdir(path.dirname(zipFilePath), {
+            recursive: true,
+         });
+
+         const command = new GetObjectCommand({
+            Bucket: bucketName,
+            Key: prefix,
+         });
+         const item = await this.s3Client.send(command);
+         if (!item.Body) {
+            throw new ProjectNotFoundError(
+               `Project ${projectName} not found in ${s3Path}`,
+            );
+         }
+         const file = fs.createWriteStream(zipFilePath);
+         item.Body.transformToWebStream().pipeTo(Writable.toWeb(file));
+         await new Promise<void>((resolve, reject) => {
+            file.on("error", reject);
+            file.on("finish", resolve);
+         });
+
+         // Extract the zip file
+         await this.unzipProject(zipFilePath);
+         logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
+         return;
+      }
+
+      // Original behavior: download directory contents
       const objects = await this.s3Client.listObjectsV2({
          Bucket: bucketName,
          Prefix: prefix,
@@ -1291,6 +1394,7 @@ export class ProjectStore {
             });
          }),
       );
+      logger.info(`Downloaded S3 directory ${s3Path} to ${absoluteDirPath}`);
    }
 
    private parseGitHubUrl(
