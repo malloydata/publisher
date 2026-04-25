@@ -1,7 +1,8 @@
+import { ClientSecretCredential } from "@azure/identity";
+import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Connection, TableSourceDef } from "@malloydata/malloy";
 import { components } from "../api";
-import { ConnectionError } from "../errors";
 import { logger } from "../logger";
 import {
    CloudStorageCredentials,
@@ -16,7 +17,42 @@ import { ApiConnection } from "./model";
 
 type ApiSchema = components["schemas"]["Schema"];
 type ApiTable = components["schemas"]["Table"];
-type ApiTableSource = components["schemas"]["TableSource"];
+type ApiAzureConnection = components["schemas"]["AzureConnection"];
+
+/**
+ * Build a SQL `AND column IN (...)` fragment for optional table-name filtering.
+ * Returns an empty string when `values` is undefined or empty.
+ */
+export function sqlInFilter(columnName: string, values?: string[]): string {
+   if (!values || values.length === 0) return "";
+   const escaped = values.map((v) => `'${v.replace(/'/g, "''")}'`);
+   return `AND ${columnName} IN (${escaped.join(", ")})`;
+}
+
+/**
+ * Group INFORMATION_SCHEMA.COLUMNS rows into ApiTable objects.
+ * Handles both upper-case (Snowflake) and lower-case (Postgres/DuckDB) column names.
+ */
+function groupColumnRowsIntoTables(
+   rows: unknown[],
+   buildResource: (tableName: string) => string,
+): ApiTable[] {
+   const tableMap = new Map<string, { name: string; type: string }[]>();
+   for (const row of rows) {
+      const r = row as Record<string, unknown>;
+      const tableName = String(r.TABLE_NAME ?? r.table_name ?? "");
+      const columnName = String(r.COLUMN_NAME ?? r.column_name ?? "");
+      const dataType = String(r.DATA_TYPE ?? r.data_type ?? "").toLowerCase();
+      if (!tableName) continue;
+      if (!tableMap.has(tableName)) tableMap.set(tableName, []);
+      tableMap.get(tableName)!.push({ name: columnName, type: dataType });
+   }
+   const tables: ApiTable[] = [];
+   for (const [tableName, columns] of tableMap) {
+      tables.push({ resource: buildResource(tableName), columns });
+   }
+   return tables;
+}
 
 function createBigQueryClient(connection: ApiConnection): BigQuery {
    if (!connection.bigqueryConnection) {
@@ -33,26 +69,25 @@ function createBigQueryClient(connection: ApiConnection): BigQuery {
 
    // Add service account key if provided
    if (connection.bigqueryConnection.serviceAccountKeyJson) {
+      let credentials: Record<string, unknown>;
       try {
-         const credentials = JSON.parse(
+         credentials = JSON.parse(
             connection.bigqueryConnection.serviceAccountKeyJson,
          );
-         config.credentials = credentials;
+      } catch (parseError) {
+         throw new Error(
+            `Failed to parse BigQuery service account key JSON: ${(parseError as Error).message}`,
+         );
+      }
+      config.credentials = credentials;
 
-         // Use project_id from credentials if defaultProjectId is not set
-         if (!config.projectId && credentials.project_id) {
-            config.projectId = credentials.project_id;
-         }
+      if (!config.projectId && credentials.project_id) {
+         config.projectId = credentials.project_id as string;
+      }
 
-         if (!config.projectId) {
-            throw new Error(
-               "BigQuery project ID is required. Either set the defaultProjectId in the connection configuration or the project_id in the service account key JSON.",
-            );
-         }
-      } catch (error) {
-         logger.warn(
-            "Failed to parse service account key JSON, using default credentials",
-            { error },
+      if (!config.projectId) {
+         throw new Error(
+            "BigQuery project ID is required. Either set the defaultProjectId in the connection configuration or the project_id in the service account key JSON.",
          );
       }
    } else if (
@@ -100,519 +135,649 @@ function getCloudCredentialsFromAttachedDatabases(
    return null;
 }
 
+async function getSchemasForBigQuery(
+   connection: ApiConnection,
+): Promise<ApiSchema[]> {
+   if (!connection.bigqueryConnection) {
+      throw new Error("BigQuery connection is required");
+   }
+   try {
+      const bigquery = createBigQueryClient(connection);
+      const [datasets] = await bigquery.getDatasets();
+
+      return await Promise.all(
+         datasets.map(async (dataset) => {
+            const [metadata] = await dataset.getMetadata();
+            return {
+               name: dataset.id,
+               isHidden: false,
+               isDefault: false,
+               description: (metadata as { description?: string })?.description,
+            };
+         }),
+      );
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for BigQuery connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for BigQuery connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function getSchemasForPostgres(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.postgresConnection) {
+      throw new Error("Postgres connection is required");
+   }
+   try {
+      // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+      // de-JSONs each row via row.row (matching Malloy-generated queries).
+      const result = await malloyConnection.runSQL(
+         "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t",
+      );
+      const rows = standardizeRunSQLResult(result);
+      return rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         const schemaName = String(
+            typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+         );
+         return {
+            name: schemaName,
+            isHidden: ["information_schema", "pg_catalog", "pg_toast"].includes(
+               schemaName,
+            ),
+            isDefault: schemaName === "public",
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for Postgres connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for Postgres connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function getSchemasForMySQL(
+   connection: ApiConnection,
+): Promise<ApiSchema[]> {
+   if (!connection.mysqlConnection) {
+      throw new Error("Mysql connection is required");
+   }
+   return [
+      {
+         name: connection.mysqlConnection.database || "mysql",
+         isHidden: false,
+         isDefault: true,
+      },
+   ];
+}
+
+async function getSchemasForSnowflake(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.snowflakeConnection) {
+      throw new Error("Snowflake connection is required");
+   }
+   try {
+      const database = connection.snowflakeConnection.database;
+      const schema = connection.snowflakeConnection.schema;
+
+      const filters: string[] = [];
+      if (database) {
+         filters.push(`CATALOG_NAME = '${database}'`);
+      }
+      if (schema) {
+         filters.push(`SCHEMA_NAME = '${schema}'`);
+      }
+      const whereClause =
+         filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
+
+      const result = await malloyConnection.runSQL(
+         `SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM ${database ? `${database}.` : ""}INFORMATION_SCHEMA.SCHEMATA ${whereClause} ORDER BY SCHEMA_NAME`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         const catalogName = String(
+            typedRow.CATALOG_NAME ?? typedRow.catalog_name ?? "",
+         );
+         const schemaName = String(
+            typedRow.SCHEMA_NAME ?? typedRow.schema_name ?? "",
+         );
+         const owner = String(
+            typedRow.SCHEMA_OWNER ?? typedRow.schema_owner ?? "",
+         );
+         return {
+            name: `${catalogName}.${schemaName}`,
+            isHidden:
+               ["SNOWFLAKE", ""].includes(owner) ||
+               schemaName === "INFORMATION_SCHEMA",
+            isDefault: schema ? schemaName === schema : false,
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for Snowflake connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for Snowflake connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function getSchemasForTrino(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.trinoConnection) {
+      throw new Error("Trino connection is required");
+   }
+   try {
+      const configuredSchema = connection.trinoConnection.schema;
+      let allRows: { catalog: string; schema: string }[] = [];
+
+      if (connection.trinoConnection.catalog) {
+         const catalog = connection.trinoConnection.catalog;
+         const result = await malloyConnection.runSQL(
+            `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         allRows = rows.map((row: unknown) => {
+            const r = row as Record<string, unknown>;
+            return {
+               catalog,
+               schema: String(r.schema_name ?? r.Schema ?? ""),
+            };
+         });
+      } else {
+         const catalogsResult = await malloyConnection.runSQL(`SHOW CATALOGS`);
+         const catalogNames = standardizeRunSQLResult(catalogsResult).map(
+            (row: unknown) => {
+               const r = row as Record<string, unknown>;
+               return String(r.Catalog ?? r.catalog ?? "");
+            },
+         );
+
+         for (const catalog of catalogNames) {
+            try {
+               const result = await malloyConnection.runSQL(
+                  `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+               );
+               const rows = standardizeRunSQLResult(result);
+               for (const row of rows) {
+                  const r = row as Record<string, unknown>;
+                  allRows.push({
+                     catalog,
+                     schema: String(r.schema_name ?? r.Schema ?? ""),
+                  });
+               }
+            } catch (catalogError) {
+               logger.warn(
+                  `Failed to list schemas for Trino catalog ${catalog}`,
+                  { error: catalogError },
+               );
+            }
+         }
+      }
+
+      return allRows.map(({ catalog, schema }) => {
+         const name = connection.trinoConnection?.catalog
+            ? schema
+            : `${catalog}.${schema}`;
+         return {
+            name,
+            isHidden: ["information_schema", "performance_schema"].includes(
+               schema,
+            ),
+            isDefault: configuredSchema ? schema === configuredSchema : false,
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for Trino connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for Trino connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function getSchemasForDuckDB(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.duckdbConnection) {
+      throw new Error("DuckDB connection is required");
+   }
+   try {
+      const result = await malloyConnection.runSQL(
+         "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
+         { rowLimit: 1000 },
+      );
+
+      const rows = standardizeRunSQLResult(result);
+
+      const schemas: ApiSchema[] = rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         const schemaName = String(typedRow.schema_name ?? "");
+         const catalogName = String(typedRow.catalog_name ?? "");
+
+         return {
+            name: `${catalogName}.${schemaName}`,
+            isHidden:
+               [
+                  "information_schema",
+                  "performance_schema",
+                  "pg_catalog",
+                  "pg_toast",
+                  "",
+               ].includes(schemaName) ||
+               ["md_information_schema", "system"].includes(catalogName),
+            isDefault: catalogName === "main",
+         };
+      });
+
+      const attachedDatabases =
+         connection.duckdbConnection.attachedDatabases || [];
+
+      const cloudDatabases = attachedDatabases.filter(
+         (attachedDb) =>
+            (attachedDb.type === "gcs" || attachedDb.type === "s3") &&
+            (attachedDb.gcsConnection || attachedDb.s3Connection),
+      );
+
+      const cloudDbPromises = cloudDatabases.map(async (attachedDb) => {
+         const dbType = attachedDb.type as "gcs" | "s3";
+         const credentials =
+            dbType === "gcs"
+               ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
+               : s3ConnectionToCredentials(attachedDb.s3Connection!);
+
+         try {
+            return await listCloudDirectorySchemas(credentials);
+         } catch (cloudError) {
+            logger.warn(
+               `Failed to list ${dbType.toUpperCase()} directory schemas for ${attachedDb.name}`,
+               { error: cloudError },
+            );
+            return [];
+         }
+      });
+
+      const cloudSchemaArrays = await Promise.all(cloudDbPromises);
+      for (const cloudSchemas of cloudSchemaArrays) {
+         schemas.push(...cloudSchemas);
+      }
+
+      const azureDatabases = attachedDatabases.filter(
+         (attachedDb) =>
+            attachedDb.type === "azure" && attachedDb.azureConnection,
+      );
+      for (const attachedDb of azureDatabases) {
+         if (attachedDb.name) {
+            schemas.push({
+               name: attachedDb.name,
+               isHidden: false,
+               isDefault: false,
+            });
+         }
+      }
+
+      return schemas;
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for DuckDB connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for DuckDB connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function getSchemasForMotherDuck(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.motherduckConnection) {
+      throw new Error("MotherDuck connection is required");
+   }
+   try {
+      const database = connection.motherduckConnection.database;
+      const whereClause = database ? `WHERE catalog_name = '${database}'` : "";
+      const result = await malloyConnection.runSQL(
+         `SELECT DISTINCT schema_name FROM information_schema.schemata ${whereClause} ORDER BY schema_name`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         const schemaName = String(
+            typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+         );
+         return {
+            name: schemaName,
+            isHidden: ["information_schema", "performance_schema", ""].includes(
+               schemaName,
+            ),
+            isDefault: schemaName === "main",
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for MotherDuck connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function getSchemasForDuckLake(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   try {
+      // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
+      const catalogName = connection.name;
+      const result = await malloyConnection.runSQL(
+         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${catalogName}' ORDER BY schema_name`,
+         { rowLimit: 1000 },
+      );
+      const rows = standardizeRunSQLResult(result);
+
+      return rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         const schemaName = typedRow.schema_name as string;
+         const shouldShow = schemaName === "main" || schemaName === "public";
+         return {
+            name: schemaName,
+            isHidden: !shouldShow,
+            isDefault: false,
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for DuckLake connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for DuckLake connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
 export async function getSchemasForConnection(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   if (connection.type === "bigquery") {
-      if (!connection.bigqueryConnection) {
-         throw new Error("BigQuery connection is required");
-      }
-      try {
-         const bigquery = createBigQueryClient(connection);
-         const [datasets] = await bigquery.getDatasets();
+   switch (connection.type) {
+      case "bigquery":
+         return getSchemasForBigQuery(connection);
+      case "postgres":
+         return getSchemasForPostgres(connection, malloyConnection);
+      case "mysql":
+         return getSchemasForMySQL(connection);
+      case "snowflake":
+         return getSchemasForSnowflake(connection, malloyConnection);
+      case "trino":
+         return getSchemasForTrino(connection, malloyConnection);
+      case "duckdb":
+         return getSchemasForDuckDB(connection, malloyConnection);
+      case "motherduck":
+         return getSchemasForMotherDuck(connection, malloyConnection);
+      case "ducklake":
+         return getSchemasForDuckLake(connection, malloyConnection);
+      default:
+         throw new Error(`Unsupported connection type: ${connection.type}`);
+   }
+}
 
-         const schemas = await Promise.all(
-            datasets.map(async (dataset) => {
-               const [metadata] = await dataset.getMetadata();
-               return {
-                  name: dataset.id,
-                  isHidden: false,
-                  isDefault: false,
-                  // Include description from dataset metadata if available
-                  description: (metadata as { description?: string })
-                     ?.description,
-               };
-            }),
-         );
-         return schemas;
-      } catch (error) {
-         console.error(
-            `Error getting schemas for BigQuery connection ${connection.name}:`,
-            error,
-         );
-         throw new Error(
-            `Failed to get schemas for BigQuery connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "postgres") {
-      if (!connection.postgresConnection) {
-         throw new Error("Postgres connection is required");
-      }
-      try {
-         // Use the connection's runSQL method to query schemas
-         const result = await malloyConnection.runSQL(
-            "SELECT schema_name as row FROM information_schema.schemata ORDER BY schema_name",
-         );
+function getFileType(key: string): string {
+   const lowerKey = key.toLowerCase();
+   if (lowerKey.endsWith(".csv")) return "csv";
+   if (lowerKey.endsWith(".parquet")) return "parquet";
+   if (lowerKey.endsWith(".json")) return "json";
+   if (lowerKey.endsWith(".jsonl") || lowerKey.endsWith(".ndjson"))
+      return "jsonl";
+   return "unknown";
+}
 
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const schemaName = row as string;
-            return {
-               name: schemaName,
-               isHidden: [
-                  "information_schema",
-                  "pg_catalog",
-                  "pg_toast",
-               ].includes(schemaName),
-               isDefault: schemaName === "public",
-            };
-         });
-      } catch (error) {
-         console.error(
-            `Error getting schemas for Postgres connection ${connection.name}:`,
-            error,
-         );
-         throw new Error(
-            `Failed to get schemas for Postgres connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "mysql") {
-      if (!connection.mysqlConnection) {
-         throw new Error("Mysql connection is required");
-      }
-      try {
-         // For MySQL, return the database name as the schema
-         return [
-            {
-               name: connection.mysqlConnection.database || "mysql",
-               isHidden: false,
-               isDefault: true,
-            },
-         ];
-      } catch (error) {
-         console.error(
-            `Error getting schemas for MySQL connection ${connection.name}:`,
-            error,
-         );
-         throw new Error(
-            `Failed to get schemas for MySQL connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "snowflake") {
-      if (!connection.snowflakeConnection) {
-         throw new Error("Snowflake connection is required");
-      }
-      try {
-         // Use the connection's runSQL method to query schemas
-         const result = await malloyConnection.runSQL("SHOW SCHEMAS");
+/**
+ * Lists blobs in an Azure container matching a glob-like prefix/extension filter.
+ * Parses an HTTPS SAS URL like:
+ *   https://account.blob.core.windows.net/container/path/*.parquet?sasToken
+ * Returns individual file URLs with the SAS token appended.
+ */
+async function listAzureBlobs(
+   fileUrl: string,
+   azureConnection?: ApiAzureConnection,
+): Promise<{ url: string; blobName: string }[]> {
+   // Split URL and SAS token carefully to avoid encoding issues with signatures
+   const queryStart = fileUrl.indexOf("?");
+   const baseUrl = queryStart >= 0 ? fileUrl.substring(0, queryStart) : fileUrl;
+   const sasToken = queryStart >= 0 ? fileUrl.substring(queryStart) : "";
 
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return {
-               name: typedRow.name as string,
-               isHidden: ["SNOWFLAKE", ""].includes(typedRow.owner as string),
-               isDefault: typedRow.isDefault === "Y",
-            };
-         });
-      } catch (error) {
-         console.error(
-            `Error getting schemas for Snowflake connection ${connection.name}:`,
-            error,
-         );
-         throw new Error(
-            `Failed to get schemas for Snowflake connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "trino") {
-      if (!connection.trinoConnection) {
-         throw new Error("Trino connection is required");
-      }
-      try {
-         let result: unknown;
-         // Use the connection's runSQL method to query schemas
-         if (connection.trinoConnection.catalog) {
-            result = await malloyConnection.runSQL(
-               `SHOW SCHEMAS FROM ${connection.trinoConnection.catalog}`,
+   // Parse the URL to extract account, container, and blob path
+   let accountUrl: string;
+   let container: string;
+   let blobPath: string;
+
+   if (baseUrl.startsWith("abfss://")) {
+      // abfss://container/path or abfss://account.dfs.core.windows.net/container/path
+      const withoutScheme = baseUrl.substring("abfss://".length);
+      const parts = withoutScheme.split("/").filter(Boolean);
+      if (parts[0].includes(".")) {
+         // Fully qualified: abfss://account.dfs.core.windows.net/container/path
+         const accountName = parts[0].split(".")[0];
+         accountUrl = `https://${accountName}.blob.core.windows.net`;
+         container = parts[1];
+         blobPath = parts.slice(2).join("/");
+      } else {
+         // Short form: abfss://container/path — need accountName from config
+         if (!azureConnection?.accountName) {
+            throw new Error(
+               "accountName is required to list blobs with abfss:// URLs",
             );
-         } else {
-            const catalogs = await malloyConnection.runSQL(`SHOW CATALOGS`);
-            console.log("catalogs", catalogs);
-            let catalogNames = standardizeRunSQLResult(catalogs);
-            catalogNames = catalogNames.map((catalog: unknown) => {
-               const typedCatalog = catalog as Record<string, unknown>;
-               return typedCatalog.Catalog as string;
-            });
-
-            const schemas: unknown[] = [];
-
-            console.log("catalogNames", catalogNames);
-            for (const catalog of catalogNames) {
-               const schemasResult = await malloyConnection.runSQL(
-                  `SHOW SCHEMAS FROM ${catalog}`,
-               );
-               const schemasResultRows = standardizeRunSQLResult(schemasResult);
-               console.log("schemasResultRows", schemasResultRows);
-
-               // Concat catalog name to schema name for each schema row
-               const schemasWithCatalog = schemasResultRows.map(
-                  (row: unknown) => {
-                     const typedRow = row as Record<string, unknown>;
-                     // For display, use the convention "catalog.schema"
-                     return {
-                        ...typedRow,
-                        Schema: `${catalog}.${typedRow.Schema ?? typedRow.schema ?? ""}`,
-                     };
-                  },
-               );
-               schemas.push(...schemasWithCatalog);
-               console.log("schemas", schemas);
-            }
-            result = schemas;
          }
-
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return {
-               name: typedRow.Schema as string,
-               isHidden: ["information_schema", "performance_schema"].includes(
-                  typedRow.Schema as string,
-               ),
-               isDefault:
-                  typedRow.Schema === connection.trinoConnection?.schema,
-            };
-         });
-      } catch (error) {
-         console.error(
-            `Error getting schemas for Trino connection ${connection.name}:`,
-            error,
-         );
-         throw new Error(
-            `Failed to get schemas for Trino connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "duckdb") {
-      if (!connection.duckdbConnection) {
-         throw new Error("DuckDB connection is required");
-      }
-      try {
-         // Use DuckDB's INFORMATION_SCHEMA.SCHEMATA to list schemas
-         // Use DISTINCT to avoid duplicates from attached databases
-         const result = await malloyConnection.runSQL(
-            "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
-            { rowLimit: 1000 },
-         );
-
-         const rows = standardizeRunSQLResult(result);
-
-         const schemas: ApiSchema[] = rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            const schemaName = typedRow.schema_name as string;
-            const catalogName = typedRow.catalog_name as string;
-
-            return {
-               name: `${catalogName}.${schemaName}`,
-               isHidden:
-                  [
-                     "information_schema",
-                     "performance_schema",
-                     "",
-                     "SNOWFLAKE",
-                     "information_schema",
-                     "pg_catalog",
-                     "pg_toast",
-                  ].includes(schemaName as string) ||
-                  ["md_information_schema", "system"].includes(
-                     catalogName as string,
-                  ),
-               isDefault: catalogName === "main",
-            };
-         });
-
-         const attachedDatabases =
-            connection.duckdbConnection.attachedDatabases || [];
-
-         // Process all cloud storage connections in parallel
-         const cloudDatabases = attachedDatabases.filter(
-            (attachedDb) =>
-               (attachedDb.type === "gcs" || attachedDb.type === "s3") &&
-               (attachedDb.gcsConnection || attachedDb.s3Connection),
-         );
-
-         const cloudDbPromises = cloudDatabases.map(async (attachedDb) => {
-            const dbType = attachedDb.type as "gcs" | "s3";
-            const credentials =
-               dbType === "gcs"
-                  ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
-                  : s3ConnectionToCredentials(attachedDb.s3Connection!);
-
-            try {
-               return await listCloudDirectorySchemas(credentials);
-            } catch (cloudError) {
-               logger.warn(
-                  `Failed to list ${dbType.toUpperCase()} directory schemas for ${attachedDb.name}`,
-                  { error: cloudError },
-               );
-               return [];
-            }
-         });
-
-         const cloudSchemaArrays = await Promise.all(cloudDbPromises);
-         for (const cloudSchemas of cloudSchemaArrays) {
-            schemas.push(...cloudSchemas);
-         }
-
-         return schemas;
-      } catch (error) {
-         console.error(
-            `Error getting schemas for DuckDB connection ${connection.name}:`,
-            error,
-         );
-         throw new Error(
-            `Failed to get schemas for DuckDB connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "motherduck") {
-      if (!connection.motherduckConnection) {
-         throw new Error("MotherDuck connection is required");
-      }
-      try {
-         // Use MotherDuck's INFORMATION_SCHEMA.SCHEMATA to list schemas
-         const result = await malloyConnection.runSQL(
-            "SELECT DISTINCT schema_name as row FROM information_schema.schemata ORDER BY schema_name",
-            { rowLimit: 1000 },
-         );
-         const rows = standardizeRunSQLResult(result);
-         console.log(rows);
-         return rows.map((row: unknown) => {
-            const typedRow = row as { row: string };
-            return {
-               name: typedRow.row,
-               isHidden: [
-                  "information_schema",
-                  "performance_schema",
-                  "",
-               ].includes(typedRow.row),
-               isDefault: false,
-            };
-         });
-      } catch (error) {
-         console.error(
-            `Error getting schemas for MotherDuck connection ${connection.name}:`,
-            error,
-         );
-         throw new Error(
-            `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "ducklake") {
-      try {
-         // Filter by catalog_name to only get schemas from the attached DuckLake catalog
-         // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
-         const catalogName = connection.name;
-         const result = await malloyConnection.runSQL(
-            `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${catalogName}' ORDER BY schema_name`,
-            { rowLimit: 1000 },
-         );
-         const rows = standardizeRunSQLResult(result);
-
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            const schemaName = typedRow.schema_name as string;
-
-            const shouldShow = schemaName === "main" || schemaName === "public";
-
-            return {
-               name: schemaName,
-               isHidden: !shouldShow,
-               isDefault: false,
-            };
-         });
-      } catch (error) {
-         logger.error(
-            `Error getting schemas for DuckLake connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get schemas for DuckLake connection ${connection.name}: ${(error as Error).message}`,
-         );
+         accountUrl = `https://${azureConnection.accountName}.blob.core.windows.net`;
+         container = parts[0];
+         blobPath = parts.slice(1).join("/");
       }
    } else {
-      throw new Error(`Unsupported connection type: ${connection.type}`);
+      // https://account.blob.core.windows.net/container/path
+      const url = new URL(baseUrl);
+      const pathParts = url.pathname.split("/").filter(Boolean);
+      container = pathParts[0];
+      blobPath = pathParts.slice(1).join("/");
+      accountUrl = `${url.protocol}//${url.host}`;
    }
+
+   // Three supported glob patterns:
+   //   path/file.ext       → single file (handled upstream by isAzureSingleFileUrl)
+   //   path/*.ext          → files directly in path/ with that extension (no subdirs)
+   //   path/**             → all valid data files in path/ and nested dirs (recursive)
+   let prefix: string;
+   let extensionFilter = ""; // for *.ext pattern
+   let recursive = true; // for ** pattern
+
+   if (blobPath.endsWith("**")) {
+      // Recursive listing: everything under this prefix
+      prefix = blobPath.slice(0, -2);
+      recursive = true;
+   } else if (blobPath.includes("*")) {
+      // Single-level glob: path/*.ext — files directly in that dir only
+      const starIndex = blobPath.indexOf("*");
+      prefix = blobPath.substring(0, starIndex);
+      extensionFilter = blobPath.substring(starIndex + 1); // e.g. ".parquet"
+      recursive = false;
+   } else {
+      // No glob — use blobPath as prefix (container-level listing)
+      prefix = blobPath;
+      recursive = true;
+   }
+
+   // Create ContainerClient with appropriate authentication
+   let containerClient: ContainerClient;
+   if (
+      azureConnection?.authType === "service_principal" &&
+      azureConnection.tenantId &&
+      azureConnection.clientId &&
+      azureConnection.clientSecret
+   ) {
+      const credential = new ClientSecretCredential(
+         azureConnection.tenantId,
+         azureConnection.clientId,
+         azureConnection.clientSecret,
+      );
+      containerClient = new ContainerClient(
+         `${accountUrl}/${container}`,
+         credential,
+      );
+   } else {
+      // SAS token auth — append token to container URL
+      const containerUrl = `${accountUrl}/${container}${sasToken}`;
+      containerClient = new ContainerClient(containerUrl);
+   }
+
+   const matchingFiles: { url: string; blobName: string }[] = [];
+   for await (const blob of containerClient.listBlobsFlat({
+      prefix: prefix || undefined,
+   })) {
+      if (extensionFilter && !blob.name.endsWith(extensionFilter)) continue;
+      // For *.ext (non-recursive): only allow files directly in prefix dir
+      if (!recursive) {
+         const nameAfterPrefix = blob.name.substring(prefix.length);
+         if (nameAfterPrefix.includes("/")) continue;
+      }
+      if (!isDataFile(blob.name)) continue;
+      // For SPN: use abfss:// URLs that DuckDB's azure extension can read
+      // For SAS: use https:// URLs with token appended
+      let url: string;
+      if (azureConnection?.authType === "service_principal") {
+         const account =
+            azureConnection.accountName ||
+            accountUrl.split("//")[1]?.split(".")[0];
+         url = `abfss://${account}.dfs.core.windows.net/${container}/${blob.name}`;
+      } else {
+         url = `${accountUrl}/${container}/${blob.name}${sasToken}`;
+      }
+      matchingFiles.push({ url, blobName: blob.name });
+   }
+
+   logger.info(
+      `Listed ${matchingFiles.length} matching blobs in Azure container ${container} with prefix "${prefix}"`,
+   );
+   return matchingFiles;
 }
 
-export async function getTablesForSchema(
-   connection: ApiConnection,
-   schemaName: string,
-   malloyConnection: Connection,
-): Promise<ApiTable[]> {
-   // Check if this is a cloud storage file path (gs://bucket/path/file.ext or s3://bucket/path/file.ext)
-   const parsedUri = parseCloudUri(schemaName);
-
-   if (parsedUri && connection.type === "duckdb") {
-      const {
-         type: cloudType,
-         bucket: bucketName,
-         path: directoryPath,
-      } = parsedUri;
-
-      const attachedDatabases =
-         connection.duckdbConnection?.attachedDatabases || [];
-      const credentials = getCloudCredentialsFromAttachedDatabases(
-         attachedDatabases,
-         cloudType,
-      );
-
-      if (!credentials) {
-         throw new Error(
-            `${cloudType.toUpperCase()} credentials not found in attached databases`,
-         );
-      }
-
-      const fileKeys = await listDataFilesInDirectory(
-         credentials,
-         bucketName,
-         directoryPath,
-      );
-
-      return await getCloudTablesWithColumns(
-         malloyConnection,
-         credentials,
-         bucketName,
-         fileKeys,
-      );
-   } else if (connection.type === "ducklake") {
-      if (schemaName.split(".").length == 2) {
-         schemaName = `${connection.name}.${schemaName}`;
-      } else if (schemaName.split(".").length === 1) {
-         schemaName = `${connection.name}.${schemaName}`;
-      }
-   }
-   const tableNames = await listTablesForSchema(
-      connection,
-      schemaName,
-      malloyConnection,
+function isDataFile(key: string): boolean {
+   const lowerKey = key.toLowerCase();
+   return (
+      lowerKey.endsWith(".csv") ||
+      lowerKey.endsWith(".parquet") ||
+      lowerKey.endsWith(".json") ||
+      lowerKey.endsWith(".jsonl") ||
+      lowerKey.endsWith(".ndjson")
    );
+}
 
-   // Fetch all table sources in parallel
-   const tableSourcePromises = tableNames.map(async (tableName) => {
-      try {
-         let tablePath: string;
-         if (connection.type === "trino") {
-            if (connection.trinoConnection?.catalog) {
-               tablePath = `${connection.trinoConnection?.catalog}.${schemaName}.${tableName}`;
-            } else {
-               // Catalog name is included in the schema name
-               tablePath = `${schemaName}.${tableName}`;
-            }
-         } else if (connection.type === "ducklake") {
-            // For ducklake, schemaName already includes connection name prefix from above
-            // So tablePath should be schemaName.tableName (which is connectionName.schemaName.tableName)
-            tablePath = `${schemaName}.${tableName}`;
-         } else {
-            tablePath = `${schemaName}.${tableName}`;
-         }
+async function describeRemoteFile(
+   malloyConnection: Connection,
+   fileUri: string,
+): Promise<ApiTable> {
+   const pathWithoutQuery = fileUri.split("?")[0];
+   const fileType = getFileType(pathWithoutQuery);
 
-         logger.info(
-            `Processing table: ${tableName} in schema: ${schemaName}`,
-            { tablePath, connectionType: connection.type },
-         );
-         const tableSource = await getConnectionTableSource(
-            malloyConnection,
-            tableName,
-            tablePath,
-         );
-         return {
-            resource: tablePath,
-            columns: tableSource.columns,
-         };
-      } catch (error) {
-         logger.warn(`Failed to get schema for table ${tableName}`, {
-            error: extractErrorDataFromError(error),
-            schemaName,
-            tableName,
-         });
-         // Return table without columns if schema fetch fails
-         return {
-            resource: `${schemaName}.${tableName}`,
-            columns: [],
-         };
-      }
+   let describeQuery: string;
+   switch (fileType) {
+      case "csv":
+         describeQuery = `DESCRIBE SELECT * FROM read_csv('${fileUri}', auto_detect=true) LIMIT 1`;
+         break;
+      case "parquet":
+         describeQuery = `DESCRIBE SELECT * FROM read_parquet('${fileUri}') LIMIT 1`;
+         break;
+      case "json":
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${fileUri}', auto_detect=true) LIMIT 1`;
+         break;
+      case "jsonl":
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${fileUri}', format='newline_delimited', auto_detect=true) LIMIT 1`;
+         break;
+      default:
+         logger.warn(`Unsupported file type for file: ${fileUri}`);
+         return { resource: fileUri, columns: [] };
+   }
+
+   const result = await malloyConnection.runSQL(describeQuery);
+   const rows = standardizeRunSQLResult(result);
+   const columns = rows.map((row: unknown) => {
+      const typedRow = row as Record<string, unknown>;
+      return {
+         name: (typedRow.column_name || typedRow.name) as string,
+         type: (typedRow.column_type || typedRow.type) as string,
+      };
    });
 
-   // Wait for all table sources to be fetched
-   const tableResults = await Promise.all(tableSourcePromises);
-
-   return tableResults;
+   const fileName = pathWithoutQuery.split("/").pop() || fileUri;
+   return { resource: fileName, columns };
 }
 
-export async function getConnectionTableSource(
+function isAzureSingleFileUrl(fileUri: string): boolean {
+   const pathWithoutQuery = fileUri.split("?")[0];
+   // Has a glob — not a single file
+   if (pathWithoutQuery.includes("*")) return false;
+   // Ends with / — directory listing
+   if (pathWithoutQuery.endsWith("/")) return false;
+   // Check if the last path segment has a data file extension
+   const lastSegment = pathWithoutQuery.split("/").pop() || "";
+   return isDataFile(lastSegment);
+}
+
+async function describeAzureFile(
    malloyConnection: Connection,
-   tableKey: string,
-   tablePath: string,
-): Promise<ApiTableSource> {
+   fileUri: string,
+   azureConnection?: ApiAzureConnection,
+): Promise<ApiTable[]> {
    try {
-      logger.info(`Attempting to fetch table schema for: ${tablePath}`, {
-         tableKey,
-         tablePath,
-      });
-      const source = await (
-         malloyConnection as Connection & {
-            fetchTableSchema: (
-               tableKey: string,
-               tablePath: string,
-            ) => Promise<TableSourceDef | undefined>;
-         }
-      ).fetchTableSchema(tableKey, tablePath);
-      if (source === undefined) {
-         throw new ConnectionError(
-            `Table ${tablePath} not found: ${JSON.stringify(source)}`,
-         );
+      if (isAzureSingleFileUrl(fileUri)) {
+         // Single file — describe directly via DuckDB
+         return [await describeRemoteFile(malloyConnection, fileUri)];
       }
 
-      // Validate that source has the expected structure
-      if (!source) {
-         throw new ConnectionError(
-            `Invalid table source returned for ${tablePath}`,
-         );
-      } else if (typeof source !== "object") {
-         throw new ConnectionError(JSON.stringify(source));
+      // Glob pattern or container/directory URL — list blobs via Azure SDK
+      const blobs = await listAzureBlobs(fileUri, azureConnection);
+      if (blobs.length === 0) {
+         return [{ resource: fileUri, columns: [] }];
       }
 
-      const malloyFields = (source as TableSourceDef).fields;
-      if (!malloyFields || !Array.isArray(malloyFields)) {
-         throw new ConnectionError(
-            `Table ${tablePath} has no fields or invalid field structure`,
-         );
-      }
-
-      //This is for the Trino connection. The connection will not throw an error if the table is not found.
-      // Instead it will return an empty fields array. So we need to check for that.
-      // But it is fine to have it for all other connections as well.
-      if (malloyFields.length === 0) {
-         throw new ConnectionError(`Table ${tablePath} not found`);
-      }
-
-      const fields = malloyFields.map((field) => {
-         return {
-            name: field.name,
-            type: field.type,
-         };
-      });
-      logger.debug(`Successfully fetched schema for ${tablePath}`, {
-         fieldCount: fields.length,
-      });
-      return {
-         source: JSON.stringify(source),
-         resource: tablePath,
-         columns: fields,
-      };
+      const results = await Promise.all(
+         blobs.map(async ({ url, blobName }) => {
+            try {
+               const table = await describeRemoteFile(malloyConnection, url);
+               return { ...table, resource: blobName };
+            } catch (error) {
+               logger.warn(`Failed to describe Azure blob: ${url}`, { error });
+               return { resource: blobName, columns: [] } as ApiTable;
+            }
+         }),
+      );
+      return results;
    } catch (error) {
-      const errorMessage =
-         error instanceof Error
-            ? error.message
-            : typeof error === "string"
-              ? error
-              : JSON.stringify(error);
-      logger.error("fetchTableSchema error", {
-         error,
-         tableKey,
-         tablePath,
-      });
-      throw new ConnectionError(errorMessage);
+      logger.error(`Failed to describe Azure file: ${fileUri}`, { error });
+      throw new Error(
+         `Failed to describe Azure file: ${error instanceof Error ? error.message : String(error)}`,
+      );
    }
 }
 
@@ -620,246 +785,426 @@ export async function listTablesForSchema(
    connection: ApiConnection,
    schemaName: string,
    malloyConnection: Connection,
-): Promise<string[]> {
-   if (connection.type === "bigquery") {
-      try {
-         // Use BigQuery client directly for efficient table listing
-         // This is much faster than querying all regions
-         const bigquery = createBigQueryClient(connection);
-         const dataset = bigquery.dataset(schemaName);
-         const [tables] = await dataset.getTables();
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   switch (connection.type) {
+      case "bigquery":
+         return listTablesForBigQuery(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      case "mysql":
+         return listTablesForMySQL(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      case "postgres":
+         return listTablesForPostgres(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      case "snowflake":
+         return listTablesForSnowflake(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      case "trino":
+         return listTablesForTrino(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      case "duckdb":
+         return listTablesForDuckDB(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      case "motherduck":
+         return listTablesForMotherDuck(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      case "ducklake":
+         return listTablesForDuckLake(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
+      default:
+         throw new Error(`Unsupported connection type: ${connection.type}`);
+   }
+}
 
-         // Return table names, filtering out any undefined values
-         return tables
-            .map((table) => table.id)
-            .filter((id): id is string => id !== undefined);
-      } catch (error) {
-         logger.error(
-            `Error getting tables for BigQuery schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get tables for BigQuery schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "mysql") {
-      if (!connection.mysqlConnection) {
-         throw new Error("Mysql connection is required");
-      }
-      try {
-         const result = await malloyConnection.runSQL(
-            `SELECT TABLE_NAME FROM information_schema.tables WHERE table_schema = '${schemaName}' AND table_type = 'BASE TABLE'`,
-         );
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.TABLE_NAME as string;
-         });
-      } catch (error) {
-         logger.error(
-            `Error getting tables for MySQL schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get tables for MySQL schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "postgres") {
-      if (!connection.postgresConnection) {
-         throw new Error("Postgres connection is required");
-      }
-      try {
-         const result = await malloyConnection.runSQL(
-            `SELECT table_name as row FROM information_schema.tables WHERE table_schema = '${schemaName}' ORDER BY table_name`,
-         );
-         const rows = standardizeRunSQLResult(result);
-         return rows as string[];
-      } catch (error) {
-         logger.error(
-            `Error getting tables for Postgres schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get tables for Postgres schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "snowflake") {
-      if (!connection.snowflakeConnection) {
-         throw new Error("Snowflake connection is required");
-      }
-      try {
-         const result = await malloyConnection.runSQL(
-            `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${schemaName}' AND TABLE_TYPE = 'BASE TABLE'`,
-         );
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.TABLE_NAME as string;
-         });
-      } catch (error) {
-         logger.error(
-            `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get tables for Snowflake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "trino") {
-      if (!connection.trinoConnection) {
-         throw new Error("Trino connection is required");
-      }
-      try {
-         let result: unknown;
+/**
+ * BigQuery: list tables via API client, then fetch each table's schema
+ * individually since BigQuery's INFORMATION_SCHEMA is region-scoped.
+ */
+async function listTablesForBigQuery(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   try {
+      const bigquery = createBigQueryClient(connection);
+      const dataset = bigquery.dataset(schemaName);
+      const [tables] = await dataset.getTables();
 
-         if (connection.trinoConnection?.catalog) {
-            result = await malloyConnection.runSQL(
-               `SHOW TABLES FROM ${connection.trinoConnection.catalog}.${schemaName}`,
-            );
+      let names = tables
+         .map((table) => table.id)
+         .filter((id): id is string => id !== undefined);
+      if (tableNames) {
+         const allowed = new Set(tableNames);
+         names = names.filter((id) => allowed.has(id));
+      }
+
+      const results = await Promise.all(
+         names.map(async (tableName) => {
+            const tablePath = `${schemaName}.${tableName}`;
+            try {
+               const source = await (
+                  malloyConnection as Connection & {
+                     fetchTableSchema: (
+                        tableKey: string,
+                        tablePath: string,
+                     ) => Promise<TableSourceDef | undefined>;
+                  }
+               ).fetchTableSchema(tableName, tablePath);
+               const columns =
+                  source?.fields?.map((field) => ({
+                     name: field.name,
+                     type: field.type,
+                  })) || [];
+               return { resource: tablePath, columns };
+            } catch (error) {
+               logger.warn(`Failed to get schema for table ${tableName}`, {
+                  error: extractErrorDataFromError(error),
+                  schemaName,
+                  tableName,
+               });
+               return { resource: tablePath, columns: [] };
+            }
+         }),
+      );
+      return results;
+   } catch (error) {
+      logger.error(
+         `Error getting tables for BigQuery schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for BigQuery schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function listTablesForMySQL(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.mysqlConnection) {
+      throw new Error("Mysql connection is required");
+   }
+   try {
+      const result = await malloyConnection.runSQL(
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for MySQL schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for MySQL schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function listTablesForPostgres(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.postgresConnection) {
+      throw new Error("Postgres connection is required");
+   }
+   try {
+      // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+      // de-JSONs each row via row.row (matching Malloy-generated queries).
+      const result = await malloyConnection.runSQL(
+         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position) t`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for Postgres schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for Postgres schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function listTablesForSnowflake(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.snowflakeConnection) {
+      throw new Error("Snowflake connection is required");
+   }
+   try {
+      const parts = schemaName.split(".");
+      let databaseName: string;
+      let schemaOnly: string;
+
+      if (parts.length >= 2) {
+         databaseName = parts[0];
+         schemaOnly = parts[1];
+      } else {
+         databaseName = connection.snowflakeConnection.database ?? "";
+         schemaOnly = parts[0];
+      }
+
+      if (!databaseName) {
+         throw new Error(
+            `Cannot resolve database for schema "${schemaName}": provide DATABASE.SCHEMA or configure a database on the connection`,
+         );
+      }
+
+      const qualifiedSchema = `${databaseName}.${schemaOnly}`;
+      const result = await malloyConnection.runSQL(
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${schemaOnly}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${qualifiedSchema}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for Snowflake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function listTablesForTrino(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.trinoConnection) {
+      throw new Error("Trino connection is required");
+   }
+   try {
+      let catalogPrefix: string;
+      let schemaOnly: string;
+      let resourcePrefix: string;
+
+      if (connection.trinoConnection.catalog) {
+         catalogPrefix = `${connection.trinoConnection.catalog}.`;
+         schemaOnly = schemaName;
+         resourcePrefix = `${connection.trinoConnection.catalog}.${schemaName}`;
+      } else {
+         const dotIdx = schemaName.indexOf(".");
+         if (dotIdx > 0) {
+            catalogPrefix = `${schemaName.substring(0, dotIdx)}.`;
+            schemaOnly = schemaName.substring(dotIdx + 1);
          } else {
-            // Catalog name is included in the schema name
-            result = await malloyConnection.runSQL(
-               `SHOW TABLES FROM ${schemaName}`,
-            );
+            catalogPrefix = "";
+            schemaOnly = schemaName;
          }
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.Table as string;
-         });
-      } catch (error) {
-         logger.error(
-            `Error getting tables for Trino schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
+         resourcePrefix = schemaName;
+      }
+
+      const result = await malloyConnection.runSQL(
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${schemaOnly}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for Trino schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for Trino schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function listTablesForDuckDB(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.duckdbConnection) {
+      throw new Error("DuckDB connection is required");
+   }
+
+   const attachedDbs = connection.duckdbConnection.attachedDatabases || [];
+
+   // Azure attached database matched by name
+   const azureDb = attachedDbs.find(
+      (db) =>
+         db.type === "azure" && db.name === schemaName && db.azureConnection,
+   );
+   if (azureDb) {
+      const azureConn = azureDb.azureConnection!;
+      const fileUrl =
+         azureConn.authType === "sas_token"
+            ? azureConn.sasUrl
+            : azureConn.fileUrl;
+      if (fileUrl) {
+         return describeAzureFile(malloyConnection, fileUrl, azureConn);
+      }
+   }
+
+   // Azure ADLS file path (abfss://, https://, az://)
+   if (
+      schemaName.startsWith("abfss://") ||
+      schemaName.startsWith("https://") ||
+      schemaName.startsWith("az://")
+   ) {
+      return describeAzureFile(malloyConnection, schemaName);
+   }
+
+   // Cloud storage (GCS/S3)
+   const parsedUri = parseCloudUri(schemaName);
+   if (parsedUri) {
+      const {
+         type: cloudType,
+         bucket: bucketName,
+         path: directoryPath,
+      } = parsedUri;
+      const credentials = getCloudCredentialsFromAttachedDatabases(
+         attachedDbs,
+         cloudType,
+      );
+      if (!credentials) {
          throw new Error(
-            `Failed to get tables for Trino schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+            `${cloudType.toUpperCase()} credentials not found in attached databases`,
          );
       }
-   } else if (connection.type === "duckdb") {
-      if (!connection.duckdbConnection) {
-         throw new Error("DuckDB connection is required");
-      }
+      const fileKeys = await listDataFilesInDirectory(
+         credentials,
+         bucketName,
+         directoryPath,
+      );
+      return getCloudTablesWithColumns(
+         malloyConnection,
+         credentials,
+         bucketName,
+         fileKeys,
+      );
+   }
 
-      const parsedUri = parseCloudUri(schemaName);
+   // Regular DuckDB schema — query information_schema.columns
+   const dotIdx = schemaName.indexOf(".");
+   if (dotIdx < 0) {
+      throw new Error(
+         `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}"`,
+      );
+   }
+   const catalogName = schemaName.substring(0, dotIdx);
+   const actualSchemaName = schemaName.substring(dotIdx + 1);
 
-      if (parsedUri) {
-         const {
-            type: cloudType,
-            bucket: bucketName,
-            path: directoryPath,
-         } = parsedUri;
+   try {
+      const result = await malloyConnection.runSQL(
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for DuckDB schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for DuckDB schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
 
-         const attachedDatabases =
-            connection.duckdbConnection.attachedDatabases || [];
+async function listTablesForMotherDuck(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.motherduckConnection) {
+      throw new Error("MotherDuck connection is required");
+   }
+   try {
+      const result = await malloyConnection.runSQL(
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for MotherDuck schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for MotherDuck schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
 
-         const credentials = getCloudCredentialsFromAttachedDatabases(
-            attachedDatabases,
-            cloudType,
-         );
+async function listTablesForDuckLake(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   // Prefix bare schema names with the catalog (connection) name.
+   // Two-part names like "catalog.schema" are already qualified.
+   if (!schemaName.includes(".")) {
+      schemaName = `${connection.name}.${schemaName}`;
+   }
 
-         if (!credentials) {
-            throw new Error(
-               `${cloudType.toUpperCase()} credentials not found in attached databases`,
-            );
-         }
-
-         try {
-            const fileKeys = await listDataFilesInDirectory(
-               credentials,
-               bucketName,
-               directoryPath,
-            );
-            return fileKeys.map((key) => {
-               const lastSlash = key.lastIndexOf("/");
-               return lastSlash > 0 ? key.substring(lastSlash + 1) : key;
-            });
-         } catch (error) {
-            logger.error(
-               `Error listing ${cloudType.toUpperCase()} objects in ${schemaName}`,
-               {
-                  error,
-               },
-            );
-            throw new Error(
-               `Failed to list files in ${schemaName}: ${(error as Error).message}`,
-            );
-         }
-      }
-
-      const catalogName = schemaName.split(".")[0];
-      const actualSchemaName = schemaName.split(".")[1];
-
-      // Regular DuckDB table listing
-      try {
-         const result = await malloyConnection.runSQL(
-            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${actualSchemaName}' and table_catalog = '${catalogName}' ORDER BY table_name`,
-            { rowLimit: 1000 },
-         );
-
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.table_name as string;
-         });
-      } catch (error) {
-         logger.error(
-            `Error getting tables for DuckDB schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get tables for DuckDB schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "motherduck") {
-      if (!connection.motherduckConnection) {
-         throw new Error("MotherDuck connection is required");
-      }
-      try {
-         const result = await malloyConnection.runSQL(
-            `SELECT table_name as row FROM information_schema.tables WHERE table_schema = '${schemaName}' ORDER BY table_name`,
-            { rowLimit: 1000 },
-         );
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as { row: string };
-            return typedRow.row;
-         });
-      } catch (error) {
-         logger.error(
-            `Error getting tables for MotherDuck schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get tables for MotherDuck schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else if (connection.type === "ducklake") {
-      const catalogName = schemaName.split(".")[0];
-      const actualSchemaName = schemaName.split(".")[1];
-      console.error("catalogName", catalogName);
-      console.error("actualSchemaName", actualSchemaName);
-      try {
-         const result = await malloyConnection.runSQL(
-            `SELECT table_name FROM information_schema.tables WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ORDER BY table_name`,
-            { rowLimit: 1000 },
-         );
-         const rows = standardizeRunSQLResult(result);
-         return rows.map((row: unknown) => {
-            const typedRow = row as Record<string, unknown>;
-            return typedRow.table_name as string;
-         });
-      } catch (error) {
-         logger.error(
-            `Error getting tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
-            { error },
-         );
-         throw new Error(
-            `Failed to get tables for DuckLake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         );
-      }
-   } else {
-      throw new Error(`Unsupported connection type: ${connection.type}`);
+   const catalogName = schemaName.split(".")[0];
+   const actualSchemaName = schemaName.split(".")[1];
+   try {
+      const result = await malloyConnection.runSQL(
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for DuckLake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
    }
 }
 

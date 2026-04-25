@@ -121,7 +121,7 @@ export class Project {
       projectPath: string,
       connections: ApiConnection[],
    ): Promise<Project> {
-      if (!(await fs.promises.stat(projectPath)).isDirectory()) {
+      if (!(await fs.promises.stat(projectPath))?.isDirectory()) {
          throw new ProjectNotFoundError(
             `Project path ${projectPath} not found`,
          );
@@ -180,11 +180,17 @@ export class Project {
       const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
       const virtualUrl = new URL(virtualUri);
 
-      // Read the model file and extract its preamble (pragmas + imports) so that
-      // the user's query inherits the model's import context.
+      // Read the full model file so the submitted source inherits the model's
+      // complete namespace — imports, source definitions, queries, etc.
       const modelPath = path.join(this.projectPath, packageName, modelName);
-      const preamble = await extractPreamble(modelPath);
-      const fullSource = preamble ? `${preamble}\n${source}` : source;
+      let modelContent = "";
+      try {
+         modelContent = await fs.promises.readFile(modelPath, "utf8");
+      } catch {
+         // If the model file can't be read, proceed with empty content
+         // and let compilation surface any errors naturally.
+      }
+      const fullSource = modelContent ? `${modelContent}\n${source}` : source;
 
       // Create a URL Reader that serves the source string for the virtual file,
       // but falls back to the disk for everything else (imports).
@@ -377,7 +383,7 @@ export class Project {
             .access(packagePath)
             .then(() => true)
             .catch(() => false)) ||
-         !(await fs.promises.stat(packagePath)).isDirectory()
+         !(await fs.promises.stat(packagePath))?.isDirectory()
       ) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }

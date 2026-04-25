@@ -2,15 +2,19 @@ import * as path from "path";
 import { components } from "../api";
 import { PUBLISHER_DATA_DIR } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
+import { logger } from "../logger";
+import { ManifestService } from "../service/manifest_service";
 import { ProjectStore } from "../service/project_store";
 
 type ApiPackage = components["schemas"]["Package"];
 
 export class PackageController {
    private projectStore: ProjectStore;
+   private manifestService: ManifestService;
 
-   constructor(projectStore: ProjectStore) {
+   constructor(projectStore: ProjectStore, manifestService: ManifestService) {
       this.projectStore = projectStore;
+      this.manifestService = manifestService;
    }
 
    public async listPackages(projectName: string): Promise<ApiPackage[]> {
@@ -32,7 +36,11 @@ export class PackageController {
       return _package.getPackageMetadata();
    }
 
-   async addPackage(projectName: string, body: ApiPackage) {
+   async addPackage(
+      projectName: string,
+      body: ApiPackage,
+      options?: { autoLoadManifest?: boolean },
+   ) {
       if (this.projectStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
@@ -46,7 +54,50 @@ export class PackageController {
       const result = await project.addPackage(body.name);
       await this.projectStore.addPackageToDatabase(projectName, body.name);
 
+      if (options?.autoLoadManifest === true) {
+         await this.tryLoadExistingManifest(projectName, body.name);
+      }
+
       return result;
+   }
+
+   /**
+    * If there are already manifest entries for this package (e.g. from a
+    * previous materialization run), reload all models with the manifest so
+    * persist references resolve to the materialized tables immediately.
+    */
+   private async tryLoadExistingManifest(
+      projectName: string,
+      packageName: string,
+   ): Promise<void> {
+      try {
+         const repository = this.projectStore.storageManager.getRepository();
+         const dbProject = await repository.getProjectByName(projectName);
+         if (!dbProject) return;
+
+         const manifest = await this.manifestService.getManifest(
+            dbProject.id,
+            packageName,
+         );
+         if (Object.keys(manifest.entries).length === 0) return;
+
+         await this.manifestService.reloadManifest(
+            dbProject.id,
+            packageName,
+            projectName,
+         );
+         logger.info("Auto-loaded existing manifest for added package", {
+            projectName,
+            packageName,
+            entryCount: Object.keys(manifest.entries).length,
+         });
+      } catch (error) {
+         logger.warn("Failed to auto-load manifest for package", {
+            projectName,
+            packageName,
+            error,
+         });
+      }
    }
 
    public async deletePackage(projectName: string, packageName: string) {

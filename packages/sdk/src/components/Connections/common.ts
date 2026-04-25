@@ -1,5 +1,6 @@
 import { HTMLInputTypeAttribute } from "react";
 import type {
+   AzureConnection,
    BigqueryConnection,
    ConnectionTypeEnum,
    DucklakeConnection,
@@ -22,9 +23,12 @@ type ConnectionField = {
       MotherDuckConnection &
       S3Connection &
       GCSConnection &
+      AzureConnection &
       DucklakeConnection);
    type: HTMLInputTypeAttribute;
    required?: boolean;
+   selectOptions?: Array<{ label: string; value: string }>;
+   visibleWhen?: { field: string; value: string };
 };
 
 export const connectionFieldsByType: Record<
@@ -283,6 +287,7 @@ export const attachedDatabaseConnectionFieldName: Record<string, string> = {
    snowflake: "snowflakeConnection",
    gcs: "gcsConnection",
    s3: "s3Connection",
+   azure: "azureConnection",
 };
 
 // Fields for S3 attached database
@@ -335,6 +340,62 @@ export const gcsAttachedDatabaseFields: Array<ConnectionField> = [
    },
 ];
 
+// Fields for Azure ADLS attached database
+export const azureAttachedDatabaseFields: Array<ConnectionField> = [
+   {
+      label: "Auth Type",
+      name: "authType" as keyof AzureConnection,
+      type: "text",
+      required: true,
+      selectOptions: [
+         { label: "SAS Token", value: "sas_token" },
+         { label: "Service Principal (SPN)", value: "service_principal" },
+      ],
+   },
+   {
+      label: "SAS URL (e.g. https://account.blob.core.windows.net/container/file.parquet?sp=r&st=...)",
+      name: "sasUrl" as keyof AzureConnection,
+      type: "text",
+      required: false,
+      visibleWhen: { field: "authType", value: "sas_token" },
+   },
+   {
+      label: "Tenant ID",
+      name: "tenantId" as keyof AzureConnection,
+      type: "text",
+      required: false,
+      visibleWhen: { field: "authType", value: "service_principal" },
+   },
+   {
+      label: "Client ID",
+      name: "clientId" as keyof AzureConnection,
+      type: "text",
+      required: false,
+      visibleWhen: { field: "authType", value: "service_principal" },
+   },
+   {
+      label: "Client Secret",
+      name: "clientSecret" as keyof AzureConnection,
+      type: "password",
+      required: false,
+      visibleWhen: { field: "authType", value: "service_principal" },
+   },
+   {
+      label: "Account Name",
+      name: "accountName" as keyof AzureConnection,
+      type: "text",
+      required: false,
+      visibleWhen: { field: "authType", value: "service_principal" },
+   },
+   {
+      label: "File URL (e.g. abfss://container/path/file.parquet)",
+      name: "fileUrl" as keyof AzureConnection,
+      type: "text",
+      required: false,
+      visibleWhen: { field: "authType", value: "service_principal" },
+   },
+];
+
 // Helper to get fields for attached database types
 export function getAttachedDatabaseFields(
    dbType: string,
@@ -354,6 +415,10 @@ export function getAttachedDatabaseFields(
    // For GCS
    if (dbType === "gcs") {
       return gcsAttachedDatabaseFields;
+   }
+   // For Azure ADLS
+   if (dbType === "azure") {
+      return azureAttachedDatabaseFields;
    }
    return [];
 }
