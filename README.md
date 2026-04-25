@@ -47,7 +47,7 @@ When Malloy executes a query, the result includes both **data** and **rendering 
 
 An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the network and provides a professional UI for data exploration.
 
-- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration.
+- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
 - **App:** Web interface for browsing Malloy content, exploring models with a no-code query builder, and viewing results.
 
 ### Publisher SDK
@@ -58,6 +58,7 @@ A React component library for building custom data applications powered by Publi
 - **Query execution** — Submits queries and retrieves results
 - **Result visualization** — Integrates Malloy Render to display results
 - **UI components** — Pre-built pages for browsing projects, packages, models, and notebooks
+- **Source filters** — Automatically renders filter widgets for models with [`#(filter)` annotations](docs/filters.md)
 
 The Publisher App is built entirely with the SDK, but the SDK is a standalone NPM package for building your own applications.
 
@@ -71,6 +72,7 @@ Publisher consists of four packages:
 | **[packages/sdk](packages/sdk/)** | React component library for building UIs that consume Publisher's REST API. |
 | **[packages/app](packages/app/)** | Reference implementation and production-ready data exploration tool built with the SDK. |
 | **[packages/python-client](packages/python-client/)** | Auto-generated Python SDK for the REST API. |
+
 
 ## Development
 

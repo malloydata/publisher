@@ -115,9 +115,9 @@ export function DimensionFilter({
    onChange,
    retrievalFn,
 }: DimensionFilterProps) {
-   // Default to "Between" for date filters, otherwise use first available match type
    const getDefaultMatchType = () => {
       if (selection?.matchType) return selection.matchType;
+      if (spec.defaultMatchType) return spec.defaultMatchType;
       if (spec.filterType === "DateMinMax") return "Between";
       return getAvailableMatchTypes(spec.filterType)[0] || "Equals";
    };
@@ -203,11 +203,11 @@ export function DimensionFilter({
          // Clear internal state when selection is cleared externally
          setValue1("");
          setValue2("");
-         // Reset to default match type (Between for dates, first available for others)
          setMatchType(
-            spec.filterType === "DateMinMax"
-               ? "Between"
-               : getAvailableMatchTypes(spec.filterType)[0] || "Equals",
+            spec.defaultMatchType ??
+               (spec.filterType === "DateMinMax"
+                  ? "Between"
+                  : getAvailableMatchTypes(spec.filterType)[0] || "Equals"),
          );
       } else if (selection) {
          // Update internal state when selection changes externally
@@ -216,7 +216,7 @@ export function DimensionFilter({
          setValue1(selection.value ?? "");
          setValue2(selection.value2 ?? "");
       }
-   }, [selection, spec.filterType]);
+   }, [selection, spec.filterType, spec.defaultMatchType]);
 
    const availableMatchTypes = getAvailableMatchTypes(spec.filterType);
    const isDate = isDateFilter(spec.filterType);
@@ -266,6 +266,7 @@ export function DimensionFilter({
          onChange({
             dimensionName: spec.dimensionName,
             source: spec.source,
+            filterName: spec.filterName,
             matchType: newMatchType,
             value: value1,
             ...(requiresTwoValues(newMatchType) && value2 && { value2 }),
@@ -296,6 +297,7 @@ export function DimensionFilter({
          onChange({
             dimensionName: spec.dimensionName,
             source: spec.source,
+            filterName: spec.filterName,
             matchType,
             value: newValue1,
             ...(needsTwoValues && newValue2 && { value2: newValue2 }),
@@ -326,9 +328,8 @@ export function DimensionFilter({
             "& .MuiAutocomplete-root .MuiInputBase-root": {
                padding: "5px 10px",
                minHeight: "29.5px",
-               maxHeight: "29.5px",
                boxSizing: "border-box",
-               overflow: "hidden",
+               flexWrap: "wrap",
             },
             "& .MuiChip-root": { height: "16px", margin: "0 2px 0 0" },
             "& .MuiChip-label": { fontSize: "0.7rem", padding: "0 6px" },
@@ -354,38 +355,62 @@ export function DimensionFilter({
             "& .MuiSvgIcon-root": { fontSize: "1.25rem" },
          }}
       >
-         {/* Dimension Label/Name */}
-         <Box sx={{ fontWeight: 600 }}>{spec.label ?? spec.dimensionName}</Box>
-
-         {/* Match Type Selector */}
-         {spec.filterType !== "Boolean" && (
-            <FormControl size="small" fullWidth>
-               <InputLabel>Match Type</InputLabel>
-               <Select
-                  value={matchType}
-                  label="Match Type"
-                  onChange={handleMatchTypeChange}
-                  disabled={availableMatchTypes.length === 1}
-                  MenuProps={{
-                     PaperProps: {
-                        sx: {
-                           "& .MuiMenuItem-root": {
-                              fontSize: "0.75rem",
-                              minHeight: "auto",
-                              padding: "4px 10px",
-                           },
-                        },
-                     },
+         {/* Dimension Label/Name — red when required and not yet set */}
+         <Box
+            sx={{
+               fontWeight: 600,
+               color:
+                  spec.required && !selection ? "error.main" : "text.primary",
+            }}
+         >
+            {spec.label ?? spec.dimensionName}
+            {spec.required && (
+               <Box
+                  component="span"
+                  sx={{
+                     color: !selection ? "error.main" : "text.secondary",
+                     fontWeight: 400,
+                     fontSize: "0.7rem",
+                     ml: 0.5,
                   }}
                >
-                  {availableMatchTypes.map((type) => (
-                     <MenuItem key={type} value={type}>
-                        {type}
-                     </MenuItem>
-                  ))}
-               </Select>
-            </FormControl>
-         )}
+                  (required)
+               </Box>
+            )}
+         </Box>
+
+         {/* Match Type Selector — hidden when the filter annotation already
+             determines the match type (defaultMatchType is set). Only shown
+             for legacy/untyped filters where the user needs to choose. */}
+         {spec.filterType !== "Boolean" &&
+            !spec.defaultMatchType &&
+            availableMatchTypes.length > 1 && (
+               <FormControl size="small" fullWidth>
+                  <InputLabel>Match Type</InputLabel>
+                  <Select
+                     value={matchType}
+                     label="Match Type"
+                     onChange={handleMatchTypeChange}
+                     MenuProps={{
+                        PaperProps: {
+                           sx: {
+                              "& .MuiMenuItem-root": {
+                                 fontSize: "0.75rem",
+                                 minHeight: "auto",
+                                 padding: "4px 10px",
+                              },
+                           },
+                        },
+                     }}
+                  >
+                     {availableMatchTypes.map((type) => (
+                        <MenuItem key={type} value={type}>
+                           {type}
+                        </MenuItem>
+                     ))}
+                  </Select>
+               </FormControl>
+            )}
 
          {/* Value Input - varies by filter type */}
          {spec.filterType === "Star" && matchType === "Equals" && (
@@ -455,7 +480,11 @@ export function DimensionFilter({
                size="small"
                label="Search Text"
                value={value1}
-               onChange={(e) => handleValueChange(e.target.value)}
+               onChange={(e) => setValue1(e.target.value)}
+               onBlur={() => handleValueChange(value1)}
+               onKeyDown={(e) => {
+                  if (e.key === "Enter") handleValueChange(value1);
+               }}
                placeholder="Enter text to search..."
                fullWidth
             />

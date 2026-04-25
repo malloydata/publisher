@@ -1,13 +1,12 @@
 import { components } from "../api";
 import { ModelNotFoundError } from "../errors";
 import { ProjectStore } from "../service/project_store";
+import type { FilterParams } from "../service/filter";
 
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
-export type ListModelsFilterEnum =
-   components["parameters"]["ListModelsFilterEnum"];
 export class ModelController {
    private projectStore: ProjectStore;
 
@@ -84,6 +83,8 @@ export class ModelController {
       packageName: string,
       notebookPath: string,
       cellIndex: number,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -101,6 +102,6 @@ export class ModelController {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
-      return model.executeNotebookCell(cellIndex);
+      return model.executeNotebookCell(cellIndex, filterParams, bypassFilters);
    }
 }
