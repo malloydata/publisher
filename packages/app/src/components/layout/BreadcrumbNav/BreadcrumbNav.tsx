@@ -1,8 +1,8 @@
 import { useRouterClickHandler } from "@malloy-publisher/sdk";
-import { ChevronRight } from "@mui/icons-material";
+import ChevronRight from "@mui/icons-material/ChevronRight";
 import Box from "@mui/material/Box";
-import Chip from "@mui/material/Chip";
 import Breadcrumbs from "@mui/material/Breadcrumbs";
+import Chip from "@mui/material/Chip";
 import { useParams } from "react-router-dom";
 
 export default function BreadcrumbNav() {
@@ -31,7 +31,7 @@ export default function BreadcrumbNav() {
                   label={params.projectName}
                   size="medium"
                   sx={{
-                     backgroundColor: "white",
+                     backgroundColor: "background.paper",
                      color: "primary.main",
                      fontWeight: 500,
                      height: "32px",
@@ -55,7 +55,7 @@ export default function BreadcrumbNav() {
                   label={params.packageName}
                   size="medium"
                   sx={{
-                     backgroundColor: "white",
+                     backgroundColor: "background.paper",
                      color: "primary.main",
                      fontWeight: 500,
                      height: "32px",
@@ -79,7 +79,7 @@ export default function BreadcrumbNav() {
                   label={modelPath}
                   size="medium"
                   sx={{
-                     backgroundColor: "white",
+                     backgroundColor: "background.paper",
                      color: "primary.main",
                      fontWeight: 500,
                      height: "32px",

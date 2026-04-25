@@ -1,23 +1,19 @@
 import {
+   Loading,
    WorkbookStorage,
    WorkbookStorageProvider,
 } from "@malloy-publisher/sdk";
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
 import "@malloydata/malloy-explorer/styles.css";
-import { CssBaseline } from "@mui/material";
+import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider } from "@mui/material/styles";
 import { lazy, Suspense, useMemo } from "react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { Loading } from "./components/common/Loading";
+import { RouteError } from "./components/common";
 import { HeaderProps } from "./components/layout/Header/Header";
 import theme from "./theme";
 
-/**
- * Vite automatically handles code splitting and chunking when using
- * React.lazy and dynamic import() statements for lazy loading React
- * components.
- */
 const HomePage = lazy(() => import("./components/pages/HomePage/HomePage"));
 const MainPage = lazy(() => import("./components/layout/MainPage/MainPage"));
 const ModelPage = lazy(() => import("./components/pages/ModelPage/ModelPage"));
@@ -27,14 +23,10 @@ const PackagePage = lazy(
 const ProjectPage = lazy(
    () => import("./components/pages/ProjectPage/ProjectPage"),
 );
-const RouteError = lazy(
-   () => import("./components/common/RouteError/RouteError"),
-);
 const WorkbookPage = lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
 
-// Create router configuration function
 export const createMalloyRouter = (
    basePath: string = "/",
    workbookStorage: WorkbookStorage,
@@ -59,43 +51,23 @@ export const createMalloyRouter = (
          children: [
             {
                index: true,
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <HomePage />
-                  </Suspense>
-               ),
+               element: <HomePage />,
             },
             {
                path: ":projectName",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <ProjectPage />
-                  </Suspense>
-               ),
+               element: <ProjectPage />,
             },
             {
                path: ":projectName/:packageName",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <PackagePage />
-                  </Suspense>
-               ),
+               element: <PackagePage />,
             },
             {
                path: ":projectName/:packageName/*",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <ModelPage />
-                  </Suspense>
-               ),
+               element: <ModelPage />,
             },
             {
                path: ":projectName/:packageName/workbook/:workspace/:workbookPath",
-               element: (
-                  <Suspense fallback={<Loading />}>
-                     <WorkbookPage />
-                  </Suspense>
-               ),
+               element: <WorkbookPage />,
             },
          ],
       },
