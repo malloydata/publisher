@@ -45,6 +45,7 @@ type ConnectionProps = {
    ) => Promise<{ data: ConnectionStatus }>;
    isMutating: boolean;
    mutable: boolean;
+   isAdding: boolean;
 };
 
 // TODO(jjs) - Move this UI to the ConnectionExplorer component
@@ -56,22 +57,24 @@ function Connection({
    onTestConnection,
    isMutating,
    mutable,
+   isAdding,
 }: ConnectionProps) {
    return (
       <TableRow
          key={connection.name}
          sx={{
             "&:hover": {
-               backgroundColor: "action.hover",
+               backgroundColor: isAdding ? undefined : "action.hover",
             },
          }}
       >
          <TableCell
             sx={{
-               cursor: "pointer",
+               cursor: isAdding ? "default" : "pointer",
                flexGrow: 1,
+               opacity: isAdding ? 0.5 : 1,
             }}
-            onClick={onClick}
+            onClick={isAdding ? undefined : onClick}
          >
             <Box
                sx={{
@@ -298,10 +301,12 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                                     }
                                  }}
                                  isMutating={
+                                    addConnection.isPending ||
                                     updateConnection.isPending ||
                                     deleteConnection.isPending
                                  }
                                  mutable={mutable}
+                                 isAdding={addConnection.isPending}
                               />
                            ))}
                         </TableBody>
@@ -374,6 +379,9 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                   <ConnectionExplorer
                      resourceUri={selectedConnectionResourceUri}
                      connectionName={selectedConnection}
+                     connection={data?.data?.find(
+                        (c) => c.name === selectedConnection,
+                     )}
                   />
                )}
             </DialogContent>

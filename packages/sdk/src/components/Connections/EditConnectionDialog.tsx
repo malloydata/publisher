@@ -809,23 +809,78 @@ export default function EditConnectionDialog({
                                        </MenuItem>
                                     ))}
                                  </TextField>
-                                 {dbFields.map((field) => (
-                                    <TextField
-                                       key={field.name}
-                                       margin="dense"
-                                       id={`attachedDb_${index}_${field.name}`}
-                                       name={`attachedDb_${index}_${field.name}`}
-                                       label={field.label}
-                                       type={field.type}
-                                       fullWidth
-                                       variant="standard"
-                                       required={field.required}
-                                       defaultValue={getAttachedDbDefault(
-                                          index,
-                                          field.name,
-                                       )}
-                                    />
-                                 ))}
+                                 {dbFields
+                                    .filter((field) => {
+                                       if (!field.visibleWhen) return true;
+                                       const currentValue =
+                                          db[field.visibleWhen.field] ||
+                                          getAttachedDbDefault(
+                                             index,
+                                             field.visibleWhen.field,
+                                          ) ||
+                                          dbFields.find(
+                                             (f) =>
+                                                f.name ===
+                                                field.visibleWhen?.field,
+                                          )?.selectOptions?.[0]?.value;
+                                       return (
+                                          currentValue ===
+                                          field.visibleWhen.value
+                                       );
+                                    })
+                                    .map((field) => (
+                                       <TextField
+                                          key={field.name}
+                                          margin="dense"
+                                          id={`attachedDb_${index}_${field.name}`}
+                                          name={`attachedDb_${index}_${field.name}`}
+                                          label={field.label}
+                                          type={
+                                             field.selectOptions
+                                                ? undefined
+                                                : field.type
+                                          }
+                                          fullWidth
+                                          variant="standard"
+                                          required={field.required}
+                                          select={!!field.selectOptions}
+                                          defaultValue={
+                                             getAttachedDbDefault(
+                                                index,
+                                                field.name,
+                                             ) ||
+                                             field.selectOptions?.[0]?.value
+                                          }
+                                          onChange={
+                                             field.selectOptions
+                                                ? (e) => {
+                                                     const updated = [
+                                                        ...attachedDatabases,
+                                                     ];
+                                                     updated[index] = {
+                                                        ...updated[index],
+                                                        [field.name]:
+                                                           e.target.value,
+                                                     };
+                                                     setAttachedDatabases(
+                                                        updated,
+                                                     );
+                                                  }
+                                                : undefined
+                                          }
+                                       >
+                                          {field.selectOptions?.map(
+                                             (option) => (
+                                                <MenuItem
+                                                   key={option.value}
+                                                   value={option.value}
+                                                >
+                                                   {option.label}
+                                                </MenuItem>
+                                             ),
+                                          )}
+                                       </TextField>
+                                    ))}
                               </Box>
                            );
                         })}
