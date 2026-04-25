@@ -12,7 +12,7 @@ import useMediaQuery from "@mui/material/useMediaQuery";
 import { useTheme } from "@mui/material/styles";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import BreadcrumbNav from "../BreadcrumNav/BreadcrumbNav";
+import BreadcrumbNav from "../BreadcrumbNav/BreadcrumbNav";
 
 export interface HeaderProps {
    logoHeader?: React.ReactElement;
