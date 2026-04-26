@@ -424,10 +424,6 @@ export class Project {
                packageName,
                packagePath,
                () => this.malloyConfig.malloyConfig,
-               () =>
-                  this.apiConnections
-                     .map((c) => c.name)
-                     .filter((n): n is string => !!n),
             );
             if (existingPackage !== undefined && reload) {
                this.retireConnectionGeneration(`package ${packageName}`, () =>
@@ -479,10 +475,6 @@ export class Project {
                packageName,
                packagePath,
                () => this.malloyConfig.malloyConfig,
-               () =>
-                  this.apiConnections
-                     .map((c) => c.name)
-                     .filter((n): n is string => !!n),
             ),
          );
       } catch (error) {
