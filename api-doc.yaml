@@ -38,11 +38,14 @@ tags:
   - name: publisher
     description: Publisher status and health check operations
   - name: projects
-    description: Project lifecycle management including creation, configuration, and deletion of data modeling projects
+    description: Project lifecycle management including creation, configuration, and
+      deletion of data modeling projects
   - name: connections
-    description: Database connection management for secure data source configuration and access
+    description: Database connection management for secure data source configuration
+      and access
   - name: packages
-    description: Package management for Malloy data models, including versioning and distribution
+    description: Package management for Malloy data models, including versioning and
+      distribution
   - name: models
     description: Malloy model access and compilation operations
   - name: notebooks
@@ -51,6 +54,10 @@ tags:
     description: Embedded database management and access
   - name: watch-mode
     description: Real-time file watching for development workflows
+  - name: materializations
+    description: Package-level materializations for persisting Malloy sources
+  - name: manifests
+    description: Build manifest management for tracking materialized source tables
 
 paths:
   /status:
@@ -775,7 +782,8 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: options
           in: query
-          description: Options
+          description: Options (deprecated; pass in body instead)
+          deprecated: true
           required: false
           schema:
             type: string
@@ -798,6 +806,9 @@ paths:
               properties:
                 sqlStatement:
                   type: string
+                options:
+                  type: string
+                  description: Options
       responses:
         "200":
           description: Query execution results
@@ -1041,6 +1052,16 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: autoLoadManifest
+          in: query
+          description: |
+            When true, automatically loads any existing build manifest
+            for the package so materialized table references resolve immediately.
+            Defaults to false.
+          required: false
+          schema:
+            type: boolean
+            default: false
       requestBody:
         required: true
         content:
@@ -1386,7 +1407,8 @@ paths:
             type: string
         - name: path
           in: path
-          description: Path to the model within the package (used to resolve relative imports)
+          description: Path to the model within the package (used to resolve relative
+            imports)
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
@@ -1741,10 +1763,225 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /projects/{projectName}/packages/{packageName}/materializations:
+    post:
+      tags:
+        - materializations
+      operationId: create-materialization
+      summary: Create a materialization
+      description: |
+        Creates a new materialization in PENDING state for all persist sources across all
+        models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMaterializationRequest"
+      responses:
+        "201":
+          description: Materialization created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Package already has an active materialization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags:
+        - materializations
+      operationId: list-materializations
+      summary: List materializations for a package
+      description: Returns the materialization history for the package, ordered by
+        most recent first.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Maximum number of materializations to return
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Number of materializations to skip
+      responses:
+        "200":
+          description: List of materializations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /projects/{projectName}/packages/{packageName}/materializations/{materializationId}:
+    get:
+      tags:
+        - materializations
+      operationId: get-materialization
+      summary: Get a specific materialization
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+      responses:
+        "200":
+          description: Materialization details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags:
+        - materializations
+      operationId: materialization-action
+      summary: Perform an action on a materialization
+      description: |
+        Performs an action on a materialization. The action is specified via
+        the `action` query parameter:
+          * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
+          * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - start
+              - stop
+          description: Action to perform on the materialization
+      responses:
+        "200":
+          description: Materialization cancelled (action=stop)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "202":
+          description: Materialization started (action=start)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Materialization"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Materialization cannot transition to the requested state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - materializations
+      operationId: delete-materialization
+      summary: Delete a materialization
+      description: Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization
+        record.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+      responses:
+        "204":
+          description: Materialization deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Materialization cannot be deleted (PENDING or RUNNING)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /projects/{projectName}/packages/{packageName}/manifest:
+    get:
+      tags:
+        - manifests
+      operationId: get-manifest
+      summary: Get the build manifest for a package
+      description: |
+        Returns the current build manifest containing buildId-to-tableName mappings
+        for all materialized sources in the package.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+      responses:
+        "200":
+          description: Build manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildManifest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags:
+        - manifests
+      operationId: manifest-action
+      summary: Perform an action on the package manifest
+      description: |
+        Performs an action on the package manifest. The action is specified via
+        the `action` query parameter:
+          * `reload` - Reads the build manifest from the shared store (DuckLake
+            in orchestrated mode, local DuckDB in standalone mode) and recompiles
+            every model in the package so subsequent queries resolve persisted
+            sources to their materialized tables. Intended for orchestrated
+            workers that did not themselves run the build; the endpoint does
+            not write anything *into* storage.
+      parameters:
+        - $ref: "#/components/parameters/projectName"
+        - $ref: "#/components/parameters/packageName"
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - reload
+          description: Action to perform on the manifest
+      responses:
+        "200":
+          description: Manifest loaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildManifest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   responses:
     BadRequest:
-      description: The request was malformed or cannot be performed given the current state of the system
+      description: The request was malformed or cannot be performed given the current
+        state of the system
       content:
         application/json:
           schema:
@@ -1786,7 +2023,8 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     ServiceUnavailable:
-      description: The service is temporarily unavailable, typically due to initialization, or draining state (Rolling updates, etc.)
+      description: The service is temporarily unavailable, typically due to
+        initialization, or draining state (Rolling updates, etc.)
       content:
         application/json:
           schema:
@@ -1825,15 +2063,20 @@ components:
           description: Whether the server is fully initialized and ready to serve requests
         operationalState:
           type: string
-          enum: ["initializing", "serving", "draining"]
-          description: Status of the server; initializing when the server is loading projects, packages and connections, serving when the server is initialized and ready to serve requests, and draining when the server is going to shut down
+          enum: [ "initializing", "serving", "draining" ]
+          description: Status of the server; initializing when the server is loading
+            projects, packages and connections, serving when the server is
+            initialized and ready to serve requests, and draining when the
+            server is going to shut down
         frozenConfig:
           type: boolean
-          description: Whether the server configuration is frozen (read-only mode). When true, all mutation operations are disabled.
+          description: Whether the server configuration is frozen (read-only mode). When
+            true, all mutation operations are disabled.
 
     Project:
       type: object
-      description: Represents a Malloy project containing packages, connections, and other resources
+      description: Represents a Malloy project containing packages, connections, and
+        other resources
       properties:
         resource:
           type: string
@@ -1846,7 +2089,8 @@ components:
           description: Project README content
         location:
           type: string
-          description: Project location, can be an absolute path or URI (e.g. github, s3, gcs, etc.)
+          description: Project location, can be an absolute path or URI (e.g. github, s3,
+            gcs, etc.)
         connections:
           type: array
           description: List of database connections configured for this project
@@ -1857,10 +2101,24 @@ components:
           description: List of Malloy packages in this project
           items:
             $ref: "#/components/schemas/Package"
+        materializationStorage:
+          type: object
+          nullable: true
+          description: Optional DuckLake-backed storage for materialization manifests
+            (orchestrated mode). When set, manifests are stored in a shared
+            DuckLake catalog instead of the local DuckDB database.
+          properties:
+            catalogUrl:
+              type: string
+              description: PostgreSQL connection URL for the DuckLake catalog metadata store
+            dataPath:
+              type: string
+              description: Cloud storage path (s3:// or gs://) for DuckLake data files
 
     Package:
       type: object
-      description: Represents a Malloy package containing models, notebooks, and embedded databases
+      description: Represents a Malloy package containing models, notebooks, and
+        embedded databases
       properties:
         resource:
           type: string
@@ -1873,7 +2131,8 @@ components:
           description: Package description
         location:
           type: string
-          description: Package location, can be an absolute path or URI (e.g. github, s3, gcs, etc.)
+          description: Package location, can be an absolute path or URI (e.g. github, s3,
+            gcs, etc.)
 
     Model:
       type: object
@@ -1962,7 +2221,8 @@ components:
           description: JSON string containing model metadata and structure information
         sourceInfos:
           type: array
-          description: Array of JSON strings containing source information for each data source
+          description: Array of JSON strings containing source information for each data
+            source
           items:
             type: string
         queries:
@@ -2032,7 +2292,8 @@ components:
           description: Whether a value must be provided
         dimensionType:
           type: string
-          description: Malloy data type of the dimension (e.g. string, number, boolean, date, timestamp)
+          description: Malloy data type of the dimension (e.g. string, number, boolean,
+            date, timestamp)
 
     Source:
       type: object
@@ -2063,33 +2324,36 @@ components:
       properties:
         query:
           type: string
-          description: Query string to execute on the model. If the query parameter is set, the queryName parameter must be empty.
+          description: Query string to execute on the model. If the query parameter is
+            set, the queryName parameter must be empty.
         sourceName:
           type: string
-          description: Name of the source in the model to use for queryName, search, and topValue requests.
+          description: Name of the source in the model to use for queryName, search, and
+            topValue requests.
         queryName:
           type: string
-          description: Name of a query to execute on a source in the model. Requires the sourceName parameter is set. If the queryName parameter is set, the query parameter must be empty.
+          description: Name of a query to execute on a source in the model. Requires the
+            sourceName parameter is set. If the queryName parameter is set, the
+            query parameter must be empty.
         compactJson:
           type: boolean
           default: false
-          description: 'If true, returns a simple JSON array of row objects in the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.'
+          description: "If true, returns a simple JSON array of row objects in the form
+            {\"columnName\": value}. If false (default), returns the full Malloy
+            result with type metadata for rendering."
         versionId:
           type: string
           description: Version ID
         filterParams:
           type: object
-          description: Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.
-          additionalProperties:
-            oneOf:
-              - type: string
-              - type: array
-                items:
-                  type: string
+          description: Filter parameter values keyed by filter name. Used with sources
+            that declare \#(filter) annotations. Each value is either a string
+            or an array of strings.
+          additionalProperties: true
         bypassFilters:
           type: boolean
           default: false
-          description: When true, skip server-side #(filter) injection entirely.
+          description: When true, skip server-side \#(filter) injection entirely.
 
     NotebookCell:
       type: object
@@ -2097,19 +2361,21 @@ components:
       properties:
         type:
           type: string
-          enum: ["markdown", "code"]
+          enum: [ "markdown", "code" ]
           description: Type of notebook cell
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
         newSources:
           type: array
-          description: Array of JSON strings containing SourceInfo objects made available in this cell
+          description: Array of JSON strings containing SourceInfo objects made available
+            in this cell
           items:
             type: string
         queryInfo:
           type: string
-          description: JSON string containing QueryInfo object for the query in this cell (if the cell contains a query)
+          description: JSON string containing QueryInfo object for the query in this cell
+            (if the cell contains a query)
 
     NotebookCellResult:
       type: object
@@ -2117,7 +2383,7 @@ components:
       properties:
         type:
           type: string
-          enum: ["markdown", "code"]
+          enum: [ "markdown", "code" ]
           description: Type of notebook cell
         text:
           type: string
@@ -2127,7 +2393,8 @@ components:
           description: JSON string containing the execution result for this cell
         newSources:
           type: array
-          description: Array of JSON strings containing SourceInfo objects made available in this cell
+          description: Array of JSON strings containing SourceInfo objects made available
+            in this cell
           items:
             type: string
 
@@ -2137,13 +2404,15 @@ components:
       properties:
         result:
           type: string
-          description: JSON string containing the query results, metadata, and execution information
+          description: JSON string containing the query results, metadata, and execution
+            information
         resource:
           type: string
           description: Resource path to the query result
         renderLogs:
           type: array
-          description: Render tag validation messages (errors, warnings) detected during query preparation
+          description: Render tag validation messages (errors, warnings) detected during
+            query preparation
           items:
             $ref: "#/components/schemas/LogMessage"
 
@@ -2175,7 +2444,7 @@ components:
         severity:
           type: string
           description: Severity level of the log message
-          enum: ["debug", "info", "warn", "error"]
+          enum: [ "debug", "info", "warn", "error" ]
         message:
           type: string
           description: Human-readable log message
@@ -2195,7 +2464,7 @@ components:
         type:
           type: string
           description: Type of embedded database
-          enum: ["embedded", "materialized"]
+          enum: [ "embedded", "materialized" ]
 
     Schema:
       description: A schema name in a Connection.
@@ -2295,7 +2564,8 @@ components:
           description: PostgreSQL password for authentication
         connectionString:
           type: string
-          description: Complete PostgreSQL connection string (alternative to individual parameters)
+          description: Complete PostgreSQL connection string (alternative to individual
+            parameters)
 
     MysqlConnection:
       type: object
@@ -2358,19 +2628,21 @@ components:
     AzureConnection:
       type: object
       description: >
-        Azure Data Lake Storage (ADLS Gen2) / Blob Storage connection configuration
-        Supports https://, http://, abfss://, and az:// URL schemes.
+        Azure Data Lake Storage (ADLS Gen2) / Blob Storage connection
+        configuration Supports https://, http://, abfss://, and az:// URL
+        schemes.
       properties:
         authType:
           type: string
-          enum: [service_principal, sas_token]
+          enum: [ service_principal, sas_token ]
           description: Authentication method for Azure Storage
         sasUrl:
           type: string
           description: >
-            Full SAS URL including token; required for sas_token auth.
-            Supports single file, directory glob (*.ext), or recursive (**) patterns.
-            Example: https://account.blob.core.windows.net/container/path/*.parquet?sp=rl&st=...
+            Full SAS URL including token; required for sas_token auth. Supports
+            single file, directory glob (*.ext), or recursive (**) patterns.
+            Example:
+            https://account.blob.core.windows.net/container/path/*.parquet?sp=rl&st=...
         tenantId:
           type: string
           description: Azure AD tenant ID (required for service_principal)
@@ -2387,8 +2659,9 @@ components:
           type: string
           description: >
             Azure file URL to query; required for service_principal auth.
-            Supports single file, directory glob (*.ext), or recursive (**) patterns.
-            Example: https://account.blob.core.windows.net/container/path/**
+            Supports single file, directory glob (*.ext), or recursive (**)
+            patterns. Example:
+            https://account.blob.core.windows.net/container/path/**
       required:
         - authType
 
@@ -2402,7 +2675,8 @@ components:
           properties:
             bucketUrl:
               type: string
-              description: URL of the storage bucket (e.g. s3://my-bucket/path or gs://my-bucket/path)
+              description: URL of the storage bucket (e.g. s3://my-bucket/path or
+                gs://my-bucket/path)
             s3Connection:
               $ref: "#/components/schemas/S3Connection"
               description: AWS S3 connection configuration for data storage
@@ -2543,7 +2817,7 @@ components:
         type:
           type: string
           description: Type of database connection
-          enum: [bigquery, snowflake, postgres, gcs, s3, azure]
+          enum: [ bigquery, snowflake, postgres, gcs, s3, azure ]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         bigqueryConnection:
@@ -2674,7 +2948,8 @@ components:
           description: Name of the project being watched for file changes
         watchingPath:
           type: string
-          description: The file system path being monitored for changes, null if not watching
+          description: The file system path being monitored for changes, null if not
+            watching
       required:
         - enabled
         - projectName
@@ -2697,7 +2972,7 @@ components:
         status:
           type: string
           description: Connection test result status
-          enum: ["ok", "failed"]
+          enum: [ "ok", "failed" ]
         errorMessage:
           type: string
           description: Error message if the connection test failed, null if successful
@@ -2712,7 +2987,9 @@ components:
         includeSql:
           type: boolean
           default: false
-          description: If true, returns the generated SQL alongside compilation results (only available when compilation succeeds and the source contains a runnable query).
+          description: If true, returns the generated SQL alongside compilation results
+            (only available when compilation succeeds and the source contains a
+            runnable query).
       required:
         - source
 
@@ -2722,8 +2999,9 @@ components:
       properties:
         status:
           type: string
-          description: Overall compilation status — "error" if any problems have error severity
-          enum: ["success", "error"]
+          description: Overall compilation status — "error" if any problems have error
+            severity
+          enum: [ "success", "error" ]
         problems:
           type: array
           description: List of compilation problems (errors and warnings)
@@ -2731,7 +3009,8 @@ components:
             $ref: "#/components/schemas/CompileProblem"
         sql:
           type: string
-          description: Generated SQL for the compiled query. Only present when includeSql is true and compilation succeeds with a runnable query.
+          description: Generated SQL for the compiled query. Only present when includeSql
+            is true and compilation succeeds with a runnable query.
 
     CompileProblem:
       type: object
@@ -2743,7 +3022,7 @@ components:
         severity:
           type: string
           description: Severity level of the problem
-          enum: ["error", "warn", "debug"]
+          enum: [ "error", "warn", "debug" ]
         code:
           type: string
           description: Machine-readable error code
@@ -2757,3 +3036,95 @@ components:
             range:
               type: object
               description: Character range within the source file
+
+    CreateMaterializationRequest:
+      type: object
+      description: Options for creating a materialization
+      properties:
+        forceRefresh:
+          type: boolean
+          default: false
+          description: If true, forces rebuild of all sources even if their BuildID is
+            unchanged
+        autoLoadManifest:
+          type: boolean
+          default: false
+          description: If true, automatically reloads the manifest into the Malloy Runtime
+            after a successful materialization
+
+    Materialization:
+      type: object
+      description: A record of a package materialization
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        packageName:
+          type: string
+        status:
+          type: string
+          enum: [ "PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELLED" ]
+        startedAt:
+          type: [ "string", "null" ]
+          format: date-time
+        completedAt:
+          type: [ "string", "null" ]
+          format: date-time
+        error:
+          type: [ "string", "null" ]
+          description: Error message if the materialization failed
+        metadata:
+          type: [ "object", "null" ]
+          description: Materialization metadata including build options, source counts,
+            and durations
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BuildManifest:
+      type: object
+      description: Manifest mapping BuildIDs to materialized table names
+      properties:
+        entries:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ManifestEntry"
+          description: Map of BuildID to manifest entry
+        strict:
+          type: boolean
+          description: Whether the manifest is in strict mode
+
+    ManifestEntry:
+      type: object
+      description: A single entry in the build manifest
+      properties:
+        tableName:
+          type: string
+          description: Name of the materialized table
+
+  parameters:
+    projectName:
+      name: projectName
+      in: path
+      required: true
+      description: Name of the project
+      schema:
+        type: string
+    packageName:
+      name: packageName
+      in: path
+      required: true
+      description: Name of the package
+      schema:
+        type: string
+    materializationId:
+      name: materializationId
+      in: path
+      required: true
+      description: ID of the materialization
+      schema:
+        type: string

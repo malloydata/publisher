@@ -22,7 +22,7 @@ import {
    MalloySQLParser,
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
-import malloyPackage from "@malloydata/malloy/package.json";
+import { createRequire } from "module";
 import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
@@ -40,12 +40,13 @@ import {
    ModelNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildFilterClause,
+   FilterValidationError,
    injectFilterRefinement,
    parseFilters,
-   FilterValidationError,
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
@@ -63,7 +64,11 @@ export type PostgresConnection = components["schemas"]["PostgresConnection"];
 export type BigqueryConnection = components["schemas"]["BigqueryConnection"];
 export type TrinoConnection = components["schemas"]["TrinoConnection"];
 
-const MALLOY_VERSION = malloyPackage.version;
+const MALLOY_VERSION = (
+   createRequire(import.meta.url)("@malloydata/malloy/package.json") as {
+      version: string;
+   }
+).version;
 
 export type ModelType = "model" | "notebook";
 type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
@@ -158,11 +163,17 @@ export class Model {
       packagePath: string,
       modelPath: string,
       malloyConfig: ModelConnectionInput,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
       const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(packagePath, modelPath, malloyConfig);
+         await Model.getModelRuntime(
+            packagePath,
+            modelPath,
+            malloyConfig,
+            options,
+         );
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -291,7 +302,7 @@ export class Model {
    }
 
    public getQueries(): ApiQuery[] | undefined {
-      return this.sources;
+      return this.queries;
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
@@ -662,6 +673,7 @@ export class Model {
       packagePath: string,
       modelPath: string,
       malloyConfig: ModelConnectionInput,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -696,10 +708,23 @@ export class Model {
 
       // Request runtimes borrow the cached package MalloyConfig. The package
       // owns release; callers must not release this runtime per request.
-      const runtime = new Runtime({
+      const runtimeOptions: {
+         urlReader: typeof urlReader;
+         config: MalloyConfig;
+         buildManifest?: BuildManifest;
+      } = {
          urlReader,
          config: Model.toMalloyConfig(malloyConfig),
-      });
+      };
+
+      if (options?.buildManifest) {
+         runtimeOptions.buildManifest = {
+            entries: options.buildManifest,
+            strict: false,
+         };
+      }
+
+      const runtime = new Runtime(runtimeOptions);
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
    }
@@ -757,13 +782,29 @@ export class Model {
                ?.filter((note) => note.at.url.includes(modelPath))
                .map((note) => note.text);
 
-            // Parse #(filter) from ALL annotations (including imports)
-            // so filters defined on an imported source are honored by notebooks
-            const allAnnotations = (
-               sourceObj as StructDef
-            ).annotation?.blockNotes?.map((note) => note.text);
+            // Parse #(filter) from ALL annotations, traversing the inherits
+            // chain so that filters on a base source (e.g. `recalls`) are
+            // picked up by an extending source (`manufacturer_recalls is
+            // recalls extend {}`).  The Malloy compiler stores the base
+            // source's annotations in `annotation.inherits`.
+            //
+            // The chain goes child → parent, so we collect child-first.
+            // parseFilters uses "last wins" dedup, so we reverse to put
+            // parent annotations first and child annotations last (winning).
+            const collectedAnnotations: string[][] = [];
+            let curAnnotation: Annotation | undefined = (sourceObj as StructDef)
+               .annotation;
+            while (curAnnotation) {
+               if (curAnnotation.blockNotes) {
+                  collectedAnnotations.push(
+                     curAnnotation.blockNotes.map((note) => note.text),
+                  );
+               }
+               curAnnotation = curAnnotation.inherits;
+            }
+            const allAnnotations = collectedAnnotations.reverse().flat();
             let filters: ApiFilter[] | undefined;
-            if (allAnnotations && allAnnotations.length > 0) {
+            if (allAnnotations.length > 0) {
                try {
                   const parsed = parseFilters(allAnnotations);
                   if (parsed.length > 0) {

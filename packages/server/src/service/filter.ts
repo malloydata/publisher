@@ -127,14 +127,19 @@ export function parseFilterAnnotation(
  * (as found on a Malloy source's `blockNotes`).
  */
 export function parseFilters(annotations: string[]): FilterDefinition[] {
-   const filters: FilterDefinition[] = [];
+   // Use a Map keyed by filter name so that later annotations (from an
+   // extending source) override earlier ones (from the base source).
+   // This is important when `source: child is parent extend {}` inherits
+   // blockNotes from the parent — the child's annotations come last and
+   // should win.
+   const byName = new Map<string, FilterDefinition>();
    for (const annotation of annotations) {
       const parsed = parseFilterAnnotation(annotation);
       if (parsed) {
-         filters.push(parsed);
+         byName.set(parsed.name, parsed);
       }
    }
-   return filters;
+   return [...byName.values()];
 }
 
 // ---------------------------------------------------------------------------

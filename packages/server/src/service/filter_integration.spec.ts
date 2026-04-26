@@ -94,6 +94,45 @@ import "orders_optional.malloy"
 run: orders -> summary
 `;
 
+// Base source with 3 filters: region (in), status (equal), customer_id (equal, required)
+const MODEL_BASE_FOR_EXTEND = `
+#(filter) name=region dimension=region type=in
+#(filter) name=status dimension=status type=equal
+#(filter) name=tenant dimension=customer_id type=equal required
+source: base_orders is duckdb.table('orders') extend {
+   primary_key: order_id
+
+   measure:
+      order_count is count()
+      total_amount is sum(amount)
+
+   view: summary is {
+      aggregate: order_count, total_amount
+   }
+}
+`;
+
+// Extending source: overrides region (in → equal), overrides tenant
+// (removes required), keeps status from base unchanged
+const MODEL_CHILD_EXTEND = `
+import "base_orders.malloy"
+
+#(filter) name=region dimension=region type=equal
+#(filter) name=tenant dimension=customer_id type=equal
+source: child_orders is base_orders extend {}
+`;
+
+// Notebook against the extended source
+const NOTEBOOK_EXTEND = `>>>markdown
+# Extend Test
+
+>>>malloy
+import "child_orders.malloy"
+
+>>>malloy
+run: child_orders -> summary
+`;
+
 beforeAll(async () => {
    await fs.mkdir(TEST_DB_DIR, { recursive: true });
    await fs.mkdir(TEST_PKG_DIR, { recursive: true });
@@ -617,6 +656,170 @@ describe("filter integration", () => {
          const markdownCell = await model.executeNotebookCell(0);
          expect(markdownCell.type).toBe("markdown");
          expect(markdownCell.text).toContain("Test Notebook");
+      });
+   });
+
+   // -----------------------------------------------------------------------
+   // Extended source filter inheritance
+   // -----------------------------------------------------------------------
+   describe("extended source filter inheritance", () => {
+      beforeEach(async () => {
+         await writeFile("base_orders.malloy", MODEL_BASE_FOR_EXTEND);
+         await writeFile("child_orders.malloy", MODEL_CHILD_EXTEND);
+         await writeFile("extend_notebook.malloynb", NOTEBOOK_EXTEND);
+      });
+
+      it("inherits base-only filters on extended source", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "child_orders.malloy",
+            getConnections(),
+         );
+
+         const sources = model.getSources();
+         const child = sources!.find((s) => s.name === "child_orders");
+         expect(child).toBeDefined();
+         expect(child!.filters).toBeDefined();
+
+         // status is defined only on the base — it should carry through
+         const statusFilter = child!.filters!.find((f) => f.name === "status");
+         expect(statusFilter).toBeDefined();
+         expect(statusFilter!.type).toBe("equal");
+      });
+
+      it("child overrides base filter type", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "child_orders.malloy",
+            getConnections(),
+         );
+
+         const sources = model.getSources();
+         const child = sources!.find((s) => s.name === "child_orders");
+         expect(child).toBeDefined();
+
+         // region: base=in, child overrides to equal
+         const regionFilter = child!.filters!.find((f) => f.name === "region");
+         expect(regionFilter).toBeDefined();
+         expect(regionFilter!.type).toBe("equal");
+      });
+
+      it("child can remove required flag by overriding", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "child_orders.malloy",
+            getConnections(),
+         );
+
+         const sources = model.getSources();
+         const child = sources!.find((s) => s.name === "child_orders");
+         expect(child).toBeDefined();
+
+         // tenant: base=required, child overrides without required
+         const tenantFilter = child!.filters!.find((f) => f.name === "tenant");
+         expect(tenantFilter).toBeDefined();
+         expect(tenantFilter!.required).toBeFalsy();
+      });
+
+      it("has exactly the expected merged filter set", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "child_orders.malloy",
+            getConnections(),
+         );
+
+         const sources = model.getSources();
+         const child = sources!.find((s) => s.name === "child_orders");
+         expect(child).toBeDefined();
+
+         // 3 unique filter names: region, status (from base), tenant
+         const filterNames = child!.filters!.map((f) => f.name).sort();
+         expect(filterNames).toEqual(["region", "status", "tenant"]);
+      });
+
+      it("applies inherited filter to query on extended source", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "child_orders.malloy",
+            getConnections(),
+         );
+
+         // status=active is inherited from the base; should work on child
+         const { compactResult } = await model.getQueryResults(
+            "child_orders",
+            "summary",
+            undefined,
+            { status: "active" },
+         );
+         const rows = asRows(compactResult);
+         expect(rows.length).toBe(1);
+         // 4 active rows: US(2), EU(1), APAC(1)
+         expect(Number(rows[0].order_count)).toBe(4);
+      });
+
+      it("applies overridden filter to query on extended source", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "child_orders.malloy",
+            getConnections(),
+         );
+
+         // region is overridden to type=equal on the child
+         const { compactResult } = await model.getQueryResults(
+            "child_orders",
+            "summary",
+            undefined,
+            { region: "US" },
+         );
+         const rows = asRows(compactResult);
+         expect(rows.length).toBe(1);
+         // 2 US rows
+         expect(Number(rows[0].order_count)).toBe(2);
+      });
+
+      it("no longer requires base's required filter after child override", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "child_orders.malloy",
+            getConnections(),
+         );
+
+         // On the base, tenant is required. On the child, it's not.
+         // Running without tenant should NOT throw.
+         const { compactResult } = await model.getQueryResults(
+            "child_orders",
+            "summary",
+         );
+         const rows = asRows(compactResult);
+         expect(rows.length).toBe(1);
+         expect(Number(rows[0].order_count)).toBe(6);
+      });
+
+      it("applies inherited filters to notebook cells", async () => {
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "extend_notebook.malloynb",
+            getConnections(),
+         );
+
+         // Apply status=cancelled (inherited from base) via notebook cell
+         const codeCell = await model.executeNotebookCell(2, {
+            status: "cancelled",
+         });
+         expect(codeCell.result).toBeDefined();
+
+         const rows = parseNotebookResult(codeCell.result!);
+         expect(rows.length).toBe(1);
+         // 2 cancelled rows: EU(1), APAC(1)
+         expect(Number(rows[0].order_count)).toBe(2);
       });
    });
 });

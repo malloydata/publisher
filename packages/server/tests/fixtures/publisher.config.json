@@ -1,0 +1,15 @@
+{
+  "frozenConfig": false,
+  "projects": [
+    {
+      "name": "test-project",
+      "packages": [
+        {
+          "name": "persist-test",
+          "location": "./persist-test"
+        }
+      ],
+      "connections": []
+    }
+  ]
+}

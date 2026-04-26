@@ -193,7 +193,10 @@ export class ConnectionController {
          if (!source) {
             throw new ConnectionError(`Table ${tablePath} not found`);
          }
-
+         // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
+         if (typeof source === "string") {
+            throw new ConnectionError(source);
+         }
          return {
             source: JSON.stringify(source),
             resource: tablePath,
@@ -225,11 +228,11 @@ export class ConnectionController {
       if (!projectName || !connectionName) {
          throw new BadRequestError("Connection payload is required");
       }
-      const { dbConnection } = await this.connectionService.getConnection(
-         projectName,
-         connectionName,
-      );
-      return dbConnection;
+      // Prefer the in-memory API connection (which was materialized by the
+      // project on load and carries `attributes`). The DB row stores the
+      // raw config and FK columns, which aren't the ApiConnection shape.
+      const project = await this.projectStore.getProject(projectName, false);
+      return project.getApiConnection(connectionName);
    }
 
    public async listConnections(projectName: string): Promise<ApiConnection[]> {
@@ -298,22 +301,26 @@ export class ConnectionController {
          connectionName,
          packageName,
       );
-
       try {
+         const schema = await (
+            malloyConnection as Connection & {
+               fetchSelectSchema: (params: {
+                  connection: string;
+                  selectStr: string;
+               }) => Promise<unknown>;
+            }
+         ).fetchSelectSchema({
+            connection: connectionName,
+            selectStr: sqlStatement,
+         });
+
+         // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
+         if (typeof schema === "string") {
+            throw new ConnectionError(schema);
+         }
+
          return {
-            source: JSON.stringify(
-               await (
-                  malloyConnection as Connection & {
-                     fetchSelectSchema: (params: {
-                        connection: string;
-                        selectStr: string;
-                     }) => Promise<unknown>;
-                  }
-               ).fetchSelectSchema({
-                  connection: connectionName,
-                  selectStr: sqlStatement,
-               }),
-            ),
+            source: JSON.stringify(schema),
          };
       } catch (error) {
          throw new ConnectionError((error as Error).message);

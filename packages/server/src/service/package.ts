@@ -23,6 +23,7 @@ import {
 } from "../constants";
 import { PackageNotFoundError } from "../errors";
 import { formatDuration, logger } from "../logger";
+import { BuildManifest } from "../storage/DatabaseInterface";
 import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -49,6 +50,11 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private malloyConfig: MalloyConfig;
+   // Eagerly-resolved connection map for materialization callers that need
+   // synchronous Map access (PR #666 / materialization_service.ts).
+   // Identity matches the MalloyConfig cache — same Connection instance is
+   // returned by `getMalloyConnection()` and looked up via the malloyConfig.
+   private connectionsMap: Map<string, Connection> = new Map();
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -66,6 +72,7 @@ export class Package {
       databases: ApiDatabase[],
       models: Map<string, Model>,
       malloyConfig: MalloyConfig = new MalloyConfig({ connections: {} }),
+      connectionsMap: Map<string, Connection> = new Map(),
    ) {
       this.projectName = projectName;
       this.packageName = packageName;
@@ -74,6 +81,7 @@ export class Package {
       this.databases = databases;
       this.models = models;
       this.malloyConfig = malloyConfig;
+      this.connectionsMap = connectionsMap;
    }
 
    static async create(
@@ -81,6 +89,11 @@ export class Package {
       packageName: string,
       packagePath: string,
       projectMalloyConfig: PackageConnectionInput,
+      // Names of project-level connections to eagerly resolve into the
+      // package's connection map. Materialization (PR #666) needs a
+      // synchronous Map<string, Connection>; without an enumeration source
+      // we cannot build it. Always also resolves the package's own "duckdb".
+      projectConnectionNames: () => string[] = () => [],
    ): Promise<Package> {
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -114,6 +127,32 @@ export class Package {
                ? projectMalloyConfig
                : () => Package.toMalloyConfig(projectMalloyConfig),
          );
+
+         // Eagerly resolve all known connections into a Map for materialization
+         // callers. Each name routes through the package's wrapped lookup, so
+         // "duckdb" resolves to the package-local in-memory instance and
+         // everything else delegates to the project's MalloyConfig.
+         const connectionsMap = new Map<string, Connection>();
+         const namesToResolve = new Set<string>(["duckdb"]);
+         for (const n of projectConnectionNames()) {
+            if (n) namesToResolve.add(n);
+         }
+         for (const name of namesToResolve) {
+            try {
+               connectionsMap.set(
+                  name,
+                  await malloyConfig.connections.lookupConnection(name),
+               );
+            } catch (err) {
+               // Don't fail package load on a single bad connection — log and
+               // skip. Materialization will surface a clearer error if it
+               // later targets a missing name.
+               logger.warn(
+                  `Failed to eagerly resolve connection ${name} for package ${packageName}`,
+                  { error: err instanceof Error ? err.message : String(err) },
+               );
+            }
+         }
 
          const models = await Package.loadModels(
             packageName,
@@ -168,6 +207,7 @@ export class Package {
             databases,
             models,
             malloyConfig,
+            connectionsMap,
          );
       } catch (error) {
          logger.error(`Error loading package ${packageName}`, { error });
@@ -218,6 +258,49 @@ export class Package {
 
    public getMalloyConfig(): MalloyConfig {
       return this.malloyConfig;
+   }
+
+   public getPackagePath(): string {
+      return this.packagePath;
+   }
+
+   public getModelPaths(): string[] {
+      return Array.from(this.models.keys());
+   }
+
+   public getConnections(): Map<string, Connection> {
+      return this.connectionsMap;
+   }
+
+   // TODO(merge): adapt to MalloyConfig flow. Model.create now takes
+   // ModelConnectionInput; we pass malloyConfig + buildManifest. The
+   // reload semantics (rebuild map off-side, swap at the end) are preserved
+   // from PR #666.
+   public async reloadAllModels(
+      buildManifest: BuildManifest["entries"],
+   ): Promise<void> {
+      const modelPaths = Array.from(this.models.keys());
+      logger.info("Reloading all models with build manifest", {
+         packageName: this.packageName,
+         modelCount: modelPaths.length,
+         manifestEntryCount: Object.keys(buildManifest).length,
+      });
+      const reloaded = await Promise.all(
+         modelPaths.map((modelPath) =>
+            Model.create(
+               this.packageName,
+               this.packagePath,
+               modelPath,
+               this.malloyConfig,
+               { buildManifest },
+            ),
+         ),
+      );
+      const nextModels = new Map<string, Model>();
+      for (const model of reloaded) {
+         nextModels.set(model.getPath(), model);
+      }
+      this.models = nextModels;
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {

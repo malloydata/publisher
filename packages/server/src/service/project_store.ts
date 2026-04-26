@@ -337,6 +337,7 @@ export class ProjectStore {
       };
       const existingProject = await repository.getProjectByName(projectName);
 
+      let dbProject: { id: string; name: string };
       if (existingProject) {
          const updateData = {
             description: projectDescription,
@@ -344,10 +345,27 @@ export class ProjectStore {
          };
 
          await repository.updateProject(existingProject.id, updateData);
-         return { id: existingProject.id, name: projectName };
+         dbProject = { id: existingProject.id, name: projectName };
       } else {
-         return await repository.createProject(projectData);
+         dbProject = await repository.createProject(projectData);
       }
+
+      // Initialize DuckLake manifest storage if configured on the project.
+      const materializationStorage = project.metadata
+         ?.materializationStorage as
+         | { catalogUrl?: string; dataPath?: string }
+         | undefined;
+      if (
+         materializationStorage?.catalogUrl &&
+         materializationStorage?.dataPath
+      ) {
+         await this.storageManager.initializeDuckLakeForProject(dbProject.id, {
+            catalogUrl: materializationStorage.catalogUrl,
+            dataPath: materializationStorage.dataPath,
+         });
+      }
+
+      return dbProject;
    }
 
    private async addPackages(
@@ -934,6 +952,7 @@ export class ProjectStore {
    private isLocalPath(location: string) {
       return (
          location.startsWith("./") ||
+         location.startsWith("../") ||
          location.startsWith("~/") ||
          location.startsWith("/") ||
          path.isAbsolute(location)

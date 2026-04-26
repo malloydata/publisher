@@ -63,7 +63,7 @@
     "speccy": "^0.11.0"
   },
   "dependencies": {
-    "duckdb": "1.4.3",
+    "duckdb": "1.4.4",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.0",
     "fn": "^0.2.0",
@@ -71,7 +71,7 @@
     "react-dom": "^19.1.0"
   },
   "resolutions": {
-    "duckdb": "1.4.3",
+    "duckdb": "1.4.4",
     "esbuild": "0.25.9",
     "@malloydata/malloy-interfaces": "^0.0.382"
   }
