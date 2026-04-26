@@ -6,7 +6,10 @@ import type { MySQLConnection } from "@malloydata/db-mysql";
 import "@malloydata/db-mysql";
 import type { PostgresConnection } from "@malloydata/db-postgres";
 import "@malloydata/db-postgres";
-import { buildPoolOptions, SnowflakeConnection } from "@malloydata/db-snowflake";
+import {
+   buildPoolOptions,
+   SnowflakeConnection,
+} from "@malloydata/db-snowflake";
 import type { TrinoConnection } from "@malloydata/db-trino";
 import "@malloydata/db-trino";
 import {
