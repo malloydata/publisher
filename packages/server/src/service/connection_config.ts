@@ -393,6 +393,11 @@ export function assembleProjectConnections(
                role: connection.snowflakeConnection?.role,
                timeoutMs:
                   connection.snowflakeConnection?.responseTimeoutMilliseconds,
+               // Pool sizing is server-owned policy (matches the values
+               // main's deleted switch passed pre-MalloyConfig adoption).
+               // Not exposed through the public API.
+               poolMin: 1,
+               poolMax: 20,
             };
             break;
          }

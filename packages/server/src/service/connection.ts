@@ -6,7 +6,7 @@ import type { MySQLConnection } from "@malloydata/db-mysql";
 import "@malloydata/db-mysql";
 import type { PostgresConnection } from "@malloydata/db-postgres";
 import "@malloydata/db-postgres";
-import { SnowflakeConnection } from "@malloydata/db-snowflake";
+import { buildPoolOptions, SnowflakeConnection } from "@malloydata/db-snowflake";
 import type { TrinoConnection } from "@malloydata/db-trino";
 import "@malloydata/db-trino";
 import {
@@ -15,12 +15,10 @@ import {
    MalloyConfig,
    TableSourceDef,
 } from "@malloydata/malloy";
-import { BaseConnection } from "@malloydata/malloy/connection";
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import path from "path";
-import type { ConnectionOptions as SnowflakeConnectionOptions } from "snowflake-sdk";
 import { components } from "../api";
 import { logAxiosError, logger } from "../logger";
 import {
@@ -847,43 +845,57 @@ function entryToDuckDBOptions(
    if (workingDirectory !== undefined) {
       rest.workingDirectory = workingDirectory;
    }
-   return removeUndefined({ ...rest, name }) as PublisherDuckDBOptions;
+   // `name` is always present; only the other fields may be undefined.
+   return { ...removeUndefined(rest), name };
 }
 
-function removeUndefined(
-   value: Record<string, unknown>,
-): Record<string, unknown> {
+function removeUndefined<T extends object>(value: T): Partial<T> {
    return Object.fromEntries(
       Object.entries(value).filter(
          ([, fieldValue]) => fieldValue !== undefined,
       ),
-   );
+   ) as Partial<T>;
 }
 
 function buildSnowflakePrivateKeyConnection(
    metadata: ProjectConnectionMetadata,
 ): SnowflakeConnection {
+   const name = metadata.apiConnection.name!;
    const snowflake = metadata.apiConnection.snowflakeConnection;
    if (!snowflake?.privateKey) {
       throw new Error(
-         `Snowflake private key is required for connection ${metadata.apiConnection.name}`,
+         `Snowflake private key is required for connection ${name}`,
       );
    }
+   if (!snowflake.account) {
+      throw new Error(`Snowflake account is required for connection ${name}`);
+   }
+   if (!snowflake.username) {
+      throw new Error(`Snowflake username is required for connection ${name}`);
+   }
+   if (!snowflake.warehouse) {
+      throw new Error(`Snowflake warehouse is required for connection ${name}`);
+   }
 
-   return new SnowflakeConnection(metadata.apiConnection.name!, {
-      connOptions: removeUndefined({
+   return new SnowflakeConnection(name, {
+      connOptions: {
          account: snowflake.account,
          username: snowflake.username,
-         password: snowflake.password,
          privateKey: normalizeSnowflakePrivateKey(snowflake.privateKey),
-         privateKeyPass: snowflake.privateKeyPass,
          authenticator: "SNOWFLAKE_JWT",
          warehouse: snowflake.warehouse,
-         database: snowflake.database,
-         schema: snowflake.schema,
-         role: snowflake.role,
-      }) as unknown as SnowflakeConnectionOptions,
+         ...removeUndefined({
+            password: snowflake.password,
+            privateKeyPass: snowflake.privateKeyPass,
+            database: snowflake.database,
+            schema: snowflake.schema,
+            role: snowflake.role,
+         }),
+      },
       timeoutMs: snowflake.responseTimeoutMilliseconds,
+      // Match the pool sizing used on the registry path (and in main's
+      // pre-MalloyConfig switch). Server-owned, not exposed via API.
+      poolOptions: buildPoolOptions({ poolMin: 1, poolMax: 20 }),
    });
 }
 
@@ -945,8 +957,11 @@ export function buildProjectMalloyConfig(
    const assembled = assembleProjectConnections(connections, projectPath);
    // Cache the build Promise rather than the resolved Connection so two
    // concurrent lookupConnection() calls for the same name share one build
-   // and we never leak a losing-instance pool/handle.
-   const wrapperConnections = new Map<string, Promise<Connection>>();
+   // and we never leak a losing-instance pool/handle. Per-branch caches
+   // preserve the concrete subtype so use sites don't need narrowing casts.
+   const duckLakeCache = new Map<string, Promise<DuckLakeConnection>>();
+   const snowflakeJwtCache = new Map<string, Promise<SnowflakeConnection>>();
+   const azureDuckDBCache = new Map<string, Promise<AzureDuckDBConnection>>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
@@ -982,24 +997,21 @@ export function buildProjectMalloyConfig(
             const metadata = getMetadataForLookup(assembled.metadata, name);
 
             if (metadata?.isDuckLake) {
-               let connectionPromise = wrapperConnections.get(name!);
+               let connectionPromise = duckLakeCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
                   connectionPromise = Promise.resolve(
                      buildDuckLakeConnection(metadata, entry),
                   );
-                  wrapperConnections.set(name!, connectionPromise);
+                  duckLakeCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
                if (
                   isUpdateConnectionRequest ||
-                  !(await isDatabaseAttached(
-                     connection as DuckDBConnection,
-                     name!,
-                  ))
+                  !(await isDatabaseAttached(connection, name!))
                ) {
                   await attachDuckLake(
-                     connection as DuckDBConnection,
+                     connection,
                      name!,
                      metadata.apiConnection.ducklakeConnection!,
                   );
@@ -1008,24 +1020,24 @@ export function buildProjectMalloyConfig(
             }
 
             if (metadata?.hasSnowflakePrivateKey) {
-               let connectionPromise = wrapperConnections.get(name!);
+               let connectionPromise = snowflakeJwtCache.get(name!);
                if (!connectionPromise) {
                   connectionPromise = Promise.resolve(
                      buildSnowflakePrivateKeyConnection(metadata),
                   );
-                  wrapperConnections.set(name!, connectionPromise);
+                  snowflakeJwtCache.set(name!, connectionPromise);
                }
                return connectionPromise;
             }
 
             if (metadata?.hasAzureAttachment) {
-               let connectionPromise = wrapperConnections.get(name!);
+               let connectionPromise = azureDuckDBCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
                   connectionPromise = Promise.resolve(
                      buildAzureDuckDBConnection(metadata, entry),
                   );
-                  wrapperConnections.set(name!, connectionPromise);
+                  azureDuckDBCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
                await attachOnce(connection, metadata);
@@ -1043,16 +1055,23 @@ export function buildProjectMalloyConfig(
 
    return {
       malloyConfig,
-      apiConnections: assembled.apiConnections as InternalConnection[],
+      apiConnections: assembled.apiConnections,
       releaseConnections: async () => {
+         const wrapperPromises: Promise<Connection>[] = [
+            ...duckLakeCache.values(),
+            ...snowflakeJwtCache.values(),
+            ...azureDuckDBCache.values(),
+         ];
          const closeResults = await Promise.allSettled([
             malloyConfig.releaseConnections(),
-            ...Array.from(wrapperConnections.values(), async (promise) => {
+            ...wrapperPromises.map(async (promise) => {
                const connection = await promise;
                await connection.close();
             }),
          ]);
-         wrapperConnections.clear();
+         duckLakeCache.clear();
+         snowflakeJwtCache.clear();
+         azureDuckDBCache.clear();
 
          const failures = closeResults.filter(
             (result): result is PromiseRejectedResult =>
@@ -1081,11 +1100,11 @@ export async function createProjectConnections(
    projectPath: string = "",
    isUpdateConnectionRequest: boolean = false,
 ): Promise<{
-   malloyConnections: Map<string, BaseConnection>;
+   malloyConnections: Map<string, Connection>;
    apiConnections: InternalConnection[];
    releaseConnections: () => Promise<void>;
 }> {
-   const connectionMap = new Map<string, BaseConnection>();
+   const connectionMap = new Map<string, Connection>();
    const projectConfig = buildProjectMalloyConfig(
       connections,
       projectPath,
@@ -1100,7 +1119,7 @@ export async function createProjectConnections(
             connection.name,
          );
       connection.attributes = getConnectionAttributes(malloyConnection);
-      connectionMap.set(connection.name, malloyConnection as BaseConnection);
+      connectionMap.set(connection.name, malloyConnection);
    }
 
    return {

@@ -473,17 +473,13 @@ export class ConnectionController {
    }
 
    public async testConnectionConfiguration(
-      connectionConfig: ApiConnection,
+      input: ApiConnection & { config?: ApiConnection },
    ): Promise<ApiConnectionStatus> {
-      if (
-         connectionConfig &&
-         "config" in connectionConfig &&
-         typeof (connectionConfig as Record<string, unknown>).config ===
-            "object"
-      ) {
-         connectionConfig = (connectionConfig as Record<string, unknown>)
-            .config as ApiConnection;
-      }
+      // Some clients wrap the payload as { config: <connection> }; unwrap.
+      const connectionConfig: ApiConnection =
+         input.config && typeof input.config === "object"
+            ? input.config
+            : input;
 
       if (
          !connectionConfig ||
@@ -555,11 +551,8 @@ export class ConnectionController {
          throw new BadRequestError("Connection payload is required");
       }
 
-      validateAzureAttachedDatabases(connection as ApiConnection);
-      validateAdminAuthoredConnection(
-         connectionName,
-         connection as ApiConnection,
-      );
+      validateAzureAttachedDatabases(connection);
+      validateAdminAuthoredConnection(connectionName, connection);
 
       logger.info(
          `Updating connection "${connectionName}" in project "${projectName}"`,

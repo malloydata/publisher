@@ -708,23 +708,13 @@ export class Model {
 
       // Request runtimes borrow the cached package MalloyConfig. The package
       // owns release; callers must not release this runtime per request.
-      const runtimeOptions: {
-         urlReader: typeof urlReader;
-         config: MalloyConfig;
-         buildManifest?: BuildManifest;
-      } = {
+      const runtime = new Runtime({
          urlReader,
          config: Model.toMalloyConfig(malloyConfig),
-      };
-
-      if (options?.buildManifest) {
-         runtimeOptions.buildManifest = {
-            entries: options.buildManifest,
-            strict: false,
-         };
-      }
-
-      const runtime = new Runtime(runtimeOptions);
+         buildManifest: options?.buildManifest
+            ? { entries: options.buildManifest, strict: false }
+            : undefined,
+      });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
    }
