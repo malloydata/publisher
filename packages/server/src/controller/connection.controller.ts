@@ -165,7 +165,8 @@ export class ConnectionController {
             return await pkg.getMalloyConnection(connectionName);
          }
          throw new BadRequestError(
-            `Ambiguous "duckdb" connection lookup: project "${projectName}" has multiple packages; specify ?packageName=<name>`,
+            `Ambiguous "duckdb" connection lookup: project "${projectName}" has multiple packages. ` +
+               `Use /projects/${projectName}/packages/{packageName}/connections/duckdb/... to disambiguate.`,
          );
       } else {
          return await project.getMalloyConnection(connectionName);

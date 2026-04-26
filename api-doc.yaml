@@ -490,15 +490,6 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: A list of schemas available in the connection with metadata
@@ -556,15 +547,6 @@ paths:
             type: array
             items:
               type: string
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: A list of table names available in the specified schema
@@ -619,15 +601,6 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: Table information
@@ -677,15 +650,6 @@ paths:
           required: false
           schema:
             type: string
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: SQL source information
@@ -721,15 +685,6 @@ paths:
           in: path
           description: Name of the connection
           required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
       requestBody:
@@ -787,15 +742,6 @@ paths:
           required: false
           schema:
             type: string
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
       requestBody:
         description: SQL statement to execute
         required: true
@@ -845,15 +791,6 @@ paths:
           in: path
           description: Name of the connection
           required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
       requestBody:
@@ -915,15 +852,6 @@ paths:
           required: false
           schema:
             type: string
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
           description: Temporary table information
@@ -979,15 +907,521 @@ paths:
           required: false
           schema:
             type: string
-        - name: packageName
-          in: query
-          description: |
-            Disambiguates per-package "duckdb" lookups in multi-package projects.
-            Required when connectionName is "duckdb" and the project has more
-            than one package; ignored otherwise.
-          required: false
+      responses:
+        "200":
+          description: Query execution results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryData"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Per-package connection data routes.
+  #
+  # `duckdb` is a per-package connection (each package has its own
+  # `:memory:` DuckDB rooted at the package's path), so any data-plane
+  # call against `connectionName="duckdb"` needs a package context.
+  # Non-`duckdb` names resolve through the package's MalloyConfig
+  # wrapper, which delegates to the project's connection registry, so
+  # the same routes also work for project-level connections looked up
+  # in a package context.
+  # ──────────────────────────────────────────────────────────────────
+
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/schemas:
+    get:
+      tags:
+        - connections
+      operationId: list-schemas-in-package
+      summary: List database schemas (per-package)
+      description: |
+        Retrieves a list of all schemas (databases) available in the specified
+        connection, resolved in the context of the named package. Required for
+        `connectionName="duckdb"`, which is per-package; works for any other
+        connection name as well (resolution falls through to the project).
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: A list of schemas available in the connection with metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Schema"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/schemas/{schemaName}/tables:
+    get:
+      tags:
+        - connections
+      operationId: list-tables-in-package
+      summary: List tables in database (per-package)
+      description: |
+        Retrieves a list of all tables and views available in the specified
+        database schema, resolved in the context of the named package.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: schemaName
+          in: path
+          description: Name of the schema
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: tableNames
+          in: query
+          description: |
+            List of table names to filter results. When provided, only returns metadata
+            for the specified tables. When omitted, returns all tables in the schema.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: A list of table names available in the specified schema
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Table"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/schemas/{schemaName}/tables/{tablePath}:
+    get:
+      tags:
+        - connections
+      operationId: get-table-in-package
+      summary: Get table details from database (per-package)
+      description: |
+        Retrieves a table from the specified database schema, resolved in
+        the context of the named package.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: schemaName
+          in: path
+          description: Name of the schema
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: tablePath
+          in: path
+          description: Full path to the table
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+      responses:
+        "200":
+          description: Table information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Table"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # TODO: Remove the GET (deprecated) form once clients migrate.
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/sqlSource:
+    get:
+      tags:
+        - connections
+      operationId: get-sqlsource-in-package
+      deprecated: true
+      summary: Get SQL source (per-package, deprecated)
+      description: |
+        **DEPRECATED**: Use the POST version instead.
+
+        Creates a Malloy source from a SQL statement using the specified
+        connection, resolved in the context of the named package.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: sqlStatement
+          in: query
+          description: SQL statement
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SQL source information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SqlSource"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    post:
+      tags:
+        - connections
+      operationId: post-sqlsource-in-package
+      summary: Create SQL source from statement (per-package)
+      description: |
+        Creates a Malloy source from a SQL statement using the specified
+        connection, resolved in the context of the named package.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      requestBody:
+        description: SQL statement to fetch the SQL source
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sqlStatement:
+                  type: string
+      responses:
+        "200":
+          description: SQL source information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SqlSource"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/sqlQuery:
+    post:
+      tags:
+        - connections
+      operationId: post-querydata-in-package
+      summary: Execute SQL query (per-package)
+      description: |
+        Executes a SQL statement against the specified database connection,
+        resolved in the context of the named package, and returns the results.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: options
+          in: query
+          description: Options (deprecated; pass in body instead)
+          deprecated: true
+          required: false
+          schema:
+            type: string
+      requestBody:
+        description: SQL statement to execute
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sqlStatement:
+                  type: string
+                options:
+                  type: string
+                  description: Options
+      responses:
+        "200":
+          description: Query execution results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryData"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/sqlTemporaryTable:
+    post:
+      tags:
+        - connections
+      operationId: post-temporarytable-in-package
+      summary: Create temporary table (per-package)
+      description: |
+        Creates a temporary table from a SQL statement using the specified
+        database connection, resolved in the context of the named package.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      requestBody:
+        description: SQL statement to create the temporary table
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sqlStatement:
+                  type: string
+      responses:
+        "200":
+          description: Temporary table information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemporaryTable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # TODO: Remove this endpoint.
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/temporaryTable:
+    get:
+      tags:
+        - connections
+      operationId: get-temporarytable-in-package
+      deprecated: true
+      summary: Create temporary table (per-package, deprecated)
+      description: |
+        **DEPRECATED**: Use the POST version instead.
+
+        Creates a temporary table from a SQL statement using the specified
+        connection, resolved in the context of the named package.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: sqlStatement
+          in: query
+          description: SQL statement
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Temporary table information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemporaryTable"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # TODO: Remove this endpoint.
+  /projects/{projectName}/packages/{packageName}/connections/{connectionName}/queryData:
+    get:
+      tags:
+        - connections
+      operationId: get-querydata-in-package
+      deprecated: true
+      summary: Execute SQL query (per-package, deprecated)
+      description: |
+        **DEPRECATED**: Use the POST version instead.
+
+        Executes a SQL statement against the specified database connection,
+        resolved in the context of the named package, and returns the results.
+      parameters:
+        - name: projectName
+          in: path
+          description: Name of the project
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package whose connection context to use
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: connectionName
+          in: path
+          description: Name of the connection
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: sqlStatement
+          in: query
+          description: SQL statement
+          required: false
+          schema:
+            type: string
+        - name: options
+          in: query
+          description: Options
+          required: false
+          schema:
+            type: string
       responses:
         "200":
           description: Query execution results
