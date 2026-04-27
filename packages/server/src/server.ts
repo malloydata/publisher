@@ -36,16 +36,12 @@ import { logger, loggerMiddleware } from "./logger";
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { normalizeQueryArray } from "./query_utils";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
 import { ProjectStore } from "./service/project_store";
 
-/** Normalize an Express query param into a string[] or undefined. */
-export function normalizeQueryArray(value: unknown): string[] | undefined {
-   if (value === undefined || value === null) return undefined;
-   if (Array.isArray(value)) return value.map(String);
-   return [String(value)];
-}
+export { normalizeQueryArray };
 
 // Parse command line arguments
 function parseArgs() {
