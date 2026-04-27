@@ -77,13 +77,21 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
             expect(result).toBeDefined();
             expect(result.resources).toBeDefined();
             expect(Array.isArray(result.resources)).toBe(true);
-            expect(result.resources.length).toBeGreaterThan(0);
+            if (result.resources.length === 0) {
+               throw new Error(
+                  "listResources returned no resources. For E2E, ensure packages (e.g. malloy-samples) are available under SERVER_ROOT and INITIALIZE_STORAGE has allowed them to download.",
+               );
+            }
 
             const faaPackageEntry = result.resources.find(
                (r) => r.uri === faaPackageUri,
             );
             expect(faaPackageEntry).toBeDefined();
             expect(faaPackageEntry?.name).toBe("faa");
+            // Server attaches package metadata for listed packages; assert on a known URI instead of
+            // resources[0] because MCP Resource.description is optional and ordering is not guaranteed.
+            expect(faaPackageEntry?.description).toBeDefined();
+            expect(typeof faaPackageEntry?.description).toBe("string");
 
             const firstResource = result.resources[0];
             expect(firstResource).toBeDefined();
@@ -92,8 +100,6 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
             expect(firstResource.uri).toMatch(/^malloy:\/\//);
             expect(firstResource.name).toBeDefined();
             expect(typeof firstResource.name).toBe("string");
-            expect(firstResource.description).toBeDefined();
-            expect(typeof firstResource.description).toBe("string");
             if (firstResource.mimeType) {
                expect(typeof firstResource.mimeType).toBe("string");
             }
@@ -112,7 +118,11 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
          expect(result).toBeDefined();
          expect(result.resources).toBeDefined();
          expect(Array.isArray(result.resources)).toBe(true);
-         expect(result.resources.length).toBeGreaterThan(0);
+         if (result.resources.length === 0) {
+            throw new Error(
+               "listResources (with extra params) returned no resources. For E2E, ensure packages (e.g. malloy-samples) are available under SERVER_ROOT and INITIALIZE_STORAGE has allowed them to download.",
+            );
+         }
       });
    });
 
