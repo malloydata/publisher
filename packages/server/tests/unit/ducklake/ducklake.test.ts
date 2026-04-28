@@ -10,7 +10,7 @@ import {
 } from "../../../src/service/connection";
 import {
    getSchemasForConnection,
-   getTablesForSchema,
+   listTablesForSchema,
 } from "../../../src/service/db_utils";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -421,8 +421,8 @@ describe("DuckLake Connection Tests", () => {
             }
 
             // Test table listing for first schema
-            const schemaName = schemas[0].name;
-            const tables = await getTablesForSchema(
+            const schemaName = schemas[0].name!;
+            const tables = await listTablesForSchema(
                ducklakeConnection,
                schemaName,
                connection,

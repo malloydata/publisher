@@ -82,9 +82,13 @@ describe("dto/connection", () => {
             account: "my-account",
             username: "user",
             password: "pass",
+            privateKey:
+               "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+            privateKeyPass: "secret",
             warehouse: "my-warehouse",
             database: "my-database",
             schema: "my-schema",
+            role: "analyst",
             responseTimeoutMilliseconds: 5000,
          };
          const snowflakeConnection = plainToInstance(

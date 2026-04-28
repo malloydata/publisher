@@ -20,6 +20,7 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
+   BadRequestError,
    FrozenConfigError,
    PackageNotFoundError,
    ProjectNotFoundError,
@@ -30,6 +31,63 @@ import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { PackageStatus, Project } from "./project";
 type ApiProject = components["schemas"]["Project"];
+
+const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
+const AZURE_DATA_EXTENSIONS = [
+   ".parquet",
+   ".csv",
+   ".json",
+   ".jsonl",
+   ".ndjson",
+];
+
+function validateAzureUrl(url: string, fieldName: string): void {
+   if (!AZURE_SUPPORTED_SCHEMES.some((s) => url.startsWith(s))) {
+      throw new BadRequestError(
+         `Azure ${fieldName} must use one of: ${AZURE_SUPPORTED_SCHEMES.join(", ")}`,
+      );
+   }
+   const pathWithoutQuery = url.split("?")[0];
+   const stars = (pathWithoutQuery.match(/\*/g) || []).length;
+
+   if (stars === 0) {
+      const lower = pathWithoutQuery.toLowerCase();
+      if (!AZURE_DATA_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: a single-file URL must end with a data file extension (${AZURE_DATA_EXTENSIONS.join(", ")})`,
+         );
+      }
+   } else if (pathWithoutQuery.endsWith("**")) {
+      // recursive — valid
+      // includes all data files in the container and all subdirectories
+   } else {
+      const lastSegment = pathWithoutQuery.split("/").pop() || "";
+      if (stars !== 1 || !lastSegment.startsWith("*")) {
+         throw new BadRequestError(
+            `Azure ${fieldName}: only three URL patterns are supported:\n` +
+               `  • Single file:    path/file.parquet\n` +
+               `  • Directory glob: path/*.ext  (direct children only)\n` +
+               `  • Recursive:      path/**     (includes all data files in the container and all subdirectories)\n` +
+               `Multi-level globs such as "sub_dir/*/*.parquet" are not supported.`,
+         );
+      }
+   }
+}
+
+function validateProjectAzureUrls(project: ApiProject): void {
+   for (const conn of project.connections || []) {
+      if (conn.type !== "duckdb") continue;
+      for (const db of conn.duckdbConnection?.attachedDatabases || []) {
+         if (db.type !== "azure" || !db.azureConnection) continue;
+         const { authType, sasUrl, fileUrl } = db.azureConnection;
+         if (authType === "sas_token" && sasUrl) {
+            validateAzureUrl(sasUrl, `"${db.name}" sasUrl`);
+         } else if (authType === "service_principal" && fileUrl) {
+            validateAzureUrl(fileUrl, `"${db.name}" fileUrl`);
+         }
+      }
+   }
+}
 
 export class ProjectStore {
    public serverRootPath: string;
@@ -59,6 +117,33 @@ export class ProjectStore {
       this.finishedInitialization = this.initialize();
    }
 
+   private async addConfiguredProject(project: ProcessedProject) {
+      try {
+         await this.addProject(
+            {
+               name: project.name,
+               resource: `${API_PREFIX}/projects/${project.name}`,
+               connections: project.connections,
+               packages: project.packages,
+            },
+            true,
+         );
+      } catch (error) {
+         this.logProjectInitializationError(project.name, error);
+      }
+   }
+
+   private logProjectInitializationError(
+      projectName: string | undefined,
+      error: unknown,
+   ) {
+      const label = projectName ? ` "${projectName}"` : "";
+      logger.error(
+         `Error initializing project${label}; skipping project`,
+         this.extractErrorDataFromError(error),
+      );
+   }
+
    private async initialize() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
       const initialTime = performance.now();
@@ -82,15 +167,7 @@ export class ProjectStore {
             // Load projects from config file
             await Promise.all(
                projectManifest.projects.map(async (project) => {
-                  await this.addProject(
-                     {
-                        name: project.name,
-                        resource: `${API_PREFIX}/projects/${project.name}`,
-                        connections: project.connections,
-                        packages: project.packages,
-                     },
-                     true,
-                  );
+                  await this.addConfiguredProject(project);
                }),
             );
          } else {
@@ -101,88 +178,87 @@ export class ProjectStore {
                // Load projects from database
                await Promise.all(
                   existingProjects.map(async (dbProject) => {
-                     // Check if project files exist on disk
-                     const projectExists = await fs.promises
-                        .access(dbProject.path)
-                        .then(() => true)
-                        .catch(() => false);
+                     try {
+                        // Check if project files exist on disk
+                        const projectExists = await fs.promises
+                           .access(dbProject.path)
+                           .then(() => true)
+                           .catch(() => false);
 
-                     if (!projectExists) {
-                        // Try to find in config and reload
-                        const projectConfig = projectManifest.projects.find(
-                           (p) => p.name === dbProject.name,
-                        );
-
-                        if (projectConfig) {
-                           const projectInstance = await this.addProject(
-                              {
-                                 name: projectConfig.name,
-                                 resource: `${API_PREFIX}/projects/${projectConfig.name}`,
-                                 connections: projectConfig.connections,
-                                 packages: projectConfig.packages,
-                              },
-                              true,
+                        if (!projectExists) {
+                           // Try to find in config and reload
+                           const projectConfig = projectManifest.projects.find(
+                              (p) => p.name === dbProject.name,
                            );
 
-                           // Update database with new path
-                           await repository.updateProject(dbProject.id, {
-                              path: projectInstance.metadata.location,
-                           });
+                           if (projectConfig) {
+                              const projectInstance = await this.addProject(
+                                 {
+                                    name: projectConfig.name,
+                                    resource: `${API_PREFIX}/projects/${projectConfig.name}`,
+                                    connections: projectConfig.connections,
+                                    packages: projectConfig.packages,
+                                 },
+                                 true,
+                              );
 
-                           return projectInstance.listPackages();
-                        } else {
-                           logger.error(
-                              `Project "${dbProject.name}" not found in config and files missing`,
-                           );
-                           return;
+                              // Update database with new path
+                              await repository.updateProject(dbProject.id, {
+                                 path: projectInstance.metadata.location,
+                              });
+
+                              return projectInstance.listPackages();
+                           } else {
+                              logger.error(
+                                 `Project "${dbProject.name}" not found in config and files missing`,
+                              );
+                              return;
+                           }
                         }
-                     }
 
-                     // Get connections from database
-                     const connections = await repository.listConnections(
-                        dbProject.id,
-                     );
-
-                     const projectInstance = await Project.create(
-                        dbProject.name,
-                        dbProject.path,
-                        connections.map((conn) => ({
-                           name: conn.name,
-                           type: conn.type,
-                           resource: `${API_PREFIX}/connections/${conn.name}`,
-                           ...conn.config,
-                        })),
-                     );
-
-                     this.projects.set(dbProject.name, projectInstance);
-
-                     // Get packages from database
-                     const packages = await repository.listPackages(
-                        dbProject.id,
-                     );
-                     packages.forEach((pkg) => {
-                        projectInstance.setPackageStatus(
-                           pkg.name,
-                           PackageStatus.SERVING,
+                        // Get connections from database
+                        const connections = await repository.listConnections(
+                           dbProject.id,
                         );
-                     });
 
-                     return projectInstance.listPackages();
+                        const projectInstance = await Project.create(
+                           dbProject.name,
+                           dbProject.path,
+                           connections.map((conn) => ({
+                              name: conn.name,
+                              type: conn.type,
+                              resource: `${API_PREFIX}/connections/${conn.name}`,
+                              ...conn.config,
+                           })),
+                        );
+
+                        // Get packages from database
+                        const packages = await repository.listPackages(
+                           dbProject.id,
+                        );
+                        packages.forEach((pkg) => {
+                           projectInstance.setPackageStatus(
+                              pkg.name,
+                              PackageStatus.SERVING,
+                           );
+                        });
+
+                        this.projects.set(dbProject.name, projectInstance);
+
+                        return projectInstance.listPackages();
+                     } catch (error) {
+                        this.logProjectInitializationError(
+                           dbProject.name,
+                           error,
+                        );
+                     }
                   }),
                );
             } else {
                // Fallback to config file if database is empty
                await Promise.all(
                   projectManifest.projects.map(async (project) => {
-                     await this.addProject(
-                        {
-                           name: project.name,
-                           resource: `${API_PREFIX}/projects/${project.name}`,
-                           connections: project.connections,
-                           packages: project.packages,
-                        },
-                        true,
-                     );
+                     await this.addConfiguredProject(project);
                   }),
                );
             }
@@ -198,7 +274,6 @@ export class ProjectStore {
          markNotReady();
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing project store", errorData);
-         process.exit(1);
       }
    }
 
@@ -262,6 +337,7 @@ export class ProjectStore {
       };
       const existingProject = await repository.getProjectByName(projectName);
 
+      let dbProject: { id: string; name: string };
       if (existingProject) {
          const updateData = {
             description: projectDescription,
@@ -269,10 +345,27 @@ export class ProjectStore {
          };
 
          await repository.updateProject(existingProject.id, updateData);
-         return { id: existingProject.id, name: projectName };
+         dbProject = { id: existingProject.id, name: projectName };
       } else {
-         return await repository.createProject(projectData);
+         dbProject = await repository.createProject(projectData);
       }
+
+      // Initialize DuckLake manifest storage if configured on the project.
+      const materializationStorage = project.metadata
+         ?.materializationStorage as
+         | { catalogUrl?: string; dataPath?: string }
+         | undefined;
+      if (
+         materializationStorage?.catalogUrl &&
+         materializationStorage?.dataPath
+      ) {
+         await this.storageManager.initializeDuckLakeForProject(dbProject.id, {
+            catalogUrl: materializationStorage.catalogUrl,
+            dataPath: materializationStorage.dataPath,
+         });
+      }
+
+      return dbProject;
    }
 
    private async addPackages(
@@ -511,22 +604,10 @@ export class ProjectStore {
    private async cleanupAndCreatePublisherPath() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
 
-      // Ensure serverRootPath exists and is a directory
-      try {
-         const stats = await fs.promises.stat(this.serverRootPath);
-         if (!stats.isDirectory()) {
-            throw new Error(
-               `Server root path ${this.serverRootPath} exists but is not a directory`,
-            );
-         }
-      } catch (error) {
-         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            // Directory doesn't exist, create it
-            await fs.promises.mkdir(this.serverRootPath, { recursive: true });
-         } else {
-            throw error;
-         }
-      }
+      // Ensure serverRootPath exists as a directory (mkdir recursive is a
+      // no-op when the directory already exists and avoids a Bun-on-Windows
+      // bug where fs.promises.stat resolves to undefined instead of throwing)
+      await fs.promises.mkdir(this.serverRootPath, { recursive: true });
 
       if (reInit) {
          const uploadDocsPath = path.join(
@@ -762,6 +843,7 @@ export class ProjectStore {
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      validateProjectAzureUrls(project);
       const projectName = project.name;
       if (!projectName) {
          throw new Error("Project name is required");
@@ -791,7 +873,7 @@ export class ProjectStore {
       const projectPath = project.metadata?.location;
 
       // Close all connections before removing the project
-      project.closeAllConnections();
+      await project.closeAllConnections();
 
       this.projects.delete(projectName);
       await this.deleteProjectFromDatabase(projectName);
@@ -870,6 +952,7 @@ export class ProjectStore {
    private isLocalPath(location: string) {
       return (
          location.startsWith("./") ||
+         location.startsWith("../") ||
          location.startsWith("~/") ||
          location.startsWith("/") ||
          path.isAbsolute(location)
@@ -1174,9 +1257,8 @@ export class ProjectStore {
       if (projectPath.endsWith(".zip")) {
          projectPath = await this.unzipProject(projectPath);
       }
-      const projectDirExists = (
-         await fs.promises.stat(projectPath)
-      ).isDirectory();
+      const projectDirExists =
+         (await fs.promises.stat(projectPath))?.isDirectory() ?? false;
       if (projectDirExists) {
          await fs.promises.rm(absoluteTargetPath, {
             recursive: true,

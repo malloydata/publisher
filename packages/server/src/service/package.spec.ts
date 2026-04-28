@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Stats } from "fs";
 import fs from "fs/promises";
-import { join } from "path";
+import { join, resolve } from "path";
 import sinon from "sinon";
 import { PackageNotFoundError } from "../errors";
 import { Model } from "./model";
@@ -152,6 +152,130 @@ describe("service/package", () => {
                   },
                ]);
                expect(packageInstance.listModels()).toBeEmpty();
+            },
+            { timeout: 20000 },
+         );
+
+         it(
+            "uses package-root-relative DuckDB file paths for nested models",
+            async () => {
+               await fs.mkdir(join(testPackageDirectory, "data"), {
+                  recursive: true,
+               });
+               await fs.mkdir(join(testPackageDirectory, "models"), {
+                  recursive: true,
+               });
+               await fs.writeFile(
+                  join(testPackageDirectory, "data", "root.csv"),
+                  "name,value\nalpha,1\nbeta,2\n",
+               );
+               await fs.writeFile(
+                  join(testPackageDirectory, "models", "root_read.malloy"),
+                  [
+                     "source: rows is duckdb.table('data/root.csv')",
+                     "query: row_count is rows -> { aggregate: c is count() }",
+                  ].join("\n"),
+               );
+
+               const absolutePackageDirectory = resolve(testPackageDirectory);
+               const packageInstance = await Package.create(
+                  "testProject",
+                  "testPackage",
+                  absolutePackageDirectory,
+                  new Map(),
+               );
+               try {
+                  const rootModel = packageInstance.getModel(
+                     "models/root_read.malloy",
+                  );
+                  expect(rootModel).toBeDefined();
+                  const rootResults = await rootModel!.getQueryResults(
+                     undefined,
+                     "row_count",
+                  );
+                  expect(
+                     (rootResults.compactResult as { c: number }[])[0]?.c,
+                  ).toBe(2);
+               } finally {
+                  await packageInstance.getMalloyConfig().releaseConnections();
+               }
+            },
+            { timeout: 20000 },
+         );
+
+         it(
+            "does not resolve DuckDB file paths relative to the model directory",
+            async () => {
+               await fs.mkdir(join(testPackageDirectory, "models"), {
+                  recursive: true,
+               });
+               await fs.writeFile(
+                  join(testPackageDirectory, "models", "sibling.csv"),
+                  "name,value\nnested,3\n",
+               );
+               await fs.writeFile(
+                  join(testPackageDirectory, "models", "sibling_read.malloy"),
+                  [
+                     "source: rows is duckdb.table('./sibling.csv')",
+                     "query: row_count is rows -> { aggregate: c is count() }",
+                  ].join("\n"),
+               );
+
+               await expect(
+                  Package.create(
+                     "testProject",
+                     "testPackage",
+                     resolve(testPackageDirectory),
+                     new Map(),
+                  ),
+               ).rejects.toThrow();
+            },
+            { timeout: 20000 },
+         );
+
+         it(
+            "does not treat package-root paths as filesystem isolation",
+            async () => {
+               const outsidePath = resolve(
+                  testPackageDirectory,
+                  "..",
+                  "outside-package.csv",
+               );
+               await fs.mkdir(join(testPackageDirectory, "models"), {
+                  recursive: true,
+               });
+               await fs.writeFile(outsidePath, "name,value\noutside,9\n");
+               await fs.writeFile(
+                  join(testPackageDirectory, "models", "outside_read.malloy"),
+                  [
+                     "source: rows is duckdb.table('../outside-package.csv')",
+                     "query: row_count is rows -> { aggregate: c is count() }",
+                  ].join("\n"),
+               );
+
+               let packageInstance: Package | undefined;
+               try {
+                  packageInstance = await Package.create(
+                     "testProject",
+                     "testPackage",
+                     resolve(testPackageDirectory),
+                     new Map(),
+                  );
+                  const outsideModel = packageInstance.getModel(
+                     "models/outside_read.malloy",
+                  );
+                  expect(outsideModel).toBeDefined();
+                  const outsideResults = await outsideModel!.getQueryResults(
+                     undefined,
+                     "row_count",
+                  );
+                  expect(
+                     (outsideResults.compactResult as { c: number }[])[0]?.c,
+                  ).toBe(1);
+               } finally {
+                  await packageInstance?.getMalloyConfig().releaseConnections();
+                  await fs.rm(outsidePath, { force: true });
+               }
             },
             { timeout: 20000 },
          );

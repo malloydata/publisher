@@ -1,10 +1,10 @@
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    Annotation,
    API,
    Connection,
    FixedConnectionMap,
    isSourceDef,
+   MalloyConfig,
    MalloyError,
    ModelDef,
    modelDefToModelInfo,
@@ -22,12 +22,11 @@ import {
    MalloySQLParser,
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
-import malloyPackage from "@malloydata/malloy/package.json";
+import { createRequire } from "module";
 import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
 import * as path from "path";
-import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    MODEL_FILE_SUFFIX,
@@ -41,13 +40,22 @@ import {
    ModelNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
+import {
+   buildFilterClause,
+   FilterValidationError,
+   injectFilterRefinement,
+   parseFilters,
+   type FilterDefinition,
+   type FilterParams,
+} from "./filter";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
-// @ts-expect-error TODO: Fix missing Source type in API
 type ApiSource = components["schemas"]["Source"];
+type ApiFilter = components["schemas"]["Filter"];
 type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
 export type ApiConnection = components["schemas"]["Connection"];
@@ -56,14 +64,21 @@ export type PostgresConnection = components["schemas"]["PostgresConnection"];
 export type BigqueryConnection = components["schemas"]["BigqueryConnection"];
 export type TrinoConnection = components["schemas"]["TrinoConnection"];
 
-const MALLOY_VERSION = malloyPackage.version;
+const MALLOY_VERSION = (
+   createRequire(import.meta.url)("@malloydata/malloy/package.json") as {
+      version: string;
+   }
+).version;
 
 export type ModelType = "model" | "notebook";
+type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 interface RunnableNotebookCell {
    type: "code" | "markdown";
    text: string;
    runnable?: QueryMaterializer;
+   /** Retained so we can rebuild the query with filter refinements at execution time. */
+   modelMaterializer?: ModelMaterializer;
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
 }
@@ -81,6 +96,8 @@ export class Model {
    private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
+   /** Parsed #(filter) definitions keyed by source name. */
+   private filterMap: Map<string, FilterDefinition[]>;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -103,6 +120,7 @@ export class Model {
       sourceInfos: Malloy.SourceInfo[] | undefined,
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
+      filterMap?: Map<string, FilterDefinition[]>,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -115,21 +133,47 @@ export class Model {
       this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
+      this.filterMap = filterMap ?? new Map();
       this.modelInfo = this.modelDef
          ? modelDefToModelInfo(this.modelDef)
          : undefined;
+   }
+
+   /**
+    * Get the parsed filter definitions for a given source name.
+    * Returns an empty array if no filters are declared.
+    */
+   public getFilters(sourceName: string): FilterDefinition[] {
+      return this.filterMap.get(sourceName) ?? [];
+   }
+
+   /**
+    * Best-effort extraction of a source name from an ad-hoc Malloy query string.
+    * Matches patterns like `run: source_name -> ...` or `source_name -> ...`.
+    */
+   private extractSourceName(query?: string): string | undefined {
+      if (!query) return undefined;
+      const runMatch = query.match(/run\s*:\s*(\w+)\s*->/);
+      const arrowMatch = query.match(/^\s*(\w+)\s*->/m);
+      return runMatch?.[1] ?? arrowMatch?.[1];
    }
 
    public static async create(
       packageName: string,
       packagePath: string,
       modelPath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: ModelConnectionInput,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
       // to pass a valid model path or handle the error.
       const { runtime, modelURL, importBaseURL, dataStyles, modelType } =
-         await Model.getModelRuntime(packagePath, modelPath, connections);
+         await Model.getModelRuntime(
+            packagePath,
+            modelPath,
+            malloyConfig,
+            options,
+         );
 
       try {
          const { modelMaterializer, runnableNotebookCells } =
@@ -143,10 +187,13 @@ export class Model {
          let modelDef = undefined;
          let sources = undefined;
          let queries = undefined;
+         let filterMap: Map<string, FilterDefinition[]> | undefined;
          const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
             modelDef = (await modelMaterializer.getModel())._modelDef;
-            sources = Model.getSources(modelPath, modelDef);
+            const sourceResult = Model.getSources(modelPath, modelDef);
+            sources = sourceResult.sources;
+            filterMap = sourceResult.filterMap;
             queries = Model.getQueries(modelPath, modelDef);
 
             // Collect sourceInfos from imported models first
@@ -207,6 +254,7 @@ export class Model {
             sourceInfos.length > 0 ? sourceInfos : undefined,
             runnableNotebookCells,
             undefined,
+            filterMap,
          );
       } catch (error) {
          let computedError = error;
@@ -254,7 +302,7 @@ export class Model {
    }
 
    public getQueries(): ApiQuery[] | undefined {
-      return this.sources;
+      return this.queries;
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
@@ -292,6 +340,8 @@ export class Model {
       sourceName?: string,
       queryName?: string,
       query?: string,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
@@ -318,12 +368,11 @@ export class Model {
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
+         let queryString: string;
          if (!sourceName && !queryName && query) {
-            runnable = this.modelMaterializer.loadQuery("\n" + query);
+            queryString = "\n" + query;
          } else if (queryName && !query) {
-            runnable = this.modelMaterializer.loadQuery(
-               `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`,
-            );
+            queryString = `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`;
          } else {
             const endTime = performance.now();
             const executionTime = endTime - startTime;
@@ -338,10 +387,34 @@ export class Model {
                "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
             );
          }
+
+         // Inject source filter predicates unless bypassed
+         if (!bypassFilters) {
+            const effectiveSource = sourceName ?? this.extractSourceName(query);
+            if (effectiveSource) {
+               const filters = this.getFilters(effectiveSource);
+               if (filters.length > 0) {
+                  const filterClause = buildFilterClause(
+                     filters,
+                     filterParams ?? {},
+                  );
+                  queryString = injectFilterRefinement(
+                     queryString,
+                     filterClause,
+                  );
+               }
+            }
+         }
+
+         runnable = this.modelMaterializer.loadQuery(queryString);
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
             throw error;
+         }
+         // Source filter validation errors are client errors (400)
+         if (error instanceof FilterValidationError) {
+            throw new BadRequestError(error.message);
          }
          // Re-throw MalloyError as-is (maps to 400)
          if (error instanceof MalloyError) {
@@ -491,7 +564,11 @@ export class Model {
       } as ApiRawNotebook;
    }
 
-   public async executeNotebookCell(cellIndex: number): Promise<{
+   public async executeNotebookCell(
+      cellIndex: number,
+      filterParams?: FilterParams,
+      bypassFilters?: boolean,
+   ): Promise<{
       type: "code" | "markdown";
       text: string;
       queryName?: string;
@@ -527,18 +604,44 @@ export class Model {
 
       if (cell.runnable) {
          try {
+            let runnableToExecute = cell.runnable;
+
+            // If filters need to be applied, rebuild the query with a refinement
+            if (!bypassFilters && cell.modelMaterializer) {
+               const effectiveSource = this.extractSourceName(cell.text);
+               if (effectiveSource) {
+                  const filters = this.getFilters(effectiveSource);
+                  if (filters.length > 0) {
+                     const filterClause = buildFilterClause(
+                        filters,
+                        filterParams ?? {},
+                     );
+                     if (filterClause) {
+                        const refinedQuery = injectFilterRefinement(
+                           cell.text,
+                           filterClause,
+                        );
+                        runnableToExecute =
+                           cell.modelMaterializer.loadQuery(refinedQuery);
+                     }
+                  }
+               }
+            }
+
             const rowLimit =
-               (await cell.runnable.getPreparedResult()).resultExplore.limit ||
-               ROW_LIMIT;
-            const result = await cell.runnable.run({ rowLimit });
-            const query = (await cell.runnable.getPreparedQuery())._query;
+               (await runnableToExecute.getPreparedResult()).resultExplore
+                  .limit || ROW_LIMIT;
+            const result = await runnableToExecute.run({ rowLimit });
+            const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
             queryResult =
                result?._queryResult &&
                this.modelInfo &&
                JSON.stringify(API.util.wrapResult(result));
          } catch (error) {
-            // Re-throw execution errors so the client knows about them
+            if (error instanceof FilterValidationError) {
+               throw new BadRequestError(error.message);
+            }
             if (error instanceof MalloyError) {
                throw error;
             }
@@ -569,7 +672,8 @@ export class Model {
    static async getModelRuntime(
       packagePath: string,
       modelPath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: ModelConnectionInput,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -599,22 +703,32 @@ export class Model {
 
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
-      const fileUrl = new URL(baseUrl.pathname, "file:");
-      const workingDirectory = fileURLToPath(fileUrl);
       const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
-      const duckdbConnection = connections.get("duckdb") as DuckDBConnection;
-      await duckdbConnection.runSQL(
-         `SET FILE_SEARCH_PATH='${workingDirectory}';`,
-      );
-
+      // Request runtimes borrow the cached package MalloyConfig. The package
+      // owns release; callers must not release this runtime per request.
       const runtime = new Runtime({
          urlReader,
-         connections: new FixedConnectionMap(connections, "duckdb"),
+         config: Model.toMalloyConfig(malloyConfig),
+         buildManifest: options?.buildManifest
+            ? { entries: options.buildManifest, strict: false }
+            : undefined,
       });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
+   }
+
+   private static toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
+      if (input instanceof MalloyConfig) {
+         return input;
+      }
+
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () => new FixedConnectionMap(input, "duckdb"),
+      );
+      return malloyConfig;
    }
 
    private static getQueries(
@@ -644,38 +758,98 @@ export class Model {
    private static getSources(
       modelPath: string,
       modelDef: ModelDef,
-   ): ApiSource[] {
-      return Object.values(modelDef.contents)
+   ): {
+      sources: ApiSource[];
+      filterMap: Map<string, FilterDefinition[]>;
+   } {
+      const filterMap = new Map<string, FilterDefinition[]>();
+
+      const sources = Object.values(modelDef.contents)
          .filter((obj) => isSourceDef(obj))
-         .map(
-            (sourceObj) =>
-               ({
-                  name: sourceObj.as || sourceObj.name,
-                  annotations: (sourceObj as StructDef).annotation?.blockNotes
-                     ?.filter((note) => note.at.url.includes(modelPath))
-                     .map((note) => note.text),
-                  views: (sourceObj as StructDef).fields
-                     .filter((turtleObj) => turtleObj.type === "turtle")
-                     .filter((turtleObj) =>
-                        // TODO(kjnesbit): Fix non-reduce views. Filter out
-                        // non-reduce views, i.e., indexes. Need to discuss with Will.
-                        (turtleObj as TurtleDef).pipeline
-                           .map((stage) => stage.type)
-                           .every((type) => type == "reduce"),
-                     )
-                     .map(
-                        (turtleObj) =>
-                           ({
-                              name: turtleObj.as || turtleObj.name,
-                              annotations: turtleObj?.annotation?.blockNotes
-                                 ?.filter((note) =>
-                                    note.at.url.includes(modelPath),
-                                 )
-                                 .map((note) => note.text),
-                           }) as ApiView,
-                     ),
-               }) as ApiSource,
-         );
+         .map((sourceObj) => {
+            const sourceName = sourceObj.as || sourceObj.name;
+            const annotations = (sourceObj as StructDef).annotation?.blockNotes
+               ?.filter((note) => note.at.url.includes(modelPath))
+               .map((note) => note.text);
+
+            // Parse #(filter) from ALL annotations, traversing the inherits
+            // chain so that filters on a base source (e.g. `recalls`) are
+            // picked up by an extending source (`manufacturer_recalls is
+            // recalls extend {}`).  The Malloy compiler stores the base
+            // source's annotations in `annotation.inherits`.
+            //
+            // The chain goes child → parent, so we collect child-first.
+            // parseFilters uses "last wins" dedup, so we reverse to put
+            // parent annotations first and child annotations last (winning).
+            const collectedAnnotations: string[][] = [];
+            let curAnnotation: Annotation | undefined = (sourceObj as StructDef)
+               .annotation;
+            while (curAnnotation) {
+               if (curAnnotation.blockNotes) {
+                  collectedAnnotations.push(
+                     curAnnotation.blockNotes.map((note) => note.text),
+                  );
+               }
+               curAnnotation = curAnnotation.inherits;
+            }
+            const allAnnotations = collectedAnnotations.reverse().flat();
+            let filters: ApiFilter[] | undefined;
+            if (allAnnotations.length > 0) {
+               try {
+                  const parsed = parseFilters(allAnnotations);
+                  if (parsed.length > 0) {
+                     filterMap.set(sourceName, parsed);
+                     const structFields = (sourceObj as StructDef).fields;
+                     filters = parsed.map((f) => {
+                        const field = structFields.find(
+                           (fd) => (fd.as || fd.name) === f.dimension,
+                        );
+                        return {
+                           name: f.name,
+                           dimension: f.dimension,
+                           type: f.type,
+                           implicit: f.implicit,
+                           required: f.required,
+                           dimensionType: field?.type as string | undefined,
+                        };
+                     });
+                  }
+               } catch (err) {
+                  logger.warn(
+                     `Failed to parse filter annotations on source "${sourceName}"`,
+                     { error: err },
+                  );
+               }
+            }
+
+            const views = (sourceObj as StructDef).fields
+               .filter((turtleObj) => turtleObj.type === "turtle")
+               .filter((turtleObj) =>
+                  // TODO(kjnesbit): Fix non-reduce views. Filter out
+                  // non-reduce views, i.e., indexes. Need to discuss with Will.
+                  (turtleObj as TurtleDef).pipeline
+                     .map((stage) => stage.type)
+                     .every((type) => type == "reduce"),
+               )
+               .map(
+                  (turtleObj) =>
+                     ({
+                        name: turtleObj.as || turtleObj.name,
+                        annotations: turtleObj?.annotation?.blockNotes
+                           ?.filter((note) => note.at.url.includes(modelPath))
+                           .map((note) => note.text),
+                     }) as ApiView,
+               );
+
+            return {
+               name: sourceName,
+               annotations,
+               views,
+               filters,
+            } as ApiSource;
+         });
+
+      return { sources, filterMap };
    }
 
    static async getModelMaterializer(
@@ -857,6 +1031,7 @@ export class Model {
                      type: "code",
                      text: stmt.text,
                      runnable: runnable,
+                     modelMaterializer: localMM,
                      newSources,
                      queryInfo,
                   } as RunnableNotebookCell;
