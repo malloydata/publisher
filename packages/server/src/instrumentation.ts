@@ -23,6 +23,14 @@ let sdk: NodeSDK | null = null;
 
 export function getPrometheusMetricsHandler() {
    if (!prometheusExporter) {
+      // In test environments, return a no-op handler
+      if (process.env.NODE_ENV === "test") {
+         return (_req: Request, res: Response) => {
+            res.status(200).json({
+               message: "Metrics not available in test environment",
+            });
+         };
+      }
       throw new Error("Prometheus exporter not initialized");
    }
    return (req: Request, res: Response) => {
@@ -42,6 +50,12 @@ export async function shutdownSDK(): Promise<void> {
 }
 
 function instrument() {
+   // Skip instrumentation in test environment to avoid initialization issues
+   if (process.env.NODE_ENV === "test") {
+      logger.info("Skipping OpenTelemetry instrumentation in test environment");
+      return;
+   }
+
    const otelCollectorUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
    prometheusExporter = new PrometheusExporter({
