@@ -1,6 +1,7 @@
 import type {
    BuildGraph,
    Connection as MalloyConnection,
+   MalloyConfig,
    PersistSource,
 } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
@@ -44,6 +45,34 @@ const STAGING_BUILD_ID_LEN = 12;
  */
 export function stagingSuffix(buildId: string): string {
    return `_${buildId.substring(0, STAGING_BUILD_ID_LEN)}`;
+}
+
+/**
+ * Resolve a Map<name, Connection> for just the names a materialization
+ * step is about to touch. The package's MalloyConfig caches each lookup,
+ * so subsequent calls with overlapping names are cheap. A failed lookup
+ * is logged and the name is omitted from the result — downstream code
+ * (`forceDeleteRowOnMissingConnection` in teardown, or the explicit
+ * "connection X not found" check in build) handles a missing entry.
+ */
+async function resolvePackageConnections(
+   pkg: { getMalloyConnection(name: string): Promise<MalloyConnection> },
+   names: Iterable<string>,
+): Promise<Map<string, MalloyConnection>> {
+   const map = new Map<string, MalloyConnection>();
+   const seen = new Set<string>();
+   for (const name of names) {
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      try {
+         map.set(name, await pkg.getMalloyConnection(name));
+      } catch (err) {
+         logger.warn(`Failed to resolve connection ${name}`, {
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+   return map;
 }
 
 /**
@@ -494,11 +523,15 @@ export class MaterializationService {
 
       const project = await this.projectStore.getProject(projectName, false);
       const pkg = await project.getPackage(packageName, false);
-      const connections = pkg.getConnections();
 
       const entries = await this.manifestService.listEntries(
          projectId,
          packageName,
+      );
+
+      const connections = await resolvePackageConnections(
+         pkg,
+         entries.map((e) => e.connectionName),
       );
 
       // `forceDeleteRowOnMissingConnection`: teardown is the one place
@@ -560,7 +593,9 @@ export class MaterializationService {
       );
 
       // ── STEP 2: COMPILE & PLAN ─────────────────────────────────────
-      const { graphs, sources, connectionDigests } =
+      // `connections` is built lazily from the connection names the plan
+      // actually targets — no upfront ATTACH on every project connection.
+      const { graphs, sources, connectionDigests, connections } =
          await this.compilePackageBuildPlan(pkg, signal);
 
       if (graphs.length === 0) {
@@ -569,7 +604,6 @@ export class MaterializationService {
       }
 
       // ── STEP 3: BUILD ──────────────────────────────────────────────
-      const connections = pkg.getConnections();
       let sourcesBuilt = 0;
       let sourcesSkipped = 0;
       const sourceResults: Record<string, unknown>[] = [];
@@ -646,13 +680,15 @@ export class MaterializationService {
       pkg: {
          getModelPaths(): string[];
          getPackagePath(): string;
-         getConnections(): Map<string, MalloyConnection>;
+         getMalloyConfig(): MalloyConfig;
+         getMalloyConnection(name: string): Promise<MalloyConnection>;
       },
       signal: AbortSignal,
    ): Promise<{
       graphs: BuildGraph[];
       sources: Record<string, PersistSource>;
       connectionDigests: Record<string, string>;
+      connections: Map<string, MalloyConnection>;
    }> {
       const modelPaths = pkg.getModelPaths();
       const allGraphs: BuildGraph[] = [];
@@ -665,7 +701,7 @@ export class MaterializationService {
             await Model.getModelRuntime(
                pkg.getPackagePath(),
                modelPath,
-               pkg.getConnections(),
+               pkg.getMalloyConfig(),
             );
 
          const modelMaterializer = runtime.loadModel(modelURL, {
@@ -730,7 +766,13 @@ export class MaterializationService {
          tableOwners.set(key, sourceID);
       }
 
-      const connections = pkg.getConnections();
+      // Resolve only the connections this build plan actually targets;
+      // the package's MalloyConfig caches each lookup so the build phase
+      // sees the same Connection instance and avoids re-resolving.
+      const connections = await resolvePackageConnections(
+         pkg,
+         allGraphs.map((g) => g.connectionName),
+      );
       const connectionDigests: Record<string, string> = {};
       for (const graph of allGraphs) {
          const conn = connections.get(graph.connectionName);
@@ -739,7 +781,12 @@ export class MaterializationService {
          }
       }
 
-      return { graphs: allGraphs, sources: allSources, connectionDigests };
+      return {
+         graphs: allGraphs,
+         sources: allSources,
+         connectionDigests,
+         connections,
+      };
    }
 
    /**
