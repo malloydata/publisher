@@ -12,6 +12,7 @@ import {
 } from "@malloydata/db-snowflake";
 import type { TrinoConnection } from "@malloydata/db-trino";
 import "@malloydata/db-trino";
+import "@malloydata/db-databricks";
 import {
    Connection,
    contextOverlay,
@@ -50,6 +51,7 @@ export type InternalConnection = ApiConnection & {
    bigqueryConnection?: components["schemas"]["BigqueryConnection"];
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
    trinoConnection?: components["schemas"]["TrinoConnection"];
+   databricksConnection?: components["schemas"]["DatabricksConnection"];
    mysqlConnection?: components["schemas"]["MysqlConnection"];
    duckdbConnection?: components["schemas"]["DuckdbConnection"];
    ducklakeConnection?: components["schemas"]["DucklakeConnection"];

@@ -129,6 +129,40 @@ export class SnowflakeConnectionDto {
    responseTimeoutMilliseconds?: number;
 }
 
+export class DatabricksConnectionDto {
+   @IsOptional()
+   @IsString()
+   host?: string;
+
+   @IsOptional()
+   @IsString()
+   path?: string;
+
+   @IsOptional()
+   @IsString()
+   token?: string;
+
+   @IsOptional()
+   @IsString()
+   oauthClientId?: string;
+
+   @IsOptional()
+   @IsString()
+   oauthClientSecret?: string;
+
+   @IsOptional()
+   @IsString()
+   defaultCatalog?: string;
+
+   @IsOptional()
+   @IsString()
+   defaultSchema?: string;
+
+   @IsOptional()
+   @IsString()
+   setupSQL?: string;
+}
+
 export class TrinoConnectionDto {
    @IsOptional()
    @IsString()
@@ -176,6 +210,7 @@ export class ConnectionDto implements ApiConnection {
       "bigquery",
       "snowflake",
       "trino",
+      "databricks",
       "mysql",
       "duckdb",
       "motherduck",
@@ -186,6 +221,7 @@ export class ConnectionDto implements ApiConnection {
       | "bigquery"
       | "snowflake"
       | "trino"
+      | "databricks"
       | "mysql"
       | "duckdb"
       | "motherduck"
@@ -210,6 +246,11 @@ export class ConnectionDto implements ApiConnection {
    @ValidateNested()
    @Type(() => TrinoConnectionDto)
    TrinoConnection?: TrinoConnectionDto;
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => DatabricksConnectionDto)
+   databricksConnection?: DatabricksConnectionDto;
 
    @IsOptional()
    @ValidateNested()

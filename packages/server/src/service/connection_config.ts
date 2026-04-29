@@ -139,6 +139,13 @@ function getStaticConnectionAttributes(
             canPersist: true,
             canStream: false,
          };
+      case "databricks":
+         return {
+            dialectName: "databricks",
+            isPool: false,
+            canPersist: true,
+            canStream: false,
+         };
       case "mysql":
          return {
             dialectName: "mysql",
@@ -245,6 +252,31 @@ function validateConnectionShape(connection: ApiConnection): void {
             throw new Error("Trino connection configuration is missing.");
          }
          break;
+      case "databricks": {
+         const databricks = connection.databricksConnection;
+         if (!databricks) {
+            throw new Error("Databricks connection configuration is missing.");
+         }
+         if (!databricks.host) {
+            throw new Error("Databricks host is required.");
+         }
+         if (!databricks.path) {
+            throw new Error("Databricks SQL warehouse HTTP path is required.");
+         }
+         const hasToken = !!databricks.token;
+         const hasOAuth =
+            !!databricks.oauthClientId && !!databricks.oauthClientSecret;
+         if (!hasToken && !hasOAuth) {
+            throw new Error(
+               "Databricks requires either a personal access token or OAuth M2M client ID and secret.",
+            );
+         }
+         const hasDefaultCatalog = !!databricks.defaultCatalog;
+         if (!hasDefaultCatalog) {
+            throw new Error("Databricks default catalog is required.");
+         }
+         break;
+      }
       case "snowflake": {
          const snowflakeConnection = connection.snowflakeConnection;
          if (!snowflakeConnection) {
@@ -406,6 +438,22 @@ export function assembleProjectConnections(
             pojo.connections[connection.name] = {
                is: "trino",
                ...validateAndBuildTrinoCoreConfig(connection.trinoConnection),
+            };
+            break;
+         }
+
+         case "databricks": {
+            const databricks = connection.databricksConnection;
+            pojo.connections[connection.name] = {
+               is: "databricks",
+               host: databricks?.host,
+               path: databricks?.path,
+               token: databricks?.token,
+               oauthClientId: databricks?.oauthClientId,
+               oauthClientSecret: databricks?.oauthClientSecret,
+               defaultCatalog: databricks?.defaultCatalog,
+               defaultSchema: databricks?.defaultSchema,
+               setupSQL: databricks?.setupSQL,
             };
             break;
          }
