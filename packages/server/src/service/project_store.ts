@@ -808,7 +808,8 @@ export class ProjectStore {
       if (!newProject.metadata) newProject.metadata = {};
       newProject.metadata.location = absoluteProjectPath;
       if (project.materializationStorage !== undefined) {
-         newProject.metadata.materializationStorage = project.materializationStorage;
+         newProject.metadata.materializationStorage =
+            project.materializationStorage;
       }
 
       this.projects.set(projectName, newProject);
