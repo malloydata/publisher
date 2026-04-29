@@ -1,5 +1,9 @@
+import { generateKeyPairSync } from "crypto";
 import { describe, expect, it } from "bun:test";
-import { assembleProjectConnections } from "./connection_config";
+import {
+   assembleProjectConnections,
+   normalizeSnowflakePrivateKey,
+} from "./connection_config";
 import { components } from "../api";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -119,5 +123,46 @@ describe("assembleProjectConnections — databricks", () => {
       expect(() => assembleProjectConnections([conn])).toThrow(
          "Databricks requires",
       );
+   });
+});
+
+describe("normalizeSnowflakePrivateKey", () => {
+   const { privateKey: pkcs8Pem } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+   });
+   const { privateKey: pkcs1Pem } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs1", format: "pem" },
+      publicKeyEncoding: { type: "pkcs1", format: "pem" },
+   });
+
+   it("passes a multi-line PKCS#8 key through and adds a trailing newline", () => {
+      const trimmed = (pkcs8Pem as string).trimEnd();
+      const result = normalizeSnowflakePrivateKey(trimmed);
+      expect(result).toContain("-----BEGIN PRIVATE KEY-----");
+      expect(result.endsWith("\n")).toBe(true);
+   });
+
+   it("converts a multi-line PKCS#1 RSA key to PKCS#8", () => {
+      const result = normalizeSnowflakePrivateKey(pkcs1Pem as string);
+      expect(result).toContain("-----BEGIN PRIVATE KEY-----");
+      expect(result).not.toContain("BEGIN RSA PRIVATE KEY");
+      expect(result.endsWith("\n")).toBe(true);
+   });
+
+   it("converts a single-line PKCS#1 RSA key to PKCS#8", () => {
+      const singleLine = (pkcs1Pem as string).replace(/\n/g, "");
+      const result = normalizeSnowflakePrivateKey(singleLine);
+      expect(result).toContain("-----BEGIN PRIVATE KEY-----");
+      expect(result).not.toContain("BEGIN RSA PRIVATE KEY");
+   });
+
+   it("reconstructs a single-line PKCS#8 key without conversion", () => {
+      const singleLine = (pkcs8Pem as string).replace(/\n/g, "");
+      const result = normalizeSnowflakePrivateKey(singleLine);
+      expect(result.startsWith("-----BEGIN PRIVATE KEY-----\n")).toBe(true);
+      expect(result.endsWith("-----END PRIVATE KEY-----\n")).toBe(true);
    });
 });
