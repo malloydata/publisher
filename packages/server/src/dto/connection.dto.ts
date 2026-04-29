@@ -1,13 +1,17 @@
 import { Type } from "class-transformer";
 import {
    IsEnum,
+   IsArray,
    IsNumber,
    IsOptional,
    IsString,
    ValidateNested,
 } from "class-validator";
 import "reflect-metadata";
+import { components } from "../api";
 import { ApiConnection } from "../service/model";
+
+type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 
 export class PostgresConnectionDto {
    @IsOptional()
@@ -98,6 +102,14 @@ export class SnowflakeConnectionDto {
 
    @IsOptional()
    @IsString()
+   privateKey?: string;
+
+   @IsOptional()
+   @IsString()
+   privateKeyPass?: string;
+
+   @IsOptional()
+   @IsString()
    warehouse?: string;
 
    @IsOptional()
@@ -107,6 +119,10 @@ export class SnowflakeConnectionDto {
    @IsOptional()
    @IsString()
    schema?: string;
+
+   @IsOptional()
+   @IsString()
+   role?: string;
 
    @IsOptional()
    @IsNumber()
@@ -143,14 +159,37 @@ export class TrinoConnectionDto {
    peakaKey?: string;
 }
 
+export class DuckdbConnectionDto {
+   @IsOptional()
+   @IsArray()
+   attachedDatabases?: AttachedDatabase[];
+}
+
 export class ConnectionDto implements ApiConnection {
    @IsOptional()
    @IsString()
    name?: string;
 
    @IsOptional()
-   @IsEnum(["postgres", "bigquery", "snowflake", "trino"])
-   type?: "postgres" | "bigquery" | "snowflake" | "trino";
+   @IsEnum([
+      "postgres",
+      "bigquery",
+      "snowflake",
+      "trino",
+      "mysql",
+      "duckdb",
+      "motherduck",
+      "ducklake",
+   ])
+   type?:
+      | "postgres"
+      | "bigquery"
+      | "snowflake"
+      | "trino"
+      | "mysql"
+      | "duckdb"
+      | "motherduck"
+      | "ducklake";
 
    @IsOptional()
    @ValidateNested()
@@ -171,4 +210,9 @@ export class ConnectionDto implements ApiConnection {
    @ValidateNested()
    @Type(() => TrinoConnectionDto)
    TrinoConnection?: TrinoConnectionDto;
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => DuckdbConnectionDto)
+   duckdbConnection?: DuckdbConnectionDto;
 }
