@@ -5,6 +5,7 @@ import { validate } from "class-validator";
 import {
    BigqueryConnectionDto,
    ConnectionDto,
+   DatabricksConnectionDto,
    PostgresConnectionDto,
    SnowflakeConnectionDto,
    MysqlConnectionDto,
@@ -97,6 +98,56 @@ describe("dto/connection", () => {
          );
 
          const errors = await validate(snowflakeConnection);
+         expect(errors).toHaveLength(0);
+      });
+
+      it("should validate a valid DatabricksConnection object", async () => {
+         const validData = {
+            host: "dbc-xxxxxxxx-xxxx.cloud.databricks.com",
+            path: "/sql/1.0/warehouses/abc123",
+            token: "dapiXXXX",
+            oauthClientId: "client-id",
+            oauthClientSecret: "client-secret",
+            defaultCatalog: "main",
+            defaultSchema: "default",
+            setupSQL: "USE CATALOG main",
+         };
+         const databricksConnection = plainToInstance(
+            DatabricksConnectionDto,
+            validData,
+         );
+
+         const errors = await validate(databricksConnection);
+         expect(errors).toHaveLength(0);
+      });
+
+      it("should return errors for invalid DatabricksConnection object", async () => {
+         const invalidData = {
+            host: 123, // Invalid type
+            path: false, // Invalid type
+         };
+         const databricksConnection = plainToInstance(
+            DatabricksConnectionDto,
+            invalidData,
+         );
+
+         const errors = await validate(databricksConnection);
+         expect(errors).toHaveLength(2);
+      });
+
+      it("should validate a valid Connection object with databricks type", async () => {
+         const validData = {
+            name: "My Databricks Connection",
+            type: "databricks",
+            databricksConnection: {
+               host: "dbc-xxxxxxxx-xxxx.cloud.databricks.com",
+               path: "/sql/1.0/warehouses/abc123",
+               token: "dapiXXXX",
+            },
+         };
+         const connection = plainToInstance(ConnectionDto, validData);
+
+         const errors = await validate(connection);
          expect(errors).toHaveLength(0);
       });
 

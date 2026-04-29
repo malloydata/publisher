@@ -406,6 +406,8 @@ paths:
                   $ref: "#/components/schemas/MotherDuckConnection"
                 trinoConnection:
                   $ref: "#/components/schemas/TrinoConnection"
+                databricksConnection:
+                  $ref: "#/components/schemas/DatabricksConnection"
                 ducklakeConnection:
                   $ref: "#/components/schemas/DucklakeConnection"
       responses:
@@ -2936,6 +2938,7 @@ components:
               bigquery,
               snowflake,
               trino,
+              databricks,
               mysql,
               duckdb,
               motherduck,
@@ -2951,6 +2954,8 @@ components:
           $ref: "#/components/schemas/SnowflakeConnection"
         trinoConnection:
           $ref: "#/components/schemas/TrinoConnection"
+        databricksConnection:
+          $ref: "#/components/schemas/DatabricksConnection"
         mysqlConnection:
           $ref: "#/components/schemas/MysqlConnection"
         duckdbConnection:
@@ -3215,6 +3220,36 @@ components:
           type: string
           description: Peaka API key for authentication with Peaka-hosted Trino clusters
 
+    DatabricksConnection:
+      type: object
+      description: Databricks SQL warehouse connection configuration
+      properties:
+        host:
+          type: string
+          description: Databricks workspace host (e.g.
+            dbc-xxxxxxxx-xxxx.cloud.databricks.com)
+        path:
+          type: string
+          description: SQL warehouse HTTP path (e.g. /sql/1.0/warehouses/<warehouse-id>)
+        token:
+          type: string
+          description: Personal access token for authentication
+        oauthClientId:
+          type: string
+          description: OAuth M2M client ID (service principal)
+        oauthClientSecret:
+          type: string
+          description: OAuth M2M client secret (service principal)
+        defaultCatalog:
+          type: string
+          description: Default Unity Catalog to use for queries
+        defaultSchema:
+          type: string
+          description: Default schema to use for queries
+        setupSQL:
+          type: string
+          description: SQL statements to run when the connection is established
+
     MotherDuckConnection:
       type: object
       description: MotherDuck database connection configuration
@@ -3229,11 +3264,12 @@ components:
     DuckdbConnection:
       type: object
       description: >
-        DuckDB database connection configuration. Publisher intentionally exposes
-        only data-source intent here. Database files, working directories,
-        filesystem/network policy, extension loading, setup SQL, temp directories,
-        and resource knobs are owned by Publisher so project configs cannot widen
-        deployment policy through low-level DuckDB settings.
+        DuckDB database connection configuration. Publisher intentionally
+        exposes only data-source intent here. Database files, working
+        directories, filesystem/network policy, extension loading, setup SQL,
+        temp directories, and resource knobs are owned by Publisher so project
+        configs cannot widen deployment policy through low-level DuckDB
+        settings.
       properties:
         attachedDatabases:
           type: array
