@@ -18,7 +18,7 @@ import {
 // --- Test Suite ---
 // Note: These tests assume interaction via a standard MCP client.
 // Tests for raw HTTP edge cases (non-JSON, non-RPC) are omitted based on this assumption.
-describe("MCP Transport Tests (E2E Integration)", () => {
+describe.serial("MCP Transport Tests (E2E Integration)", () => {
    let env: McpE2ETestEnvironment | null = null;
    let mcpClient: Client<Request, Notification, Result>; // Convenience variable
 
