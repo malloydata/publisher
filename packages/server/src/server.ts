@@ -524,6 +524,70 @@ app.get(
    },
 );
 
+// ── Per-package connection data routes ─────────────────────────────
+// `duckdb` is per-package; non-`duckdb` names fall through to the
+// project's connection registry via the package's MalloyConfig wrapper.
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.listSchemas(
+               req.params.projectName,
+               req.params.connectionName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.listTables(
+               req.params.projectName,
+               req.params.connectionName,
+               req.params.schemaName,
+               normalizeQueryArray(req.query.tableNames),
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getTable(
+               req.params.projectName,
+               req.params.connectionName,
+               req.params.schemaName,
+               req.params.tablePath,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 /**
  * @deprecated Use /projects/:projectName/connections/:connectionName/sqlSource POST method instead
  */
@@ -565,8 +629,49 @@ app.post(
    },
 );
 
+// Per-package versions
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionSqlSource(
+               req.params.projectName,
+               req.params.connectionName,
+               req.query.sqlStatement as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionSqlSource(
+               req.params.projectName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 /**
- * @deprecated Use /projects/:projectName/connections/:connectionName/queryData POST method instead
+ * @deprecated Use /projects/:projectName/connections/:connectionName/sqlQuery POST method instead
  */
 app.get(
    `${API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
@@ -578,6 +683,30 @@ app.get(
                req.params.connectionName,
                req.query.sqlStatement as string,
                req.query.options as string,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+/**
+ * @deprecated Use /projects/:projectName/packages/:packageName/connections/:connectionName/sqlQuery
+ */
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/queryData`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionQueryData(
+               req.params.projectName,
+               req.params.connectionName,
+               req.query.sqlStatement as string,
+               req.query.options as string,
+               req.params.packageName,
             ),
          );
       } catch (error) {
@@ -617,8 +746,35 @@ app.post(
    },
 );
 
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlQuery`,
+   async (req, res) => {
+      try {
+         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
+         if (req.body?.options) {
+            options = req.body.options;
+         } else {
+            options = req.query.options;
+         }
+         res.status(200).json(
+            await connectionController.getConnectionQueryData(
+               req.params.projectName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               options as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 /**
- * @deprecated Use /projects/:projectName/connections/:connectionName/temporaryTable POST method instead
+ * @deprecated Use /projects/:projectName/connections/:connectionName/sqlTemporaryTable POST method instead
  */
 app.get(
    `${API_PREFIX}/projects/:projectName/connections/:connectionName/temporaryTable`,
@@ -639,6 +795,29 @@ app.get(
    },
 );
 
+/**
+ * @deprecated Use /projects/:projectName/packages/:packageName/connections/:connectionName/sqlTemporaryTable
+ */
+app.get(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/temporaryTable`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionTemporaryTable(
+               req.params.projectName,
+               req.params.connectionName,
+               req.query.sqlStatement as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.post(
    `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
    async (req, res) => {
@@ -648,6 +827,26 @@ app.post(
                req.params.projectName,
                req.params.connectionName,
                req.body.sqlStatement as string,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionTemporaryTable(
+               req.params.projectName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               req.params.packageName,
             ),
          );
       } catch (error) {

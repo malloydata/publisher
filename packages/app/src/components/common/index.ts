@@ -1,1 +1,1 @@
-export { default as RouteError } from "./RouteError/RouteError";
+export * from "./RouteError/RouteError";

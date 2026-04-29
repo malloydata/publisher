@@ -337,6 +337,78 @@ describe("ProjectStore Service", () => {
       expect(projects.map((p) => p.name)).toContain(projectName2);
    });
 
+   it("should skip a project with invalid startup connection config", async () => {
+      const validProjectName = "valid-project";
+      const invalidProjectName = "invalid-motherduck-project";
+      const validProjectPath = path.join(serverRootPath, validProjectName);
+      const invalidProjectPath = path.join(serverRootPath, invalidProjectName);
+
+      mkdirSync(validProjectPath, { recursive: true });
+      mkdirSync(invalidProjectPath, { recursive: true });
+      writeFileSync(
+         path.join(validProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: validProjectName,
+            description: "Valid project",
+         }),
+      );
+      writeFileSync(
+         path.join(invalidProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: invalidProjectName,
+            description: "Invalid project",
+         }),
+      );
+
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  name: invalidProjectName,
+                  packages: [
+                     {
+                        name: invalidProjectName,
+                        location: invalidProjectPath,
+                     },
+                  ],
+                  connections: [
+                     {
+                        name: "motherduck",
+                        type: "motherduck",
+                        motherduckConnection: {},
+                     },
+                  ],
+               },
+               {
+                  name: validProjectName,
+                  packages: [
+                     {
+                        name: validProjectName,
+                        location: validProjectPath,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newProjectStore = new ProjectStore(serverRootPath);
+      await newProjectStore.finishedInitialization;
+
+      const projects = await newProjectStore.listProjects();
+      expect(projects.map((p) => p.name)).toEqual([validProjectName]);
+      await expect(
+         newProjectStore.getProject(invalidProjectName),
+      ).rejects.toThrow();
+   });
+
    it("should handle project updates", async () => {
       // Create a project directory
       const projectPath = path.join(serverRootPath, projectName);

@@ -8,22 +8,36 @@ import "@malloy-publisher/sdk/styles.css";
 import "@malloydata/malloy-explorer/styles.css";
 import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider } from "@mui/material/styles";
-import { lazy, Suspense, useMemo } from "react";
+import * as React from "react";
+import { Suspense, useMemo } from "react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { RouteError } from "./components/common";
 import { HeaderProps } from "./components/layout/Header/Header";
 import theme from "./theme";
 
-const HomePage = lazy(() => import("./components/pages/HomePage/HomePage"));
-const MainPage = lazy(() => import("./components/layout/MainPage/MainPage"));
-const ModelPage = lazy(() => import("./components/pages/ModelPage/ModelPage"));
-const PackagePage = lazy(
+/**
+ * Vite automatically handles code splitting and chunking when using
+ * React.lazy and dynamic import() statements for lazy loading React
+ * components.
+ */
+const HomePage = React.lazy(
+   () => import("./components/pages/HomePage/HomePage"),
+);
+const MainPage = React.lazy(
+   () => import("./components/layout/MainPage/MainPage"),
+);
+const ModelPage = React.lazy(
+   () => import("./components/pages/ModelPage/ModelPage"),
+);
+const PackagePage = React.lazy(
    () => import("./components/pages/PackagePage/PackagePage"),
 );
-const ProjectPage = lazy(
+const ProjectPage = React.lazy(
    () => import("./components/pages/ProjectPage/ProjectPage"),
 );
-const WorkbookPage = lazy(
+const RouteError = React.lazy(
+   () => import("./components/common/RouteError/RouteError"),
+);
+const WorkbookPage = React.lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
 
