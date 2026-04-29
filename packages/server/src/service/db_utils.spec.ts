@@ -262,6 +262,65 @@ describe("listTablesForSchema", () => {
       });
    });
 
+   describe("databricks", () => {
+      it("uses defaultCatalog-prefixed information_schema.columns", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "databricks",
+            databricksConnection: {
+               host: "dbc.cloud.databricks.com",
+               path: "/sql/1.0/warehouses/abc",
+               token: "dapi",
+               defaultCatalog: "main",
+            },
+         };
+         const m = mockConnection(columnRows);
+         const tables = await listTablesForSchema(conn, "default", m.conn);
+
+         expect(m.lastSQL).toContain("main.information_schema.columns");
+         expect(m.lastSQL).toContain("table_schema = 'default'");
+         expect(tables[0].resource).toBe("main.default.orders");
+      });
+
+      it("extracts catalog from schemaName when no defaultCatalog", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "databricks",
+            databricksConnection: {
+               host: "dbc.cloud.databricks.com",
+               path: "/sql/1.0/warehouses/abc",
+               token: "dapi",
+            },
+         };
+         const m = mockConnection(columnRows);
+         const tables = await listTablesForSchema(
+            conn,
+            "main.default",
+            m.conn,
+         );
+
+         expect(m.lastSQL).toContain("main.information_schema.columns");
+         expect(m.lastSQL).toContain("table_schema = 'default'");
+         expect(tables[0].resource).toBe("main.default.orders");
+      });
+
+      it("includes IN filter when tableNames provided", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "databricks",
+            databricksConnection: {
+               host: "dbc.cloud.databricks.com",
+               path: "/sql/1.0/warehouses/abc",
+               token: "dapi",
+               defaultCatalog: "main",
+            },
+         };
+         const m = mockConnection(columnRows);
+         await listTablesForSchema(conn, "default", m.conn, ["orders"]);
+         expect(m.lastSQL).toContain("table_name IN ('orders')");
+      });
+   });
+
    describe("duckdb", () => {
       const conn: ApiConnection = {
          name: "test",
@@ -671,6 +730,105 @@ describe("getSchemasForConnection", () => {
          expect(
             schemas.find((s) => s.name === "information_schema")?.isHidden,
          ).toBe(true);
+      });
+   });
+
+   describe("databricks", () => {
+      it("queries catalog.information_schema.schemata when defaultCatalog is set", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "databricks",
+            databricksConnection: {
+               host: "dbc.cloud.databricks.com",
+               path: "/sql/1.0/warehouses/abc",
+               token: "dapi",
+               defaultCatalog: "main",
+               defaultSchema: "default",
+            },
+         };
+         const rows = [
+            { schema_name: "default" },
+            { schema_name: "information_schema" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(conn, m.conn);
+
+         expect(m.lastSQL).toContain("main.information_schema.schemata");
+         expect(schemas).toHaveLength(2);
+         expect(schemas.find((s) => s.name === "default")?.isDefault).toBe(true);
+         expect(
+            schemas.find((s) => s.name === "information_schema")?.isHidden,
+         ).toBe(true);
+      });
+
+      it("falls back to SHOW CATALOGS when defaultCatalog is unset", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "databricks",
+            databricksConnection: {
+               host: "dbc.cloud.databricks.com",
+               path: "/sql/1.0/warehouses/abc",
+               token: "dapi",
+            },
+         };
+         // First runSQL returns catalog list; subsequent runSQL calls (one
+         // per catalog) return schema rows. We use a dedicated mock so we
+         // can switch behavior across calls.
+         let callIndex = 0;
+         const calls: string[] = [];
+         const fakeConn = {
+            runSQL: async (sql: string) => {
+               calls.push(sql);
+               if (callIndex++ === 0) {
+                  return { rows: [{ catalog: "main" }, { catalog: "samples" }] };
+               }
+               return { rows: [{ schema_name: "default" }] };
+            },
+         } as unknown as Connection;
+
+         const schemas = await getSchemasForConnection(conn, fakeConn);
+
+         expect(calls[0]).toContain("SHOW CATALOGS");
+         expect(calls.some((c) => c.includes("main.information_schema.schemata")))
+            .toBe(true);
+         expect(calls.some((c) =>
+            c.includes("samples.information_schema.schemata"),
+         )).toBe(true);
+         // Two catalogs each contribute one schema → catalog-qualified names.
+         expect(schemas.map((s) => s.name)).toEqual([
+            "main.default",
+            "samples.default",
+         ]);
+      });
+
+      it("warns and continues when a catalog rejects information_schema", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "databricks",
+            databricksConnection: {
+               host: "dbc.cloud.databricks.com",
+               path: "/sql/1.0/warehouses/abc",
+               token: "dapi",
+            },
+         };
+         let callIndex = 0;
+         const fakeConn = {
+            runSQL: async (sql: string) => {
+               if (callIndex++ === 0) {
+                  return { rows: [{ catalog: "denied" }, { catalog: "ok" }] };
+               }
+               if (sql.includes("denied")) {
+                  throw new Error("USE CATALOG denied");
+               }
+               return { rows: [{ schema_name: "default" }] };
+            },
+         } as unknown as Connection;
+
+         const schemas = await getSchemasForConnection(conn, fakeConn);
+
+         // Denied catalog is skipped, ok catalog contributes its schema.
+         expect(schemas).toHaveLength(1);
+         expect(schemas[0].name).toBe("ok.default");
       });
    });
 

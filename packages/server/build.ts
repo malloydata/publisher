@@ -20,6 +20,7 @@ await build({
       "@malloydata/db-postgres",
       "@malloydata/db-snowflake",
       "@malloydata/db-trino",
+      "@malloydata/db-databricks",
       "@google-cloud/storage",
       "@azure/identity",
       "@azure/storage-blob",

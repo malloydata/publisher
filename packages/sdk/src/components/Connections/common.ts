@@ -3,6 +3,7 @@ import type {
    AzureConnection,
    BigqueryConnection,
    ConnectionTypeEnum,
+   DatabricksConnection,
    DucklakeConnection,
    GCSConnection,
    MotherDuckConnection,
@@ -19,6 +20,7 @@ type ConnectionField = {
       BigqueryConnection &
       SnowflakeConnection &
       TrinoConnection &
+      DatabricksConnection &
       MysqlConnection &
       MotherDuckConnection &
       S3Connection &
@@ -217,6 +219,50 @@ export const connectionFieldsByType: Record<
          required: false, // Can be used instead of password for HTTPS
       },
    ],
+   databricks: [
+      {
+         label: "Host",
+         name: "host",
+         type: "text",
+         required: true,
+      },
+      {
+         label: "HTTP Path",
+         name: "path",
+         type: "text",
+         required: true,
+      },
+      {
+         label: "Access Token",
+         name: "token",
+         type: "password",
+         required: false, // Either token or OAuth client credentials required
+      },
+      {
+         label: "OAuth Client ID",
+         name: "oauthClientId",
+         type: "text",
+         required: false, // Required with oauthClientSecret if no token
+      },
+      {
+         label: "OAuth Client Secret",
+         name: "oauthClientSecret",
+         type: "password",
+         required: false, // Required with oauthClientId if no token
+      },
+      {
+         label: "Default Catalog",
+         name: "defaultCatalog",
+         type: "text",
+         required: false,
+      },
+      {
+         label: "Default Schema",
+         name: "defaultSchema",
+         type: "text",
+         required: false,
+      },
+   ],
    mysql: [
       {
          label: "Host",
@@ -274,6 +320,7 @@ export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
    bigquery: "bigqueryConnection",
    snowflake: "snowflakeConnection",
    trino: "trinoConnection",
+   databricks: "databricksConnection",
    mysql: "mysqlConnection",
    duckdb: "duckdbConnection",
    motherduck: "motherduckConnection",

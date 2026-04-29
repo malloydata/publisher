@@ -353,6 +353,82 @@ async function getSchemasForTrino(
    }
 }
 
+async function getSchemasForDatabricks(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.databricksConnection) {
+      throw new Error("Databricks connection is required");
+   }
+   try {
+      const configuredSchema = connection.databricksConnection.defaultSchema;
+      let allRows: { catalog: string; schema: string }[] = [];
+
+      if (connection.databricksConnection.defaultCatalog) {
+         const catalog = connection.databricksConnection.defaultCatalog;
+         const result = await malloyConnection.runSQL(
+            `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         allRows = rows.map((row: unknown) => {
+            const r = row as Record<string, unknown>;
+            return {
+               catalog,
+               schema: String(r.schema_name ?? r.Schema ?? ""),
+            };
+         });
+      } else {
+         const catalogsResult = await malloyConnection.runSQL(`SHOW CATALOGS`);
+         const catalogNames = standardizeRunSQLResult(catalogsResult).map(
+            (row: unknown) => {
+               const r = row as Record<string, unknown>;
+               return String(r.catalog ?? r.Catalog ?? r.catalog_name ?? "");
+            },
+         );
+
+         for (const catalog of catalogNames) {
+            try {
+               const result = await malloyConnection.runSQL(
+                  `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+               );
+               const rows = standardizeRunSQLResult(result);
+               for (const row of rows) {
+                  const r = row as Record<string, unknown>;
+                  allRows.push({
+                     catalog,
+                     schema: String(r.schema_name ?? r.Schema ?? ""),
+                  });
+               }
+            } catch (catalogError) {
+               logger.warn(
+                  `Failed to list schemas for Databricks catalog ${catalog}`,
+                  { error: catalogError },
+               );
+            }
+         }
+      }
+      logger.info("allRows for Schemas for Databricks", { allRows });
+      return allRows.map(({ catalog, schema }) => {
+         const name = connection.databricksConnection?.defaultCatalog
+            ? schema
+            : `${catalog}.${schema}`;
+         return {
+            name,
+            isHidden: ["information_schema"].includes(schema),
+            isDefault: configuredSchema ? schema === configuredSchema : false,
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for Databricks connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for Databricks connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
 async function getSchemasForDuckDB(
    connection: ApiConnection,
    malloyConnection: Connection,
@@ -533,6 +609,8 @@ export async function getSchemasForConnection(
          return getSchemasForSnowflake(connection, malloyConnection);
       case "trino":
          return getSchemasForTrino(connection, malloyConnection);
+      case "databricks":
+         return getSchemasForDatabricks(connection, malloyConnection);
       case "duckdb":
          return getSchemasForDuckDB(connection, malloyConnection);
       case "motherduck":
@@ -823,6 +901,13 @@ export async function listTablesForSchema(
             malloyConnection,
             tableNames,
          );
+      case "databricks":
+         return listTablesForDatabricks(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
       case "duckdb":
          return listTablesForDuckDB(
             connection,
@@ -1053,6 +1138,52 @@ async function listTablesForTrino(
       );
       throw new Error(
          `Failed to get tables for Trino schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+      );
+   }
+}
+
+async function listTablesForDatabricks(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.databricksConnection) {
+      throw new Error("Databricks connection is required");
+   }
+   try {
+      let catalogPrefix: string;
+      let schemaOnly: string;
+      let resourcePrefix: string;
+
+      if (connection.databricksConnection.defaultCatalog) {
+         catalogPrefix = `${connection.databricksConnection.defaultCatalog}.`;
+         schemaOnly = schemaName;
+         resourcePrefix = `${connection.databricksConnection.defaultCatalog}.${schemaName}`;
+      } else {
+         const dotIdx = schemaName.indexOf(".");
+         if (dotIdx > 0) {
+            catalogPrefix = `${schemaName.substring(0, dotIdx)}.`;
+            schemaOnly = schemaName.substring(dotIdx + 1);
+         } else {
+            catalogPrefix = "";
+            schemaOnly = schemaName;
+         }
+         resourcePrefix = schemaName;
+      }
+
+      const result = await malloyConnection.runSQL(
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${schemaOnly}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for Databricks schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for Databricks schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
       );
    }
 }
