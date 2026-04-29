@@ -1,15 +1,17 @@
 import {
+   Loading,
    WorkbookStorage,
    WorkbookStorageProvider,
 } from "@malloy-publisher/sdk";
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
 import "@malloydata/malloy-explorer/styles.css";
-import { CssBaseline } from "@mui/material";
+import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider } from "@mui/material/styles";
 import * as React from "react";
+import { Suspense, useMemo } from "react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
-import { HeaderProps } from "./components/Header";
+import { HeaderProps } from "./components/layout/Header/Header";
 import theme from "./theme";
 
 /**
@@ -17,15 +19,28 @@ import theme from "./theme";
  * React.lazy and dynamic import() statements for lazy loading React
  * components.
  */
-const HomePage = React.lazy(() => import("./components/HomePage"));
-const MainPage = React.lazy(() => import("./components/MainPage"));
-const ModelPage = React.lazy(() => import("./components/ModelPage"));
-const PackagePage = React.lazy(() => import("./components/PackagePage"));
-const ProjectPage = React.lazy(() => import("./components/ProjectPage"));
-const RouteError = React.lazy(() => import("./components/RouteError"));
-const WorkbookPage = React.lazy(() => import("./components/WorkbookPage"));
+const HomePage = React.lazy(
+   () => import("./components/pages/HomePage/HomePage"),
+);
+const MainPage = React.lazy(
+   () => import("./components/layout/MainPage/MainPage"),
+);
+const ModelPage = React.lazy(
+   () => import("./components/pages/ModelPage/ModelPage"),
+);
+const PackagePage = React.lazy(
+   () => import("./components/pages/PackagePage/PackagePage"),
+);
+const ProjectPage = React.lazy(
+   () => import("./components/pages/ProjectPage/ProjectPage"),
+);
+const RouteError = React.lazy(
+   () => import("./components/common/RouteError/RouteError"),
+);
+const WorkbookPage = React.lazy(
+   () => import("./components/pages/WorkbookPage/WorkbookPage"),
+);
 
-// Create router configuration function
 export const createMalloyRouter = (
    basePath: string = "/",
    workbookStorage: WorkbookStorage,
@@ -39,7 +54,9 @@ export const createMalloyRouter = (
                <WorkbookStorageProvider workbookStorage={workbookStorage}>
                   <ThemeProvider theme={theme}>
                      <CssBaseline />
-                     <MainPage headerProps={headerProps} />
+                     <Suspense fallback={<Loading />}>
+                        <MainPage headerProps={headerProps} />
+                     </Suspense>
                   </ThemeProvider>
                </WorkbookStorageProvider>
             </ServerProvider>
@@ -47,7 +64,7 @@ export const createMalloyRouter = (
          errorElement: <RouteError />,
          children: [
             {
-               path: "",
+               index: true,
                element: <HomePage />,
             },
             {
@@ -77,11 +94,15 @@ export interface MalloyPublisherAppProps {
    workbookStorage: WorkbookStorage;
 }
 
-export const MalloyPublisherApp: React.FC<MalloyPublisherAppProps> = ({
-   workbookStorage,
+export const MalloyPublisherApp = ({
    basePath = "/",
+   workbookStorage,
    headerProps,
-}) => {
-   const router = createMalloyRouter(basePath, workbookStorage, headerProps);
+}: MalloyPublisherAppProps) => {
+   const router = useMemo(
+      () => createMalloyRouter(basePath, workbookStorage, headerProps),
+      [basePath, workbookStorage, headerProps],
+   );
+
    return <RouterProvider router={router} />;
 };

@@ -35,6 +35,7 @@
       "@azure/storage-blob": "^12.26.0",
       "@google-cloud/storage": "^7.16.0",
       "@malloydata/db-bigquery": "^0.0.383",
+      "@malloydata/db-databricks": "^0.0.383",
       "@malloydata/db-duckdb": "^0.0.383",
       "@malloydata/db-mysql": "^0.0.383",
       "@malloydata/db-postgres": "^0.0.383",
