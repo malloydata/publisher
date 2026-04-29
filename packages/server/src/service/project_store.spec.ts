@@ -10,11 +10,23 @@ import { ProjectStore } from "./project_store";
 
 type MockData = Record<string, unknown>;
 
+const initializeDuckLakeCalls: Array<{
+   projectId: string;
+   config: { catalogUrl: string; dataPath: string };
+}> = [];
+
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
          async initialize(_reInit?: boolean): Promise<void> {
             return;
+         }
+
+         async initializeDuckLakeForProject(
+            projectId: string,
+            config: { catalogUrl: string; dataPath: string },
+         ): Promise<void> {
+            initializeDuckLakeCalls.push({ projectId, config });
          }
 
          getRepository() {
@@ -465,6 +477,69 @@ describe("ProjectStore Service", () => {
       expect(existsSync(readmePath)).toBe(true);
       const readmeContent = readFileSync(readmePath, "utf-8");
       expect(readmeContent).toBe("Updated README content");
+   });
+
+   it("should propagate materializationStorage on addProject for new project", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({ frozenConfig: false, projects: [] }),
+      );
+
+      await projectStore.finishedInitialization;
+
+      const materializationStorage = {
+         catalogUrl:
+            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
+         dataPath: "gs://test-bucket",
+      };
+
+      initializeDuckLakeCalls.length = 0;
+      const project = await projectStore.addProject({
+         name: projectName,
+         materializationStorage,
+      });
+
+      expect(project.metadata.materializationStorage).toEqual(
+         materializationStorage,
+      );
+      expect(initializeDuckLakeCalls).toHaveLength(1);
+      expect(initializeDuckLakeCalls[0].config).toEqual(materializationStorage);
+   });
+
+   it("should propagate materializationStorage on update", async () => {
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ name: projectName, description: "Test package" }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            projects: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+               },
+            ],
+         }),
+      );
+
+      await projectStore.finishedInitialization;
+      const project = await projectStore.getProject(projectName);
+
+      const materializationStorage = {
+         catalogUrl:
+            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
+         dataPath: "gs://test-bucket",
+      };
+
+      await project.update({ name: projectName, materializationStorage });
+
+      expect(project.metadata.materializationStorage).toEqual(
+         materializationStorage,
+      );
    });
 
    it(
