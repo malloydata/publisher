@@ -293,11 +293,7 @@ describe("listTablesForSchema", () => {
             },
          };
          const m = mockConnection(columnRows);
-         const tables = await listTablesForSchema(
-            conn,
-            "main.default",
-            m.conn,
-         );
+         const tables = await listTablesForSchema(conn, "main.default", m.conn);
 
          expect(m.lastSQL).toContain("main.information_schema.columns");
          expect(m.lastSQL).toContain("table_schema = 'default'");
@@ -755,7 +751,9 @@ describe("getSchemasForConnection", () => {
 
          expect(m.lastSQL).toContain("main.information_schema.schemata");
          expect(schemas).toHaveLength(2);
-         expect(schemas.find((s) => s.name === "default")?.isDefault).toBe(true);
+         expect(schemas.find((s) => s.name === "default")?.isDefault).toBe(
+            true,
+         );
          expect(
             schemas.find((s) => s.name === "information_schema")?.isHidden,
          ).toBe(true);
@@ -780,7 +778,9 @@ describe("getSchemasForConnection", () => {
             runSQL: async (sql: string) => {
                calls.push(sql);
                if (callIndex++ === 0) {
-                  return { rows: [{ catalog: "main" }, { catalog: "samples" }] };
+                  return {
+                     rows: [{ catalog: "main" }, { catalog: "samples" }],
+                  };
                }
                return { rows: [{ schema_name: "default" }] };
             },
@@ -789,11 +789,14 @@ describe("getSchemasForConnection", () => {
          const schemas = await getSchemasForConnection(conn, fakeConn);
 
          expect(calls[0]).toContain("SHOW CATALOGS");
-         expect(calls.some((c) => c.includes("main.information_schema.schemata")))
-            .toBe(true);
-         expect(calls.some((c) =>
-            c.includes("samples.information_schema.schemata"),
-         )).toBe(true);
+         expect(
+            calls.some((c) => c.includes("main.information_schema.schemata")),
+         ).toBe(true);
+         expect(
+            calls.some((c) =>
+               c.includes("samples.information_schema.schemata"),
+            ),
+         ).toBe(true);
          // Two catalogs each contribute one schema → catalog-qualified names.
          expect(schemas.map((s) => s.name)).toEqual([
             "main.default",
