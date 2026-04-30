@@ -16,7 +16,7 @@
    "scripts": {
       "test": "bun run test:unit && bun run test:integration",
       "test:unit": "bun test --timeout 100000 src",
-      "test:integration": "bun test --timeout 100000 tests",
+      "test:integration": "bun test --timeout 200000 tests --max-workers=1",
       "build": "bun generate-api-types && bun build:app && NODE_ENV=production bun run build.ts",
       "build:server-only": "bun generate-api-types && NODE_ENV=production bun run build.ts",
       "start": "NODE_ENV=production bun run ./dist/server.mjs",

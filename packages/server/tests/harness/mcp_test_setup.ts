@@ -5,6 +5,7 @@ import {
    Request,
    Result,
 } from "@modelcontextprotocol/sdk/types.js";
+import { Mutex } from "async-mutex";
 import http from "http";
 import { AddressInfo } from "net";
 import path from "path";
@@ -24,37 +25,24 @@ export interface McpE2ETestEnvironment {
    originalInitializeStorage: string | undefined;
 }
 
-// Counter for unique port assignment per test suite
+// Counter for unique port assignment per test suite (incremented only under e2eSetupMutex)
 let portCounter = 0;
 
-// Mutex to prevent concurrent initialization (since all tests share the same database)
-let initializationLock: Promise<void> | null = null;
+// True mutex: the previous Promise-based lock had a TOCTOU race where two beforeAll hooks
+// could both pass the `if (initializationLock)` check and run setup concurrently, sharing
+// one publisher.db / server singleton and causing flaky listResources and port collisions.
+const e2eSetupMutex = new Mutex();
 
 /**
  * Starts the real application server and connects a real MCP client.
  */
 export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> {
-   // Wait for any ongoing initialization to complete (prevents concurrent DB initialization)
-   if (initializationLock) {
+   return e2eSetupMutex.runExclusive(async () => {
       console.log(
-         "[E2E Test Setup] Waiting for previous initialization to complete...",
+         "[E2E Test Setup] Acquired setup mutex; starting environment...",
       );
-      await initializationLock;
-   }
-
-   // Create a new lock for this initialization
-   let resolveLock: () => void;
-   initializationLock = new Promise((resolve) => {
-      resolveLock = resolve;
+      return setupE2ETestEnvironmentInternal();
    });
-
-   try {
-      return await setupE2ETestEnvironmentInternal();
-   } finally {
-      // Release the lock
-      resolveLock!();
-      initializationLock = null;
-   }
 }
 
 async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment> {
@@ -129,9 +117,9 @@ async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment>
 
    // --- Wait for server to be ready (packages downloaded) ---
    // Poll the readiness endpoint to ensure initialization completes before tests run
-   // Note: Reduced timeout to 90s to be under the 100s test timeout
+   // Allow >90s: cold CI can spend most of the budget on clone + package load before markReady().
    console.log("[E2E Test Setup] Waiting for server to be ready...");
-   const maxWaitTime = 90000; // 90 seconds max wait (under 100s test timeout)
+   const maxWaitTime = 150000; // 150 seconds (INITIALIZE_STORAGE + large samples can be slow)
    const pollInterval = 1000; // Check every second
    const startTime = Date.now();
    let isReady = false;

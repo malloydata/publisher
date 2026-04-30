@@ -20,7 +20,8 @@ interface PackageContentEntry {
 }
 
 // --- Test Suite ---
-describe("MCP Resource Handlers (E2E Integration)", () => {
+// Serial: one shared MCP client; concurrent it() blocks can interleave StreamableHTTP requests.
+describe.serial("MCP Resource Handlers (E2E Integration)", () => {
    let env: McpE2ETestEnvironment | null = null;
    let mcpClient: Client;
 
@@ -85,17 +86,17 @@ describe("MCP Resource Handlers (E2E Integration)", () => {
             expect(faaPackageEntry).toBeDefined();
             expect(faaPackageEntry?.name).toBe("faa");
 
-            const firstResource = result.resources[0];
-            expect(firstResource).toBeDefined();
-            expect(firstResource.uri).toBeDefined();
-            expect(typeof firstResource.uri).toBe("string");
-            expect(firstResource.uri).toMatch(/^malloy:\/\//);
-            expect(firstResource.name).toBeDefined();
-            expect(typeof firstResource.name).toBe("string");
-            expect(firstResource.description).toBeDefined();
-            expect(typeof firstResource.description).toBe("string");
-            if (firstResource.mimeType) {
-               expect(typeof firstResource.mimeType).toBe("string");
+            // Assert shape on a known row (order of listResources is not guaranteed).
+            const sample = faaPackageEntry!;
+            expect(sample.uri).toBeDefined();
+            expect(typeof sample.uri).toBe("string");
+            expect(sample.uri).toMatch(/^malloy:\/\//);
+            expect(sample.name).toBeDefined();
+            expect(typeof sample.name).toBe("string");
+            expect(sample.description).toBeDefined();
+            expect(typeof sample.description).toBe("string");
+            if (sample.mimeType) {
+               expect(typeof sample.mimeType).toBe("string");
             }
          },
          { timeout: 30000 },
