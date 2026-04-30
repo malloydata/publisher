@@ -28,7 +28,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.192",
+      "version": "0.0.193",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -79,7 +79,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.192",
+      "version": "0.0.193",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -90,7 +90,7 @@
       },
       "devDependencies": {
         "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-        "@malloydata/malloy-query-builder": "0.0.383",
+        "@malloydata/malloy-query-builder": "^0.0.383",
         "@openapitools/openapi-generator-cli": "^2.20.2",
         "@shikijs/langs": "^1.16.3",
         "@shikijs/themes": "^1.16.3",
@@ -132,7 +132,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.192",
+      "version": "0.0.193",
       "bin": {
         "malloy-publisher": "dist/server.mjs",
       },
@@ -211,7 +211,7 @@
   "overrides": {
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
     "@malloydata/malloy-interfaces": "^0.0.383",
-    "@malloydata/malloy-query-builder": "0.0.383",
+    "@malloydata/malloy-query-builder": "^0.0.383",
     "duckdb": "1.4.4",
     "esbuild": "0.25.9",
   },

@@ -99,6 +99,10 @@ export class Project {
          await this.writeProjectReadme(payload.readme);
       }
 
+      if (payload.materializationStorage !== undefined) {
+         this.metadata.materializationStorage = payload.materializationStorage;
+      }
+
       // Handle connections update
       // TODO: Update project connections should have its own API endpoint
       if (payload.connections) {
