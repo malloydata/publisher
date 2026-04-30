@@ -1,3 +1,4 @@
+import { createPrivateKey } from "crypto";
 import path from "path";
 import { components } from "../api";
 
@@ -48,6 +49,12 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
             beginMarker: "-----BEGIN PRIVATE KEY-----",
             endMarker: "-----END PRIVATE KEY-----",
          },
+         {
+            beginRegex: /-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----/i,
+            endRegex: /-----END\s+RSA\s+PRIVATE\s+KEY-----/i,
+            beginMarker: "-----BEGIN RSA PRIVATE KEY-----",
+            endMarker: "-----END RSA PRIVATE KEY-----",
+         },
       ];
 
       for (const pattern of keyPatterns) {
@@ -71,6 +78,28 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
       }
    } else if (!privateKeyContent.endsWith("\n")) {
       privateKeyContent += "\n";
+   }
+
+   // Snowflake's Node SDK requires PKCS#8 ("BEGIN PRIVATE KEY"). Convert
+   // PKCS#1 ("BEGIN RSA PRIVATE KEY") so users can paste either format.
+   if (/-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----/i.test(privateKeyContent)) {
+      try {
+         privateKeyContent = createPrivateKey({
+            key: privateKeyContent,
+            format: "pem",
+         })
+            .export({ type: "pkcs8", format: "pem" })
+            .toString();
+      } catch (err) {
+         throw new Error(
+            `Failed to convert Snowflake RSA private key (PKCS#1) to PKCS#8: ${
+               err instanceof Error ? err.message : String(err)
+            }`,
+         );
+      }
+      if (!privateKeyContent.endsWith("\n")) {
+         privateKeyContent += "\n";
+      }
    }
 
    return privateKeyContent;
