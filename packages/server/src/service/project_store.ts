@@ -359,10 +359,14 @@ export class ProjectStore {
          materializationStorage?.catalogUrl &&
          materializationStorage?.dataPath
       ) {
-         await this.storageManager.initializeDuckLakeForProject(dbProject.id, {
-            catalogUrl: materializationStorage.catalogUrl,
-            dataPath: materializationStorage.dataPath,
-         });
+         await this.storageManager.initializeDuckLakeForProject(
+            dbProject.id,
+            dbProject.name,
+            {
+               catalogUrl: materializationStorage.catalogUrl,
+               dataPath: materializationStorage.dataPath,
+            },
+         );
       }
 
       return dbProject;

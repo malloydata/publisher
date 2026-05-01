@@ -12,6 +12,7 @@ type MockData = Record<string, unknown>;
 
 const initializeDuckLakeCalls: Array<{
    projectId: string;
+   projectName: string;
    config: { catalogUrl: string; dataPath: string };
 }> = [];
 
@@ -24,9 +25,10 @@ mock.module("../storage/StorageManager", () => {
 
          async initializeDuckLakeForProject(
             projectId: string,
+            projectName: string,
             config: { catalogUrl: string; dataPath: string },
          ): Promise<void> {
-            initializeDuckLakeCalls.push({ projectId, config });
+            initializeDuckLakeCalls.push({ projectId, projectName, config });
          }
 
          getRepository() {
