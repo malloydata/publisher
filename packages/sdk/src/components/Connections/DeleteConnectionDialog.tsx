@@ -35,6 +35,7 @@ export default function DeleteConnectionDialog({
    return (
       <React.Fragment>
          <IconButton
+            aria-label={`Delete connection ${connection?.name ?? ""}`.trim()}
             onClick={(event) => {
                event.stopPropagation();
                handleClickOpen();

@@ -45,6 +45,7 @@ const PackageMenu = ({
          {mutable && (
             <>
                <IconButton
+                  aria-label={`Package actions for ${p.name}`}
                   onClick={(event) => {
                      event.stopPropagation();
                      openMenu(event);

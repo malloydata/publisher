@@ -52,8 +52,8 @@ export interface ServerProviderProps {
     * Will send "Bearer 123" in the Authorization header.
     */
    getAccessToken?: () => Promise<string>;
-   /** Whether the publisher should allow project and package management operations.
-    * When false, users can only view and explore existing projects and packages.
+   /** Whether the publisher should allow environment and package management operations.
+    * When false, users can only view and explore existing environments and packages.
     * @default true
     */
    mutable?: boolean;
