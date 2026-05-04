@@ -1,11 +1,10 @@
-import { Box, Grid, Typography } from "@mui/material";
+import { Box, Container, Stack, Typography } from "@mui/material";
+import { useEffect } from "react";
 import { parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
-import { PackageContainer } from "../styles";
 import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
 import Packages from "./Packages";
-import { useEffect } from "react";
 
 interface ProjectProps {
    onSelectPackage: (to: string, event?: React.MouseEvent) => void;
@@ -24,29 +23,51 @@ export default function Project({
    }, []);
 
    return (
-      <>
-         <PackageContainer>
-            <Box
-               display="flex"
-               justifyContent="space-between"
-               alignItems="center"
-               mb={2}
+      <Container
+         maxWidth={false}
+         sx={{ maxWidth: 1024, mx: "auto", px: 4, py: 3 }}
+      >
+         <Box sx={{ mb: 5 }}>
+            <Typography
+               variant="h4"
+               component="h1"
+               sx={{ fontWeight: 600, letterSpacing: "-0.025em", mb: 0.5 }}
             >
-               <Typography variant="h6">{projectName} packages</Typography>
+               {projectName}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+               Manage packages in this project. Open a package to explore its
+               models, notebooks, and connections.
+            </Typography>
+         </Box>
+
+         <Box sx={{ mb: 5 }}>
+            <Stack
+               direction="row"
+               justifyContent="space-between"
+               alignItems="flex-start"
+               sx={{ mb: 3 }}
+            >
+               <Box>
+                  <Typography
+                     variant="h6"
+                     sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
+                  >
+                     Packages
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                     Published packages available for use in this project
+                  </Typography>
+               </Box>
                {mutable && <AddPackageDialog resourceUri={resourceUri} />}
-            </Box>
-            <Grid container spacing={3} columns={12}>
-               <Grid size={{ xs: 12, md: 12 }}>
-                  <Packages
-                     onSelectPackage={onSelectPackage}
-                     resourceUri={resourceUri}
-                  />
-               </Grid>
-               <Grid size={{ xs: 12, md: 12 }}>
-                  <About resourceUri={resourceUri} />
-               </Grid>
-            </Grid>
-         </PackageContainer>
-      </>
+            </Stack>
+            <Packages
+               onSelectPackage={onSelectPackage}
+               resourceUri={resourceUri}
+            />
+         </Box>
+
+         <About resourceUri={resourceUri} />
+      </Container>
    );
 }

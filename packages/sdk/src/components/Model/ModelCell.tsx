@@ -123,7 +123,7 @@ export function ModelCell({
                }}
                onClick={() => setResultsDialogOpen(true)}
             >
-               <SearchIcon sx={{ fontSize: "18px", color: "#666666" }} />
+               <SearchIcon sx={{ fontSize: "18px", color: "text.secondary" }} />
             </IconButton>
          </Box>
 

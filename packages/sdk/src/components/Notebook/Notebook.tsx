@@ -532,7 +532,7 @@ export default function Notebook({
 
                {/* Error States */}
                {isError && error.status === 404 && (
-                  <Typography variant="body2" sx={{ color: "#666666" }}>
+                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
                      <code>{`${projectName} > ${packageName} > ${notebookPath}`}</code>{" "}
                      not found.
                   </Typography>

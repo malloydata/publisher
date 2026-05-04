@@ -1,154 +1,16 @@
-import MenuIcon from "@mui/icons-material/Menu";
-import AppBar from "@mui/material/AppBar";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import IconButton from "@mui/material/IconButton";
-import Menu from "@mui/material/Menu";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import { useTheme } from "@mui/material/styles";
-import Toolbar from "@mui/material/Toolbar";
-import Typography from "@mui/material/Typography";
-import useMediaQuery from "@mui/material/useMediaQuery";
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import BreadcrumbNav from "../BreadcrumbNav/BreadcrumbNav";
+import { ReactElement } from "react";
 
+/**
+ * Public API surface used by `MalloyPublisherApp({ headerProps })` consumers.
+ * The shell is now a left sidebar + content header (see MainPage / Sidebar);
+ * `logoHeader` overrides the default brand mark in the sidebar header,
+ * `endCap` renders into the content header's actions slot.
+ */
 export interface HeaderProps {
-   logoHeader?: React.ReactElement;
-   endCap?: React.ReactElement;
+   logoHeader?: ReactElement;
+   endCap?: ReactElement;
 }
 
-export default function Header({ logoHeader, endCap }: HeaderProps) {
-   const navigate = useNavigate();
-   const theme = useTheme();
-   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
-   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-   const open = Boolean(anchorEl);
-
-   const handleMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
-      setAnchorEl(event.currentTarget);
-   };
-   const handleMenuClose = () => setAnchorEl(null);
-
-   const menuItems = [
-      {
-         label: "Malloy Docs",
-         link: "https://docs.malloydata.dev/documentation/",
-         sx: { color: "primary.main" },
-      },
-      {
-         label: "Publisher Docs",
-         link: "https://github.com/malloydata/publisher/blob/main/README.md",
-         sx: { color: "primary.main" },
-      },
-      {
-         label: "Publisher API",
-         link: "/api-doc.html",
-         sx: { color: "primary.main" },
-      },
-   ];
-   return (
-      <AppBar
-         position="sticky"
-         elevation={0}
-         sx={{
-            backgroundColor: "background.paper",
-            borderBottom: "1px solid",
-            borderColor: "divider",
-         }}
-      >
-         <Toolbar
-            sx={{
-               justifyContent: "space-between",
-               flexWrap: "nowrap",
-               minHeight: 44,
-            }}
-         >
-            {logoHeader ? (
-               logoHeader
-            ) : (
-               <Box
-                  sx={{
-                     display: "flex",
-                     alignItems: "center",
-                     gap: 1,
-                     cursor: "pointer",
-                  }}
-                  onClick={() => navigate("/")}
-               >
-                  <Box
-                     component="img"
-                     src="/logo.svg"
-                     alt="Malloy"
-                     sx={{ width: 28, height: 28 }}
-                  />
-                  <Typography
-                     variant="h6"
-                     sx={{
-                        color: "text.primary",
-                        fontWeight: 700,
-                        letterSpacing: "-0.025em",
-                        fontSize: { xs: "1.1rem", sm: "1.25rem" },
-                     }}
-                  >
-                     Malloy Publisher
-                  </Typography>
-               </Box>
-            )}
-
-            {isMobile ? (
-               <>
-                  <IconButton color="inherit" onClick={handleMenuOpen}>
-                     <MenuIcon />
-                  </IconButton>
-                  <Menu
-                     anchorEl={anchorEl}
-                     open={open}
-                     onClose={handleMenuClose}
-                     anchorOrigin={{
-                        vertical: "bottom",
-                        horizontal: "right",
-                     }}
-                  >
-                     {menuItems.map((item) => (
-                        <MenuItem
-                           key={item.label}
-                           onClick={() => {
-                              handleMenuClose();
-                              window.location.href = item.link;
-                           }}
-                           sx={item.sx}
-                        >
-                           {item.label}
-                        </MenuItem>
-                     ))}
-                     {endCap && <MenuItem>{endCap}</MenuItem>}
-                  </Menu>
-               </>
-            ) : (
-               <Stack direction="row" spacing={2} alignItems="center">
-                  {menuItems.map((item) => (
-                     <Button key={item.label} href={item.link} sx={item.sx}>
-                        {item.label}
-                     </Button>
-                  ))}
-                  {endCap}
-               </Stack>
-            )}
-         </Toolbar>
-
-         <Box
-            sx={{
-               borderTop: "1px solid white",
-               paddingLeft: "16px",
-               paddingRight: "16px",
-               marginBottom: "1px",
-               overflowX: "auto",
-            }}
-         >
-            <BreadcrumbNav />
-         </Box>
-      </AppBar>
-   );
+export default function Header(_props: HeaderProps) {
+   return null;
 }

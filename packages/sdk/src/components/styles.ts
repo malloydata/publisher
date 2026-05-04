@@ -134,16 +134,14 @@ export const PackageCardContent = styled(CardContent)({
    },
 });
 
-export const PackageSectionTitle = styled("div")({
-   fontSize: "12px",
-   fontWeight: "600",
-   color: "#666666",
-   textTransform: "uppercase",
-   letterSpacing: "0.5px",
+export const PackageSectionTitle = styled("div")(({ theme }) => ({
+   fontSize: "0.875rem",
+   fontWeight: 500,
+   color: theme.palette.text.secondary,
    marginBottom: "16px",
    paddingBottom: "8px",
-   borderBottom: "1px solid #f0f0f0",
-});
+   borderBottom: `1px solid ${theme.palette.divider}`,
+}));
 
 export const PackageContainer = styled("div")({
    padding: "32px",
