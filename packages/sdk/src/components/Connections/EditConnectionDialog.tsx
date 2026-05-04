@@ -1,7 +1,9 @@
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -10,7 +12,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 
 import { Edit } from "@mui/icons-material";
 import MenuItem from "@mui/material/MenuItem";
@@ -18,6 +20,7 @@ import {
    AttachedDatabase,
    AttachedDatabaseTypeEnum,
    Connection,
+   ConnectionStatus,
    ConnectionTypeEnum,
    DucklakeConnection,
 } from "../../client/api";
@@ -34,6 +37,9 @@ type EditConnectionDialogProps = {
    connection: Connection;
    onSubmit: (connection: Connection) => Promise<unknown>;
    isSubmitting: boolean;
+   onTestConnection?: (
+      connection: Connection,
+   ) => Promise<{ data: ConnectionStatus }>;
 };
 
 function initAttachedDatabases(connection: Connection) {
@@ -56,8 +62,14 @@ export default function EditConnectionDialog({
    connection,
    onSubmit,
    isSubmitting,
+   onTestConnection,
 }: EditConnectionDialogProps) {
    const [open, setOpen] = useState(false);
+   const [testStatus, setTestStatus] = useState<
+      "idle" | "testing" | "success" | "failed"
+   >("idle");
+   const [testError, setTestError] = useState<string>("");
+   const formRef = useRef<HTMLFormElement>(null);
    const [type, setType] = useState<Connection["type"]>(connection.type);
    const [attachedDatabases, setAttachedDatabases] = useState<
       Array<{
@@ -83,12 +95,11 @@ export default function EditConnectionDialog({
 
    const handleClose = () => {
       setOpen(false);
+      setTestStatus("idle");
+      setTestError("");
    };
 
-   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-
-      const formData = new FormData(event.currentTarget);
+   const buildConnectionPayload = (formData: FormData): Connection => {
       const name = formData.get("name")?.toString();
       const type = formData.get("type")?.toString() as ConnectionTypeEnum;
       const fields = connectionFieldsByType[type];
@@ -386,8 +397,39 @@ export default function EditConnectionDialog({
          } satisfies Connection;
       }
 
+      return connectionPayload;
+   };
+
+   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const formData = new FormData(event.currentTarget);
+      const connectionPayload = buildConnectionPayload(formData);
       await onSubmit(connectionPayload);
       handleClose();
+   };
+
+   const handleTestConnection = async () => {
+      if (!onTestConnection || !formRef.current) return;
+      setTestStatus("testing");
+      setTestError("");
+      try {
+         const formData = new FormData(formRef.current);
+         const connectionPayload = buildConnectionPayload(formData);
+         const response = await onTestConnection(connectionPayload);
+         if (response.data.status === "ok") {
+            setTestStatus("success");
+         } else {
+            setTestStatus("failed");
+            setTestError(
+               response.data.errorMessage || "Connection test failed",
+            );
+         }
+      } catch (error) {
+         setTestStatus("failed");
+         setTestError(
+            error instanceof Error ? error.message : "Connection test failed",
+         );
+      }
    };
 
    const addAttachedDatabase = () => {
@@ -471,7 +513,7 @@ export default function EditConnectionDialog({
                <DialogContentText>
                   Edit a connection to query your data database using Malloy.
                </DialogContentText>
-               <form onSubmit={handleSubmit} id="connection-form">
+               <form onSubmit={handleSubmit} id="connection-form" ref={formRef}>
                   <TextField
                      autoFocus
                      required
@@ -694,7 +736,7 @@ export default function EditConnectionDialog({
                               startIcon={<AddIcon />}
                               onClick={addAttachedDatabase}
                               size="small"
-                              variant="outlined"
+                              variant="text"
                            >
                               Add Database
                            </Button>
@@ -898,6 +940,28 @@ export default function EditConnectionDialog({
                   )}
                </form>
             </DialogContent>
+            {testStatus !== "idle" && (
+               <Box sx={{ px: 3, pb: 1 }}>
+                  {testStatus === "testing" && (
+                     <Alert
+                        severity="info"
+                        icon={<CircularProgress size={20} />}
+                     >
+                        Testing connection...
+                     </Alert>
+                  )}
+                  {testStatus === "success" && (
+                     <Alert severity="success">
+                        Connection test successful
+                     </Alert>
+                  )}
+                  {testStatus === "failed" && (
+                     <Alert severity="error">
+                        {testError || "Connection test failed"}
+                     </Alert>
+                  )}
+               </Box>
+            )}
             <DialogActions
                onClick={(event) => {
                   event.stopPropagation();
@@ -906,6 +970,15 @@ export default function EditConnectionDialog({
                <Button disabled={isSubmitting} onClick={handleClose}>
                   Cancel
                </Button>
+               {onTestConnection && (
+                  <Button
+                     onClick={handleTestConnection}
+                     disabled={isSubmitting || testStatus === "testing"}
+                     variant="text"
+                  >
+                     Test Connection
+                  </Button>
+               )}
                <Button
                   type="submit"
                   form="connection-form"

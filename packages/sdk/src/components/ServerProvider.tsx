@@ -10,6 +10,7 @@ import React, {
 } from "react";
 import {
    ConnectionsApi,
+   ConnectionsTestApi,
    DatabasesApi,
    ModelsApi,
    NotebooksApi,
@@ -89,6 +90,7 @@ const getApiClients = (
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
+      connectionsTest: new ConnectionsTestApi(config, basePath, axiosInstance),
    };
 };
 
