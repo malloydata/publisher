@@ -1,20 +1,18 @@
 import MenuIcon from "@mui/icons-material/Menu";
-import {
-   AppBar,
-   Box,
-   Button,
-   IconButton,
-   Menu,
-   MenuItem,
-   Stack,
-   Toolbar,
-   Typography,
-   useMediaQuery,
-   useTheme,
-} from "@mui/material";
+import AppBar from "@mui/material/AppBar";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import IconButton from "@mui/material/IconButton";
+import Menu from "@mui/material/Menu";
+import MenuItem from "@mui/material/MenuItem";
+import Stack from "@mui/material/Stack";
+import { useTheme } from "@mui/material/styles";
+import Toolbar from "@mui/material/Toolbar";
+import Typography from "@mui/material/Typography";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import BreadcrumbNav from "./BreadcrumbNav";
+import BreadcrumbNav from "../BreadcrumbNav/BreadcrumbNav";
 
 export interface HeaderProps {
    logoHeader?: React.ReactElement;
@@ -37,17 +35,17 @@ export default function Header({ logoHeader, endCap }: HeaderProps) {
       {
          label: "Malloy Docs",
          link: "https://docs.malloydata.dev/documentation/",
-         sx: { color: "#14b3cb" },
+         sx: { color: "primary.main" },
       },
       {
          label: "Publisher Docs",
          link: "https://github.com/malloydata/publisher/blob/main/README.md",
-         sx: { color: "#14b3cb" },
+         sx: { color: "primary.main" },
       },
       {
          label: "Publisher API",
          link: "/api-doc.html",
-         sx: { color: "#14b3cb" },
+         sx: { color: "primary.main" },
       },
    ];
    return (

@@ -315,6 +315,21 @@ export default function AddConnectionDialog({
             if (!connectionConfig.accessToken) {
                throw new Error("Access Token is required");
             }
+         } else if (type === "databricks") {
+            if (!connectionConfig.host) {
+               throw new Error("Host is required");
+            }
+            if (!connectionConfig.path) {
+               throw new Error("HTTP Path is required");
+            }
+            const hasOAuth =
+               connectionConfig.oauthClientId &&
+               connectionConfig.oauthClientSecret;
+            if (!connectionConfig.token && !hasOAuth) {
+               throw new Error(
+                  "Either Access Token or OAuth Client ID + Secret is required",
+               );
+            }
          }
 
          connectionPayload = {

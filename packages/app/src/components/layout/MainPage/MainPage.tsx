@@ -1,7 +1,9 @@
-import { Box } from "@mui/material";
+import { Loading } from "@malloy-publisher/sdk";
+import Box from "@mui/material/Box";
 import Container from "@mui/material/Container";
+import { Suspense } from "react";
 import { Outlet } from "react-router-dom";
-import Header, { HeaderProps } from "./Header";
+import Header, { HeaderProps } from "../Header/Header";
 
 interface PublisherConfigProps {
    headerProps?: HeaderProps;
@@ -24,9 +26,10 @@ export default function MainPage({ headerProps }: PublisherConfigProps) {
                gap: 2,
             }}
          >
-            {/* Page Content */}
             <Box sx={{ flex: 1 }}>
-               <Outlet />
+               <Suspense fallback={<Loading />}>
+                  <Outlet />
+               </Suspense>
             </Box>
          </Container>
       </Box>

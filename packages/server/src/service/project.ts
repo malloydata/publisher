@@ -1,6 +1,5 @@
 import type { LogMessage } from "@malloydata/malloy";
-import { FixedConnectionMap, MalloyError, Runtime } from "@malloydata/malloy";
-import { BaseConnection } from "@malloydata/malloy/connection";
+import { MalloyError, Runtime } from "@malloydata/malloy";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
 import * as path from "path";
@@ -14,9 +13,10 @@ import {
 import { logger } from "../logger";
 import { URL_READER } from "../utils";
 import {
-   createProjectConnections,
+   buildProjectMalloyConfig,
    deleteDuckLakeConnectionFile,
    InternalConnection,
+   ProjectMalloyConfig,
 } from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
@@ -35,12 +35,27 @@ interface PackageInfo {
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiProject = components["schemas"]["Project"];
+type RetiredConnectionGeneration = {
+   label: string;
+   releaseConnections: () => Promise<void>;
+   timer?: ReturnType<typeof setTimeout>;
+};
+
+const RETIRED_CONNECTION_DRAIN_MS = 30_000;
 
 export class Project {
    private packages: Map<string, Package> = new Map();
+   // Lock ordering: connectionMutex (project) MUST be acquired before any
+   // packageMutex. Connection updates may invalidate cached package
+   // MalloyConfigs and force reloads, so the project lock is the outer one.
+   // Never acquire connectionMutex while holding a packageMutex — that's the
+   // AB/BA deadlock path.
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
-   private malloyConnections: Map<string, BaseConnection>;
+   private malloyConfig: ProjectMalloyConfig;
+   private connectionMutex = new Mutex();
+   private retiredConnectionGenerations =
+      new Set<RetiredConnectionGeneration>();
    private apiConnections: ApiConnection[];
    private projectPath: string;
    private projectName: string;
@@ -49,12 +64,12 @@ export class Project {
    constructor(
       projectName: string,
       projectPath: string,
-      malloyConnections: Map<string, BaseConnection>,
+      malloyConfig: ProjectMalloyConfig,
       apiConnections: InternalConnection[],
    ) {
       this.projectName = projectName;
       this.projectPath = projectPath;
-      this.malloyConnections = malloyConnections;
+      this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
       this.metadata = {
          resource: `${API_PREFIX}/projects/${this.projectName}`,
@@ -84,33 +99,35 @@ export class Project {
          await this.writeProjectReadme(payload.readme);
       }
 
+      if (payload.materializationStorage !== undefined) {
+         this.metadata.materializationStorage = payload.materializationStorage;
+      }
+
       // Handle connections update
       // TODO: Update project connections should have its own API endpoint
       if (payload.connections) {
-         logger.info(
-            `Updating ${payload.connections.length} connections for project ${this.projectName}`,
-         );
-         const isUpdateConnectionRequest = true;
-         // Reload connections with full config
-         const { malloyConnections, apiConnections } =
-            await createProjectConnections(
-               payload.connections,
+         const payloadConnections = payload.connections;
+         await this.runConnectionUpdateExclusive(async () => {
+            logger.info(
+               `Updating ${payloadConnections.length} connections for project ${this.projectName}`,
+            );
+            const isUpdateConnectionRequest = true;
+            const nextMalloyConfig = buildProjectMalloyConfig(
+               payloadConnections,
                this.projectPath,
                isUpdateConnectionRequest,
             );
 
-         // Update the project's connection maps
-         this.malloyConnections = malloyConnections;
-         this.apiConnections = apiConnections;
+            this.updateConnections(nextMalloyConfig);
 
-         logger.info(
-            `Successfully updated connections for project ${this.projectName}`,
-            {
-               malloyConnections: malloyConnections.size,
-               apiConnections: apiConnections.length,
-               internalConnections: apiConnections.length,
-            },
-         );
+            logger.info(
+               `Successfully updated connections for project ${this.projectName}`,
+               {
+                  apiConnections: this.apiConnections.length,
+                  internalConnections: this.apiConnections.length,
+               },
+            );
+         });
       }
 
       return this;
@@ -128,22 +145,20 @@ export class Project {
       }
 
       logger.info(`Creating project with connection configuration`);
-      const { malloyConnections, apiConnections } =
-         await createProjectConnections(connections, projectPath);
+      const malloyConfig = buildProjectMalloyConfig(connections, projectPath);
 
       logger.info(
-         `Loaded ${malloyConnections.size + apiConnections.length} connections for project ${projectName}`,
+         `Loaded ${malloyConfig.apiConnections.length} connections for project ${projectName}`,
          {
-            malloyConnections,
-            apiConnections,
+            apiConnections: malloyConfig.apiConnections,
          },
       );
 
       const project = new Project(
          projectName,
          projectPath,
-         malloyConnections,
-         apiConnections,
+         malloyConfig,
+         malloyConfig.apiConnections,
       );
 
       return project;
@@ -203,10 +218,14 @@ export class Project {
          },
       };
 
-      // Initialize Runtime with the project's active connections
+      const pkg = await this.getPackage(packageName);
+
+      // Initialize Runtime with the package's active MalloyConfig so compile
+      // checks see the same package-scoped duckdb as execution. This runtime
+      // borrows the package config; the package/project lifecycle owns release.
       const runtime = new Runtime({
          urlReader: interceptingReader,
-         connections: new FixedConnectionMap(this.malloyConnections, "duckdb"),
+         config: pkg.getMalloyConfig(),
       });
 
       // Attempt to compile
@@ -254,14 +273,66 @@ export class Project {
       return connection;
    }
 
-   public getMalloyConnection(connectionName: string): BaseConnection {
-      const connection = this.malloyConnections.get(connectionName);
-      if (!connection) {
-         throw new ConnectionNotFoundError(
-            `Connection ${connectionName} not found`,
+   public async getMalloyConnection(connectionName: string) {
+      return this.malloyConfig.malloyConfig.connections.lookupConnection(
+         connectionName,
+      );
+   }
+
+   public getProjectMalloyConfig() {
+      return this.malloyConfig.malloyConfig;
+   }
+
+   public async runConnectionUpdateExclusive<T>(
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      return this.connectionMutex.runExclusive(fn);
+   }
+
+   private retireConnectionGeneration(
+      label: string,
+      releaseConnections: () => Promise<void>,
+   ): void {
+      const generation: RetiredConnectionGeneration = {
+         label,
+         releaseConnections,
+      };
+      generation.timer = setTimeout(() => {
+         void this.releaseRetiredConnectionGeneration(generation);
+      }, RETIRED_CONNECTION_DRAIN_MS);
+      (
+         generation.timer as ReturnType<typeof setTimeout> & {
+            unref?: () => void;
+         }
+      ).unref?.();
+      this.retiredConnectionGenerations.add(generation);
+   }
+
+   private async releaseRetiredConnectionGeneration(
+      generation: RetiredConnectionGeneration,
+   ): Promise<void> {
+      if (!this.retiredConnectionGenerations.delete(generation)) return;
+
+      if (generation.timer) {
+         clearTimeout(generation.timer);
+      }
+
+      try {
+         await generation.releaseConnections();
+      } catch (error) {
+         logger.error(
+            `Error releasing retired connection generation ${generation.label}`,
+            { error },
          );
       }
-      return connection;
+   }
+
+   private async releaseAllRetiredConnectionGenerations(): Promise<void> {
+      await Promise.all(
+         [...this.retiredConnectionGenerations].map((generation) =>
+            this.releaseRetiredConnectionGeneration(generation),
+         ),
+      );
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
@@ -356,8 +427,13 @@ export class Project {
                this.projectName,
                packageName,
                packagePath,
-               this.malloyConnections,
+               () => this.malloyConfig.malloyConfig,
             );
+            if (existingPackage !== undefined && reload) {
+               this.retireConnectionGeneration(`package ${packageName}`, () =>
+                  existingPackage.getMalloyConfig().releaseConnections(),
+               );
+            }
             this.packages.set(packageName, _package);
 
             // Set package status to serving
@@ -391,7 +467,7 @@ export class Project {
          `Adding package ${packageName} to project ${this.projectName}`,
          {
             packagePath,
-            malloyConnections: this.malloyConnections,
+            malloyConfig: this.malloyConfig.malloyConfig,
          },
       );
       this.setPackageStatus(packageName, PackageStatus.LOADING);
@@ -402,7 +478,7 @@ export class Project {
                this.projectName,
                packageName,
                packagePath,
-               this.malloyConnections,
+               () => this.malloyConfig.malloyConfig,
             ),
          );
       } catch (error) {
@@ -514,6 +590,8 @@ export class Project {
          this.setPackageStatus(packageName, PackageStatus.UNLOADING);
       }
 
+      await _package.getMalloyConfig().releaseConnections();
+
       try {
          await fs.promises.rm(path.join(this.projectPath, packageName), {
             recursive: true,
@@ -532,33 +610,37 @@ export class Project {
    }
 
    public updateConnections(
-      malloyConnections: Map<string, BaseConnection>,
-      apiConnections: ApiConnection[],
+      malloyConfig: ProjectMalloyConfig,
+      _apiConnections?: ApiConnection[],
+      afterPreviousRelease?: () => Promise<void>,
    ): void {
-      this.malloyConnections = malloyConnections;
-      this.apiConnections = apiConnections;
+      const previousMalloyConfig = this.malloyConfig;
+      this.malloyConfig = malloyConfig;
+      this.apiConnections = malloyConfig.apiConnections;
+
+      if (previousMalloyConfig !== malloyConfig) {
+         this.retireConnectionGeneration(
+            `project ${this.projectName}`,
+            async () => {
+               await previousMalloyConfig.releaseConnections();
+               await afterPreviousRelease?.();
+            },
+         );
+      } else {
+         void afterPreviousRelease?.();
+      }
    }
 
    public async deleteConnection(connectionName: string): Promise<void> {
-      this.malloyConnections.get(connectionName)?.close();
-      const isDeleted = this.malloyConnections.delete(connectionName);
-
       const index = this.apiConnections.findIndex(
          (conn) => conn.name === connectionName,
       );
-
-      const connectionType = this.apiConnections[index]?.type;
-      if (connectionType === "duckdb") {
-         await this.deleteDuckDBConnection(connectionName);
-      } else if (connectionType === "ducklake") {
-         await this.deleteDuckLakeConnection(connectionName);
-      }
 
       if (index !== -1) {
          this.apiConnections.splice(index, 1);
       }
 
-      if (isDeleted || index !== -1) {
+      if (index !== -1) {
          logger.info(
             `Removed connection ${connectionName} from project ${this.projectName}`,
          );
@@ -569,24 +651,36 @@ export class Project {
       }
    }
 
-   public closeAllConnections(): void {
-      // Close all Malloy connections
-      for (const [connectionName, connection] of this.malloyConnections) {
-         try {
-            connection.close();
-            logger.info(
-               `Closed connection ${connectionName} for project ${this.projectName}`,
-            );
-         } catch (error) {
+   public async closeAllConnections(): Promise<void> {
+      // Release the package-scoped MalloyConfigs (each holds the package's own
+      // sandbox `duckdb` connection) before tearing down the project config
+      // they wrap. Without this, hard unload leaks per-package DuckDB handles.
+      const packageReleases = await Promise.allSettled(
+         Array.from(this.packages.values(), (pkg) =>
+            pkg.getMalloyConfig().releaseConnections(),
+         ),
+      );
+      for (const result of packageReleases) {
+         if (result.status === "rejected") {
             logger.error(
-               `Error closing connection ${connectionName} for project ${this.projectName}`,
-               { error },
+               `Error closing package connections for project ${this.projectName}`,
+               { error: result.reason },
             );
          }
       }
+      this.packages.clear();
+      this.packageStatuses.clear();
 
-      // Clear connection maps
-      this.malloyConnections.clear();
+      try {
+         await this.malloyConfig.releaseConnections();
+      } catch (error) {
+         logger.error(
+            `Error closing connections for project ${this.projectName}`,
+            { error },
+         );
+      }
+      await this.releaseAllRetiredConnectionGenerations();
+
       this.apiConnections = [];
 
       logger.info(`Closed all connections for project ${this.projectName}`);
@@ -605,29 +699,17 @@ export class Project {
          this.projectPath,
          `${connectionName}.duckdb`,
       );
-      fs.promises
-         .access(duckdbPath)
-         .then(() => {
-            fs.promises
-               .rm(duckdbPath)
-               .then(() => {
-                  logger.info(
-                     `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
-                  );
-               })
-               .catch((error) => {
-                  logger.error(
-                     `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
-                     { error },
-                  );
-               });
-         })
-         .catch((error) => {
-            logger.error(
-               `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
-               { error },
-            );
-         });
+      try {
+         await fs.promises.rm(duckdbPath, { force: true });
+         logger.info(
+            `Removed DuckDB connection file ${connectionName} from project ${this.projectName}`,
+         );
+      } catch (error) {
+         logger.error(
+            `Failed to remove DuckDB connection file ${connectionName} from project ${this.projectName}`,
+            { error },
+         );
+      }
    }
 
    public async deleteDuckLakeConnection(

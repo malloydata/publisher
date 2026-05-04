@@ -19,7 +19,7 @@ import {
 } from "../../harness/mcp_test_setup";
 
 // --- Test Suite ---
-describe("MCP Tool Handlers (E2E Integration)", () => {
+describe.serial("MCP Tool Handlers (E2E Integration)", () => {
    let env: McpE2ETestEnvironment | null = null;
    let mcpClient: Client;
 

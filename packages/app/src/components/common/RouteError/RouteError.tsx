@@ -1,6 +1,8 @@
-import { useRouteError } from "react-router-dom";
-import { Box, Stack, Typography } from "@mui/material";
+import Box from "@mui/material/Box";
 import Container from "@mui/material/Container";
+import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
+import { useRouteError } from "react-router-dom";
 
 function RouteError() {
    const error = useRouteError();

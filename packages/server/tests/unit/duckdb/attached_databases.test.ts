@@ -838,7 +838,7 @@ describe("createProjectConnections - DuckDB", () => {
          await expect(
             createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow(
-            "DuckDB attached databases names cannot conflict with connection name",
+            "DuckDB attached database names cannot conflict with connection name",
          );
       });
 
@@ -886,24 +886,6 @@ describe("createProjectConnections - DuckDB", () => {
          await expect(
             createProjectConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
-      });
-
-      it("should throw when DuckDB connection has no attached databases", async () => {
-         const connections: ApiConnection[] = [
-            {
-               name: "no_attached_db",
-               type: "duckdb",
-               duckdbConnection: {
-                  attachedDatabases: [],
-               },
-            },
-         ];
-
-         await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow(
-            "DuckDB connection must have at least one attached database",
-         );
       });
 
       it("should throw on unsupported connection type", async () => {

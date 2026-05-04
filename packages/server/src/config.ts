@@ -90,9 +90,14 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       const fileContent = fs.readFileSync(publisherConfigPath, "utf8");
       rawConfig = JSON.parse(fileContent);
    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       logger.error(
-         `Failed to parse ${PUBLISHER_CONFIG_NAME}. Using default empty config.`,
-         { error },
+         `Failed to parse ${publisherConfigPath}: ${message}. Using default empty config.`,
+         {
+            path: publisherConfigPath,
+            error: message,
+            stack: error instanceof Error ? error.stack : undefined,
+         },
       );
       return {
          frozenConfig: false,

@@ -117,6 +117,33 @@ export class ProjectStore {
       this.finishedInitialization = this.initialize();
    }
 
+   private async addConfiguredProject(project: ProcessedProject) {
+      try {
+         await this.addProject(
+            {
+               name: project.name,
+               resource: `${API_PREFIX}/projects/${project.name}`,
+               connections: project.connections,
+               packages: project.packages,
+            },
+            true,
+         );
+      } catch (error) {
+         this.logProjectInitializationError(project.name, error);
+      }
+   }
+
+   private logProjectInitializationError(
+      projectName: string | undefined,
+      error: unknown,
+   ) {
+      const label = projectName ? ` "${projectName}"` : "";
+      logger.error(
+         `Error initializing project${label}; skipping project`,
+         this.extractErrorDataFromError(error),
+      );
+   }
+
    private async initialize() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
       const initialTime = performance.now();
@@ -140,15 +167,7 @@ export class ProjectStore {
             // Load projects from config file
             await Promise.all(
                projectManifest.projects.map(async (project) => {
-                  await this.addProject(
-                     {
-                        name: project.name,
-                        resource: `${API_PREFIX}/projects/${project.name}`,
-                        connections: project.connections,
-                        packages: project.packages,
-                     },
-                     true,
-                  );
+                  await this.addConfiguredProject(project);
                }),
             );
          } else {
@@ -159,88 +178,87 @@ export class ProjectStore {
                // Load projects from database
                await Promise.all(
                   existingProjects.map(async (dbProject) => {
-                     // Check if project files exist on disk
-                     const projectExists = await fs.promises
-                        .access(dbProject.path)
-                        .then(() => true)
-                        .catch(() => false);
+                     try {
+                        // Check if project files exist on disk
+                        const projectExists = await fs.promises
+                           .access(dbProject.path)
+                           .then(() => true)
+                           .catch(() => false);
 
-                     if (!projectExists) {
-                        // Try to find in config and reload
-                        const projectConfig = projectManifest.projects.find(
-                           (p) => p.name === dbProject.name,
-                        );
-
-                        if (projectConfig) {
-                           const projectInstance = await this.addProject(
-                              {
-                                 name: projectConfig.name,
-                                 resource: `${API_PREFIX}/projects/${projectConfig.name}`,
-                                 connections: projectConfig.connections,
-                                 packages: projectConfig.packages,
-                              },
-                              true,
+                        if (!projectExists) {
+                           // Try to find in config and reload
+                           const projectConfig = projectManifest.projects.find(
+                              (p) => p.name === dbProject.name,
                            );
 
-                           // Update database with new path
-                           await repository.updateProject(dbProject.id, {
-                              path: projectInstance.metadata.location,
-                           });
+                           if (projectConfig) {
+                              const projectInstance = await this.addProject(
+                                 {
+                                    name: projectConfig.name,
+                                    resource: `${API_PREFIX}/projects/${projectConfig.name}`,
+                                    connections: projectConfig.connections,
+                                    packages: projectConfig.packages,
+                                 },
+                                 true,
+                              );
 
-                           return projectInstance.listPackages();
-                        } else {
-                           logger.error(
-                              `Project "${dbProject.name}" not found in config and files missing`,
-                           );
-                           return;
+                              // Update database with new path
+                              await repository.updateProject(dbProject.id, {
+                                 path: projectInstance.metadata.location,
+                              });
+
+                              return projectInstance.listPackages();
+                           } else {
+                              logger.error(
+                                 `Project "${dbProject.name}" not found in config and files missing`,
+                              );
+                              return;
+                           }
                         }
-                     }
 
-                     // Get connections from database
-                     const connections = await repository.listConnections(
-                        dbProject.id,
-                     );
-
-                     const projectInstance = await Project.create(
-                        dbProject.name,
-                        dbProject.path,
-                        connections.map((conn) => ({
-                           name: conn.name,
-                           type: conn.type,
-                           resource: `${API_PREFIX}/connections/${conn.name}`,
-                           ...conn.config,
-                        })),
-                     );
-
-                     this.projects.set(dbProject.name, projectInstance);
-
-                     // Get packages from database
-                     const packages = await repository.listPackages(
-                        dbProject.id,
-                     );
-                     packages.forEach((pkg) => {
-                        projectInstance.setPackageStatus(
-                           pkg.name,
-                           PackageStatus.SERVING,
+                        // Get connections from database
+                        const connections = await repository.listConnections(
+                           dbProject.id,
                         );
-                     });
 
-                     return projectInstance.listPackages();
+                        const projectInstance = await Project.create(
+                           dbProject.name,
+                           dbProject.path,
+                           connections.map((conn) => ({
+                              name: conn.name,
+                              type: conn.type,
+                              resource: `${API_PREFIX}/connections/${conn.name}`,
+                              ...conn.config,
+                           })),
+                        );
+
+                        // Get packages from database
+                        const packages = await repository.listPackages(
+                           dbProject.id,
+                        );
+                        packages.forEach((pkg) => {
+                           projectInstance.setPackageStatus(
+                              pkg.name,
+                              PackageStatus.SERVING,
+                           );
+                        });
+
+                        this.projects.set(dbProject.name, projectInstance);
+
+                        return projectInstance.listPackages();
+                     } catch (error) {
+                        this.logProjectInitializationError(
+                           dbProject.name,
+                           error,
+                        );
+                     }
                   }),
                );
             } else {
                // Fallback to config file if database is empty
                await Promise.all(
                   projectManifest.projects.map(async (project) => {
-                     await this.addProject(
-                        {
-                           name: project.name,
-                           resource: `${API_PREFIX}/projects/${project.name}`,
-                           connections: project.connections,
-                           packages: project.packages,
-                        },
-                        true,
-                     );
+                     await this.addConfiguredProject(project);
                   }),
                );
             }
@@ -256,7 +274,6 @@ export class ProjectStore {
          markNotReady();
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing project store", errorData);
-         process.exit(1);
       }
    }
 
@@ -342,10 +359,14 @@ export class ProjectStore {
          materializationStorage?.catalogUrl &&
          materializationStorage?.dataPath
       ) {
-         await this.storageManager.initializeDuckLakeForProject(dbProject.id, {
-            catalogUrl: materializationStorage.catalogUrl,
-            dataPath: materializationStorage.dataPath,
-         });
+         await this.storageManager.initializeDuckLakeForProject(
+            dbProject.id,
+            dbProject.name,
+            {
+               catalogUrl: materializationStorage.catalogUrl,
+               dataPath: materializationStorage.dataPath,
+            },
+         );
       }
 
       return dbProject;
@@ -790,6 +811,10 @@ export class ProjectStore {
 
       if (!newProject.metadata) newProject.metadata = {};
       newProject.metadata.location = absoluteProjectPath;
+      if (project.materializationStorage !== undefined) {
+         newProject.metadata.materializationStorage =
+            project.materializationStorage;
+      }
 
       this.projects.set(projectName, newProject);
 
@@ -856,7 +881,7 @@ export class ProjectStore {
       const projectPath = project.metadata?.location;
 
       // Close all connections before removing the project
-      project.closeAllConnections();
+      await project.closeAllConnections();
 
       this.projects.delete(projectName);
       await this.deleteProjectFromDatabase(projectName);
