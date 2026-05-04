@@ -40,7 +40,7 @@ export function ModelExplorerDialog({
             }}
          >
             {title}
-            <IconButton onClick={onClose} sx={{ color: "#666666" }}>
+            <IconButton onClick={onClose} sx={{ color: "text.secondary" }}>
                <CloseIcon />
             </IconButton>
          </DialogTitle>

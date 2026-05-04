@@ -3,92 +3,91 @@ import ChevronRight from "@mui/icons-material/ChevronRight";
 import Box from "@mui/material/Box";
 import Breadcrumbs from "@mui/material/Breadcrumbs";
 import Chip from "@mui/material/Chip";
+import { MouseEvent } from "react";
 import { useParams } from "react-router-dom";
+
+interface BreadcrumbChipProps {
+   label: string;
+   onClick: (event: MouseEvent) => void;
+}
+
+function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
+   return (
+      <Chip
+         clickable
+         onClick={onClick}
+         label={label}
+         size="small"
+         aria-label={`Navigate to ${label}`}
+         sx={{
+            backgroundColor: "background.paper",
+            color: "text.primary",
+            fontWeight: 500,
+            fontSize: "0.875rem",
+            height: 32,
+            cursor: "pointer",
+            borderRadius: "4px",
+            maxWidth: 320,
+            "& .MuiChip-label": {
+               overflow: "hidden",
+               textOverflow: "ellipsis",
+               whiteSpace: "nowrap",
+            },
+            "&:hover": {
+               backgroundColor: "grey.100",
+            },
+         }}
+      />
+   );
+}
 
 export default function BreadcrumbNav() {
    const params = useParams();
    const modelPath = params["*"];
    const navigate = useRouterClickHandler();
 
+   if (!params.projectName && !params.packageName && !modelPath) {
+      return null;
+   }
+
    return (
-      <Box sx={{ display: "flex", alignItems: "center" }}>
+      <Box sx={{ display: "flex", alignItems: "center", minWidth: 0 }}>
          <Breadcrumbs
             aria-label="breadcrumb"
             separator={
                <ChevronRight sx={{ fontSize: 14, color: "text.secondary" }} />
             }
-            sx={{
-               "& .MuiBreadcrumbs-separator": {
-                  margin: "0 6px",
-               },
-            }}
          >
             {params.projectName && (
-               <Chip
+               <BreadcrumbChip
+                  label={params.projectName}
                   onClick={(event) =>
                      navigate(`/${params.projectName}/`, event)
                   }
-                  label={params.projectName}
-                  size="medium"
-                  sx={{
-                     backgroundColor: "background.paper",
-                     color: "primary.main",
-                     fontWeight: 500,
-                     height: "32px",
-                     fontSize: "1rem",
-                     cursor: "pointer",
-                     "&:hover": {
-                        backgroundColor: "primary.100",
-                     },
-                  }}
                />
             )}
 
             {params.packageName && (
-               <Chip
+               <BreadcrumbChip
+                  label={params.packageName}
                   onClick={(event) =>
                      navigate(
                         `/${params.projectName}/${params.packageName}/`,
                         event,
                      )
                   }
-                  label={params.packageName}
-                  size="medium"
-                  sx={{
-                     backgroundColor: "background.paper",
-                     color: "primary.main",
-                     fontWeight: 500,
-                     height: "32px",
-                     fontSize: "1rem",
-                     cursor: "pointer",
-                     "&:hover": {
-                        backgroundColor: "secondary.100",
-                     },
-                  }}
                />
             )}
 
             {modelPath && (
-               <Chip
+               <BreadcrumbChip
+                  label={modelPath}
                   onClick={(event) =>
                      navigate(
                         `/${params.projectName}/${params.packageName}/${modelPath}`,
                         event,
                      )
                   }
-                  label={modelPath}
-                  size="medium"
-                  sx={{
-                     backgroundColor: "background.paper",
-                     color: "primary.main",
-                     fontWeight: 500,
-                     height: "32px",
-                     fontSize: "1rem",
-                     cursor: "pointer",
-                     "&:hover": {
-                        backgroundColor: "grey.200",
-                     },
-                  }}
                />
             )}
          </Breadcrumbs>
