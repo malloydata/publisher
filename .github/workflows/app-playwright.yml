@@ -2,7 +2,7 @@ name: App Playwright E2E
 
 on:
   pull_request:
-    branches: [ main, sagark/project-to-env-latest ]
+    branches: [ main ]
 
 env:
   BUN_VERSION: 1.3.13
