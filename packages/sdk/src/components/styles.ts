@@ -54,17 +54,13 @@ export const CleanNotebookCell = styled("div")({
 });
 
 export const CleanMetricCard = styled("div")({
-   backgroundColor: "#ffffff",
+   backgroundColor: "transparent",
    paddingTop: "12px",
    paddingBottom: "2px",
    borderRadius: "8px",
-   border: "1px solid #f0f0f0",
-   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+   border: "none",
+   boxShadow: "none",
    marginBottom: "0",
-   transition: "box-shadow 0.2s ease-in-out",
-   "&:hover": {
-      boxShadow: "0 2px 6px rgba(0, 0, 0, 0.08)",
-   },
 });
 
 export const CleanCodeBlock = styled("div")({

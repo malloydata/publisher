@@ -29,9 +29,10 @@ export const contentTypeColors = {
    dashboard: colors.accent.olive,
 } as const;
 
-export const MONO_FONT_FAMILY = '"Diatype Mono", monospace';
+export const MONO_FONT_FAMILY =
+   '"JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", monospace';
 export const SANS_FONT_FAMILY =
-   '"Diatype", "Helvetica Neue", "Arial", sans-serif';
+   '"Inter", "Helvetica Neue", "Arial", sans-serif';
 
 export const greyScale = {
    50: colors.offWhite,
