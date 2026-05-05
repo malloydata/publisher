@@ -75,11 +75,7 @@ export default function Home({ onClickProject }: HomeProps) {
             >
                Publisher
             </Typography>
-            <Typography
-               variant="body1"
-               color="text.secondary"
-               sx={{ mb: 3 }}
-            >
+            <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
                The open-source semantic model server for the Malloy data
                language.
             </Typography>
@@ -155,10 +151,7 @@ export default function Home({ onClickProject }: HomeProps) {
                </Stack>
                <Grid container spacing={2}>
                   {projects.map((project) => (
-                     <Grid
-                        size={{ xs: 12, sm: 6, md: 4 }}
-                        key={project.name}
-                     >
+                     <Grid size={{ xs: 12, sm: 6, md: 4 }} key={project.name}>
                         <ProjectCard
                            project={project}
                            onClickProject={onClickProject}

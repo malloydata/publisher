@@ -28,11 +28,12 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.193",
+      "version": "0.0.194",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
         "@mui/material": "^7.0.2",
+        "@tanstack/react-query": "^5.59.16",
         "@vitejs/plugin-react": "^4.3.1",
         "react-router-dom": "^7.6.2",
       },
@@ -79,7 +80,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.193",
+      "version": "0.0.195",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -132,7 +133,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.193",
+      "version": "0.0.194",
       "bin": {
         "malloy-publisher": "dist/server.mjs",
       },
