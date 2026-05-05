@@ -703,7 +703,7 @@ export class Model {
 
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
-      const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
+      const importBaseURL = baseUrl;
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
       // Request runtimes borrow the cached package MalloyConfig. The package
