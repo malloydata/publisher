@@ -36,6 +36,7 @@ import { logger, loggerMiddleware } from "./logger";
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
@@ -1363,6 +1364,21 @@ app.post(
       }
    },
 );
+
+// Register legacy `/projects/...` routes for backwards compatibility with
+// clients that haven't migrated to `/environments/...` yet. Must be added
+// before the SPA catch-all below.
+registerLegacyRoutes(app, {
+   environmentStore,
+   connectionController,
+   modelController,
+   packageController,
+   databaseController,
+   queryController,
+   compileController,
+   materializationController,
+   manifestController,
+});
 
 // Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
