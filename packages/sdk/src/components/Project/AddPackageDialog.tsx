@@ -1,41 +1,35 @@
-import React from "react";
-import Button from "@mui/material/Button";
-import TextField from "@mui/material/TextField";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
-import { useState } from "react";
 import { Add } from "@mui/icons-material";
-import { Snackbar } from "@mui/material";
-import { Package } from "../../client";
+import {
+   Box,
+   Button,
+   Dialog,
+   DialogActions,
+   DialogContent,
+   DialogTitle,
+   Snackbar,
+   Stack,
+   TextField,
+   Typography,
+} from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
+import React, { useState } from "react";
+import { Package } from "../../client";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
-import { useServer } from "../ServerProvider";
 import { parseResourceUri } from "../../utils/formatting";
+import { useServer } from "../ServerProvider";
 
 interface AddPackageDialogProps {
    resourceUri: string;
 }
 
-export default function AddPackageDialog({
-   resourceUri,
-}: AddPackageDialogProps) {
+export default function AddPackageDialog({ resourceUri }: AddPackageDialogProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
    const [notificationMessage, setNotificationMessage] = useState("");
 
-   const handleClickOpen = () => {
-      setOpen(true);
-   };
-
-   const handleClose = () => {
-      setOpen(false);
-   };
-
    const { projectName } = parseResourceUri(resourceUri);
+
    const addPackage = useMutationWithApiError({
       async mutationFn(variables: Package) {
          return apiClients.packages.createPackage(projectName, {
@@ -45,15 +39,13 @@ export default function AddPackageDialog({
          });
       },
       onSuccess() {
-         handleClose();
+         setOpen(false);
          setNotificationMessage("Package created successfully");
          queryClient.invalidateQueries({ queryKey: ["packages", projectName] });
       },
       onError(error) {
          setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
+            error instanceof Error ? error.message : "An unknown error occurred",
          );
       },
    });
@@ -68,83 +60,124 @@ export default function AddPackageDialog({
    };
 
    return (
-      <React.Fragment>
+      <>
          <Button
-            onClick={handleClickOpen}
+            onClick={() => setOpen(true)}
             variant="contained"
             color="primary"
             startIcon={<Add />}
-            sx={{
-               color: "white",
-            }}
          >
             Add Package
          </Button>
 
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Create New Package</DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Create a new malloy package to start exploring your data.
-                  <br />
-                  <br />
-                  The location can be a GitHub/S3/GCP URL containing a package
-                  (Zipped or unzipped), or an absolute path to a directory that
-                  the publisher server has access to.
-                  <br />
-                  <br />
-                  Make sure to conform the{" "}
-                  <a
-                     href="https://github.com/malloydata/publisher/blob/main/README.md#architecture-overview"
-                     target="_blank"
-                     rel="noopener noreferrer"
+         <Dialog
+            open={open}
+            onClose={() => setOpen(false)}
+            maxWidth="sm"
+            fullWidth
+            PaperProps={{ sx: { borderRadius: 2 } }}
+         >
+            <DialogTitle
+               sx={{
+                  fontSize: "1.25rem",
+                  fontWeight: 600,
+                  letterSpacing: "-0.025em",
+                  pt: 3,
+                  pb: 1,
+                  px: 3,
+               }}
+            >
+               Create new package
+            </DialogTitle>
+            <DialogContent sx={{ px: 3, pb: 0 }}>
+               <Box sx={{ mb: 3 }}>
+                  <Typography
+                     variant="body2"
+                     color="text.secondary"
+                     sx={{ mb: 1.5 }}
                   >
-                     Malloy Package Format
-                  </a>
-                  .
-               </DialogContentText>
+                     Create a new Malloy package to start exploring your data.
+                  </Typography>
+                  <Typography
+                     variant="body2"
+                     color="text.secondary"
+                     sx={{ mb: 1.5 }}
+                  >
+                     The location can be a GitHub/S3/GCP URL containing a package
+                     (zipped or unzipped), or an absolute path to a directory the
+                     publisher server has access to.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                     Make sure to conform to the{" "}
+                     <Box
+                        component="a"
+                        href="https://github.com/malloydata/publisher/blob/main/README.md#architecture-overview"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        sx={{
+                           color: "text.primary",
+                           textDecoration: "underline",
+                        }}
+                     >
+                        Malloy Package Format
+                     </Box>
+                     .
+                  </Typography>
+               </Box>
                <form onSubmit={handleSubmit} id="package-form">
-                  <TextField
-                     autoFocus
-                     required
-                     margin="dense"
-                     id="name"
-                     name="name"
-                     label="Package Name"
-                     type="text"
-                     fullWidth
-                     variant="standard"
-                  />
-                  <TextField
-                     id="description"
-                     name="description"
-                     label="Description"
-                     multiline
-                     fullWidth
-                     rows={4}
-                     variant="standard"
-                  />
-                  <TextField
-                     id="location"
-                     name="location"
-                     label="Location"
-                     type="text"
-                     placeholder="E.g. s3://my-bucket/my-package.zip"
-                     fullWidth
-                     variant="standard"
-                  />
+                  <Stack spacing={2.5}>
+                     <TextField
+                        autoFocus
+                        required
+                        id="name"
+                        name="name"
+                        label="Package name"
+                        type="text"
+                        fullWidth
+                        variant="outlined"
+                        size="small"
+                        InputLabelProps={{ shrink: true }}
+                     />
+                     <TextField
+                        id="description"
+                        name="description"
+                        label="Description"
+                        multiline
+                        rows={3}
+                        fullWidth
+                        variant="outlined"
+                        size="small"
+                        InputLabelProps={{ shrink: true }}
+                     />
+                     <TextField
+                        id="location"
+                        name="location"
+                        label="Location"
+                        type="text"
+                        placeholder="e.g. s3://my-bucket/my-package.zip"
+                        fullWidth
+                        variant="outlined"
+                        size="small"
+                        InputLabelProps={{ shrink: true }}
+                     />
+                  </Stack>
                </form>
             </DialogContent>
-            <DialogActions>
-               <Button disabled={addPackage.isPending} onClick={handleClose}>
+            <DialogActions sx={{ px: 3, pt: 2, pb: 3, gap: 1 }}>
+               <Button
+                  variant="outlined"
+                  disabled={addPackage.isPending}
+                  onClick={() => setOpen(false)}
+               >
                   Cancel
                </Button>
                <Button
                   type="submit"
                   form="package-form"
+                  variant="contained"
                   loading={addPackage.isPending}
                >
-                  Save Changes
+                  Create package
                </Button>
             </DialogActions>
          </Dialog>
@@ -154,6 +187,6 @@ export default function AddPackageDialog({
             onClose={() => setNotificationMessage("")}
             message={notificationMessage}
          />
-      </React.Fragment>
+      </>
    );
 }

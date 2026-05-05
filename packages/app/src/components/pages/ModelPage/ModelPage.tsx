@@ -1,4 +1,5 @@
 import { encodeResourceUri, Model, Notebook } from "@malloy-publisher/sdk";
+import Box from "@mui/material/Box";
 import { useParams } from "react-router-dom";
 
 function ModelPage() {
@@ -24,22 +25,30 @@ function ModelPage() {
       modelPath,
    });
 
+   const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
+
    if (modelPath?.endsWith(".malloy")) {
       return (
-         <Model
-            resourceUri={resourceUri}
-            runOnDemand={true}
-            maxResultSize={512 * 1024}
-         />
+         <Box sx={wrapperSx}>
+            <Model
+               resourceUri={resourceUri}
+               runOnDemand={true}
+               maxResultSize={512 * 1024}
+            />
+         </Box>
       );
    }
    if (modelPath?.endsWith(".malloynb")) {
-      return <Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />;
+      return (
+         <Box sx={wrapperSx}>
+            <Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />
+         </Box>
+      );
    }
    return (
-      <div>
+      <Box sx={wrapperSx}>
          <h2>Unrecognized file type: {modelPath}</h2>
-      </div>
+      </Box>
    );
 }
 
