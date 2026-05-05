@@ -2,6 +2,7 @@ import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
+import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ReleaseCallback = () => Promise<void>;
@@ -191,8 +192,9 @@ export class ConnectionService {
             name: connectionName,
          };
 
-         const updatedConnections = existingConnections.map((conn) =>
-            conn.name === connectionName ? updatedConnection : conn,
+         const updatedConnections = existingConnections.map(
+            (conn: ApiConnection) =>
+               conn.name === connectionName ? updatedConnection : conn,
          );
 
          // Pass isUpdateConnectionRequest=true so the DuckLake wrapper
@@ -258,7 +260,10 @@ export class ConnectionService {
                : dbConnection.config;
          const updatedConnections = environment
             .listApiConnections()
-            .filter((connection) => connection.name !== connectionName);
+            .filter(
+               (connection: ApiConnection) =>
+                  connection.name !== connectionName,
+            );
          const nextMalloyConfig = buildEnvironmentMalloyConfig(
             updatedConnections,
             environment.metadata.location || "",
