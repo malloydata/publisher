@@ -453,14 +453,9 @@ export default function Notebook({
                      elevation={0}
                      sx={{
                         p: 3,
-                        backgroundColor: "#ffffff",
-                        border: "1px solid #f0f0f0",
-                        borderRadius: 2,
-                        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
-                        transition: "box-shadow 0.2s ease-in-out",
-                        "&:hover": {
-                           boxShadow: "0 2px 6px rgba(0, 0, 0, 0.08)",
-                        },
+                        backgroundColor: "transparent",
+                        border: "none",
+                        boxShadow: "none",
                      }}
                   >
                      <Typography
@@ -532,7 +527,7 @@ export default function Notebook({
 
                {/* Error States */}
                {isError && error.status === 404 && (
-                  <Typography variant="body2" sx={{ color: "#666666" }}>
+                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
                      <code>{`${projectName} > ${packageName} > ${notebookPath}`}</code>{" "}
                      not found.
                   </Typography>

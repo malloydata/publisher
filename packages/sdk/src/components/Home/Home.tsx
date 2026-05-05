@@ -1,23 +1,17 @@
 import { MoreVert } from "@mui/icons-material";
-import AnalyticsRoundedIcon from "@mui/icons-material/AnalyticsRounded";
-import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
-import AutoAwesomeRoundedIcon from "@mui/icons-material/AutoAwesomeRounded";
-import CodeRoundedIcon from "@mui/icons-material/CodeRounded";
-import ExploreRoundedIcon from "@mui/icons-material/ExploreRounded";
-import PsychologyRoundedIcon from "@mui/icons-material/PsychologyRounded";
-import StorageRoundedIcon from "@mui/icons-material/StorageRounded";
+import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import {
    Box,
    Button,
    Card,
    CardContent,
-   Chip,
    Container,
    Divider,
    Grid,
    IconButton,
    Menu,
    Stack,
+   Tooltip,
    Typography,
 } from "@mui/material";
 import { useState } from "react";
@@ -35,6 +29,24 @@ interface HomeProps {
    onClickProject?: (to: string, event?: React.MouseEvent) => void;
 }
 
+const FEATURES: Array<{ title: string; body: string; href: string }> = [
+   {
+      title: "Ad-hoc analysis",
+      body: "Browse semantic sources, build queries, and run nested logic in Explorer — no code.",
+      href: "https://github.com/malloydata/publisher/blob/main/README.md#ad-hoc-data-analysis",
+   },
+   {
+      title: "Notebook dashboards",
+      body: "Code-first dashboards using Malloy notebooks. Versioned alongside your models.",
+      href: "https://github.com/malloydata/publisher/blob/main/README.md#notebook-based-dashboards",
+   },
+   {
+      title: "AI data agents",
+      body: "Expose models via MCP so agents can discover sources and ask well-formed questions.",
+      href: "https://github.com/malloydata/publisher/blob/main/README.md#mcp-based-ai-data-agents",
+   },
+];
+
 export default function Home({ onClickProject }: HomeProps) {
    const { apiClients, mutable } = useServer();
 
@@ -47,421 +59,289 @@ export default function Home({ onClickProject }: HomeProps) {
       return <ApiErrorDisplay error={error} context="Projects List" />;
    }
 
-   if (isSuccess) {
-      return (
-         <Container maxWidth="lg" sx={{ py: 4 }}>
-            {/* Hero Section */}
-            <Box sx={{ textAlign: "center", mb: 6 }}>
-               <Stack
-                  direction="row"
-                  justifyContent="center"
-                  alignItems="center"
-                  spacing={1}
-                  sx={{ mb: 2 }}
-               >
-                  <AutoAwesomeRoundedIcon
-                     sx={{ fontSize: 32, color: "primary.main" }}
-                  />
-                  <Typography variant="h3" component="h1" fontWeight={700}>
-                     Publisher
-                  </Typography>
-               </Stack>
-               <Typography
-                  variant="h5"
-                  color="text.secondary"
-                  sx={{ mb: 3, maxWidth: 600, mx: "auto" }}
-               >
-                  The open-source semantic model server for the Malloy data
-                  language
-               </Typography>
-               <Typography
-                  variant="body1"
-                  color="text.secondary"
-                  sx={{ maxWidth: 800, mx: "auto" }}
-               >
-                  Define semantic models once — and use them everywhere.
-                  Publisher serves Malloy models through clean APIs, enabling
-                  consistent, interpretable, and AI-ready data access for tools,
-                  applications, and agents.
-               </Typography>
-            </Box>
-
-            {/* Feature Cards */}
-            <Grid container spacing={3} sx={{ mb: 6 }}>
-               <Grid size={{ xs: 12, md: 4 }}>
-                  <Card
-                     variant="outlined"
-                     onClick={() => {
-                        window.open(
-                           "https://github.com/malloydata/publisher/blob/main/README.md#ad-hoc-data-analysis",
-                           "_blank",
-                        );
-                     }}
-                     sx={{
-                        height: "100%",
-                        cursor: "pointer",
-                        transition: "all 0.2s ease",
-                        "&:hover": {
-                           transform: "translateY(-2px)",
-                           boxShadow: 2,
-                        },
-                     }}
-                  >
-                     <CardContent sx={{ p: 3 }}>
-                        <Stack
-                           direction="row"
-                           alignItems="center"
-                           spacing={1}
-                           sx={{ mb: 2 }}
-                        >
-                           <AnalyticsRoundedIcon
-                              sx={{ color: "info.main", fontSize: 28 }}
-                           />
-                           <Typography variant="h6" fontWeight={600}>
-                              Ad Hoc Analysis
-                           </Typography>
-                        </Stack>
-                        <Typography
-                           variant="body2"
-                           color="text.secondary"
-                           sx={{ mb: 2 }}
-                        >
-                           Use Explorer, a visual query builder that allows
-                           analysts to browse semantic sources, build queries,
-                           and run nested logic — all without writing code.
-                        </Typography>
-                        <Chip
-                           label="No-code"
-                           size="small"
-                           color="primary"
-                           variant="outlined"
-                        />
-                     </CardContent>
-                  </Card>
-               </Grid>
-
-               <Grid size={{ xs: 12, md: 4 }}>
-                  <Card
-                     variant="outlined"
-                     onClick={() => {
-                        window.open(
-                           "https://github.com/malloydata/publisher/blob/main/README.md#notebook-based-dashboards",
-                           "_blank",
-                        );
-                     }}
-                     sx={{
-                        height: "100%",
-                        cursor: "pointer",
-                        transition: "all 0.2s ease",
-                        "&:hover": {
-                           transform: "translateY(-2px)",
-                           boxShadow: 2,
-                        },
-                     }}
-                  >
-                     <CardContent sx={{ p: 3 }}>
-                        <Stack
-                           direction="row"
-                           alignItems="center"
-                           spacing={1}
-                           sx={{ mb: 2 }}
-                        >
-                           <CodeRoundedIcon
-                              sx={{ color: "warning.main", fontSize: 28 }}
-                           />
-                           <Typography variant="h6" fontWeight={600}>
-                              Notebook Dashboards
-                           </Typography>
-                        </Stack>
-                        <Typography
-                           variant="body2"
-                           color="text.secondary"
-                           sx={{ mb: 2 }}
-                        >
-                           Create shareable, code-first dashboards using Malloy
-                           notebooks. Include text, charts, and reusable views —
-                           all versioned alongside your models.
-                        </Typography>
-                        <Chip
-                           label="Versioned"
-                           size="small"
-                           color="warning"
-                           variant="outlined"
-                        />
-                     </CardContent>
-                  </Card>
-               </Grid>
-
-               <Grid size={{ xs: 12, md: 4 }}>
-                  <Card
-                     variant="outlined"
-                     onClick={() => {
-                        window.open(
-                           "https://github.com/malloydata/publisher/blob/main/README.md#mcp-based-ai-data-agents",
-                           "_blank",
-                        );
-                     }}
-                     sx={{
-                        height: "100%",
-                        cursor: "pointer",
-                        transition: "all 0.2s ease",
-                        "&:hover": {
-                           transform: "translateY(-2px)",
-                           boxShadow: 2,
-                        },
-                     }}
-                  >
-                     <CardContent sx={{ p: 3 }}>
-                        <Stack
-                           direction="row"
-                           alignItems="center"
-                           spacing={1}
-                           sx={{ mb: 2 }}
-                        >
-                           <PsychologyRoundedIcon
-                              sx={{ color: "success.main", fontSize: 28 }}
-                           />
-                           <Typography variant="h6" fontWeight={600}>
-                              AI Data Agents
-                           </Typography>
-                        </Stack>
-                        <Typography
-                           variant="body2"
-                           color="text.secondary"
-                           sx={{ mb: 2 }}
-                        >
-                           Expose your semantic models via the Model Context
-                           Protocol (MCP), enabling AI agents to discover
-                           sources and ask well-formed questions.
-                        </Typography>
-                        <Chip
-                           label="AI-Ready"
-                           size="small"
-                           color="success"
-                           variant="outlined"
-                        />
-                     </CardContent>
-                  </Card>
-               </Grid>
-            </Grid>
-
-            <Divider sx={{ my: 4 }} />
-
-            {/* Project Selection Section */}
-            {data.data.length > 0 ? (
-               <>
-                  <Box sx={{ textAlign: "center", mb: 4 }}>
-                     <Stack
-                        direction="row"
-                        justifyContent="center"
-                        alignItems="center"
-                        spacing={1}
-                        sx={{ mb: 2 }}
-                     >
-                        <StorageRoundedIcon
-                           sx={{ color: "primary.main", fontSize: 24 }}
-                        />
-                        <Typography variant="h4" fontWeight={600}>
-                           Select a Project
-                        </Typography>
-                     </Stack>
-                     <Typography variant="body1" color="text.secondary">
-                        Choose a project to explore its semantic models and
-                        start analyzing your data
-                     </Typography>
-                     {mutable && <AddProjectDialog />}
-                  </Box>
-                  <Grid container spacing={3} justifyContent="center">
-                     {data.data.map((project) => (
-                        <Grid
-                           size={{ xs: 12, sm: 6, md: 4 }}
-                           key={project.name}
-                        >
-                           <ProjectCard
-                              project={project}
-                              onClickProject={onClickProject}
-                           />
-                        </Grid>
-                     ))}
-                  </Grid>
-               </>
-            ) : (
-               <Box sx={{ textAlign: "center", mb: 4 }}>
-                  <Stack
-                     direction="row"
-                     justifyContent="center"
-                     alignItems="center"
-                     spacing={1}
-                     sx={{ mb: 2 }}
-                  >
-                     <StorageRoundedIcon
-                        sx={{ color: "primary.main", fontSize: 24 }}
-                     />
-                     <Typography variant="h4" fontWeight={600}>
-                        Get Started
-                     </Typography>
-                  </Stack>
-                  <Typography
-                     variant="body1"
-                     color="text.secondary"
-                     sx={{ mb: 3 }}
-                  >
-                     No projects found. Create your first Malloy project to
-                     start exploring semantic models and building data
-                     experiences.
-                  </Typography>
-                  {mutable ? (
-                     <AddProjectDialog />
-                  ) : (
-                     <Button
-                        variant="contained"
-                        size="large"
-                        color="primary"
-                        startIcon={<AutoAwesomeRoundedIcon />}
-                        href="https://github.com/malloydata/publisher/blob/main/README.md#server-configuration"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                     >
-                        Learn How to Create Models
-                     </Button>
-                  )}
-               </Box>
-            )}
-
-            {/* Footer Section */}
-            <Box
-               sx={{
-                  textAlign: "center",
-                  mt: 6,
-                  pt: 4,
-                  borderTop: 1,
-                  borderColor: "divider",
-               }}
-            >
-               <Typography variant="body2" color="text.secondary">
-                  Publisher is built on fully open infrastructure and designed
-                  for the AI era. Join the{" "}
-                  <a
-                     href="https://join.slack.com/t/malloy-community/shared_invite/zt-1kgfwgi5g-CrsdaRqs81QY67QW0~t_uw"
-                     target="_blank"
-                     rel="noopener noreferrer"
-                     style={{
-                        color: "primary.main",
-                        textDecoration: "underline",
-                     }}
-                  >
-                     Malloy Slack community
-                  </a>{" "}
-                  to ask questions, share ideas, and contribute to the future of
-                  data modeling.
-               </Typography>
-            </Box>
-         </Container>
-      );
-   } else {
+   if (!isSuccess) {
       return <Loading text="Loading projects..." />;
    }
+
+   const projects = data.data ?? [];
+
+   return (
+      <Container maxWidth="md" sx={{ py: 6 }}>
+         <Box sx={{ mb: 5 }}>
+            <Typography
+               variant="h3"
+               component="h1"
+               sx={{ fontWeight: 500, letterSpacing: "-0.025em", mb: 1 }}
+            >
+               Publisher
+            </Typography>
+            <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
+               The open-source semantic model server for the Malloy data
+               language.
+            </Typography>
+            <Typography
+               variant="body2"
+               color="text.secondary"
+               sx={{ maxWidth: 720, lineHeight: 1.6 }}
+            >
+               Define semantic models once — and use them everywhere. Publisher
+               serves Malloy models through clean APIs, enabling consistent,
+               interpretable, and AI-ready data access for tools, applications,
+               and agents.
+            </Typography>
+         </Box>
+
+         <Grid container spacing={4} sx={{ mb: 5 }}>
+            {FEATURES.map((feature) => (
+               <Grid size={{ xs: 12, md: 4 }} key={feature.title}>
+                  <Stack spacing={1}>
+                     <Typography
+                        variant="body2"
+                        component="a"
+                        href={feature.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        sx={{
+                           fontWeight: 500,
+                           color: "text.primary",
+                           textDecoration: "none",
+                           "&:hover": { textDecoration: "underline" },
+                        }}
+                     >
+                        {feature.title}
+                     </Typography>
+                     <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{ lineHeight: 1.6 }}
+                     >
+                        {feature.body}
+                     </Typography>
+                  </Stack>
+               </Grid>
+            ))}
+         </Grid>
+
+         <Divider sx={{ my: 4 }} />
+
+         {projects.length > 0 ? (
+            <Box sx={{ mb: 4 }}>
+               <Stack
+                  direction="row"
+                  justifyContent="space-between"
+                  alignItems="flex-start"
+                  sx={{ mb: 3 }}
+               >
+                  <Box>
+                     <Typography
+                        variant="h5"
+                        sx={{
+                           fontWeight: 500,
+                           letterSpacing: "-0.025em",
+                           mb: 0.5,
+                        }}
+                     >
+                        Projects
+                     </Typography>
+                     <Typography variant="body2" color="text.secondary">
+                        Published projects available on this server
+                     </Typography>
+                  </Box>
+                  {mutable && <AddProjectDialog />}
+               </Stack>
+               <Grid container spacing={2}>
+                  {projects.map((project) => (
+                     <Grid size={{ xs: 12, sm: 6, md: 4 }} key={project.name}>
+                        <ProjectCard
+                           project={project}
+                           onClickProject={onClickProject}
+                        />
+                     </Grid>
+                  ))}
+               </Grid>
+            </Box>
+         ) : (
+            <Box sx={{ mb: 4 }}>
+               <Typography
+                  variant="h5"
+                  sx={{ fontWeight: 500, letterSpacing: "-0.025em", mb: 1 }}
+               >
+                  Get started
+               </Typography>
+               <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mb: 3, maxWidth: 600 }}
+               >
+                  Create your first Malloy project to start exploring semantic
+                  models and building data experiences.
+               </Typography>
+               {mutable ? (
+                  <AddProjectDialog />
+               ) : (
+                  <Button
+                     variant="contained"
+                     color="primary"
+                     href="https://github.com/malloydata/publisher/blob/main/README.md#server-configuration"
+                     target="_blank"
+                     rel="noopener noreferrer"
+                  >
+                     Learn how to create models
+                  </Button>
+               )}
+            </Box>
+         )}
+
+         <Divider sx={{ my: 4 }} />
+
+         <Typography variant="body2" color="text.secondary">
+            Publisher is built on fully open infrastructure and designed for the
+            AI era. Join the{" "}
+            <Box
+               component="a"
+               href="https://join.slack.com/t/malloy-community/shared_invite/zt-1kgfwgi5g-CrsdaRqs81QY67QW0~t_uw"
+               target="_blank"
+               rel="noopener noreferrer"
+               sx={{
+                  color: "text.primary",
+                  textDecoration: "underline",
+               }}
+            >
+               Malloy Slack community
+            </Box>{" "}
+            to ask questions, share ideas, and contribute.
+         </Typography>
+      </Container>
+   );
 }
+
 function ProjectCard({
    project,
    onClickProject,
 }: {
    project: Project;
-   onClickProject: (to: string, event?: React.MouseEvent) => void;
+   onClickProject?: (to: string, event?: React.MouseEvent) => void;
 }) {
    const { mutable } = useServer();
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
-   const isMenuOpen = Boolean(menuAnchorEl);
-   const openMenu = (event: React.MouseEvent<HTMLElement>) => {
+   const menuOpen = Boolean(menuAnchorEl);
+
+   const description = getProjectDescription(project.readme);
+
+   const handleClick = (event: React.MouseEvent) => {
+      if (project.name && onClickProject) {
+         onClickProject(`/${project.name}/`, event);
+      }
+   };
+
+   const handleMenuClick = (event: React.MouseEvent<HTMLElement>) => {
+      event.stopPropagation();
       setMenuAnchorEl(event.currentTarget);
    };
-   const closeMenu = () => {
+
+   const handleMenuClose = () => {
       setMenuAnchorEl(null);
    };
+
    return (
-      <div>
-         <Card
-            variant="outlined"
-            sx={{
-               height: "100%",
-               transition: "all 0.2s ease",
-               "&:hover": {
-                  transform: "translateY(-2px)",
-                  boxShadow: 2,
-                  borderColor: "primary.main",
-               },
-            }}
-         >
-            {mutable && (
-               <>
-                  <IconButton
-                     aria-controls={isMenuOpen ? "project-menu" : undefined}
-                     aria-haspopup="true"
-                     aria-expanded={isMenuOpen ? "true" : undefined}
-                     onClick={openMenu}
-                     sx={{ position: "absolute", top: 8, right: 8 }}
-                  >
-                     <MoreVert fontSize="small" />
-                  </IconButton>
-                  <Menu
-                     id="project-menu"
-                     aria-haspopup="true"
-                     aria-expanded={isMenuOpen ? "true" : undefined}
-                     open={isMenuOpen}
-                     anchorEl={menuAnchorEl}
-                     onClose={closeMenu}
-                     disableRestoreFocus
-                     anchorOrigin={{
-                        vertical: "top",
-                        horizontal: "left",
-                     }}
-                     transformOrigin={{
-                        vertical: "top",
-                        horizontal: "right",
-                     }}
-                  >
-                     <EditProjectDialog
-                        project={project}
-                        onCloseDialog={closeMenu}
-                     />
-                     <DeleteProjectDialog
-                        project={project}
-                        onCloseDialog={closeMenu}
-                     />
-                  </Menu>
-               </>
-            )}
-            <CardContent sx={{ p: 3, textAlign: "center" }}>
-               <ExploreRoundedIcon
+      <Card
+         variant="outlined"
+         onClick={handleClick}
+         sx={{
+            height: "100%",
+            cursor: "pointer",
+            borderRadius: 3,
+            borderColor: "divider",
+            boxShadow: "none",
+            transition: "all 0.2s ease-in-out",
+            "&:hover": { boxShadow: 2, borderColor: "primary.main" },
+         }}
+      >
+         <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>
+            <Box
+               sx={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 1.5,
+               }}
+            >
+               <Box
                   sx={{
-                     fontSize: 48,
-                     color: "primary.main",
-                     mb: 2,
+                     width: 36,
+                     height: 36,
+                     borderRadius: 1.5,
+                     bgcolor: "grey.100",
+                     display: "flex",
+                     alignItems: "center",
+                     justifyContent: "center",
+                     flexShrink: 0,
+                     color: "text.primary",
                   }}
-               />
-               <Typography variant="h6" fontWeight={600} gutterBottom>
-                  {project.name}
-               </Typography>
-               <Typography
-                  variant="body2"
-                  color="text.secondary"
-                  sx={{ mb: 2, minHeight: "60px" }}
                >
-                  {getProjectDescription(project.readme)}
-               </Typography>
-               <Button
-                  variant="contained"
-                  color="secondary"
-                  endIcon={<ArrowForwardRoundedIcon />}
-                  fullWidth
-                  onClick={(event) =>
-                     onClickProject(`/${project.name}/`, event)
-                  }
-               >
-                  Open Project
-               </Button>
-            </CardContent>
-         </Card>
-      </div>
+                  <FolderOutlinedIcon sx={{ fontSize: 20 }} />
+               </Box>
+               <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography
+                     variant="subtitle1"
+                     noWrap
+                     sx={{ fontWeight: 600, mb: 0.5 }}
+                  >
+                     {project.name}
+                  </Typography>
+                  <Tooltip title={description} followCursor enterDelay={1000}>
+                     <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{
+                           overflow: "hidden",
+                           textOverflow: "ellipsis",
+                           display: "-webkit-box",
+                           WebkitLineClamp: 2,
+                           WebkitBoxOrient: "vertical",
+                           lineHeight: 1.5,
+                        }}
+                     >
+                        {description}
+                     </Typography>
+                  </Tooltip>
+               </Box>
+               {mutable && (
+                  <>
+                     <IconButton
+                        size="small"
+                        onClick={handleMenuClick}
+                        aria-label="Project options"
+                        sx={{ flexShrink: 0, mt: -0.5, mr: -0.5 }}
+                     >
+                        <MoreVert fontSize="small" />
+                     </IconButton>
+                     <Menu
+                        anchorEl={menuAnchorEl}
+                        open={menuOpen}
+                        onClose={handleMenuClose}
+                        onClick={(e) => e.stopPropagation()}
+                        anchorOrigin={{
+                           vertical: "bottom",
+                           horizontal: "right",
+                        }}
+                        transformOrigin={{
+                           vertical: "top",
+                           horizontal: "right",
+                        }}
+                     >
+                        <EditProjectDialog
+                           project={project}
+                           onCloseDialog={handleMenuClose}
+                        />
+                        <DeleteProjectDialog
+                           project={project}
+                           onCloseDialog={handleMenuClose}
+                        />
+                     </Menu>
+                  </>
+               )}
+            </Box>
+         </CardContent>
+      </Card>
    );
 }

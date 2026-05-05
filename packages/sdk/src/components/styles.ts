@@ -54,17 +54,13 @@ export const CleanNotebookCell = styled("div")({
 });
 
 export const CleanMetricCard = styled("div")({
-   backgroundColor: "#ffffff",
+   backgroundColor: "transparent",
    paddingTop: "12px",
    paddingBottom: "2px",
    borderRadius: "8px",
-   border: "1px solid #f0f0f0",
-   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+   border: "none",
+   boxShadow: "none",
    marginBottom: "0",
-   transition: "box-shadow 0.2s ease-in-out",
-   "&:hover": {
-      boxShadow: "0 2px 6px rgba(0, 0, 0, 0.08)",
-   },
 });
 
 export const CleanCodeBlock = styled("div")({
@@ -134,16 +130,14 @@ export const PackageCardContent = styled(CardContent)({
    },
 });
 
-export const PackageSectionTitle = styled("div")({
-   fontSize: "12px",
-   fontWeight: "600",
-   color: "#666666",
-   textTransform: "uppercase",
-   letterSpacing: "0.5px",
+export const PackageSectionTitle = styled("div")(({ theme }) => ({
+   fontSize: "0.875rem",
+   fontWeight: 500,
+   color: theme.palette.text.secondary,
    marginBottom: "16px",
    paddingBottom: "8px",
-   borderBottom: "1px solid #f0f0f0",
-});
+   borderBottom: `1px solid ${theme.palette.divider}`,
+}));
 
 export const PackageContainer = styled("div")({
    padding: "32px",

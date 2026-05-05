@@ -193,7 +193,7 @@ export function NotebookCell({
                         <LinkOutlinedIcon
                            sx={{
                               fontSize: "24px",
-                              color: "#666666",
+                              color: "text.secondary",
                               cursor: "pointer",
                               marginTop: "26px",
                            }}
@@ -270,7 +270,10 @@ export function NotebookCell({
                                  onClick={() => setSourcesDialogOpen(true)}
                               >
                                  <SearchIcon
-                                    sx={{ fontSize: "18px", color: "#666666" }}
+                                    sx={{
+                                       fontSize: "18px",
+                                       color: "text.secondary",
+                                    }}
                                  />
                               </IconButton>
                            )}
@@ -308,7 +311,7 @@ export function NotebookCell({
                   Malloy Code
                   <IconButton
                      onClick={() => setCodeDialogOpen(false)}
-                     sx={{ color: "#666666" }}
+                     sx={{ color: "text.secondary" }}
                   >
                      <CloseIcon />
                   </IconButton>
@@ -357,7 +360,7 @@ export function NotebookCell({
                   Embeddable Code
                   <IconButton
                      onClick={() => setEmbeddingDialogOpen(false)}
-                     sx={{ color: "#666666" }}
+                     sx={{ color: "text.secondary" }}
                   >
                      <CloseIcon />
                   </IconButton>
@@ -388,7 +391,7 @@ export function NotebookCell({
                               width: "24px",
                               height: "24px",
                               marginLeft: "8px",
-                              color: "#666666",
+                              color: "text.secondary",
                            }}
                            onClick={() => {
                               navigator.clipboard.writeText(
@@ -474,7 +477,7 @@ export function NotebookCell({
                            }}
                         >
                            <CodeIcon
-                              sx={{ fontSize: "18px", color: "#666666" }}
+                              sx={{ fontSize: "18px", color: "text.secondary" }}
                            />
                         </IconButton>
                      )}
@@ -490,7 +493,7 @@ export function NotebookCell({
                         onClick={() => setResultsDialogOpen(true)}
                      >
                         <SearchIcon
-                           sx={{ fontSize: "18px", color: "#666666" }}
+                           sx={{ fontSize: "18px", color: "text.secondary" }}
                         />
                      </IconButton>
                   </Stack>
