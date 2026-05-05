@@ -1,11 +1,5 @@
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import {
-   Box,
-   Container,
-   Link,
-   Stack,
-   Typography,
-} from "@mui/material";
+import { Box, Container, Link, Stack, Typography } from "@mui/material";
 import React from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -13,10 +7,7 @@ import { RetrievalFunction } from "../filter/DimensionFilter";
 import { Loading } from "../Loading";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
-import {
-   encodeResourceUri,
-   parseResourceUri,
-} from "../../utils/formatting";
+import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import ContentTypeIcon from "./ContentTypeIcon";
 
 const README_NOTEBOOK = "README.malloynb";
@@ -46,7 +37,8 @@ export default function Package({
       ((to: string) => {
          window.location.href = to;
       });
-   const { projectName, packageName, versionId } = parseResourceUri(resourceUri);
+   const { projectName, packageName, versionId } =
+      parseResourceUri(resourceUri);
 
    const pkgQuery = useQueryWithApiError({
       queryKey: ["package", projectName, packageName, versionId],
@@ -85,12 +77,12 @@ export default function Package({
          ),
    });
 
-   const notebooks = (notebooksQuery.data?.data ?? []).slice().sort((a, b) =>
-      a.path.localeCompare(b.path),
-   );
-   const models = (modelsQuery.data?.data ?? []).slice().sort((a, b) =>
-      a.path.localeCompare(b.path),
-   );
+   const notebooks = (notebooksQuery.data?.data ?? [])
+      .slice()
+      .sort((a, b) => a.path.localeCompare(b.path));
+   const models = (modelsQuery.data?.data ?? [])
+      .slice()
+      .sort((a, b) => a.path.localeCompare(b.path));
    const databases = (databasesQuery.data?.data ?? [])
       .slice()
       .sort((a, b) => a.path.localeCompare(b.path));
@@ -104,8 +96,7 @@ export default function Package({
       modelPath: README_NOTEBOOK,
    });
 
-   const isLoading =
-      !notebooksQuery.isSuccess && !notebooksQuery.isError;
+   const isLoading = !notebooksQuery.isSuccess && !notebooksQuery.isError;
 
    if (pkgQuery.isError) {
       return (
@@ -179,10 +170,7 @@ export default function Package({
                   {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
                </PackageSection>
 
-               <PackageSection
-                  title="Semantic Models"
-                  count={models.length}
-               >
+               <PackageSection title="Semantic Models" count={models.length}>
                   {models.map((model) => (
                      <PackageItemRow
                         key={model.path}
@@ -195,10 +183,7 @@ export default function Package({
                   {models.length === 0 && <EmptyRow label="No models" />}
                </PackageSection>
 
-               <PackageSection
-                  title="Package Data"
-                  count={databases.length}
-               >
+               <PackageSection title="Package Data" count={databases.length}>
                   {databases.map((database) => (
                      <PackageItemRow
                         key={database.path}
@@ -236,7 +221,12 @@ function PackageSection({
 }) {
    return (
       <Box sx={{ mb: 4 }}>
-         <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1 }}>
+         <Stack
+            direction="row"
+            alignItems="baseline"
+            spacing={1}
+            sx={{ mb: 1 }}
+         >
             <Typography
                variant="h6"
                sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}

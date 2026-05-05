@@ -22,7 +22,9 @@ interface AddPackageDialogProps {
    resourceUri: string;
 }
 
-export default function AddPackageDialog({ resourceUri }: AddPackageDialogProps) {
+export default function AddPackageDialog({
+   resourceUri,
+}: AddPackageDialogProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
@@ -45,7 +47,9 @@ export default function AddPackageDialog({ resourceUri }: AddPackageDialogProps)
       },
       onError(error) {
          setNotificationMessage(
-            error instanceof Error ? error.message : "An unknown error occurred",
+            error instanceof Error
+               ? error.message
+               : "An unknown error occurred",
          );
       },
    });
@@ -103,9 +107,9 @@ export default function AddPackageDialog({ resourceUri }: AddPackageDialogProps)
                      color="text.secondary"
                      sx={{ mb: 1.5 }}
                   >
-                     The location can be a GitHub/S3/GCP URL containing a package
-                     (zipped or unzipped), or an absolute path to a directory the
-                     publisher server has access to.
+                     The location can be a GitHub/S3/GCP URL containing a
+                     package (zipped or unzipped), or an absolute path to a
+                     directory the publisher server has access to.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                      Make sure to conform to the{" "}

@@ -38,10 +38,7 @@ export default function Packages({
 
    if (isError) {
       return (
-         <ApiErrorDisplay
-            error={error}
-            context={`${projectName} > Packages`}
-         />
+         <ApiErrorDisplay error={error} context={`${projectName} > Packages`} />
       );
    }
 
@@ -49,9 +46,7 @@ export default function Packages({
       return <Loading text="Fetching Packages..." />;
    }
 
-   const packages = [...data.data].sort((a, b) =>
-      a.name.localeCompare(b.name),
-   );
+   const packages = [...data.data].sort((a, b) => a.name.localeCompare(b.name));
 
    return (
       <Grid container spacing={2}>
@@ -117,9 +112,7 @@ function PackageCard({
          }}
       >
          <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>
-            <Box
-               sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}
-            >
+            <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
                <Box
                   sx={{
                      width: 36,
