@@ -1,5 +1,6 @@
 import type {
    BuildGraph,
+   MalloyConfig,
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
@@ -18,13 +19,13 @@ import {
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
+import { EnvironmentStore } from "./environment_store";
 import { ManifestService } from "./manifest_service";
 import {
    dropManifestEntries,
    GcResult,
    liveTableKey,
 } from "./materialized_table_gc";
-import { EnvironmentStore } from "./environment_store";
 import { Model } from "./model";
 import { quoteTablePath, splitTablePath } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
@@ -44,6 +45,34 @@ const STAGING_BUILD_ID_LEN = 12;
  */
 export function stagingSuffix(buildId: string): string {
    return `_${buildId.substring(0, STAGING_BUILD_ID_LEN)}`;
+}
+
+/**
+ * Resolve a Map<name, Connection> for just the names a materialization
+ * step is about to touch. The package's MalloyConfig caches each lookup,
+ * so subsequent calls with overlapping names are cheap. A failed lookup
+ * is logged and the name is omitted from the result — downstream code
+ * (`forceDeleteRowOnMissingConnection` in teardown, or the explicit
+ * "connection X not found" check in build) handles a missing entry.
+ */
+async function resolvePackageConnections(
+   pkg: { getMalloyConnection(name: string): Promise<MalloyConnection> },
+   names: Iterable<string>,
+): Promise<Map<string, MalloyConnection>> {
+   const map = new Map<string, MalloyConnection>();
+   const seen = new Set<string>();
+   for (const name of names) {
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      try {
+         map.set(name, await pkg.getMalloyConnection(name));
+      } catch (err) {
+         logger.warn(`Failed to resolve connection ${name}`, {
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+   return map;
 }
 
 /**
@@ -99,7 +128,7 @@ const VALID_TRANSITIONS: Record<
  * The manifest is optionally activated after a successful build so
  * subsequent queries resolve persist references to materialized tables.
  *
- * Enforces at-most-one concurrent build per (project, package) via a
+ * Enforces at-most-one concurrent build per (environment, package) via a
  * DB-level unique index on `materializations.active_key` (see
  * `MaterializationRepository`), and supports cooperative cancellation
  * through `AbortController`.
@@ -455,7 +484,7 @@ export class MaterializationService {
     *
     * This is the only out-of-band teardown surface exposed by the
     * publisher and is intended for a single caller: the controlplane,
-    * invoking it on the truly destructive path before the package/project
+    * invoking it on the truly destructive path before the package/environment
     * is torn down. The publisher's `DELETE` endpoints are *not* wired into
     * teardown because the controlplane invokes them for non-destructive
     * unload too (down-replicate, drain, archive) where the entity still
@@ -495,16 +524,20 @@ export class MaterializationService {
          );
       }
 
-      const project = await this.environmentStore.getEnvironment(
+      const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const pkg = await project.getPackage(packageName, false);
-      const connections = pkg.getConnections();
+      const pkg = await environment.getPackage(packageName, false);
 
       const entries = await this.manifestService.listEntries(
          environmentId,
          packageName,
+      );
+
+      const connections = await resolvePackageConnections(
+         pkg,
+         entries.map((e) => e.connectionName),
       );
 
       // `forceDeleteRowOnMissingConnection`: teardown is the one place
@@ -544,11 +577,11 @@ export class MaterializationService {
          packageName,
       });
 
-      const project = await this.environmentStore.getEnvironment(
+      const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const pkg = await project.getPackage(packageName, false);
+      const pkg = await environment.getPackage(packageName, false);
 
       // ── STEP 1: LOAD ───────────────────────────────────────────────
       const manifest = new Manifest();
@@ -569,7 +602,9 @@ export class MaterializationService {
       );
 
       // ── STEP 2: COMPILE & PLAN ─────────────────────────────────────
-      const { graphs, sources, connectionDigests } =
+      // `connections` is built lazily from the connection names the plan
+      // actually targets — no upfront ATTACH on every environment connection.
+      const { graphs, sources, connectionDigests, connections } =
          await this.compilePackageBuildPlan(pkg, signal);
 
       if (graphs.length === 0) {
@@ -578,7 +613,6 @@ export class MaterializationService {
       }
 
       // ── STEP 3: BUILD ──────────────────────────────────────────────
-      const connections = pkg.getConnections();
       let sourcesBuilt = 0;
       let sourcesSkipped = 0;
       const sourceResults: Record<string, unknown>[] = [];
@@ -655,13 +689,15 @@ export class MaterializationService {
       pkg: {
          getModelPaths(): string[];
          getPackagePath(): string;
-         getConnections(): Map<string, MalloyConnection>;
+         getMalloyConfig(): MalloyConfig;
+         getMalloyConnection(name: string): Promise<MalloyConnection>;
       },
       signal: AbortSignal,
    ): Promise<{
       graphs: BuildGraph[];
       sources: Record<string, PersistSource>;
       connectionDigests: Record<string, string>;
+      connections: Map<string, MalloyConnection>;
    }> {
       const modelPaths = pkg.getModelPaths();
       const allGraphs: BuildGraph[] = [];
@@ -674,7 +710,7 @@ export class MaterializationService {
             await Model.getModelRuntime(
                pkg.getPackagePath(),
                modelPath,
-               pkg.getConnections(),
+               pkg.getMalloyConfig(),
             );
 
          const modelMaterializer = runtime.loadModel(modelURL, {
@@ -739,7 +775,13 @@ export class MaterializationService {
          tableOwners.set(key, sourceID);
       }
 
-      const connections = pkg.getConnections();
+      // Resolve only the connections this build plan actually targets;
+      // the package's MalloyConfig caches each lookup so the build phase
+      // sees the same Connection instance and avoids re-resolving.
+      const connections = await resolvePackageConnections(
+         pkg,
+         allGraphs.map((g) => g.connectionName),
+      );
       const connectionDigests: Record<string, string> = {};
       for (const graph of allGraphs) {
          const conn = connections.get(graph.connectionName);
@@ -748,7 +790,12 @@ export class MaterializationService {
          }
       }
 
-      return { graphs: allGraphs, sources: allSources, connectionDigests };
+      return {
+         graphs: allGraphs,
+         sources: allSources,
+         connectionDigests,
+         connections,
+      };
    }
 
    /**

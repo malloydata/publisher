@@ -1,6 +1,9 @@
+import {
+   encodeResourceUri,
+   Environment,
+   useRouterClickHandler,
+} from "@malloy-publisher/sdk";
 import { useParams } from "react-router-dom";
-import { encodeResourceUri, Environment } from "@malloy-publisher/sdk";
-import { useRouterClickHandler } from "@malloy-publisher/sdk";
 
 function EnvironmentPage() {
    const navigate = useRouterClickHandler();

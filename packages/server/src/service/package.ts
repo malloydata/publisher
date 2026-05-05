@@ -2,10 +2,14 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import "@malloydata/db-duckdb/native";
 import {
    Connection,
    ConnectionRuntime,
+   contextOverlay,
    EmptyURLReader,
+   FixedConnectionMap,
+   MalloyConfig,
    SourceDef,
 } from "@malloydata/malloy";
 import { metrics } from "@opentelemetry/api";
@@ -28,16 +32,24 @@ type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
+// A thunk lets callers pass a live reference to the *current* environment
+// MalloyConfig so the package wrapper resolves environment connections against the
+// generation that's active at lookup time, not the one that was current when
+// the package was first loaded.
+type PackageConnectionInput =
+   | MalloyConfig
+   | Map<string, Connection>
+   | (() => MalloyConfig);
 
 const ENABLE_LIST_MODEL_COMPILATION = true;
 export class Package {
-   private projectName: string;
+   private environmentName: string;
    private packageName: string;
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
    private models: Map<string, Model> = new Map();
    private packagePath: string;
-   private connections: Map<string, Connection> = new Map();
+   private malloyConfig: MalloyConfig;
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -48,28 +60,28 @@ export class Package {
    );
 
    constructor(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       packagePath: string,
       packageMetadata: ApiPackage,
       databases: ApiDatabase[],
       models: Map<string, Model>,
-      connections: Map<string, Connection> = new Map(),
+      malloyConfig: MalloyConfig = new MalloyConfig({ connections: {} }),
    ) {
-      this.projectName = projectName;
+      this.environmentName = environmentName;
       this.packageName = packageName;
       this.packagePath = packagePath;
       this.packageMetadata = packageMetadata;
       this.databases = databases;
       this.models = models;
-      this.connections = connections;
+      this.malloyConfig = malloyConfig;
    }
 
    static async create(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       packagePath: string,
-      projectConnections: Map<string, Connection>,
+      environmentMalloyConfig: PackageConnectionInput,
    ): Promise<Package> {
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -88,7 +100,7 @@ export class Package {
                packageConfigTime - manifestValidationTime,
             ),
          });
-         packageConfig.resource = `${API_PREFIX}/environments/${projectName}/packages/${packageName}`;
+         packageConfig.resource = `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`;
 
          const databases = await Package.readDatabases(packagePath);
          const databasesTime = performance.now();
@@ -97,20 +109,17 @@ export class Package {
             databaseCount: databases.length,
             duration: formatDuration(databasesTime - packageConfigTime),
          });
-         const connections = new Map<string, Connection>(projectConnections);
-
-         // Add a duckdb connection for the package.
-         const duckdbConnection = new DuckDBConnection(
-            "duckdb",
-            ":memory:",
+         const malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
+            typeof environmentMalloyConfig === "function"
+               ? environmentMalloyConfig
+               : () => Package.toMalloyConfig(environmentMalloyConfig),
          );
-         connections.set("duckdb", duckdbConnection);
 
          const models = await Package.loadModels(
             packageName,
             packagePath,
-            connections,
+            malloyConfig,
          );
          const modelsTime = performance.now();
          logger.info("Models loaded", {
@@ -153,13 +162,13 @@ export class Package {
             duration: formatDuration(executionTime),
          });
          return new Package(
-            projectName,
+            environmentName,
             packageName,
             packagePath,
             packageConfig,
             databases,
             models,
-            connections,
+            malloyConfig,
          );
       } catch (error) {
          logger.error(`Error loading package ${packageName}`, { error });
@@ -190,10 +199,6 @@ export class Package {
       return this.packageName;
    }
 
-   public getPackagePath(): string {
-      return this.packagePath;
-   }
-
    public getPackageMetadata(): ApiPackage {
       return this.packageMetadata;
    }
@@ -206,19 +211,24 @@ export class Package {
       return this.models.get(modelPath);
    }
 
+   public async getMalloyConnection(
+      connectionName: string,
+   ): Promise<Connection> {
+      return this.malloyConfig.connections.lookupConnection(connectionName);
+   }
+
+   public getMalloyConfig(): MalloyConfig {
+      return this.malloyConfig;
+   }
+
+   public getPackagePath(): string {
+      return this.packagePath;
+   }
+
    public getModelPaths(): string[] {
       return Array.from(this.models.keys());
    }
 
-   /**
-    * Recompile every model in the package with the given build manifest
-    * so queries resolve persist references to materialized tables.
-    *
-    * Builds a fresh map off to the side and swaps it in at the end. If any
-    * recompile fails the whole call rejects before the swap and the live
-    * `this.models` reference remains untouched — no half-loaded state is
-    * ever observable to concurrent readers.
-    */
    public async reloadAllModels(
       buildManifest: BuildManifest["entries"],
    ): Promise<void> {
@@ -228,14 +238,13 @@ export class Package {
          modelCount: modelPaths.length,
          manifestEntryCount: Object.keys(buildManifest).length,
       });
-
       const reloaded = await Promise.all(
          modelPaths.map((modelPath) =>
             Model.create(
                this.packageName,
                this.packagePath,
                modelPath,
-               this.connections,
+               this.malloyConfig,
                { buildManifest },
             ),
          ),
@@ -245,20 +254,6 @@ export class Package {
          nextModels.set(model.getPath(), model);
       }
       this.models = nextModels;
-   }
-
-   public getConnections(): Map<string, Connection> {
-      return this.connections;
-   }
-
-   public getMalloyConnection(connectionName: string): Connection {
-      const connection = this.connections.get(connectionName);
-      if (!connection) {
-         throw new Error(
-            `Connection ${connectionName} not found in package ${this.packageName}`,
-         );
-      }
-      return connection;
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
@@ -288,7 +283,7 @@ export class Package {
                   }
                }
                return {
-                  projectName: this.projectName,
+                  environmentName: this.environmentName,
                   path: modelPath,
                   packageName: this.packageName,
                   error,
@@ -310,7 +305,7 @@ export class Package {
                   error = this.models.get(modelPath)?.getNotebookError();
                }
                return {
-                  projectName: this.projectName,
+                  environmentName: this.environmentName,
                   packageName: this.packageName,
                   path: modelPath,
                   error: error?.message,
@@ -322,15 +317,64 @@ export class Package {
    private static async loadModels(
       packageName: string,
       packagePath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: MalloyConfig,
    ): Promise<Map<string, Model>> {
       const modelPaths = await Package.getModelPaths(packagePath);
       const models = await Promise.all(
          modelPaths.map((modelPath) =>
-            Model.create(packageName, packagePath, modelPath, connections),
+            Model.create(packageName, packagePath, modelPath, malloyConfig),
          ),
       );
       return new Map(models.map((model) => [model.getPath(), model]));
+   }
+
+   private static buildPackageMalloyConfig(
+      packagePath: string,
+      getEnvironmentMalloyConfig: () => MalloyConfig,
+   ): MalloyConfig {
+      const malloyConfig = new MalloyConfig(
+         {
+            connections: {
+               duckdb: {
+                  is: "duckdb",
+                  databasePath: ":memory:",
+               },
+            },
+         },
+         {
+            config: contextOverlay({ rootDirectory: packagePath }),
+         },
+      );
+
+      malloyConfig.wrapConnections((base) => ({
+         lookupConnection: async (name?: string) => {
+            if (!name || name === "duckdb") {
+               return base.lookupConnection(name);
+            }
+            // Resolve against the *current* environment MalloyConfig so a
+            // connection-generation swap on Environment propagates without a
+            // package reload.
+            return getEnvironmentMalloyConfig().connections.lookupConnection(
+               name,
+            );
+         },
+      }));
+
+      return malloyConfig;
+   }
+
+   private static toMalloyConfig(
+      input: MalloyConfig | Map<string, Connection>,
+   ): MalloyConfig {
+      if (input instanceof MalloyConfig) {
+         return input;
+      }
+
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () => new FixedConnectionMap(input, "duckdb"),
+      );
+      return malloyConfig;
    }
 
    private static async getModelPaths(packagePath: string): Promise<string[]> {
@@ -453,8 +497,8 @@ export class Package {
       this.packageName = name;
    }
 
-   public setProjectName(projectName: string) {
-      this.projectName = projectName;
+   public setEnvironmentName(environmentName: string) {
+      this.environmentName = environmentName;
    }
 
    public setPackageMetadata(packageMetadata: ApiPackage) {

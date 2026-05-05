@@ -10,11 +10,29 @@ import { EnvironmentStore } from "./environment_store";
 
 type MockData = Record<string, unknown>;
 
+const initializeDuckLakeCalls: Array<{
+   environmentId: string;
+   environmentName: string;
+   config: { catalogUrl: string; dataPath: string };
+}> = [];
+
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
          async initialize(_reInit?: boolean): Promise<void> {
             return;
+         }
+
+         async initializeDuckLakeForEnvironment(
+            environmentId: string,
+            environmentName: string,
+            config: { catalogUrl: string; dataPath: string },
+         ): Promise<void> {
+            initializeDuckLakeCalls.push({
+               environmentId,
+               environmentName,
+               config,
+            });
          }
 
          getRepository() {
@@ -339,6 +357,78 @@ describe("EnvironmentStore Service", () => {
       expect(projects.map((p) => p.name)).toContain(projectName2);
    });
 
+   it("should skip a project with invalid startup connection config", async () => {
+      const validProjectName = "valid-project";
+      const invalidProjectName = "invalid-motherduck-project";
+      const validProjectPath = path.join(serverRootPath, validProjectName);
+      const invalidProjectPath = path.join(serverRootPath, invalidProjectName);
+
+      mkdirSync(validProjectPath, { recursive: true });
+      mkdirSync(invalidProjectPath, { recursive: true });
+      writeFileSync(
+         path.join(validProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: validProjectName,
+            description: "Valid project",
+         }),
+      );
+      writeFileSync(
+         path.join(invalidProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: invalidProjectName,
+            description: "Invalid project",
+         }),
+      );
+
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: invalidProjectName,
+                  packages: [
+                     {
+                        name: invalidProjectName,
+                        location: invalidProjectPath,
+                     },
+                  ],
+                  connections: [
+                     {
+                        name: "motherduck",
+                        type: "motherduck",
+                        motherduckConnection: {},
+                     },
+                  ],
+               },
+               {
+                  name: validProjectName,
+                  packages: [
+                     {
+                        name: validProjectName,
+                        location: validProjectPath,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const projects = await newEnvironmentStore.listEnvironments();
+      expect(projects.map((p) => p.name)).toEqual([validProjectName]);
+      await expect(
+         newEnvironmentStore.getEnvironment(invalidProjectName),
+      ).rejects.toThrow();
+   });
+
    it("should handle project updates", async () => {
       // Create a project directory
       const projectPath = path.join(serverRootPath, projectName);
@@ -395,6 +485,69 @@ describe("EnvironmentStore Service", () => {
       expect(existsSync(readmePath)).toBe(true);
       const readmeContent = readFileSync(readmePath, "utf-8");
       expect(readmeContent).toBe("Updated README content");
+   });
+
+   it("should propagate materializationStorage on addEnvironment for new environment", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({ frozenConfig: false, environments: [] }),
+      );
+
+      await environmentStore.finishedInitialization;
+
+      const materializationStorage = {
+         catalogUrl:
+            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
+         dataPath: "gs://test-bucket",
+      };
+
+      initializeDuckLakeCalls.length = 0;
+      const project = await environmentStore.addEnvironment({
+         name: projectName,
+         materializationStorage,
+      });
+
+      expect(project.metadata.materializationStorage).toEqual(
+         materializationStorage,
+      );
+      expect(initializeDuckLakeCalls).toHaveLength(1);
+      expect(initializeDuckLakeCalls[0].config).toEqual(materializationStorage);
+   });
+
+   it("should propagate materializationStorage on update", async () => {
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ name: projectName, description: "Test package" }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+               },
+            ],
+         }),
+      );
+
+      await environmentStore.finishedInitialization;
+      const project = await environmentStore.getEnvironment(projectName);
+
+      const materializationStorage = {
+         catalogUrl:
+            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
+         dataPath: "gs://test-bucket",
+      };
+
+      await project.update({ name: projectName, materializationStorage });
+
+      expect(project.metadata.materializationStorage).toEqual(
+         materializationStorage,
+      );
    });
 
    it(

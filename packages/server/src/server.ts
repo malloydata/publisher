@@ -1,18 +1,14 @@
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
-import "./instrumentation";
-import {
-   getPrometheusMetricsHandler,
-   httpMetricsMiddleware,
-} from "./instrumentation";
-
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import * as bodyParser from "body-parser";
+import bodyParser from "body-parser";
 import cors from "cors";
 import express from "express";
 import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
+import { ParsedQs } from "qs";
+import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
@@ -30,14 +26,19 @@ import {
    registerHealthEndpoints,
    registerSignalHandlers,
 } from "./health";
+import "./instrumentation";
+import {
+   getPrometheusMetricsHandler,
+   httpMetricsMiddleware,
+} from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
-import { EnvironmentStore } from "./service/environment_store";
 
 /** Normalize an Express query param into a string[] or undefined. */
 export function normalizeQueryArray(value: unknown): string[] | undefined {
@@ -120,15 +121,10 @@ const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
 const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
    process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
 );
-// Find the app directory - handle NPX vs local execution
-let ROOT: string;
-if (require.main) {
-   // Use the main module's directory (works for NPX and direct execution)
-   ROOT = path.join(path.dirname(require.main.filename), "app");
-} else {
-   // Fallback to current script directory
-   ROOT = path.join(path.dirname(process.argv[1] || __filename), "app");
-}
+// Find the app directory relative to this bundled server file.
+// Works under both ESM (import.meta.url) and when invoked via NPX.
+const __filename_esm = fileURLToPath(import.meta.url);
+const ROOT = path.join(path.dirname(__filename_esm), "app");
 const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
 const API_PREFIX = "/api/v0";
 const isDevelopment = process.env["NODE_ENV"] === "development";
@@ -538,6 +534,70 @@ app.get(
    },
 );
 
+// ── Per-package connection data routes ─────────────────────────────
+// `duckdb` is per-package; non-`duckdb` names fall through to the
+// project's connection registry via the package's MalloyConfig wrapper.
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.listSchemas(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.listTables(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.params.schemaName,
+               normalizeQueryArray(req.query.tableNames),
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getTable(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.params.schemaName,
+               req.params.tablePath,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 /**
  * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlSource POST method instead
  */
@@ -579,8 +639,49 @@ app.post(
    },
 );
 
+// Per-package versions
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionSqlSource(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.query.sqlStatement as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionSqlSource(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 /**
- * @deprecated Use /environments/:environmentName/connections/:connectionName/queryData POST method instead
+ * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlQuery POST method instead
  */
 app.get(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/queryData`,
@@ -602,16 +703,76 @@ app.get(
    },
 );
 
-app.post(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlQuery`,
+/**
+ * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery
+ */
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/queryData`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.environmentName,
                req.params.connectionName,
+               req.query.sqlStatement as string,
+               req.query.options as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlQuery`,
+   async (req, res) => {
+      try {
+         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
+
+         // Support both body and query parameters for options for backwards compatibility
+         // TODO: To be removed in the future
+         if (req.body?.options) {
+            options = req.body.options;
+         } else {
+            options = req.query.options;
+         }
+         res.status(200).json(
+            await connectionController.getConnectionQueryData(
+               req.params.environmentName,
+               req.params.connectionName,
                req.body.sqlStatement as string,
-               req.body.options as string,
+               options as string,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery`,
+   async (req, res) => {
+      try {
+         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
+         if (req.body?.options) {
+            options = req.body.options;
+         } else {
+            options = req.query.options;
+         }
+         res.status(200).json(
+            await connectionController.getConnectionQueryData(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               options as string,
+               req.params.packageName,
             ),
          );
       } catch (error) {
@@ -623,7 +784,7 @@ app.post(
 );
 
 /**
- * @deprecated Use /environments/:environmentName/connections/:connectionName/temporaryTable POST method instead
+ * @deprecated Use environments/:environmentName/connections/:connectionName/sqlTemporaryTable POST method instead
  */
 app.get(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/temporaryTable`,
@@ -644,6 +805,29 @@ app.get(
    },
 );
 
+/**
+ * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable
+ */
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/temporaryTable`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionTemporaryTable(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.query.sqlStatement as string,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlTemporaryTable`,
    async (req, res) => {
@@ -653,6 +837,26 @@ app.post(
                req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.getConnectionTemporaryTable(
+               req.params.environmentName,
+               req.params.connectionName,
+               req.body.sqlStatement as string,
+               req.params.packageName,
             ),
          );
       } catch (error) {

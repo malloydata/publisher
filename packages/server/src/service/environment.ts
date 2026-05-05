@@ -1,10 +1,5 @@
 import type { LogMessage } from "@malloydata/malloy";
-import {
-   Connection,
-   FixedConnectionMap,
-   MalloyError,
-   Runtime,
-} from "@malloydata/malloy";
+import { MalloyError, Runtime } from "@malloydata/malloy";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
 import * as path from "path";
@@ -18,8 +13,9 @@ import {
 import { logger } from "../logger";
 import { URL_READER } from "../utils";
 import {
-   createEnvironmentConnections,
+   buildEnvironmentMalloyConfig,
    deleteDuckLakeConnectionFile,
+   EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
 import { ApiConnection } from "./model";
@@ -39,12 +35,27 @@ interface PackageInfo {
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiEnvironment = components["schemas"]["Environment"];
+type RetiredConnectionGeneration = {
+   label: string;
+   releaseConnections: () => Promise<void>;
+   timer?: ReturnType<typeof setTimeout>;
+};
+
+const RETIRED_CONNECTION_DRAIN_MS = 30_000;
 
 export class Environment {
    private packages: Map<string, Package> = new Map();
+   // Lock ordering: connectionMutex (environment) MUST be acquired before any
+   // packageMutex. Connection updates may invalidate cached package
+   // MalloyConfigs and force reloads, so the environment lock is the outer one.
+   // Never acquire connectionMutex while holding a packageMutex — that's the
+   // AB/BA deadlock path.
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
-   private malloyConnections: Map<string, Connection>;
+   private malloyConfig: EnvironmentMalloyConfig;
+   private connectionMutex = new Mutex();
+   private retiredConnectionGenerations =
+      new Set<RetiredConnectionGeneration>();
    private apiConnections: ApiConnection[];
    private environmentPath: string;
    private environmentName: string;
@@ -53,12 +64,12 @@ export class Environment {
    constructor(
       environmentName: string,
       environmentPath: string,
-      malloyConnections: Map<string, Connection>,
+      malloyConfig: EnvironmentMalloyConfig,
       apiConnections: InternalConnection[],
    ) {
       this.environmentName = environmentName;
       this.environmentPath = environmentPath;
-      this.malloyConnections = malloyConnections;
+      this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
       this.metadata = {
          resource: `${API_PREFIX}/environments/${this.environmentName}`,
@@ -90,33 +101,35 @@ export class Environment {
          await this.writeEnvironmentReadme(payload.readme);
       }
 
+      if (payload.materializationStorage !== undefined) {
+         this.metadata.materializationStorage = payload.materializationStorage;
+      }
+
       // Handle connections update
       // TODO: Update environment connections should have its own API endpoint
       if (payload.connections) {
-         logger.info(
-            `Updating ${payload.connections.length} connections for environment ${this.environmentName}`,
-         );
-         const isUpdateConnectionRequest = true;
-         // Reload connections with full config
-         const { malloyConnections, apiConnections } =
-            await createEnvironmentConnections(
-               payload.connections,
+         const payloadConnections = payload.connections;
+         await this.runConnectionUpdateExclusive(async () => {
+            logger.info(
+               `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
+            );
+            const isUpdateConnectionRequest = true;
+            const nextMalloyConfig = buildEnvironmentMalloyConfig(
+               payloadConnections,
                this.environmentPath,
                isUpdateConnectionRequest,
             );
 
-         // Update the environment's connection maps
-         this.malloyConnections = malloyConnections;
-         this.apiConnections = apiConnections;
+            this.updateConnections(nextMalloyConfig);
 
-         logger.info(
-            `Successfully updated connections for environment ${this.environmentName}`,
-            {
-               malloyConnections: malloyConnections.size,
-               apiConnections: apiConnections.length,
-               internalConnections: apiConnections.length,
-            },
-         );
+            logger.info(
+               `Successfully updated connections for environment ${this.environmentName}`,
+               {
+                  apiConnections: this.apiConnections.length,
+                  internalConnections: this.apiConnections.length,
+               },
+            );
+         });
       }
 
       return this;
@@ -134,22 +147,23 @@ export class Environment {
       }
 
       logger.info(`Creating environment with connection configuration`);
-      const { malloyConnections, apiConnections } =
-         await createEnvironmentConnections(connections, environmentPath);
+      const malloyConfig = buildEnvironmentMalloyConfig(
+         connections,
+         environmentPath,
+      );
 
       logger.info(
-         `Loaded ${malloyConnections.size + apiConnections.length} connections for environment ${environmentName}`,
+         `Loaded ${malloyConfig.apiConnections.length} connections for environment ${environmentName}`,
          {
-            malloyConnections,
-            apiConnections,
+            apiConnections: malloyConfig.apiConnections,
          },
       );
 
       const environment = new Environment(
          environmentName,
          environmentPath,
-         malloyConnections,
-         apiConnections,
+         malloyConfig,
+         malloyConfig.apiConnections,
       );
 
       return environment;
@@ -211,10 +225,14 @@ export class Environment {
          },
       };
 
-      // Initialize Runtime with the environment's active connections
+      const pkg = await this.getPackage(packageName);
+
+      // Initialize Runtime with the package's active MalloyConfig so compile
+      // checks see the same package-scoped duckdb as execution. This runtime
+      // borrows the package config; the package/environment lifecycle owns release.
       const runtime = new Runtime({
          urlReader: interceptingReader,
-         connections: new FixedConnectionMap(this.malloyConnections, "duckdb"),
+         config: pkg.getMalloyConfig(),
       });
 
       // Attempt to compile
@@ -262,14 +280,66 @@ export class Environment {
       return connection;
    }
 
-   public getMalloyConnection(connectionName: string): Connection {
-      const connection = this.malloyConnections.get(connectionName);
-      if (!connection) {
-         throw new ConnectionNotFoundError(
-            `Connection ${connectionName} not found`,
+   public async getMalloyConnection(connectionName: string) {
+      return this.malloyConfig.malloyConfig.connections.lookupConnection(
+         connectionName,
+      );
+   }
+
+   public getEnvironmentMalloyConfig() {
+      return this.malloyConfig.malloyConfig;
+   }
+
+   public async runConnectionUpdateExclusive<T>(
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      return this.connectionMutex.runExclusive(fn);
+   }
+
+   private retireConnectionGeneration(
+      label: string,
+      releaseConnections: () => Promise<void>,
+   ): void {
+      const generation: RetiredConnectionGeneration = {
+         label,
+         releaseConnections,
+      };
+      generation.timer = setTimeout(() => {
+         void this.releaseRetiredConnectionGeneration(generation);
+      }, RETIRED_CONNECTION_DRAIN_MS);
+      (
+         generation.timer as ReturnType<typeof setTimeout> & {
+            unref?: () => void;
+         }
+      ).unref?.();
+      this.retiredConnectionGenerations.add(generation);
+   }
+
+   private async releaseRetiredConnectionGeneration(
+      generation: RetiredConnectionGeneration,
+   ): Promise<void> {
+      if (!this.retiredConnectionGenerations.delete(generation)) return;
+
+      if (generation.timer) {
+         clearTimeout(generation.timer);
+      }
+
+      try {
+         await generation.releaseConnections();
+      } catch (error) {
+         logger.error(
+            `Error releasing retired connection generation ${generation.label}`,
+            { error },
          );
       }
-      return connection;
+   }
+
+   private async releaseAllRetiredConnectionGenerations(): Promise<void> {
+      await Promise.all(
+         [...this.retiredConnectionGenerations].map((generation) =>
+            this.releaseRetiredConnectionGeneration(generation),
+         ),
+      );
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
@@ -366,8 +436,13 @@ export class Environment {
                this.environmentName,
                packageName,
                packagePath,
-               this.malloyConnections,
+               () => this.malloyConfig.malloyConfig,
             );
+            if (existingPackage !== undefined && reload) {
+               this.retireConnectionGeneration(`package ${packageName}`, () =>
+                  existingPackage.getMalloyConfig().releaseConnections(),
+               );
+            }
             this.packages.set(packageName, _package);
 
             // Set package status to serving
@@ -401,7 +476,7 @@ export class Environment {
          `Adding package ${packageName} to environment ${this.environmentName}`,
          {
             packagePath,
-            malloyConnections: this.malloyConnections,
+            malloyConfig: this.malloyConfig.malloyConfig,
          },
       );
       this.setPackageStatus(packageName, PackageStatus.LOADING);
@@ -412,7 +487,7 @@ export class Environment {
                this.environmentName,
                packageName,
                packagePath,
-               this.malloyConnections,
+               () => this.malloyConfig.malloyConfig,
             ),
          );
       } catch (error) {
@@ -524,6 +599,8 @@ export class Environment {
          this.setPackageStatus(packageName, PackageStatus.UNLOADING);
       }
 
+      await _package.getMalloyConfig().releaseConnections();
+
       try {
          await fs.promises.rm(path.join(this.environmentPath, packageName), {
             recursive: true,
@@ -546,33 +623,37 @@ export class Environment {
    }
 
    public updateConnections(
-      malloyConnections: Map<string, Connection>,
-      apiConnections: ApiConnection[],
+      malloyConfig: EnvironmentMalloyConfig,
+      _apiConnections?: ApiConnection[],
+      afterPreviousRelease?: () => Promise<void>,
    ): void {
-      this.malloyConnections = malloyConnections;
-      this.apiConnections = apiConnections;
+      const previousMalloyConfig = this.malloyConfig;
+      this.malloyConfig = malloyConfig;
+      this.apiConnections = malloyConfig.apiConnections;
+
+      if (previousMalloyConfig !== malloyConfig) {
+         this.retireConnectionGeneration(
+            `environment ${this.environmentName}`,
+            async () => {
+               await previousMalloyConfig.releaseConnections();
+               await afterPreviousRelease?.();
+            },
+         );
+      } else {
+         void afterPreviousRelease?.();
+      }
    }
 
    public async deleteConnection(connectionName: string): Promise<void> {
-      this.malloyConnections.get(connectionName)?.close();
-      const isDeleted = this.malloyConnections.delete(connectionName);
-
       const index = this.apiConnections.findIndex(
          (conn) => conn.name === connectionName,
       );
-
-      const connectionType = this.apiConnections[index]?.type;
-      if (connectionType === "duckdb") {
-         await this.deleteDuckDBConnection(connectionName);
-      } else if (connectionType === "ducklake") {
-         await this.deleteDuckLakeConnection(connectionName);
-      }
 
       if (index !== -1) {
          this.apiConnections.splice(index, 1);
       }
 
-      if (isDeleted || index !== -1) {
+      if (index !== -1) {
          logger.info(
             `Removed connection ${connectionName} from environment ${this.environmentName}`,
          );
@@ -583,24 +664,36 @@ export class Environment {
       }
    }
 
-   public closeAllConnections(): void {
-      // Close all Malloy connections
-      for (const [connectionName, connection] of this.malloyConnections) {
-         try {
-            connection.close();
-            logger.info(
-               `Closed connection ${connectionName} for environment ${this.environmentName}`,
-            );
-         } catch (error) {
+   public async closeAllConnections(): Promise<void> {
+      // Release the package-scoped MalloyConfigs (each holds the package's own
+      // sandbox `duckdb` connection) before tearing down the environment config
+      // they wrap. Without this, hard unload leaks per-package DuckDB handles.
+      const packageReleases = await Promise.allSettled(
+         Array.from(this.packages.values(), (pkg) =>
+            pkg.getMalloyConfig().releaseConnections(),
+         ),
+      );
+      for (const result of packageReleases) {
+         if (result.status === "rejected") {
             logger.error(
-               `Error closing connection ${connectionName} for environment ${this.environmentName}`,
-               { error },
+               `Error closing package connections for environment ${this.environmentName}`,
+               { error: result.reason },
             );
          }
       }
+      this.packages.clear();
+      this.packageStatuses.clear();
 
-      // Clear connection maps
-      this.malloyConnections.clear();
+      try {
+         await this.malloyConfig.releaseConnections();
+      } catch (error) {
+         logger.error(
+            `Error closing connections for environment ${this.environmentName}`,
+            { error },
+         );
+      }
+      await this.releaseAllRetiredConnectionGenerations();
+
       this.apiConnections = [];
 
       logger.info(
@@ -621,29 +714,17 @@ export class Environment {
          this.environmentPath,
          `${connectionName}.duckdb`,
       );
-      fs.promises
-         .access(duckdbPath)
-         .then(() => {
-            fs.promises
-               .rm(duckdbPath)
-               .then(() => {
-                  logger.info(
-                     `Removed DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
-                  );
-               })
-               .catch((error) => {
-                  logger.error(
-                     `Failed to remove DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
-                     { error },
-                  );
-               });
-         })
-         .catch((error) => {
-            logger.error(
-               `Failed to remove DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
-               { error },
-            );
-         });
+      try {
+         await fs.promises.rm(duckdbPath, { force: true });
+         logger.info(
+            `Removed DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
+         );
+      } catch (error) {
+         logger.error(
+            `Failed to remove DuckDB connection file ${connectionName} from environment ${this.environmentName}`,
+            { error },
+         );
+      }
    }
 
    public async deleteDuckLakeConnection(

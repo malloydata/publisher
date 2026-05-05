@@ -1,10 +1,10 @@
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    Annotation,
    API,
    Connection,
    FixedConnectionMap,
    isSourceDef,
+   MalloyConfig,
    MalloyError,
    ModelDef,
    modelDefToModelInfo,
@@ -22,12 +22,11 @@ import {
    MalloySQLParser,
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
-import malloyPackage from "@malloydata/malloy/package.json";
 import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
+import { createRequire } from "module";
 import * as path from "path";
-import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    MODEL_FILE_SUFFIX,
@@ -45,9 +44,9 @@ import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildFilterClause,
+   FilterValidationError,
    injectFilterRefinement,
    parseFilters,
-   FilterValidationError,
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
@@ -65,9 +64,14 @@ export type PostgresConnection = components["schemas"]["PostgresConnection"];
 export type BigqueryConnection = components["schemas"]["BigqueryConnection"];
 export type TrinoConnection = components["schemas"]["TrinoConnection"];
 
-const MALLOY_VERSION = malloyPackage.version;
+const MALLOY_VERSION = (
+   createRequire(import.meta.url)("@malloydata/malloy/package.json") as {
+      version: string;
+   }
+).version;
 
 export type ModelType = "model" | "notebook";
+type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 interface RunnableNotebookCell {
    type: "code" | "markdown";
@@ -158,7 +162,7 @@ export class Model {
       packageName: string,
       packagePath: string,
       modelPath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: ModelConnectionInput,
       options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<Model> {
       // getModelRuntime might throw a ModelNotFoundError. It's the callers responsibility
@@ -167,7 +171,7 @@ export class Model {
          await Model.getModelRuntime(
             packagePath,
             modelPath,
-            connections,
+            malloyConfig,
             options,
          );
 
@@ -422,7 +426,7 @@ export class Model {
          logger.error("Query parsing error", {
             error,
             errorMessage,
-            projectName: this.packageName,
+            environmentName: this.packageName,
             modelPath: this.modelPath,
             query,
             queryName,
@@ -462,7 +466,7 @@ export class Model {
          logger.error("Query execution error", {
             error,
             errorMessage,
-            projectName: this.packageName,
+            environmentName: this.packageName,
             modelPath: this.modelPath,
             query,
             queryName,
@@ -668,7 +672,7 @@ export class Model {
    static async getModelRuntime(
       packagePath: string,
       modelPath: string,
-      connections: Map<string, Connection>,
+      malloyConfig: ModelConnectionInput,
       options?: { buildManifest?: BuildManifest["entries"] },
    ): Promise<{
       runtime: Runtime;
@@ -699,35 +703,32 @@ export class Model {
 
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
-      const fileUrl = new URL(baseUrl.pathname, "file:");
-      const workingDirectory = fileURLToPath(fileUrl);
       const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
-      const duckdbConnection = connections.get("duckdb") as DuckDBConnection;
-      await duckdbConnection.runSQL(
-         `SET FILE_SEARCH_PATH='${workingDirectory}';`,
-      );
-
-      const runtimeOptions: {
-         urlReader: typeof urlReader;
-         connections: FixedConnectionMap;
-         buildManifest?: BuildManifest;
-      } = {
+      // Request runtimes borrow the cached package MalloyConfig. The package
+      // owns release; callers must not release this runtime per request.
+      const runtime = new Runtime({
          urlReader,
-         connections: new FixedConnectionMap(connections, "duckdb"),
-      };
-
-      if (options?.buildManifest) {
-         runtimeOptions.buildManifest = {
-            entries: options.buildManifest,
-            strict: false,
-         };
-      }
-
-      const runtime = new Runtime(runtimeOptions);
+         config: Model.toMalloyConfig(malloyConfig),
+         buildManifest: options?.buildManifest
+            ? { entries: options.buildManifest, strict: false }
+            : undefined,
+      });
       const dataStyles = urlReader.getHackyAccumulatedDataStyles();
       return { runtime, modelURL, importBaseURL, dataStyles, modelType };
+   }
+
+   private static toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
+      if (input instanceof MalloyConfig) {
+         return input;
+      }
+
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () => new FixedConnectionMap(input, "duckdb"),
+      );
+      return malloyConfig;
    }
 
    private static getQueries(

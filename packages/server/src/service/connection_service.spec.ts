@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
-import { FrozenConfigError, ConnectionNotFoundError } from "../errors";
+import { components } from "../api";
+import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { ConnectionService } from "./connection_service";
 import { EnvironmentStore } from "./environment_store";
-import { components } from "../api";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -626,6 +626,58 @@ describe("service/connection_service", () => {
             (mockRepository.deleteConnection as sinon.SinonStub).calledWith(
                "conn-123",
             ),
+         ).toBe(true);
+      });
+
+      it("should defer DuckDB file cleanup until the previous config release callback", async () => {
+         const connectionName = "local-file";
+         const duckdbConnection: ApiConnection = {
+            name: connectionName,
+            type: "duckdb",
+            duckdbConnection: {
+               attachedDatabases: [],
+            },
+         };
+         const mockDbConnection = {
+            id: "conn-123",
+            name: duckdbConnection.name,
+            type: "duckdb",
+            config: duckdbConnection,
+         };
+         const mockProject = {
+            listApiConnections: sinon.stub().returns([duckdbConnection]),
+            getApiConnection: sinon.stub().returns(duckdbConnection),
+            updateConnections: sinon.stub(),
+            deleteDuckDBConnection: sinon.stub().resolves(),
+            metadata: { location: "/test/path" },
+         };
+         const getConnectionStub = sinon.stub(
+            connectionService,
+            "getConnection",
+         );
+         getConnectionStub.resolves({
+            dbConnection: mockDbConnection,
+            repository: mockRepository,
+         } as unknown as Awaited<
+            ReturnType<typeof connectionService.getConnection>
+         >);
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            mockProject,
+         );
+
+         await connectionService.deleteConnection(
+            "test-project",
+            connectionName,
+         );
+
+         expect(mockProject.deleteDuckDBConnection.called).toBe(false);
+         const releaseCallback = mockProject.updateConnections.getCall(0)
+            .args[2] as () => Promise<void>;
+
+         expect(typeof releaseCallback).toBe("function");
+         await releaseCallback();
+         expect(
+            mockProject.deleteDuckDBConnection.calledWith(connectionName),
          ).toBe(true);
       });
 

@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (optional — defaults to npm patch bump of current sdk version)"
+        description: "Version to release (optional — defaults to npm patch bump of
+          current sdk version)"
         required: false
         type: string
 
@@ -81,7 +82,7 @@ jobs:
       ref: ${{ needs.prepare.outputs.branch_name }}
 
   gh-release:
-    needs: [prepare, publish-npm, publish-docker]
+    needs: [ prepare, publish-npm, publish-docker ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -118,6 +119,13 @@ jobs:
           - Release branch: \`${BRANCH}\`
           - Triggered by: @${{ github.actor }}
           EOF
+
+          if [[ "$VERSION" == *-* ]]; then
+            echo "::notice title=GitHub Release::Skipping release creation for prerelease version ${VERSION}"
+            echo "## 🏷️ GitHub Release" >> $GITHUB_STEP_SUMMARY
+            echo "Skipped for prerelease version \`${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
 
           gh release create "$TAG" \
             --target "$BRANCH" \

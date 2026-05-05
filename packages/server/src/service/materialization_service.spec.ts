@@ -7,20 +7,20 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../errors";
-import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import {
    ManifestEntry,
    Materialization,
    MaterializationStatus,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
+import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
+import { EnvironmentStore } from "./environment_store";
 import { ManifestService } from "./manifest_service";
 import {
    manifestTableKey,
    MaterializationService,
    tablePhysicallyExists,
 } from "./materialization_service";
-import { EnvironmentStore } from "./environment_store";
 
 function makeExecution(
    overrides: Partial<Materialization> = {},
@@ -504,10 +504,12 @@ describe("MaterializationService", () => {
             dialectName: "duckdb",
             runSQL,
          } as unknown as Connection;
-         const connections = new Map<string, Connection>([
-            ["conn", connection],
-         ]);
-         const pkg = { getConnections: () => connections };
+         const pkg = {
+            getMalloyConnection: async (name: string): Promise<Connection> => {
+               if (name === "conn") return connection;
+               throw new Error(`unknown connection: ${name}`);
+            },
+         };
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves(pkg),
          });
@@ -562,10 +564,12 @@ describe("MaterializationService", () => {
          // a vanished "ghost_conn", which used to be impossible to tear down.
          // `teardownPackage` must force-delete the row anyway so teardown
          // can complete.
-         const connections = new Map<string, Connection>([
-            ["live_conn", livingConn],
-         ]);
-         const pkg = { getConnections: () => connections };
+         const pkg = {
+            getMalloyConnection: async (name: string): Promise<Connection> => {
+               if (name === "live_conn") return livingConn;
+               throw new Error(`unknown connection: ${name}`);
+            },
+         };
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves(pkg),
          });
@@ -606,10 +610,12 @@ describe("MaterializationService", () => {
             dialectName: "duckdb",
             runSQL,
          } as unknown as Connection;
-         const connections = new Map<string, Connection>([
-            ["conn", connection],
-         ]);
-         const pkg = { getConnections: () => connections };
+         const pkg = {
+            getMalloyConnection: async (name: string): Promise<Connection> => {
+               if (name === "conn") return connection;
+               throw new Error(`unknown connection: ${name}`);
+            },
+         };
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves(pkg),
          });

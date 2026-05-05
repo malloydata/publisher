@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import { logger } from "../logger";
 import {
    DatabaseConnection,
@@ -42,6 +43,19 @@ function escapeSQL(value: string): string {
    return value.replace(/'/g, "''");
 }
 
+function configKey(c: DuckLakeManifestConfig): string {
+   return `${c.catalogUrl}|${c.dataPath}`;
+}
+
+function catalogNameForConfig(c: DuckLakeManifestConfig): string {
+   const hash = crypto
+      .createHash("sha256")
+      .update(configKey(c))
+      .digest("hex")
+      .slice(0, 8);
+   return `manifest_lake_${hash}`;
+}
+
 /**
  * Manages the storage backend (DuckDB, Postgres, etc.) and per-environment
  * manifest stores. Environments without `materializationStorage` config use
@@ -57,8 +71,12 @@ export class StorageManager {
    /** Per-environment DuckLake manifest stores, keyed by environmentId. */
    private environmentManifestStores = new Map<string, ManifestStore>();
 
-   /** Tracks which catalogs have been attached to avoid duplicate ATTACHes. */
-   private attachedCatalogs = new Set<string>();
+   /**
+    * Tracks attached DuckLake catalogs as `configKey -> catalogName`. Each
+    * unique materializationStorage config gets its own ATTACHment under a
+    * deterministic catalog name, so multiple configs can coexist on one worker.
+    */
+   private attachedCatalogs = new Map<string, string>();
 
    private config: StorageConfig;
 
@@ -105,32 +123,44 @@ export class StorageManager {
 
    /**
     * Lazily initializes a DuckLake manifest store for an environment.
-    * The DuckLake catalog is attached to the shared DuckDB connection
-    * and persists for the lifetime of the process.
+    *
+    * One shared catalog per materializationStorage config: every environment
+    * pointing at the same (catalogUrl, dataPath) shares one `build_manifests`
+    * table inside it, partitioned by `environment_id` (set to the environment's name
+    * so it's stable across worker replicas — required for cross-pod manifest
+    * visibility in orchestrated mode). Different configs (e.g. different
+    * orgs) attach as separate catalogs under distinct deterministic aliases.
     */
    async initializeDuckLakeForEnvironment(
       environmentId: string,
+      environmentName: string,
       config: DuckLakeManifestConfig,
    ): Promise<void> {
       if (!this.duckDbConnection) {
          throw new Error("Storage not initialized. Call initialize() first.");
       }
 
-      const catalogName = `manifest_lake_${environmentId.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-
-      if (!this.attachedCatalogs.has(catalogName)) {
+      const key = configKey(config);
+      let catalogName = this.attachedCatalogs.get(key);
+      if (!catalogName) {
+         // Catalog name derived from the config so multiple configs can coexist as
+         // separate ATTACHments without colliding on the name.
+         catalogName = catalogNameForConfig(config);
          await this.attachDuckLakeCatalog(config, catalogName);
+         this.attachedCatalogs.set(key, catalogName);
       }
 
       const store = new DuckLakeManifestStore(
          this.duckDbConnection,
          catalogName,
+         environmentName,
       );
       await store.bootstrapSchema();
 
       this.environmentManifestStores.set(environmentId, store);
       logger.info("DuckLake manifest store initialized for environment", {
          environmentId,
+         environmentName,
          catalogName,
       });
    }
@@ -155,7 +185,14 @@ export class StorageManager {
          config.dataPath.startsWith("s3://");
 
       let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${catalogName}`;
-      const attachOpts: string[] = [`DATA_PATH '${escapedDataPath}'`];
+      const attachOpts: string[] = [
+         `DATA_PATH '${escapedDataPath}'`,
+         // The manifest table is small relational metadata (one row per build).
+         // Set a high inlining limit so writes always land transactionally in
+         // the postgres catalog rather than as parquet files in object storage,
+         // sidestepping object-storage auth issues entirely for this path.
+         "DATA_INLINING_ROW_LIMIT 100000",
+      ];
       if (isCloudStorage) {
          attachOpts.push("OVERRIDE_DATA_PATH true");
       }
@@ -163,8 +200,6 @@ export class StorageManager {
 
       logger.info(`Attaching DuckLake manifest catalog: ${attachCmd}`);
       await connection.run(attachCmd);
-
-      this.attachedCatalogs.add(catalogName);
    }
 
    getRepository(): ResourceRepository {

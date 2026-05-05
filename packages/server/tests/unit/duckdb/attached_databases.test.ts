@@ -838,7 +838,7 @@ describe("createEnvironmentConnections - DuckDB", () => {
          await expect(
             createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow(
-            "DuckDB attached databases names cannot conflict with connection name",
+            "DuckDB attached database names cannot conflict with connection name",
          );
       });
 

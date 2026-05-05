@@ -117,6 +117,33 @@ export class EnvironmentStore {
       this.finishedInitialization = this.initialize();
    }
 
+   private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
+      try {
+         await this.addEnvironment(
+            {
+               name: environment.name,
+               resource: `${API_PREFIX}/environments/${environment.name}`,
+               connections: environment.connections,
+               packages: environment.packages,
+            },
+            true,
+         );
+      } catch (error) {
+         this.logEnvironmentInitializationError(environment.name, error);
+      }
+   }
+
+   private logEnvironmentInitializationError(
+      environmentName: string | undefined,
+      error: unknown,
+   ) {
+      const label = environmentName ? ` "${environmentName}"` : "";
+      logger.error(
+         `Error initializing environment${label}; skipping environment`,
+         this.extractErrorDataFromError(error),
+      );
+   }
+
    private async initialize() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
       const initialTime = performance.now();
@@ -141,115 +168,107 @@ export class EnvironmentStore {
             // Load environments from config file
             await Promise.all(
                environmentManifest.environments.map(async (environment) => {
-                  await this.addEnvironment(
-                     {
-                        name: environment.name,
-                        resource: `${API_PREFIX}/environments/${environment.name}`,
-                        connections: environment.connections,
-                        packages: environment.packages,
-                     },
-                     true,
-                  );
+                  await this.addConfiguredEnvironment(environment);
                }),
             );
          } else {
             // Load existing environments from database
-            const existingProjects = await repository.listEnvironments();
+            const existingEnvironments = await repository.listEnvironments();
 
-            if (existingProjects.length > 0) {
+            if (existingEnvironments.length > 0) {
                // Load environments from database
                await Promise.all(
-                  existingProjects.map(async (dbEnvironment) => {
-                     // Check if environment files exist on disk
-                     const environmentExists = await fs.promises
-                        .access(dbEnvironment.path)
-                        .then(() => true)
-                        .catch(() => false);
+                  existingEnvironments.map(async (dbEnvironment) => {
+                     try {
+                        // Check if environment files exist on disk
+                        const environmentExists = await fs.promises
+                           .access(dbEnvironment.path)
+                           .then(() => true)
+                           .catch(() => false);
 
-                     if (!environmentExists) {
-                        // Try to find in config and reload
-                        const environmentConfig =
-                           environmentManifest.environments.find(
-                              (e) => e.name === dbEnvironment.name,
-                           );
-
-                        if (environmentConfig) {
-                           const environmentInstance =
-                              await this.addEnvironment(
-                                 {
-                                    name: environmentConfig.name,
-                                    resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
-                                    connections: environmentConfig.connections,
-                                    packages: environmentConfig.packages,
-                                 },
-                                 true,
+                        if (!environmentExists) {
+                           // Try to find in config and reload
+                           const environmentConfig =
+                              environmentManifest.environments.find(
+                                 (p) => p.name === dbEnvironment.name,
                               );
 
-                           // Update database with new path
-                           await repository.updateEnvironment(
-                              dbEnvironment.id,
-                              {
-                                 path: environmentInstance.metadata.location,
-                              },
-                           );
+                           if (environmentConfig) {
+                              const environmentInstance =
+                                 await this.addEnvironment(
+                                    {
+                                       name: environmentConfig.name,
+                                       resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
+                                       connections:
+                                          environmentConfig.connections,
+                                       packages: environmentConfig.packages,
+                                    },
+                                    true,
+                                 );
 
-                           return environmentInstance.listPackages();
-                        } else {
-                           logger.error(
-                              `Environment "${dbEnvironment.name}" not found in config and files missing`,
-                           );
-                           return;
+                              // Update database with new path
+                              await repository.updateEnvironment(
+                                 dbEnvironment.id,
+                                 {
+                                    path: environmentInstance.metadata.location,
+                                 },
+                              );
+
+                              return environmentInstance.listPackages();
+                           } else {
+                              logger.error(
+                                 `Environment "${dbEnvironment.name}" not found in config and files missing`,
+                              );
+                              return;
+                           }
                         }
-                     }
 
-                     // Get connections from database
-                     const connections = await repository.listConnections(
-                        dbEnvironment.id,
-                     );
-
-                     const environmentInstance = await Environment.create(
-                        dbEnvironment.name,
-                        dbEnvironment.path,
-                        connections.map((conn) => ({
-                           name: conn.name,
-                           type: conn.type,
-                           resource: `${API_PREFIX}/connections/${conn.name}`,
-                           ...conn.config,
-                        })),
-                     );
-
-                     this.environments.set(
-                        dbEnvironment.name,
-                        environmentInstance,
-                     );
-
-                     // Get packages from database
-                     const packages = await repository.listPackages(
-                        dbEnvironment.id,
-                     );
-                     packages.forEach((pkg) => {
-                        environmentInstance.setPackageStatus(
-                           pkg.name,
-                           PackageStatus.SERVING,
+                        // Get connections from database
+                        const connections = await repository.listConnections(
+                           dbEnvironment.id,
                         );
-                     });
 
-                     return environmentInstance.listPackages();
+                        const environmentInstance = await Environment.create(
+                           dbEnvironment.name,
+                           dbEnvironment.path,
+                           connections.map((conn) => ({
+                              name: conn.name,
+                              type: conn.type,
+                              resource: `${API_PREFIX}/connections/${conn.name}`,
+                              ...conn.config,
+                           })),
+                        );
+
+                        // Get packages from database
+                        const packages = await repository.listPackages(
+                           dbEnvironment.id,
+                        );
+                        packages.forEach((pkg) => {
+                           environmentInstance.setPackageStatus(
+                              pkg.name,
+                              PackageStatus.SERVING,
+                           );
+                        });
+
+                        this.environments.set(
+                           dbEnvironment.name,
+                           environmentInstance,
+                        );
+
+                        return environmentInstance.listPackages();
+                     } catch (error) {
+                        this.logEnvironmentInitializationError(
+                           dbEnvironment.name,
+                           error,
+                        );
+                     }
                   }),
                );
             } else {
                // Fallback to config file if database is empty
                await Promise.all(
                   environmentManifest.environments.map(async (environment) => {
-                     await this.addEnvironment(
-                        {
-                           name: environment.name,
-                           resource: `${API_PREFIX}/environments/${environment.name}`,
-                           connections: environment.connections,
-                           packages: environment.packages,
-                        },
-                        true,
-                     );
+                     await this.addConfiguredEnvironment(environment);
                   }),
                );
             }
@@ -265,7 +284,6 @@ export class EnvironmentStore {
          markNotReady();
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
-         process.exit(1);
       }
    }
 
@@ -335,18 +353,18 @@ export class EnvironmentStore {
          description: environmentDescription,
          metadata: environment.metadata || {},
       };
-      const existingProject =
+      const existingEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
       let dbEnvironment: { id: string; name: string };
-      if (existingProject) {
+      if (existingEnvironment) {
          const updateData = {
             description: environmentDescription,
             metadata: environment.metadata || {},
          };
 
-         await repository.updateEnvironment(existingProject.id, updateData);
-         dbEnvironment = { id: existingProject.id, name: environmentName };
+         await repository.updateEnvironment(existingEnvironment.id, updateData);
+         dbEnvironment = { id: existingEnvironment.id, name: environmentName };
       } else {
          dbEnvironment = await repository.createEnvironment(environmentData);
       }
@@ -362,6 +380,7 @@ export class EnvironmentStore {
       ) {
          await this.storageManager.initializeDuckLakeForEnvironment(
             dbEnvironment.id,
+            dbEnvironment.name,
             {
                catalogUrl: materializationStorage.catalogUrl,
                dataPath: materializationStorage.dataPath,
@@ -821,6 +840,10 @@ export class EnvironmentStore {
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
+      if (environment.materializationStorage !== undefined) {
+         newEnvironment.metadata.materializationStorage =
+            environment.materializationStorage;
+      }
 
       this.environments.set(environmentName, newEnvironment);
 
@@ -895,7 +918,7 @@ export class EnvironmentStore {
       const environmentPath = environment.metadata?.location;
 
       // Close all connections before removing the environment
-      environment.closeAllConnections();
+      await environment.closeAllConnections();
 
       this.environments.delete(environmentName);
       await this.deleteEnvironmentFromDatabase(environmentName);

@@ -1,10 +1,65 @@
 import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
-import { createEnvironmentConnections } from "./connection";
-import { EnvironmentStore } from "./environment_store";
+import { buildEnvironmentMalloyConfig } from "./connection";
 
 type ApiConnection = components["schemas"]["Connection"];
+type ReleaseCallback = () => Promise<void>;
+type ConnectionUpdateEnvironment = {
+   runConnectionUpdateExclusive?: <T>(fn: () => Promise<T>) => Promise<T>;
+   updateConnections?: (
+      nextMalloyConfig: ReturnType<typeof buildEnvironmentMalloyConfig>,
+      apiConnections?: ApiConnection[],
+      afterPreviousRelease?: ReleaseCallback,
+   ) => void;
+   deleteConnection?: (connectionName: string) => Promise<void>;
+   deleteDuckDBConnection?: (connectionName: string) => Promise<void>;
+   deleteDuckLakeConnection?: (connectionName: string) => Promise<void>;
+};
+
+async function runEnvironmentConnectionUpdate<T>(
+   environment: ConnectionUpdateEnvironment,
+   fn: () => Promise<T>,
+): Promise<T> {
+   if (environment.runConnectionUpdateExclusive) {
+      return environment.runConnectionUpdateExclusive(fn);
+   }
+   return fn();
+}
+
+function updateEnvironmentConnections(
+   environment: ConnectionUpdateEnvironment,
+   nextMalloyConfig: ReturnType<typeof buildEnvironmentMalloyConfig>,
+   afterPreviousRelease?: ReleaseCallback,
+): void {
+   environment.updateConnections?.(
+      nextMalloyConfig,
+      nextMalloyConfig.apiConnections,
+      afterPreviousRelease,
+   );
+}
+
+function buildDeletedConnectionCleanup(
+   environment: ConnectionUpdateEnvironment,
+   deletedConnection: ApiConnection,
+   connectionName: string,
+): ReleaseCallback | undefined {
+   if (
+      deletedConnection.type === "duckdb" &&
+      typeof environment.deleteDuckDBConnection === "function"
+   ) {
+      return () => environment.deleteDuckDBConnection!(connectionName);
+   }
+
+   if (
+      deletedConnection.type === "ducklake" &&
+      typeof environment.deleteDuckLakeConnection === "function"
+   ) {
+      return () => environment.deleteDuckLakeConnection!(connectionName);
+   }
+
+   return undefined;
+}
 
 export class ConnectionService {
    private environmentStore: EnvironmentStore;
@@ -83,21 +138,21 @@ export class ConnectionService {
          environmentName,
          false,
       );
-      const existingConnections = environment.listApiConnections();
-
-      const { malloyConnections, apiConnections } =
-         await createEnvironmentConnections(
+      await runEnvironmentConnectionUpdate(environment, async () => {
+         const existingConnections = environment.listApiConnections();
+         const nextMalloyConfig = buildEnvironmentMalloyConfig(
             [...existingConnections, connection],
             environment.metadata.location || "",
          );
 
-      environment.updateConnections(malloyConnections, apiConnections);
+         await this.environmentStore.addConnection(
+            connection,
+            dbEnvironment.id,
+            repository,
+         );
 
-      await this.environmentStore.addConnection(
-         connection,
-         dbEnvironment.id,
-         repository,
-      );
+         updateEnvironmentConnections(environment, nextMalloyConfig);
+      });
 
       logger.info(
          `Successfully added connection "${connection.name}" to environment "${environmentName}"`,
@@ -127,31 +182,36 @@ export class ConnectionService {
          environmentName,
          false,
       );
-      const existingConnections = environment.listApiConnections();
+      await runEnvironmentConnectionUpdate(environment, async () => {
+         const existingConnections = environment.listApiConnections();
 
-      const updatedConnection = {
-         ...dbConnection.config,
-         ...connection,
-         name: connectionName,
-      };
+         const updatedConnection = {
+            ...dbConnection.config,
+            ...connection,
+            name: connectionName,
+         };
 
-      const updatedConnections = existingConnections.map((conn) =>
-         conn.name === connectionName ? updatedConnection : conn,
-      );
-
-      const { malloyConnections, apiConnections } =
-         await createEnvironmentConnections(
-            updatedConnections,
-            environment.metadata.location || "",
+         const updatedConnections = existingConnections.map((conn) =>
+            conn.name === connectionName ? updatedConnection : conn,
          );
 
-      environment.updateConnections(malloyConnections, apiConnections);
+         // Pass isUpdateConnectionRequest=true so the DuckLake wrapper
+         // re-attaches against the updated catalog/storage settings instead
+         // of trusting the prior generation's persisted attach state.
+         const nextMalloyConfig = buildEnvironmentMalloyConfig(
+            updatedConnections,
+            environment.metadata.location || "",
+            true,
+         );
 
-      await this.environmentStore.updateConnection(
-         updatedConnection,
-         dbEnvironment.id,
-         repository,
-      );
+         await this.environmentStore.updateConnection(
+            updatedConnection,
+            dbEnvironment.id,
+            repository,
+         );
+
+         updateEnvironmentConnections(environment, nextMalloyConfig);
+      });
 
       logger.info(
          `Successfully updated connection "${connectionName}" in environment "${environmentName}"`,
@@ -182,10 +242,42 @@ export class ConnectionService {
          environmentName,
          false,
       );
-      await environment.deleteConnection(connectionName);
+      await runEnvironmentConnectionUpdate(environment, async () => {
+         if (typeof environment.listApiConnections !== "function") {
+            if (typeof environment.deleteConnection === "function") {
+               await environment.deleteConnection(connectionName);
+            }
+            await repository.deleteConnection(dbConnection.id);
+            return;
+         }
 
-      // Delete from database
-      await repository.deleteConnection(dbConnection.id);
+         const deletedConnection =
+            "getApiConnection" in environment &&
+            typeof environment.getApiConnection === "function"
+               ? environment.getApiConnection(connectionName)
+               : dbConnection.config;
+         const updatedConnections = environment
+            .listApiConnections()
+            .filter((connection) => connection.name !== connectionName);
+         const nextMalloyConfig = buildEnvironmentMalloyConfig(
+            updatedConnections,
+            environment.metadata.location || "",
+         );
+         const deleteConnectionFilesAfterRelease =
+            buildDeletedConnectionCleanup(
+               environment,
+               deletedConnection,
+               connectionName,
+            );
+
+         await repository.deleteConnection(dbConnection.id);
+
+         updateEnvironmentConnections(
+            environment,
+            nextMalloyConfig,
+            deleteConnectionFilesAfterRelease,
+         );
+      });
 
       logger.info(
          `Successfully deleted connection "${connectionName}" from environment "${environmentName}"`,

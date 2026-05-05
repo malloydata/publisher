@@ -4,11 +4,13 @@ import { components } from "../api";
 import { BadRequestError, ConnectionError } from "../errors";
 import { logger } from "../logger";
 import { testConnectionConfig } from "../service/connection";
+import { validateDuckdbApiSurface } from "../service/connection_config";
 import { ConnectionService } from "../service/connection_service";
 import {
    getSchemasForConnection,
    listTablesForSchema,
 } from "../service/db_utils";
+import type { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -83,6 +85,23 @@ function validateAzureAttachedDatabases(connectionConfig: ApiConnection): void {
    }
 }
 
+function validateAdminAuthoredConnection(
+   connectionName: string,
+   connectionConfig: ApiConnection,
+): void {
+   if (connectionName === "duckdb" || connectionConfig.name === "duckdb") {
+      throw new BadRequestError(
+         "DuckDB connection name cannot be 'duckdb'; it is reserved for Publisher package sandboxes.",
+      );
+   }
+
+   try {
+      validateDuckdbApiSurface(connectionConfig);
+   } catch (error) {
+      throw new BadRequestError((error as Error).message);
+   }
+}
+
 export class ConnectionController {
    private environmentStore: EnvironmentStore;
    private connectionService: ConnectionService;
@@ -95,31 +114,65 @@ export class ConnectionController {
     * Gets the appropriate Malloy connection for a given connection name.
     * For DuckDB connections, retrieves from package level; for others, from environment level.
     */
+   private getApiConnectionForLookup(
+      environment: Environment,
+      connectionName: string,
+   ): ApiConnection {
+      if (connectionName === "duckdb") {
+         return {
+            name: "duckdb",
+            type: "duckdb",
+            duckdbConnection: { attachedDatabases: [] },
+         };
+      }
+      return environment.getApiConnection(connectionName);
+   }
+
    private async getMalloyConnection(
       environmentName: string,
       connectionName: string,
+      packageName?: string,
    ): Promise<Connection> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const connection = environment.getApiConnection(connectionName);
 
-      // For DuckDB connections, get the connection from a package
-      if (connection.name === "duckdb" && connection.type === "duckdb") {
+      // "duckdb" is the per-package sandbox; its rootDirectory is the
+      // package's directory. There is no environment-level "duckdb" — the name is
+      // reserved at config time. So the lookup is intrinsically per-package
+      // and the caller must say which package to use.
+      if (connectionName === "duckdb") {
          const packages = await environment.listPackages();
          if (packages.length === 0) {
-            return environment.getMalloyConnection(connectionName);
+            // Fall through to environment; this will surface the standard
+            // "connection not found" rather than silently inventing one.
+            return await environment.getMalloyConnection(connectionName);
          }
-         // For now, use the first package's DuckDB connection
-         const packageName = packages[0].name;
-         if (!packageName) {
-            throw new ConnectionError("Package name is undefined");
+         if (packageName) {
+            const known = packages.some((p) => p.name === packageName);
+            if (!known) {
+               throw new BadRequestError(
+                  `Package "${packageName}" not found in environment "${environmentName}"`,
+               );
+            }
+            const pkg = await environment.getPackage(packageName);
+            return await pkg.getMalloyConnection(connectionName);
          }
-         const pkg = await environment.getPackage(packageName);
-         return pkg.getMalloyConnection(connectionName);
+         if (packages.length === 1) {
+            const onlyPackage = packages[0].name;
+            if (!onlyPackage) {
+               throw new ConnectionError("Package name is undefined");
+            }
+            const pkg = await environment.getPackage(onlyPackage);
+            return await pkg.getMalloyConnection(connectionName);
+         }
+         throw new BadRequestError(
+            `Ambiguous "duckdb" connection lookup: environment "${environmentName}" has multiple packages. ` +
+               `Use /environments/${environmentName}/packages/{packageName}/connections/duckdb/... to disambiguate.`,
+         );
       } else {
-         return environment.getMalloyConnection(connectionName);
+         return await environment.getMalloyConnection(connectionName);
       }
    }
 
@@ -200,39 +253,52 @@ export class ConnectionController {
       return environment.listApiConnections();
    }
 
-   // Lists schemas (namespaces) available in a connection
+   // Lists schemas (namespaces) available in a connection.
+   // For "duckdb", the per-package sandbox, packageName disambiguates which
+   // package's DuckDB to browse in a multi-package environment.
    public async listSchemas(
       environmentName: string,
       connectionName: string,
+      packageName?: string,
    ): Promise<ApiSchema[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const connection = environment.getApiConnection(connectionName);
+      const connection = this.getApiConnectionForLookup(
+         environment,
+         connectionName,
+      );
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
+         packageName,
       );
 
       return getSchemasForConnection(connection, malloyConnection);
    }
 
-   // Lists tables available in a schema. For postgres the schema is usually "public"
+   // Lists tables available in a schema. For postgres the schema is usually "public".
+   // packageName disambiguates per-package "duckdb" lookups (see listSchemas).
    public async listTables(
       environmentName: string,
       connectionName: string,
       schemaName: string,
       tableNames?: string[],
+      packageName?: string,
    ): Promise<ApiTable[]> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const connection = environment.getApiConnection(connectionName);
+      const connection = this.getApiConnectionForLookup(
+         environment,
+         connectionName,
+      );
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
+         packageName,
       );
 
       return listTablesForSchema(
@@ -247,10 +313,12 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       sqlStatement: string,
+      packageName?: string,
    ): Promise<ApiSqlSource> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
+         packageName,
       );
       try {
          const schema = await (
@@ -283,17 +351,22 @@ export class ConnectionController {
       connectionName: string,
       schemaName: string,
       tablePath: string,
+      packageName?: string,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
+         packageName,
       );
       // Use getApiConnection to get the unwrapped ApiConnection config, consistent with listSchemas and listTables.
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
-      const connection = environment.getApiConnection(connectionName);
+      const connection = this.getApiConnectionForLookup(
+         environment,
+         connectionName,
+      );
 
       // TODO: Move this database connection logic to the db_utils.ts file -- and
       // ultimately into a connection-specific class.
@@ -367,10 +440,12 @@ export class ConnectionController {
       connectionName: string,
       sqlStatement: string,
       options: string,
+      packageName?: string,
    ): Promise<ApiQueryData> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
+         packageName,
       );
 
       let runSQLOptions: RunSQLOptions = {};
@@ -398,10 +473,12 @@ export class ConnectionController {
       environmentName: string,
       connectionName: string,
       sqlStatement: string,
+      packageName?: string,
    ): Promise<ApiTemporaryTable> {
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
+         packageName,
       );
 
       try {
@@ -418,17 +495,13 @@ export class ConnectionController {
    }
 
    public async testConnectionConfiguration(
-      connectionConfig: ApiConnection,
+      input: ApiConnection & { config?: ApiConnection },
    ): Promise<ApiConnectionStatus> {
-      if (
-         connectionConfig &&
-         "config" in connectionConfig &&
-         typeof (connectionConfig as Record<string, unknown>).config ===
-            "object"
-      ) {
-         connectionConfig = (connectionConfig as Record<string, unknown>)
-            .config as ApiConnection;
-      }
+      // Some clients wrap the payload as { config: <connection> }; unwrap.
+      const connectionConfig: ApiConnection =
+         input.config && typeof input.config === "object"
+            ? input.config
+            : input;
 
       if (
          !connectionConfig ||
@@ -474,6 +547,7 @@ export class ConnectionController {
       }
 
       validateAzureAttachedDatabases(connectionConfig);
+      validateAdminAuthoredConnection(connectionName, connectionConfig);
 
       logger.info(
          `Creating connection "${connectionName}" in environment "${environmentName}"`,
@@ -499,7 +573,8 @@ export class ConnectionController {
          throw new BadRequestError("Connection payload is required");
       }
 
-      validateAzureAttachedDatabases(connection as ApiConnection);
+      validateAzureAttachedDatabases(connection);
+      validateAdminAuthoredConnection(connectionName, connection);
 
       logger.info(
          `Updating connection "${connectionName}" in environment "${environmentName}"`,

@@ -1,5 +1,5 @@
 import { Mutex } from "async-mutex";
-import * as duckdb from "duckdb";
+import duckdb from "duckdb";
 import * as path from "path";
 import { DatabaseConnection } from "../DatabaseInterface";
 
