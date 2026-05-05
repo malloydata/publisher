@@ -207,12 +207,7 @@ type ServiceAccountKey = {
 function parseServiceAccountKey(json?: string): ServiceAccountKey | undefined {
    if (!json) return undefined;
    const keyData = JSON.parse(json) as ServiceAccountKey;
-   const requiredFields = [
-      "type",
-      "environment_id",
-      "private_key",
-      "client_email",
-   ];
+   const requiredFields = ["type", "project_id", "private_key", "client_email"];
    for (const field of requiredFields) {
       if (!keyData[field]) {
          throw new Error(
