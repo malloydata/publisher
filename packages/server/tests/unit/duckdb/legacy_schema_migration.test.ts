@@ -11,10 +11,12 @@ import { initializeSchema } from "../../../src/storage/duckdb/schema";
 
 const TEST_DB_DIR = path.join(os.tmpdir(), "duckdb-legacy-migration-tests");
 
-async function seedLegacyDb(dbPath: string): Promise<void> {
-   const db = new DuckDBConnection(dbPath);
-   await db.initialize();
-
+// Seed a pre-rename schema on an *already-open* connection. We deliberately
+// avoid opening, closing, and reopening the same DuckDB file within a test:
+// on Windows runners the second `duckdb.Database(path)` call sometimes fails
+// with `Invalid Error` because the OS hasn't released the file handle yet.
+// Sharing one connection between seed and assertion sidesteps that entirely.
+async function seedLegacySchema(db: DuckDBConnection): Promise<void> {
    // Seed a pre-rename schema: parent table named `projects` and child
    // tables with `project_id` foreign-key columns. Mirrors what an existing
    // installation looked like before the projects→environments rename.
@@ -93,8 +95,6 @@ async function seedLegacyDb(dbPath: string): Promise<void> {
       `INSERT INTO packages VALUES ('pkg1', 'p1', 'pkg-one', NULL, '/m', NULL,
          TIMESTAMP '2024-01-01 00:00:00', TIMESTAMP '2024-01-01 00:00:00')`,
    );
-
-   await db.close();
 }
 
 describe("DuckDB legacy projects schema cleanup", () => {
@@ -112,12 +112,14 @@ describe("DuckDB legacy projects schema cleanup", () => {
 
    it("drops legacy projects schema and creates the new environments schema cleanly", async () => {
       const dbPath = path.join(TEST_DB_DIR, "legacy.duckdb");
-      await seedLegacyDb(dbPath);
-
-      // Re-open and run schema initialization (the path a server upgrade
-      // takes: existing legacy DB on disk, new code starting up).
       const db = new DuckDBConnection(dbPath);
       await db.initialize();
+
+      // Seed the legacy schema on the same connection, then run the
+      // production schema-init path. This mirrors a server upgrade
+      // (legacy data on disk, new code starting up) without forcing a
+      // close+reopen, which is unreliable on Windows runners.
+      await seedLegacySchema(db);
       await initializeSchema(db);
 
       // Legacy parent table is gone.
@@ -159,10 +161,10 @@ describe("DuckDB legacy projects schema cleanup", () => {
 
    it("is idempotent: running initializeSchema twice on a migrated DB is a no-op", async () => {
       const dbPath = path.join(TEST_DB_DIR, "legacy_idempotent.duckdb");
-      await seedLegacyDb(dbPath);
-
       const db = new DuckDBConnection(dbPath);
       await db.initialize();
+
+      await seedLegacySchema(db);
       await initializeSchema(db);
       // Second call should hit the early-return path (isInitialized() === true).
       await initializeSchema(db);
