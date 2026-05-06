@@ -914,9 +914,7 @@ describe("Config legacy 'projects' key back-compat", () => {
          expect(result.environments[0].packages[0].name).toBe("p1");
 
          expect(
-            warnings.some((w) =>
-               w.includes('uses deprecated "projects" key'),
-            ),
+            warnings.some((w) => w.includes('uses deprecated "projects" key')),
          ).toBe(true);
       } finally {
          logger.warn = originalWarn;
@@ -958,9 +956,7 @@ describe("Config legacy 'projects' key back-compat", () => {
 
          // No deprecation warning should fire when `environments` is present.
          expect(
-            warnings.some((w) =>
-               w.includes('uses deprecated "projects" key'),
-            ),
+            warnings.some((w) => w.includes('uses deprecated "projects" key')),
          ).toBe(false);
       } finally {
          logger.warn = originalWarn;
