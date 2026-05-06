@@ -93,7 +93,7 @@ export class DuckDBConnection implements DatabaseConnection {
       return this.mutex.runExclusive(async () => {
          return new Promise<boolean>((resolve) => {
             this.connection!.all(
-               "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'",
+               "SELECT name FROM sqlite_master WHERE type='table' AND name='environments'",
                (err, rows) => {
                   if (err) {
                      resolve(false);

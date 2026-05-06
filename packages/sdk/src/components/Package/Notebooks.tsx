@@ -24,16 +24,16 @@ export default function Notebooks({
 }: NotebooksProps) {
    const { apiClients } = useServer();
    const {
-      projectName: projectName,
+      environmentName: environmentName,
       packageName: packageName,
       versionId: versionId,
    } = parseResourceUri(resourceUri);
 
    const { data, isError, error, isSuccess } = useQueryWithApiError({
-      queryKey: ["notebooks", projectName, packageName, versionId],
+      queryKey: ["notebooks", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.notebooks.listNotebooks(
-            projectName,
+            environmentName,
             packageName,
             versionId,
          ),
@@ -55,7 +55,7 @@ export default function Notebooks({
                {isError && (
                   <ApiErrorDisplay
                      error={error}
-                     context={`${projectName} > ${packageName} > Notebooks`}
+                     context={`${environmentName} > ${packageName} > Notebooks`}
                   />
                )}
                {isSuccess && data.data.length > 0 && (

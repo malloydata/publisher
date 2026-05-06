@@ -47,7 +47,7 @@ export async function setupE2ETestEnvironment(): Promise<McpE2ETestEnvironment> 
 
 async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment> {
    // --- Store and Set SERVER_ROOT Env Var ---
-   // The ProjectStore relies on SERVER_ROOT to find publisher.config.json.
+   // The EnvironmentStore relies on SERVER_ROOT to find publisher.config.json.
    const originalServerRoot = process.env.SERVER_ROOT; // Store original value
    // Resolve the path to 'packages/server' based on the location of this file
    // Use import.meta.url for cross-platform compatibility (works on Windows)

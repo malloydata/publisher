@@ -1,14 +1,14 @@
-import {
-  Configuration,
-  ProjectsApi,
-  PackagesApi,
-  ConnectionsApi,
-} from "./generated";
 import { AxiosError } from "axios";
 import { logAxiosError } from "../utils/logger.js";
+import {
+  Configuration,
+  ConnectionsApi,
+  EnvironmentsApi,
+  PackagesApi,
+} from "./generated";
 
 export class PublisherClient {
-  private projectsApi: ProjectsApi;
+  private environmentsApi: EnvironmentsApi;
   private packagesApi: PackagesApi;
   private connectionsApi: ConnectionsApi;
   private baseURL: string;
@@ -20,7 +20,7 @@ export class PublisherClient {
       basePath: `${this.baseURL}/api/v0`,
     });
 
-    this.projectsApi = new ProjectsApi(config);
+    this.environmentsApi = new EnvironmentsApi(config);
     this.packagesApi = new PackagesApi(config);
     this.connectionsApi = new ConnectionsApi(config);
   }
@@ -35,68 +35,71 @@ export class PublisherClient {
     return this.baseURL;
   }
 
-  // Projects
-  async listProjects(): Promise<any[]> {
+  // Environments
+  async listEnvironments(): Promise<any[]> {
     try {
-      const response = await this.projectsApi.listProjects();
+      const response = await this.environmentsApi.listEnvironments();
       return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
   }
 
-  async getProject(name: string): Promise<any> {
+  async getEnvironment(name: string): Promise<any> {
     try {
-      const response = await this.projectsApi.getProject(name);
+      const response = await this.environmentsApi.getEnvironment(name);
       return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
   }
 
-  async createProject(name: string): Promise<any> {
+  async createEnvironment(name: string): Promise<any> {
     try {
-      const response = await this.projectsApi.createProject({ name });
+      const response = await this.environmentsApi.createEnvironment({ name });
       return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
   }
 
-  async updateProject(
+  async updateEnvironment(
     name: string,
     updates: { name?: string; readme?: string; location?: string },
   ): Promise<any> {
     try {
-      const response = await this.projectsApi.updateProject(name, updates);
+      const response = await this.environmentsApi.updateEnvironment(
+        name,
+        updates,
+      );
       return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
   }
 
-  async deleteProject(name: string): Promise<void> {
+  async deleteEnvironment(name: string): Promise<void> {
     try {
-      await this.projectsApi.deleteProject(name);
+      await this.environmentsApi.deleteEnvironment(name);
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
   }
 
   // Packages
-  async listPackages(projectName: string): Promise<any[]> {
+  async listPackages(environmentName: string): Promise<any[]> {
     try {
-      const response = await this.packagesApi.listPackages(projectName);
+      const response = await this.packagesApi.listPackages(environmentName);
       return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
   }
 
-  async getPackage(projectName: string, packageName: string): Promise<any> {
+  async getPackage(environmentName: string, packageName: string): Promise<any> {
     try {
       const response = await this.packagesApi.getPackage(
-        projectName,
+        environmentName,
         packageName,
       );
       return response.data;
@@ -106,13 +109,13 @@ export class PublisherClient {
   }
 
   async createPackage(
-    projectName: string,
+    environmentName: string,
     packageName: string,
     location: string,
     description?: string,
   ): Promise<any> {
     try {
-      const response = await this.packagesApi.createPackage(projectName, {
+      const response = await this.packagesApi.createPackage(environmentName, {
         name: packageName,
         location,
         description,
@@ -124,13 +127,13 @@ export class PublisherClient {
   }
 
   async updatePackage(
-    projectName: string,
+    environmentName: string,
     packageName: string,
     updates: { name?: string; location?: string; description?: string },
   ): Promise<any> {
     try {
       const response = await this.packagesApi.updatePackage(
-        projectName,
+        environmentName,
         packageName,
         updates,
       );
@@ -140,18 +143,22 @@ export class PublisherClient {
     }
   }
 
-  async deletePackage(projectName: string, packageName: string): Promise<void> {
+  async deletePackage(
+    environmentName: string,
+    packageName: string,
+  ): Promise<void> {
     try {
-      await this.packagesApi.deletePackage(projectName, packageName);
+      await this.packagesApi.deletePackage(environmentName, packageName);
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
   }
 
   // Connections
-  async listConnections(projectName: string): Promise<any[]> {
+  async listConnections(environmentName: string): Promise<any[]> {
     try {
-      const response = await this.connectionsApi.listConnections(projectName);
+      const response =
+        await this.connectionsApi.listConnections(environmentName);
       return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
@@ -159,12 +166,12 @@ export class PublisherClient {
   }
 
   async getConnection(
-    projectName: string,
+    environmentName: string,
     connectionName: string,
   ): Promise<any> {
     try {
       const response = await this.connectionsApi.getConnection(
-        projectName,
+        environmentName,
         connectionName,
       );
       return response.data;
@@ -173,7 +180,10 @@ export class PublisherClient {
     }
   }
 
-  async createConnection(projectName: string, connection: any): Promise<any> {
+  async createConnection(
+    environmentName: string,
+    connection: any,
+  ): Promise<any> {
     try {
       // Extract connection name from the connection object
       const connectionName = connection.name;
@@ -182,7 +192,7 @@ export class PublisherClient {
       }
 
       const response = await this.connectionsApi.createConnection(
-        projectName,
+        environmentName,
         connectionName,
         connection,
       );
@@ -193,13 +203,13 @@ export class PublisherClient {
   }
 
   async updateConnection(
-    projectName: string,
+    environmentName: string,
     connectionName: string,
     connection: any,
   ): Promise<any> {
     try {
       const response = await this.connectionsApi.updateConnection(
-        projectName,
+        environmentName,
         connectionName,
         connection,
       );
@@ -210,11 +220,14 @@ export class PublisherClient {
   }
 
   async deleteConnection(
-    projectName: string,
+    environmentName: string,
     connectionName: string,
   ): Promise<void> {
     try {
-      await this.connectionsApi.deleteConnection(projectName, connectionName);
+      await this.connectionsApi.deleteConnection(
+        environmentName,
+        connectionName,
+      );
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }

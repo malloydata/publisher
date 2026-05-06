@@ -4,10 +4,10 @@ import { useParams } from "react-router-dom";
 function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
-   if (!params.projectName) {
+   if (!params.environmentName) {
       return (
          <div>
-            <h2>Missing project name</h2>
+            <h2>Missing environment name</h2>
          </div>
       );
    }
@@ -19,7 +19,7 @@ function ModelPage() {
       );
    }
    const resourceUri = encodeResourceUri({
-      projectName: params.projectName,
+      environmentName: params.environmentName,
       packageName: params.packageName,
       modelPath,
    });

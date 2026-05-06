@@ -1,7 +1,7 @@
 import type {
    BuildGraph,
-   Connection as MalloyConnection,
    MalloyConfig,
+   Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
@@ -19,6 +19,7 @@ import {
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
+import { EnvironmentStore } from "./environment_store";
 import { ManifestService } from "./manifest_service";
 import {
    dropManifestEntries,
@@ -26,9 +27,8 @@ import {
    liveTableKey,
 } from "./materialized_table_gc";
 import { Model } from "./model";
-import { ProjectStore } from "./project_store";
 import { quoteTablePath, splitTablePath } from "./quoting";
-import { resolveProjectId } from "./resolve_project";
+import { resolveEnvironmentId } from "./resolve_environment";
 
 /**
  * Length of the BuildID prefix used when synthesizing staging table names.
@@ -128,7 +128,7 @@ const VALID_TRANSITIONS: Record<
  * The manifest is optionally activated after a successful build so
  * subsequent queries resolve persist references to materialized tables.
  *
- * Enforces at-most-one concurrent build per (project, package) via a
+ * Enforces at-most-one concurrent build per (environment, package) via a
  * DB-level unique index on `materializations.active_key` (see
  * `MaterializationRepository`), and supports cooperative cancellation
  * through `AbortController`.
@@ -149,12 +149,12 @@ export class MaterializationService {
    private runningAbortControllers = new Map<string, AbortController>();
 
    constructor(
-      private projectStore: ProjectStore,
+      private environmentStore: EnvironmentStore,
       private manifestService: ManifestService,
    ) {}
 
    private get repository(): ResourceRepository {
-      return this.projectStore.storageManager.getRepository();
+      return this.environmentStore.storageManager.getRepository();
    }
 
    // ==================== STATE MACHINE ====================
@@ -198,28 +198,28 @@ export class MaterializationService {
    // ==================== BUILD QUERIES ====================
 
    async listMaterializations(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]> {
-      const projectId = await this.resolveProjectId(projectName);
+      const environmentId = await this.resolveEnvironmentId(environmentName);
       return this.repository.listMaterializations(
-         projectId,
+         environmentId,
          packageName,
          options,
       );
    }
 
    async getMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       buildId: string,
    ): Promise<Materialization> {
-      const projectId = await this.resolveProjectId(projectName);
+      const environmentId = await this.resolveEnvironmentId(environmentName);
       const execution = await this.repository.getMaterializationById(buildId);
       if (
          !execution ||
-         execution.projectId !== projectId ||
+         execution.environmentId !== environmentId ||
          execution.packageName !== packageName
       ) {
          throw new MaterializationNotFoundError(
@@ -236,21 +236,24 @@ export class MaterializationService {
     * metadata so `startMaterialization` can read them back.
     */
    async createMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       options: { forceRefresh?: boolean; autoLoadManifest?: boolean } = {},
    ): Promise<Materialization> {
-      const projectId = await this.resolveProjectId(projectName);
+      const environmentId = await this.resolveEnvironmentId(environmentName);
 
       // Verify the package exists.
-      const project = await this.projectStore.getProject(projectName, false);
-      await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      await environment.getPackage(packageName, false);
 
       // A non-atomic probe for a helpful error message. The DB-level unique
       // index on active_key is the actual race-free guard — see the catch
       // block below.
       const active = await this.repository.getActiveMaterialization(
-         projectId,
+         environmentId,
          packageName,
       );
       if (active) {
@@ -266,7 +269,7 @@ export class MaterializationService {
 
       try {
          return await this.repository.createMaterialization(
-            projectId,
+            environmentId,
             packageName,
             "PENDING",
             metadata,
@@ -276,7 +279,7 @@ export class MaterializationService {
             // Lost the race with a concurrent create. Re-read to report the
             // winner's id for parity with the non-racy error above.
             const winner = await this.repository.getActiveMaterialization(
-               projectId,
+               environmentId,
                packageName,
             );
             throw new MaterializationConflictError(
@@ -294,13 +297,13 @@ export class MaterializationService {
     * background. Returns the RUNNING execution immediately.
     */
    async startMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       buildId: string,
    ): Promise<Materialization> {
-      const projectId = await this.resolveProjectId(projectName);
+      const environmentId = await this.resolveEnvironmentId(environmentName);
       const execution = await this.getMaterialization(
-         projectName,
+         environmentName,
          packageName,
          buildId,
       );
@@ -313,7 +316,7 @@ export class MaterializationService {
 
       // Check for a *different* active materialization on this package.
       const active = await this.repository.getActiveMaterialization(
-         projectId,
+         environmentId,
          packageName,
       );
       if (active && active.id !== execution.id) {
@@ -331,8 +334,8 @@ export class MaterializationService {
       // Fire-and-forget: run the build in the background.
       this.runMaterialization(
          execution.id,
-         projectName,
-         projectId,
+         environmentName,
+         environmentId,
          packageName,
          metadata,
       ).catch((err) => {
@@ -347,8 +350,8 @@ export class MaterializationService {
 
    private async runMaterialization(
       executionId: string,
-      projectName: string,
-      projectId: string,
+      environmentName: string,
+      environmentId: string,
       packageName: string,
       metadata: Record<string, unknown>,
    ): Promise<void> {
@@ -357,8 +360,8 @@ export class MaterializationService {
 
       try {
          const buildMetadata = await this.executeBuild(
-            projectName,
-            projectId,
+            environmentName,
+            environmentId,
             packageName,
             !!metadata.forceRefresh,
             abortController.signal,
@@ -366,14 +369,14 @@ export class MaterializationService {
 
          if (metadata.autoLoadManifest) {
             const updatedManifest = await this.manifestService.getManifest(
-               projectId,
+               environmentId,
                packageName,
             );
-            const project = await this.projectStore.getProject(
-               projectName,
+            const environment = await this.environmentStore.getEnvironment(
+               environmentName,
                false,
             );
-            const pkg = await project.getPackage(packageName, false);
+            const pkg = await environment.getPackage(packageName, false);
             await pkg.reloadAllModels(updatedManifest.entries);
          }
 
@@ -415,12 +418,12 @@ export class MaterializationService {
     * Cancels a running build. Takes a specific buildId.
     */
    async stopMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       buildId: string,
    ): Promise<Materialization> {
       const execution = await this.getMaterialization(
-         projectName,
+         environmentName,
          packageName,
          buildId,
       );
@@ -455,12 +458,12 @@ export class MaterializationService {
     * (SUCCESS, FAILED, CANCELLED) can be deleted.
     */
    async deleteMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       materializationId: string,
    ): Promise<void> {
       const execution = await this.getMaterialization(
-         projectName,
+         environmentName,
          packageName,
          materializationId,
       );
@@ -481,7 +484,7 @@ export class MaterializationService {
     *
     * This is the only out-of-band teardown surface exposed by the
     * publisher and is intended for a single caller: the controlplane,
-    * invoking it on the truly destructive path before the package/project
+    * invoking it on the truly destructive path before the package/environment
     * is torn down. The publisher's `DELETE` endpoints are *not* wired into
     * teardown because the controlplane invokes them for non-destructive
     * unload too (down-replicate, drain, archive) where the entity still
@@ -505,14 +508,14 @@ export class MaterializationService {
     * deleting manifest rows.
     */
    async teardownPackage(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       options: { dryRun?: boolean } = {},
    ): Promise<GcResult> {
-      const projectId = await this.resolveProjectId(projectName);
+      const environmentId = await this.resolveEnvironmentId(environmentName);
 
       const active = await this.repository.getActiveMaterialization(
-         projectId,
+         environmentId,
          packageName,
       );
       if (active) {
@@ -521,11 +524,14 @@ export class MaterializationService {
          );
       }
 
-      const project = await this.projectStore.getProject(projectName, false);
-      const pkg = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const pkg = await environment.getPackage(packageName, false);
 
       const entries = await this.manifestService.listEntries(
-         projectId,
+         environmentId,
          packageName,
       );
 
@@ -541,7 +547,7 @@ export class MaterializationService {
       return dropManifestEntries(entries, {
          connections,
          manifestService: this.manifestService,
-         projectId,
+         environmentId,
          dryRun: options.dryRun,
          forceDeleteRowOnMissingConnection: true,
       });
@@ -560,30 +566,33 @@ export class MaterializationService {
     * `gcErrors` metadata so the controller/UI can show them.
     */
    private async executeBuild(
-      projectName: string,
-      projectId: string,
+      environmentName: string,
+      environmentId: string,
       packageName: string,
       forceRefresh: boolean,
       signal: AbortSignal,
    ): Promise<Record<string, unknown>> {
       logger.info("Starting materialization build", {
-         projectName,
+         environmentName,
          packageName,
       });
 
-      const project = await this.projectStore.getProject(projectName, false);
-      const pkg = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const pkg = await environment.getPackage(packageName, false);
 
       // ── STEP 1: LOAD ───────────────────────────────────────────────
       const manifest = new Manifest();
       const existingManifest = await this.manifestService.getManifest(
-         projectId,
+         environmentId,
          packageName,
       );
       manifest.loadText(JSON.stringify(existingManifest));
 
       const existingEntries = await this.manifestService.listEntries(
-         projectId,
+         environmentId,
          packageName,
       );
       const knownMaterializedTables = new Set(
@@ -594,7 +603,7 @@ export class MaterializationService {
 
       // ── STEP 2: COMPILE & PLAN ─────────────────────────────────────
       // `connections` is built lazily from the connection names the plan
-      // actually targets — no upfront ATTACH on every project connection.
+      // actually targets — no upfront ATTACH on every environment connection.
       const { graphs, sources, connectionDigests, connections } =
          await this.compilePackageBuildPlan(pkg, signal);
 
@@ -634,7 +643,7 @@ export class MaterializationService {
                   connection,
                   connectionDigests,
                   forceRefresh,
-                  projectId,
+                  environmentId,
                   packageName,
                   knownMaterializedTables,
                );
@@ -649,7 +658,7 @@ export class MaterializationService {
       // ── STEP 4: GC ─────────────────────────────────────────────────
       const gcResult = await this.runPostBuildGc(
          manifest,
-         projectId,
+         environmentId,
          packageName,
          connections,
       );
@@ -800,7 +809,7 @@ export class MaterializationService {
       connection: MalloyConnection,
       connectionDigests: Record<string, string>,
       forceRefresh: boolean,
-      projectId: string,
+      environmentId: string,
       packageName: string,
       knownMaterializedTables: Set<string>,
    ): Promise<Record<string, unknown>> {
@@ -899,7 +908,7 @@ export class MaterializationService {
       manifest.update(buildId, { tableName });
 
       await this.manifestService.writeEntry(
-         projectId,
+         environmentId,
          packageName,
          buildId,
          tableName,
@@ -930,13 +939,13 @@ export class MaterializationService {
     */
    private async runPostBuildGc(
       manifest: Manifest,
-      projectId: string,
+      environmentId: string,
       packageName: string,
       connections: Map<string, MalloyConnection>,
    ): Promise<GcResult> {
       const activeManifest = manifest.activeEntries;
       const allDbEntries = await this.manifestService.listEntries(
-         projectId,
+         environmentId,
          packageName,
       );
 
@@ -954,7 +963,7 @@ export class MaterializationService {
       const gcResult = await dropManifestEntries(staleEntries, {
          connections,
          manifestService: this.manifestService,
-         projectId,
+         environmentId,
          liveTables,
       });
 
@@ -970,7 +979,7 @@ export class MaterializationService {
 
    // ==================== HELPERS ====================
 
-   private resolveProjectId(projectName: string): Promise<string> {
-      return resolveProjectId(this.repository, projectName);
+   private resolveEnvironmentId(environmentName: string): Promise<string> {
+      return resolveEnvironmentId(this.repository, environmentName);
    }
 }

@@ -7,12 +7,12 @@ export class StorageManager {
 
    getRepository() {
       return {
-         listProjects: async (): Promise<unknown[]> => [],
-         createProject: async (data: MockData): Promise<MockData> => ({
+         listEnvironments: async (): Promise<unknown[]> => [],
+         createEnvironment: async (data: MockData): Promise<MockData> => ({
             id: "test-id",
             ...data,
          }),
-         updateProject: async (
+         updateEnvironment: async (
             id: string,
             data: MockData,
          ): Promise<MockData> => ({

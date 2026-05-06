@@ -12,3 +12,6 @@ __pycache__/
 
 packages/server/k6-tests/clients/
 packages/server/k6-tests/results/
+
+# Playwright MCP artifacts
+.playwright-mcp/*

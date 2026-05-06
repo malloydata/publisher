@@ -12,7 +12,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import type { components } from "../../../src/api";
-import { createProjectConnections } from "../../../src/service/connection";
+import { createEnvironmentConnections } from "../../../src/service/connection";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -355,7 +355,7 @@ describe("DuckDB Attached Databases", () => {
    });
 });
 
-describe("createProjectConnections - DuckDB", () => {
+describe("createEnvironmentConnections - DuckDB", () => {
    const PROJECT_TEST_DIR = path.join(os.tmpdir(), "duckdb-project-tests");
    let createdConnections: Map<string, unknown> = new Map();
 
@@ -402,7 +402,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          const { malloyConnections, apiConnections } =
-            await createProjectConnections(connections, PROJECT_TEST_DIR);
+            await createEnvironmentConnections(connections, PROJECT_TEST_DIR);
 
          createdConnections = malloyConnections;
 
@@ -433,7 +433,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          const { malloyConnections, apiConnections } =
-            await createProjectConnections(connections, PROJECT_TEST_DIR);
+            await createEnvironmentConnections(connections, PROJECT_TEST_DIR);
 
          createdConnections = malloyConnections;
 
@@ -462,7 +462,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          const { malloyConnections, apiConnections } =
-            await createProjectConnections(connections, PROJECT_TEST_DIR);
+            await createEnvironmentConnections(connections, PROJECT_TEST_DIR);
 
          createdConnections = malloyConnections;
 
@@ -502,7 +502,7 @@ describe("createProjectConnections - DuckDB", () => {
             },
          ];
 
-         const { malloyConnections } = await createProjectConnections(
+         const { malloyConnections } = await createEnvironmentConnections(
             connections,
             PROJECT_TEST_DIR,
          );
@@ -533,7 +533,7 @@ describe("createProjectConnections - DuckDB", () => {
             },
          ];
 
-         const { malloyConnections } = await createProjectConnections(
+         const { malloyConnections } = await createEnvironmentConnections(
             connections,
             PROJECT_TEST_DIR,
          );
@@ -591,7 +591,7 @@ describe("createProjectConnections - DuckDB", () => {
             },
          ];
 
-         const { malloyConnections } = await createProjectConnections(
+         const { malloyConnections } = await createEnvironmentConnections(
             connections,
             PROJECT_TEST_DIR,
          );
@@ -624,7 +624,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow();
       });
 
@@ -637,7 +637,7 @@ describe("createProjectConnections - DuckDB", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("DuckDB connection configuration is missing");
       });
 
@@ -658,7 +658,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Unsupported database type");
       });
 
@@ -682,7 +682,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("service account key required");
       });
 
@@ -704,7 +704,7 @@ describe("createProjectConnections - DuckDB", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("keyId and secret are required");
       });
 
@@ -726,7 +726,7 @@ describe("createProjectConnections - DuckDB", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("accessKeyId and secretAccessKey are required");
       });
 
@@ -748,7 +748,7 @@ describe("createProjectConnections - DuckDB", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("PostgreSQL connection configuration is required");
       });
 
@@ -761,7 +761,7 @@ describe("createProjectConnections - DuckDB", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("DuckLake connection configuration is missing");
       });
 
@@ -785,7 +785,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("username is required");
       });
 
@@ -806,7 +806,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("PostgreSQL connection configuration missing");
       });
 
@@ -836,7 +836,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow(
             "DuckDB attached database names cannot conflict with connection name",
          );
@@ -854,7 +854,7 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
       });
 
@@ -884,8 +884,26 @@ describe("createProjectConnections - DuckDB", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
+      });
+
+      it("should throw when DuckDB connection has no attached databases", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "no_attached_db",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [],
+               },
+            },
+         ];
+
+         await expect(
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
+         ).rejects.toThrow(
+            "DuckDB connection must have at least one attached database",
+         );
       });
 
       it("should throw on unsupported connection type", async () => {
@@ -897,7 +915,7 @@ describe("createProjectConnections - DuckDB", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Unsupported connection type");
       });
 
@@ -921,13 +939,13 @@ describe("createProjectConnections - DuckDB", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow();
       });
    });
 });
 
-describe("createProjectConnections - Other Connection Types", () => {
+describe("createEnvironmentConnections - Other Connection Types", () => {
    const PROJECT_TEST_DIR = path.join(
       os.tmpdir(),
       "connection-validation-tests",
@@ -970,7 +988,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Snowflake connection configuration is missing");
       });
 
@@ -988,7 +1006,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Snowflake account is required");
       });
 
@@ -1006,7 +1024,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Snowflake username is required");
       });
 
@@ -1024,7 +1042,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow(
             "Snowflake password or private key or private key path is required",
          );
@@ -1044,7 +1062,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Snowflake warehouse is required");
       });
    });
@@ -1059,7 +1077,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("Trino connection configuration is missing");
       });
 
@@ -1076,7 +1094,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow(
             'Invalid Trino connection: expected "http://server:port" or "https://server:port"',
          );
@@ -1093,7 +1111,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ] as ApiConnection[];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("MotherDuck connection configuration is missing");
       });
 
@@ -1107,7 +1125,7 @@ describe("createProjectConnections - Other Connection Types", () => {
          ];
 
          await expect(
-            createProjectConnections(connections, PROJECT_TEST_DIR),
+            createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("MotherDuck access token is required");
       });
    });

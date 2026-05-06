@@ -5,13 +5,13 @@ export class MaterializationController {
    constructor(private materializationService: MaterializationService) {}
 
    async createMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       body: Record<string, unknown>,
    ) {
       const options = this.validateCreateBody(body);
       return this.materializationService.createMaterialization(
-         projectName,
+         environmentName,
          packageName,
          options,
       );
@@ -38,73 +38,73 @@ export class MaterializationController {
    }
 
    async startMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       materializationId: string,
    ) {
       return this.materializationService.startMaterialization(
-         projectName,
+         environmentName,
          packageName,
          materializationId,
       );
    }
 
    async stopMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       materializationId: string,
    ) {
       return this.materializationService.stopMaterialization(
-         projectName,
+         environmentName,
          packageName,
          materializationId,
       );
    }
 
    async listMaterializations(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       options?: { limit?: number; offset?: number },
    ) {
       return this.materializationService.listMaterializations(
-         projectName,
+         environmentName,
          packageName,
          options,
       );
    }
 
    async getMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       materializationId: string,
    ) {
       return this.materializationService.getMaterialization(
-         projectName,
+         environmentName,
          packageName,
          materializationId,
       );
    }
 
    async deleteMaterialization(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       materializationId: string,
    ) {
       return this.materializationService.deleteMaterialization(
-         projectName,
+         environmentName,
          packageName,
          materializationId,
       );
    }
 
    async teardownPackage(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       body: Record<string, unknown>,
    ) {
       const options = this.validateTeardownBody(body);
       return this.materializationService.teardownPackage(
-         projectName,
+         environmentName,
          packageName,
          options,
       );

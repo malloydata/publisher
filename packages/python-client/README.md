@@ -25,14 +25,14 @@ uv pip install -e ".[test]"  # editable install with test extras
 
 ```python
 from malloy_publisher_sdk import Client, errors
-from malloy_publisher_sdk.api.projects import list_projects
+from malloy_publisher_sdk.api.environments import list_environments
 
 client = Client(base_url="http://localhost:4000/api/v0")
 
 try:
-    projects = list_projects.sync(client=client)
-    for proj in projects:
-        print(proj.name, proj.resource)
+    environments = list_environments.sync(client=client)
+    for env in environments:
+        print(env.name, env.resource)
 except errors.ApiError as exc:
     print(exc.status_code, exc.body)
 ```
@@ -42,12 +42,12 @@ except errors.ApiError as exc:
 ```python
 import asyncio
 from malloy_publisher_sdk import Client
-from malloy_publisher_sdk.api.projects import list_projects
+from malloy_publisher_sdk.api.environments import list_environments
 
 async def main():
     async with Client(base_url="http://localhost:4000/api/v0") as client:
-        projects = await list_projects.asyncio(client=client)
-        print([p.name for p in projects])
+        environments = await list_environments.asyncio(client=client)
+        print([e.name for e in environments])
 
 asyncio.run(main())
 ```

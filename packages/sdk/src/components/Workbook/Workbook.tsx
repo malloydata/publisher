@@ -45,7 +45,7 @@ export default function Workbook({ workbookPath, resourceUri }: WorkbookProps) {
    const { server, getAccessToken } = useServer();
    const { apiClients } = useServer();
    const { workbookStorage } = useWorkbookStorage();
-   const { projectName, packageName } = parseResourceUri(resourceUri);
+   const { environmentName, packageName } = parseResourceUri(resourceUri);
    const [success, setSuccess] = React.useState<string | undefined>(undefined);
    const [lastError, setLastError] = React.useState<string | undefined>(
       undefined,
@@ -113,7 +113,7 @@ export default function Workbook({ workbookPath, resourceUri }: WorkbookProps) {
       }
       setDeleteDialogOpen(false);
       // TODO(jjs) - on delete event
-      navigate(`/${projectName}/${packageName}`);
+      navigate(`/${environmentName}/${packageName}`);
    };
 
    const handleDeleteCancel = () => {
@@ -155,7 +155,7 @@ export default function Workbook({ workbookPath, resourceUri }: WorkbookProps) {
                console.log("Fetching model from Publisher", model);
                promises.push(
                   apiClients.models
-                     .getModel(projectName, packageName, model, undefined)
+                     .getModel(environmentName, packageName, model, undefined)
                      .then((data) => ({
                         modelPath: model,
                         sourceInfos: data.data.sourceInfos.map((source) =>
@@ -182,7 +182,7 @@ export default function Workbook({ workbookPath, resourceUri }: WorkbookProps) {
       fetchModels();
       // This function cannot depend on sourceAndPaths because it would cause an infinite loop.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [getAccessToken, workbookData, packageName, projectName, server]);
+   }, [getAccessToken, workbookData, packageName, environmentName, server]);
 
    React.useEffect(() => {
       if (!workbookPath) {

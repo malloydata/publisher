@@ -1,0 +1,1022 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import * as path from "path";
+import * as sinon from "sinon";
+import { components } from "../api";
+import { isPublisherConfigFrozen } from "../config";
+import { TEMP_DIR_PATH } from "../constants";
+import { Environment } from "./environment";
+import { EnvironmentStore } from "./environment_store";
+
+type MockData = Record<string, unknown>;
+
+const initializeDuckLakeCalls: Array<{
+   environmentId: string;
+   environmentName: string;
+   config: { catalogUrl: string; dataPath: string };
+}> = [];
+
+mock.module("../storage/StorageManager", () => {
+   return {
+      StorageManager: class MockStorageManager {
+         async initialize(_reInit?: boolean): Promise<void> {
+            return;
+         }
+
+         async initializeDuckLakeForEnvironment(
+            environmentId: string,
+            environmentName: string,
+            config: { catalogUrl: string; dataPath: string },
+         ): Promise<void> {
+            initializeDuckLakeCalls.push({
+               environmentId,
+               environmentName,
+               config,
+            });
+         }
+
+         getRepository() {
+            return {
+               // ===== PROJECT METHODS =====
+               listEnvironments: async (): Promise<unknown[]> => [],
+
+               getEnvironmentById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  name: "test-project",
+                  path: "/test/path",
+                  description: "Test description",
+                  metadata: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getEnvironmentByName: async (
+                  _name: string,
+               ): Promise<MockData | null> => {
+                  // Return null to simulate "project doesn't exist yet"
+                  return null;
+               },
+
+               createEnvironment: async (
+                  data: MockData,
+               ): Promise<MockData> => ({
+                  id: "test-project-id",
+                  name: data.name,
+                  path: data.path,
+                  description: data.description,
+                  metadata: data.metadata,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               updateEnvironment: async (
+                  id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
+                  id,
+                  name: "test-project",
+                  path: "/test/path",
+                  description: data.description,
+                  metadata: {
+                     ...(data.metadata || {}),
+                     readme: data.readme,
+                  },
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               deleteEnvironment: async (_id: string): Promise<void> => {},
+
+               // ===== PACKAGE METHODS =====
+               listPackages: async (
+                  _environmentId: string,
+               ): Promise<unknown[]> => [],
+
+               getPackageById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  environmentId: "test-project-id",
+                  name: "test-package",
+                  description: "Test package",
+                  manifestPath: "/test/manifest.json",
+                  metadata: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getPackageByName: async (
+                  _environmentId: string,
+                  _name: string,
+               ): Promise<MockData | null> => null,
+
+               createPackage: async (data: MockData): Promise<MockData> => ({
+                  id: "test-package-id",
+                  environmentId: data.environmentId,
+                  name: data.name,
+                  description: data.description,
+                  manifestPath: data.manifestPath,
+                  metadata: data.metadata,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               updatePackage: async (
+                  id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
+                  id,
+                  environmentId: "test-project-id",
+                  name: "test-package",
+                  description: data.description,
+                  manifestPath: "/test/manifest.json",
+                  metadata: data.metadata || {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               deletePackage: async (_id: string): Promise<void> => {},
+
+               // ===== CONNECTION METHODS =====
+               listConnections: async (
+                  _environmentId: string,
+               ): Promise<unknown[]> => [],
+
+               getConnectionById: async (
+                  id: string,
+               ): Promise<MockData | null> => ({
+                  id,
+                  environmentId: "test-project-id",
+                  name: "test-connection",
+                  type: "postgres",
+                  config: {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               getConnectionByName: async (
+                  _environmentId: string,
+                  _name: string,
+               ): Promise<MockData | null> => null,
+
+               createConnection: async (data: MockData): Promise<MockData> => ({
+                  id: "test-connection-id",
+                  environmentId: data.environmentId,
+                  name: data.name,
+                  type: data.type,
+                  config: data.config,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               updateConnection: async (
+                  id: string,
+                  data: MockData,
+               ): Promise<MockData> => ({
+                  id,
+                  environmentId: "test-project-id",
+                  name: "test-connection",
+                  type: "postgres",
+                  config: data.config || {},
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+               }),
+
+               deleteConnection: async (_id: string): Promise<void> => {},
+            };
+         }
+      },
+      StorageConfig: {} as Record<string, unknown>,
+   };
+});
+
+type Connection = components["schemas"]["Connection"];
+
+const serverRootPath = path.join(
+   TEMP_DIR_PATH,
+   "pathways-worker-publisher-project-store-test",
+);
+const projectName = "organizationName-projectName";
+
+let sandbox: sinon.SinonSandbox;
+
+describe("EnvironmentStore Service", () => {
+   let environmentStore: EnvironmentStore;
+
+   beforeEach(async () => {
+      // Clean up any existing test directory
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+      mkdirSync(serverRootPath);
+      sandbox = sinon.createSandbox();
+
+      // Mock the configuration to prevent initialization errors
+      mock(isPublisherConfigFrozen).mockReturnValue(false);
+      mock.module("../config", () => ({
+         isPublisherConfigFrozen: () => false,
+      }));
+
+      // Create project store after mocking
+      environmentStore = new EnvironmentStore(serverRootPath);
+   });
+
+   afterEach(async () => {
+      // Clean up the test directory after each test
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+      mkdirSync(serverRootPath);
+      sandbox.restore();
+   });
+
+   it("should not load a package if the project does not exist", async () => {
+      await expect(
+         environmentStore.getEnvironment("non-existent-project"),
+      ).rejects.toThrow();
+   });
+
+   it(
+      "should create and manage projects with connections",
+      async () => {
+         // Create a project directory
+         const projectPath = path.join(serverRootPath, projectName);
+         mkdirSync(projectPath, { recursive: true });
+         // Create publisher.json manifest file
+         writeFileSync(
+            path.join(projectPath, "publisher.json"),
+            JSON.stringify({
+               name: projectName,
+               description: "Test package",
+            }),
+         );
+
+         // Create publisher config
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(
+            publisherConfigPath,
+            JSON.stringify({
+               frozenConfig: false,
+               environments: [
+                  {
+                     name: projectName,
+                     packages: [
+                        {
+                           name: projectName,
+                           location: projectPath,
+                        },
+                     ],
+                     connections: [
+                        {
+                           name: "testConnection",
+                           type: "postgres",
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+
+         // Test that the project can be retrieved
+         const project = await environmentStore.getEnvironment(projectName);
+         expect(project).toBeInstanceOf(Environment);
+         expect(project.metadata.name).toBe(projectName);
+      },
+      { timeout: 30000 },
+   );
+
+   it("should handle multiple projects", async () => {
+      const projectName1 = "project1";
+      const projectName2 = "project2";
+      const projectPath1 = path.join(serverRootPath, projectName1);
+      const projectPath2 = path.join(serverRootPath, projectName2);
+
+      // Create project directories
+      mkdirSync(projectPath1, { recursive: true });
+      mkdirSync(projectPath2, { recursive: true });
+
+      // Create publisher config
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName1,
+                  packages: [
+                     {
+                        name: projectName1,
+                        location: projectPath1,
+                     },
+                  ],
+                  connections: [
+                     {
+                        name: "testConnection",
+                        type: "postgres",
+                     },
+                  ],
+               },
+               {
+                  name: projectName2,
+                  packages: [
+                     {
+                        name: projectName2,
+                        location: projectPath2,
+                     },
+                  ],
+                  connections: [
+                     {
+                        name: "testConnection2",
+                        type: "bigquery",
+                        bigqueryConnection: {},
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      // Create a new project store that will read the configuration
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      // Test that both projects can be listed
+      const projects = await newEnvironmentStore.listEnvironments();
+      expect(projects).toBeInstanceOf(Array);
+      expect(projects.length).toBe(2);
+      expect(projects.map((p) => p.name)).toContain(projectName1);
+      expect(projects.map((p) => p.name)).toContain(projectName2);
+   });
+
+   it("should skip a project with invalid startup connection config", async () => {
+      const validProjectName = "valid-project";
+      const invalidProjectName = "invalid-motherduck-project";
+      const validProjectPath = path.join(serverRootPath, validProjectName);
+      const invalidProjectPath = path.join(serverRootPath, invalidProjectName);
+
+      mkdirSync(validProjectPath, { recursive: true });
+      mkdirSync(invalidProjectPath, { recursive: true });
+      writeFileSync(
+         path.join(validProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: validProjectName,
+            description: "Valid project",
+         }),
+      );
+      writeFileSync(
+         path.join(invalidProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: invalidProjectName,
+            description: "Invalid project",
+         }),
+      );
+
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: invalidProjectName,
+                  packages: [
+                     {
+                        name: invalidProjectName,
+                        location: invalidProjectPath,
+                     },
+                  ],
+                  connections: [
+                     {
+                        name: "motherduck",
+                        type: "motherduck",
+                        motherduckConnection: {},
+                     },
+                  ],
+               },
+               {
+                  name: validProjectName,
+                  packages: [
+                     {
+                        name: validProjectName,
+                        location: validProjectPath,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const projects = await newEnvironmentStore.listEnvironments();
+      expect(projects.map((p) => p.name)).toEqual([validProjectName]);
+      await expect(
+         newEnvironmentStore.getEnvironment(invalidProjectName),
+      ).rejects.toThrow();
+   });
+
+   it("should handle project updates", async () => {
+      // Create a project directory
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      // Create publisher.json manifest file
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({
+            name: projectName,
+            description: "Test package",
+         }),
+      );
+      // Create publisher config
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     {
+                        name: projectName,
+                        location: projectPath,
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      await environmentStore.finishedInitialization;
+
+      // Get the project
+      const project = await environmentStore.getEnvironment(projectName);
+
+      // Update the project
+      await project.update({
+         name: projectName,
+         readme: "Updated README content",
+      });
+
+      const readmePath = path.join(
+         serverRootPath,
+         "publisher_data",
+         projectName,
+         "README.md",
+      );
+
+      expect(existsSync(readmePath)).toBe(true);
+      const readmeContent = readFileSync(readmePath, "utf-8");
+      expect(readmeContent).toBe("Updated README content");
+   });
+
+   it("should propagate materializationStorage on addEnvironment for new environment", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({ frozenConfig: false, environments: [] }),
+      );
+
+      await environmentStore.finishedInitialization;
+
+      const materializationStorage = {
+         catalogUrl:
+            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
+         dataPath: "gs://test-bucket",
+      };
+
+      initializeDuckLakeCalls.length = 0;
+      const project = await environmentStore.addEnvironment({
+         name: projectName,
+         materializationStorage,
+      });
+
+      expect(project.metadata.materializationStorage).toEqual(
+         materializationStorage,
+      );
+      expect(initializeDuckLakeCalls).toHaveLength(1);
+      expect(initializeDuckLakeCalls[0].config).toEqual(materializationStorage);
+   });
+
+   it("should propagate materializationStorage on update", async () => {
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ name: projectName, description: "Test package" }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+               },
+            ],
+         }),
+      );
+
+      await environmentStore.finishedInitialization;
+      const project = await environmentStore.getEnvironment(projectName);
+
+      const materializationStorage = {
+         catalogUrl:
+            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
+         dataPath: "gs://test-bucket",
+      };
+
+      await project.update({ name: projectName, materializationStorage });
+
+      expect(project.metadata.materializationStorage).toEqual(
+         materializationStorage,
+      );
+   });
+
+   it(
+      "should handle project reload",
+      async () => {
+         // Create a project directory
+         const projectPath = path.join(serverRootPath, projectName);
+         mkdirSync(projectPath, { recursive: true });
+         // Create publisher.json manifest file
+         writeFileSync(
+            path.join(projectPath, "publisher.json"),
+            JSON.stringify({
+               name: projectName,
+               description: "Test package",
+            }),
+         );
+
+         // Create publisher config
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(
+            publisherConfigPath,
+            JSON.stringify({
+               environments: [
+                  {
+                     name: projectName,
+                     packages: [
+                        {
+                           name: projectName,
+                           location: projectPath,
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+
+         // Get the project
+         const project1 = await environmentStore.getEnvironment(projectName);
+
+         // Get the project again with reload=true
+         const project2 = await environmentStore.getEnvironment(
+            projectName,
+            true,
+         );
+
+         expect(project1).toBeInstanceOf(Environment);
+         expect(project2).toBeInstanceOf(Environment);
+         expect(project1.metadata.name).toBe(project2.metadata.name as string);
+      },
+      { timeout: 30000 },
+   );
+
+   it("should handle missing project paths", async () => {
+      // Create publisher config with non-existent project path
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     {
+                        name: projectName,
+                        location: "/non/existent/path",
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      // Test that getting the project throws an error
+      await expect(
+         environmentStore.getEnvironment(projectName),
+      ).rejects.toThrow();
+   });
+
+   it("should handle invalid publisher config", async () => {
+      // Create invalid publisher config
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(publisherConfigPath, "invalid json");
+
+      // Create a new project store that will read the invalid config
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+
+      // Test that the project store handles invalid JSON gracefully by falling back to empty config
+      await newEnvironmentStore.finishedInitialization;
+      const projects = await newEnvironmentStore.listEnvironments();
+      expect(projects).toEqual([]);
+   });
+
+   it("should handle invalid field names in publisher config without crashing", async () => {
+      // Create publisher config with invalid field names (ramen instead of name, papa instead of packages)
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  invalidKey1: "malloy-samples", // Invalid: should be "name"
+                  invalidKey2: [
+                     // Invalid: should be "packages"
+                     {
+                        name: "ecommerce",
+                        location:
+                           "https://github.com/credibledata/malloy-samples/tree/main/ecommerce",
+                     },
+                  ],
+                  connections: [
+                     {
+                        name: "bigquery",
+                        type: "bigquery",
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      // Create a new project store that will read the invalid config
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+
+      // Test that the project store handles invalid fields gracefully without crashing
+      await newEnvironmentStore.finishedInitialization;
+      const projects = await newEnvironmentStore.listEnvironments();
+
+      // Should not crash and should return empty array since invalid projects are filtered out
+      expect(projects).toEqual([]);
+   });
+
+   it("should filter out invalid projects from publisher config", async () => {
+      // Create publisher config with mix of valid and invalid projects
+      const publisherConfigPath = path.join(
+         serverRootPath,
+         "publisher.config.json",
+      );
+      const validProjectPath = path.join(serverRootPath, "valid-project");
+      mkdirSync(validProjectPath, { recursive: true });
+      writeFileSync(
+         path.join(validProjectPath, "publisher.json"),
+         JSON.stringify({
+            name: "valid-project",
+            description: "Valid project",
+         }),
+      );
+
+      writeFileSync(
+         publisherConfigPath,
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  // Invalid project: missing "name" field
+                  packages: [
+                     {
+                        name: "package1",
+                        location: "./invalid-project",
+                     },
+                  ],
+               },
+               {
+                  // Invalid project: "invalidKey1" instead of "name"
+                  invalidKey1: "invalid-project-2",
+                  packages: [
+                     {
+                        name: "package2",
+                        location: "./invalid-project-2",
+                     },
+                  ],
+               },
+               {
+                  // Invalid project: "invalidKey2" instead of "packages"
+                  name: "invalid-project-3",
+                  invalidKey2: [
+                     {
+                        name: "package3",
+                        location: "./invalid-project-3",
+                     },
+                  ],
+               },
+               {
+                  // Valid project
+                  name: "valid-project",
+                  packages: [
+                     {
+                        name: "valid-project",
+                        location: "./valid-project",
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      // Create a new project store that will read the config
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+
+      // Test that invalid projects are filtered out
+      await newEnvironmentStore.finishedInitialization;
+      const projects = await newEnvironmentStore.listEnvironments();
+
+      // Should only have the valid project
+      expect(projects.length).toBe(1);
+      expect(projects[0].name).toBe("valid-project");
+   });
+
+   it(
+      "should handle concurrent project access",
+      async () => {
+         // Create a project directory
+         const projectPath = path.join(serverRootPath, projectName);
+         mkdirSync(projectPath, { recursive: true });
+         // Create publisher.json manifest file
+         writeFileSync(
+            path.join(projectPath, "publisher.json"),
+            JSON.stringify({
+               name: projectName,
+               description: "Test package",
+            }),
+         );
+
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(
+            publisherConfigPath,
+            JSON.stringify({
+               frozenConfig: false,
+               environments: [
+                  {
+                     name: projectName,
+                     packages: [
+                        {
+                           name: projectName,
+                           location: projectPath,
+                        },
+                     ],
+                     connections: [
+                        {
+                           name: "testConnection",
+                           type: "postgres",
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+
+         await environmentStore.finishedInitialization;
+
+         // Test concurrent access to the same project
+         const promises = Array.from({ length: 5 }, () =>
+            environmentStore.getEnvironment(projectName),
+         );
+
+         const projects = await Promise.all(promises);
+
+         expect(projects).toHaveLength(5);
+         projects.forEach((project) => {
+            expect(project).toBeInstanceOf(Environment);
+            expect(project.metadata.name).toBe(projectName);
+         });
+      },
+      { timeout: 30000 },
+   );
+});
+
+describe("Project Service Error Recovery", () => {
+   let sandbox: sinon.SinonSandbox;
+   let environmentStore: EnvironmentStore;
+   const serverRootPath = path.join(
+      TEMP_DIR_PATH,
+      "pathways-worker-publisher-error-recovery-test",
+   );
+   const projectName = "organizationName-projectName-error-recovery";
+   const testConnections: Connection[] = [
+      {
+         name: "testConnection",
+         type: "postgres",
+         postgresConnection: {
+            host: "host",
+            port: 1234,
+            databaseName: "databaseName",
+            userName: "userName",
+            password: "password",
+         },
+      },
+   ];
+
+   beforeEach(async () => {
+      sandbox = sinon.createSandbox();
+      mkdirSync(serverRootPath, { recursive: true });
+
+      // Mock the configuration to prevent initialization errors
+      mock(isPublisherConfigFrozen).mockReturnValue(false);
+      mock.module("../config", () => ({
+         isPublisherConfigFrozen: () => false,
+      }));
+
+      // Create project store after mocking
+      environmentStore = new EnvironmentStore(serverRootPath);
+   });
+
+   afterEach(async () => {
+      sandbox.restore();
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+   });
+
+   describe("Project Loading Error Recovery", () => {
+      it("should handle missing project directories gracefully", async () => {
+         // Create publisher config with missing project directory
+         const publisherConfigPath = path.join(
+            serverRootPath,
+            "publisher.config.json",
+         );
+         writeFileSync(
+            publisherConfigPath,
+            JSON.stringify({
+               environments: [
+                  {
+                     name: projectName,
+                     packages: [
+                        {
+                           name: projectName,
+                           location: path.join(
+                              serverRootPath,
+                              "missing-project",
+                           ),
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+
+         // Test that the project store handles the missing directory
+         await expect(
+            environmentStore.getEnvironment(projectName),
+         ).rejects.toThrow();
+      });
+
+      it(
+         "should handle corrupted connection files",
+         async () => {
+            // Create a project directory
+            const projectPath = path.join(serverRootPath, projectName);
+            mkdirSync(projectPath, { recursive: true });
+            // Create publisher.json manifest file
+            writeFileSync(
+               path.join(projectPath, "publisher.json"),
+               JSON.stringify({
+                  name: projectName,
+                  description: "Test package",
+               }),
+            );
+
+            // Create corrupted connections file
+            const connectionsPath = path.join(
+               projectPath,
+               "publisher.connections.json",
+            );
+            writeFileSync(connectionsPath, "invalid json");
+
+            // Create publisher config
+            const publisherConfigPath = path.join(
+               serverRootPath,
+               "publisher.config.json",
+            );
+            writeFileSync(
+               publisherConfigPath,
+               JSON.stringify({
+                  environments: [
+                     {
+                        name: projectName,
+                        packages: [
+                           {
+                              name: projectName,
+                              location: projectPath,
+                           },
+                        ],
+                     },
+                  ],
+               }),
+            );
+
+            // Test that the project store handles corrupted connection files gracefully
+            // (The current implementation loads the project even with corrupted connection files)
+            const project = await environmentStore.getEnvironment(projectName);
+            expect(project).toBeInstanceOf(Environment);
+            expect(project.metadata.name).toBe(projectName);
+         },
+         { timeout: 30000 },
+      );
+   });
+
+   describe("Project Store State Management", () => {
+      it(
+         "should maintain consistent state after errors",
+         async () => {
+            // Create a valid project first
+            const projectPath = path.join(serverRootPath, projectName);
+            mkdirSync(projectPath, { recursive: true });
+            // Create publisher.json manifest file
+            writeFileSync(
+               path.join(projectPath, "publisher.json"),
+               JSON.stringify({
+                  name: projectName,
+                  description: "Test package",
+               }),
+            );
+            writeFileSync(
+               path.join(projectPath, "publisher.connections.json"),
+               JSON.stringify(testConnections),
+            );
+
+            const publisherConfigPath = path.join(
+               serverRootPath,
+               "publisher.config.json",
+            );
+            writeFileSync(
+               publisherConfigPath,
+               JSON.stringify({
+                  environments: [
+                     {
+                        name: projectName,
+                        packages: [
+                           {
+                              name: projectName,
+                              location: projectPath,
+                           },
+                        ],
+                     },
+                  ],
+               }),
+            );
+
+            // Get the project successfully
+            const project = await environmentStore.getEnvironment(projectName);
+            expect(project).toBeInstanceOf(Environment);
+
+            // Try to get a non-existent project
+            await expect(
+               environmentStore.getEnvironment("non-existent"),
+            ).rejects.toThrow();
+
+            // Verify the original project is still accessible
+            const projectAgain =
+               await environmentStore.getEnvironment(projectName);
+            expect(projectAgain).toBeInstanceOf(Environment);
+            expect(projectAgain.metadata.name).toBe(projectName);
+         },
+         { timeout: 30000 },
+      );
+   });
+});

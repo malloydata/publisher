@@ -72,7 +72,7 @@ export interface GcResult {
 export interface GcContext {
    connections: Map<string, Connection>;
    manifestService: ManifestService;
-   projectId: string;
+   environmentId: string;
    dryRun?: boolean;
    /**
     * Set of `liveTableKey(connectionName, tableName)` tuples that some
@@ -115,7 +115,7 @@ async function processOneEntry(
    if (!connection) {
       if (ctx.forceDeleteRowOnMissingConnection && !ctx.dryRun) {
          try {
-            await ctx.manifestService.deleteEntry(ctx.projectId, entry.id);
+            await ctx.manifestService.deleteEntry(ctx.environmentId, entry.id);
             logger.warn(
                "GC: deleted manifest row whose connection is gone; physical table (if any) is orphaned",
                {
@@ -184,7 +184,7 @@ async function processOneEntry(
    const quoted = (p: string) => quoteTablePath(p, dialect);
 
    try {
-      await ctx.manifestService.deleteEntry(ctx.projectId, entry.id);
+      await ctx.manifestService.deleteEntry(ctx.environmentId, entry.id);
    } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       logger.warn("GC: failed to delete manifest row; skipping physical drop", {

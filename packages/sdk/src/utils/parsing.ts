@@ -1,5 +1,7 @@
 // Helper function to extract a brief description from README content
-export const getProjectDescription = (readme: string | undefined): string => {
+export const getEnvironmentDescription = (
+   readme: string | undefined,
+): string => {
    if (!readme) {
       return "Explore semantic models, run queries, and build dashboards";
    }
@@ -28,19 +30,19 @@ export const getProjectDescription = (readme: string | undefined): string => {
    return truncated.join(" ") + "...";
 };
 
-export const generateProjectReadme = (
-   project: {
+export const generateEnvironmentReadme = (
+   environment: {
       name: string;
       readme?: string;
    },
    description?: string,
 ): string => {
-   const readmeLines = (project.readme || undefined)?.split("\n") ?? [];
+   const readmeLines = (environment.readme || undefined)?.split("\n") ?? [];
    if (readmeLines.length === 0) {
-      readmeLines.push(`# ${project.name}`);
+      readmeLines.push(`# ${environment.name}`);
       readmeLines.push("");
    }
-   if ((project.readme?.length ?? 0) > 0 && description) {
+   if ((environment.readme?.length ?? 0) > 0 && description) {
       readmeLines.splice(2, 1, description);
    } else if (description) {
       readmeLines.push(description);

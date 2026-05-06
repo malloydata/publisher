@@ -20,16 +20,16 @@ interface ModelsProps {
 
 export default function Models({ onClickModelFile, resourceUri }: ModelsProps) {
    const {
-      projectName: projectName,
+      environmentName: environmentName,
       packageName: packageName,
       versionId: versionId,
    } = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
    const { data, isError, error, isSuccess } = useQueryWithApiError({
-      queryKey: ["models", projectName, packageName, versionId],
+      queryKey: ["models", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.models.listModels(projectName, packageName, versionId),
+         apiClients.models.listModels(environmentName, packageName, versionId),
    });
 
    return (
@@ -46,7 +46,7 @@ export default function Models({ onClickModelFile, resourceUri }: ModelsProps) {
                {isError && (
                   <ApiErrorDisplay
                      error={error}
-                     context={`${projectName} > ${packageName} > Models`}
+                     context={`${environmentName} > ${packageName} > Models`}
                   />
                )}
                {isSuccess && data.data.length > 0 && (

@@ -46,7 +46,7 @@ import "@malloy-publisher/sdk/styles.css";
 function App() {
    return (
       <ServerProvider baseURL="http://localhost:4000/api/v0">
-         <Home onClickProject={(path) => console.log("Navigate to:", path)} />
+         <Home onClickEnvironment={(path) => console.log("Navigate to:", path)} />
       </ServerProvider>
    );
 }
@@ -65,7 +65,7 @@ import {
 import {
    ServerProvider,
    Home,
-   Project,
+   Environment,
    Package,
    Model,
    Notebook,
@@ -80,13 +80,13 @@ function App() {
          <BrowserRouter>
             <Routes>
                <Route path="/" element={<HomePage />} />
-               <Route path="/:projectName" element={<ProjectPage />} />
+               <Route path="/:environmentName" element={<EnvironmentPage />} />
                <Route
-                  path="/:projectName/:packageName"
+                  path="/:environmentName/:packageName"
                   element={<PackagePage />}
                />
                <Route
-                  path="/:projectName/:packageName/*"
+                  path="/:environmentName/:packageName/*"
                   element={<ModelPage />}
                />
             </Routes>
@@ -97,20 +97,20 @@ function App() {
 
 function HomePage() {
    const navigate = useRouterClickHandler();
-   return <Home onClickProject={navigate} />;
+   return <Home onClickEnvironment={navigate} />;
 }
 
-function ProjectPage() {
+function EnvironmentPage() {
    const navigate = useRouterClickHandler();
-   const { projectName } = useParams();
-   const resourceUri = encodeResourceUri({ projectName });
-   return <Project onSelectPackage={navigate} resourceUri={resourceUri} />;
+   const { environmentName } = useParams();
+   const resourceUri = encodeResourceUri({ environmentName });
+   return <Environment onSelectPackage={navigate} resourceUri={resourceUri} />;
 }
 
 function PackagePage() {
    const navigate = useRouterClickHandler();
-   const { projectName, packageName } = useParams();
-   const resourceUri = encodeResourceUri({ projectName, packageName });
+   const { environmentName, packageName } = useParams();
+   const resourceUri = encodeResourceUri({ environmentName, packageName });
    return <Package onClickPackageFile={navigate} resourceUri={resourceUri} />;
 }
 
@@ -118,7 +118,7 @@ function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
    const resourceUri = encodeResourceUri({
-      projectName: params.projectName,
+      environmentName: params.environmentName,
       packageName: params.packageName,
       modelPath,
    });
@@ -142,14 +142,14 @@ function ModelPage() {
 The SDK uses a standardized URI format to identify resources:
 
 ```
-publisher://projects/{projectName}/packages/{packageName}/models/{modelPath}?versionId={version}
+publisher://environments/{environmentName}/packages/{packageName}/models/{modelPath}?versionId={version}
 ```
 
 Examples:
 
-- Project: `publisher://projects/my-project`
-- Package: `publisher://projects/my-project/packages/analytics`
-- Model: `publisher://projects/my-project/packages/analytics/models/orders.malloy`
+- Environment: `publisher://environments/my-environment`
+- Package: `publisher://environments/my-environment/packages/analytics`
+- Model: `publisher://environments/my-environment/packages/analytics/models/orders.malloy`
 
 Use the `encodeResourceUri()` and `parseResourceUri()` utilities to work with these URIs.
 
@@ -159,8 +159,8 @@ The SDK components follow a natural hierarchy:
 
 ```
 ServerProvider (required wrapper)
-├── Home (list all projects)
-│   └── Project (show packages in a project)
+├── Home (list all environments)
+│   └── Environment (show packages in an environment)
 │       └── Package (show models, notebooks, connections)
 │           ├── Model (visual query builder + named queries)
 │           └── Notebook (read-only notebook viewer)
@@ -174,13 +174,13 @@ Components accept callback functions for navigation rather than handling routing
 ```tsx
 // With React Router
 const navigate = useRouterClickHandler();
-<Home onClickProject={navigate} />
+<Home onClickEnvironment={navigate} />
 
 // Custom navigation
-<Home onClickProject={(path) => window.location.href = path} />
+<Home onClickEnvironment={(path) => window.location.href = path} />
 
 // SPA with history
-<Home onClickProject={(path) => history.push(path)} />
+<Home onClickEnvironment={(path) => history.push(path)} />
 ```
 
 ---
@@ -195,7 +195,7 @@ The `ServerProvider` is the required context provider that wraps your applicatio
 | ---------------- | ----------------------- | ------------- | -------------------------------------------------------------------- |
 | `baseURL`        | `string`                | Auto-detected | Base URL of the Publisher API (e.g., `http://localhost:4000/api/v0`) |
 | `getAccessToken` | `() => Promise<string>` | `undefined`   | Async function returning auth token                                  |
-| `mutable`        | `boolean`               | `true`        | Enable/disable project/package management UI                         |
+| `mutable`        | `boolean`               | `true`        | Enable/disable environment/package management UI                         |
 
 ### Basic Usage
 
@@ -238,19 +238,19 @@ async function getAccessToken() {
 
 ### Home
 
-Displays a landing page with feature cards and a list of all available projects.
+Displays a landing page with feature cards and a list of all available environments.
 
 ```tsx
 import { Home } from "@malloy-publisher/sdk";
 
 interface HomeProps {
-   onClickProject?: (path: string, event?: React.MouseEvent) => void;
+   onClickEnvironment?: (path: string, event?: React.MouseEvent) => void;
 }
 
 // Usage
 <Home
-   onClickProject={(path, event) => {
-      // path is like "/my-project/"
+   onClickEnvironment={(path, event) => {
+      // path is like "/my-environment/"
       navigate(path);
    }}
 />;
@@ -260,27 +260,27 @@ interface HomeProps {
 
 - Hero section with Publisher branding
 - Feature cards (Ad Hoc Analysis, Notebook Dashboards, AI Agents)
-- Project listing with descriptions
-- Add/Edit/Delete project dialogs (when `mutable=true`)
+- Environment listing with descriptions
+- Add/Edit/Delete environment dialogs (when `mutable=true`)
 
 ---
 
-### Project
+### Environment
 
-Shows all packages within a project.
+Shows all packages within an environment.
 
 ```tsx
-import { Project, encodeResourceUri } from "@malloy-publisher/sdk";
+import { Environment, encodeResourceUri } from "@malloy-publisher/sdk";
 
-interface ProjectProps {
+interface EnvironmentProps {
    onSelectPackage: (path: string, event?: React.MouseEvent) => void;
    resourceUri: string;
 }
 
 // Usage
-const resourceUri = encodeResourceUri({ projectName: "my-project" });
+const resourceUri = encodeResourceUri({ environmentName: "my-environment" });
 
-<Project
+<Environment
    onSelectPackage={(path) => navigate(path)}
    resourceUri={resourceUri}
 />;
@@ -290,7 +290,7 @@ const resourceUri = encodeResourceUri({ projectName: "my-project" });
 
 - Package listing with version info
 - Add/Edit/Delete package dialogs (when `mutable=true`)
-- Project README display
+- Environment README display
 
 ---
 
@@ -308,7 +308,7 @@ interface PackageProps {
 
 // Usage
 const resourceUri = encodeResourceUri({
-   projectName: "my-project",
+   environmentName: "my-environment",
    packageName: "analytics",
 });
 
@@ -350,7 +350,7 @@ interface QueryExplorerResult {
 
 // Usage
 const resourceUri = encodeResourceUri({
-   projectName: "my-project",
+   environmentName: "my-environment",
    packageName: "analytics",
    modelPath: "models/orders.malloy",
 });
@@ -428,7 +428,7 @@ interface NotebookProps {
 
 // Usage
 const resourceUri = encodeResourceUri({
-   projectName: "my-project",
+   environmentName: "my-environment",
    packageName: "analytics",
    modelPath: "notebooks/sales-dashboard.malloynb",
 });
@@ -465,7 +465,7 @@ interface WorkbookProps {
 // Usage
 const workbookStorage = new BrowserWorkbookStorage();
 const resourceUri = encodeResourceUri({
-   projectName: "my-project",
+   environmentName: "my-environment",
    packageName: "analytics",
 });
 
@@ -508,7 +508,7 @@ interface QueryResultProps {
   sourceName="orders"
   queryName="by_region"
   resourceUri={encodeResourceUri({
-    projectName: "my-project",
+    environmentName: "my-environment",
     packageName: "analytics",
     modelPath: "models/orders.malloy",
   })}
@@ -518,7 +518,7 @@ interface QueryResultProps {
 <QueryResult
   query="run: orders -> { group_by: status; aggregate: order_count }"
   resourceUri={encodeResourceUri({
-    projectName: "my-project",
+    environmentName: "my-environment",
     packageName: "analytics",
     modelPath: "models/orders.malloy",
   })}
@@ -567,7 +567,7 @@ const embedded = createEmbeddedQueryResult({
    queryName: "by_region",
    sourceName: "orders",
    resourceUri: encodeResourceUri({
-      projectName: "my-project",
+      environmentName: "my-environment",
       packageName: "analytics",
       modelPath: "models/orders.malloy",
    }),
@@ -684,7 +684,7 @@ import {
 } from '@malloy-publisher/sdk';
 
 const config: DimensionFiltersConfig = {
-  project: "malloy-samples",
+  environment: "malloy-samples",
   package: "faa",
   indexLimit: 1000,
   dimensionSpecs: [
@@ -743,9 +743,9 @@ function MyComponent() {
    } = useServer();
 
    // Use API clients directly
-   const projects = await apiClients.projects.listProjects();
+   const environments = await apiClients.environments.listEnvironments();
    const model = await apiClients.models.getModel(
-      projectName,
+      environmentName,
       packageName,
       modelPath,
       versionId,
@@ -758,7 +758,7 @@ function MyComponent() {
 ```typescript
 interface ApiClients {
    models: ModelsApi; // Get/execute models
-   projects: ProjectsApi; // CRUD projects
+   environments: EnvironmentsApi; // CRUD environments
    packages: PackagesApi; // CRUD packages
    notebooks: NotebooksApi; // Get/execute notebooks
    connections: ConnectionsApi; // CRUD connections
@@ -780,7 +780,7 @@ function MyComponent() {
    const { data, isLoading, isError, error } = useQueryWithApiError({
       queryKey: ["my-data", someParam],
       queryFn: async () => {
-         const response = await apiClients.projects.listProjects();
+         const response = await apiClients.environments.listEnvironments();
          return response.data;
       },
    });
@@ -808,18 +808,18 @@ import { useMutationWithApiError } from "@malloy-publisher/sdk";
 
 function MyComponent() {
    const mutation = useMutationWithApiError({
-      mutationFn: async (newProject) => {
-         const response = await apiClients.projects.createProject(newProject);
+      mutationFn: async (newEnvironment) => {
+         const response = await apiClients.environments.createEnvironment(newEnvironment);
          return response.data;
       },
       onSuccess: () => {
-         queryClient.invalidateQueries(["projects"]);
+         queryClient.invalidateQueries(["environments"]);
       },
    });
 
    return (
-      <button onClick={() => mutation.mutate({ name: "new-project" })}>
-         Create Project
+      <button onClick={() => mutation.mutate({ name: "new-environment" })}>
+         Create Environment
       </button>
    );
 }
@@ -897,7 +897,7 @@ function MyComponent() {
    const navigate = useRouterClickHandler();
 
    return (
-      <button onClick={(e) => navigate("/projects/analytics", e)}>
+      <button onClick={(e) => navigate("/environments/analytics", e)}>
          Go to Analytics
       </button>
    );
@@ -922,27 +922,27 @@ Create a resource URI from components.
 ```tsx
 import { encodeResourceUri } from "@malloy-publisher/sdk";
 
-// Project only
-const projectUri = encodeResourceUri({
-   projectName: "my-project",
+// Environment only
+const environmentUri = encodeResourceUri({
+   environmentName: "my-environment",
 });
-// Result: "publisher://projects/my-project"
+// Result: "publisher://environments/my-environment"
 
 // Package
 const packageUri = encodeResourceUri({
-   projectName: "my-project",
+   environmentName: "my-environment",
    packageName: "analytics",
 });
-// Result: "publisher://projects/my-project/packages/analytics"
+// Result: "publisher://environments/my-environment/packages/analytics"
 
 // Model with version
 const modelUri = encodeResourceUri({
-   projectName: "my-project",
+   environmentName: "my-environment",
    packageName: "analytics",
    modelPath: "models/orders.malloy",
    versionId: "abc123",
 });
-// Result: "publisher://projects/my-project/packages/analytics/models/models/orders.malloy?versionId=abc123"
+// Result: "publisher://environments/my-environment/packages/analytics/models/models/orders.malloy?versionId=abc123"
 ```
 
 ---
@@ -955,12 +955,12 @@ Parse a resource URI back to components.
 import { parseResourceUri } from "@malloy-publisher/sdk";
 
 const uri =
-   "publisher://projects/my-project/packages/analytics/models/orders.malloy?versionId=abc123";
+   "publisher://environments/my-environment/packages/analytics/models/orders.malloy?versionId=abc123";
 const parsed = parseResourceUri(uri);
 
 // Result:
 // {
-//   projectName: "my-project",
+//   environmentName: "my-environment",
 //   packageName: "analytics",
 //   modelPath: "orders.malloy",
 //   versionId: "abc123"
@@ -973,7 +973,7 @@ const parsed = parseResourceUri(uri);
 
 ```typescript
 type ParsedResource = {
-   projectName: string;
+   environmentName: string;
    packageName?: string;
    connectionName?: string;
    versionId?: string;
@@ -1219,7 +1219,7 @@ import { Grid, Typography, Paper } from "@mui/material";
 
 function Dashboard() {
    const resourceUri = encodeResourceUri({
-      projectName: "my-project",
+      environmentName: "my-environment",
       packageName: "analytics",
       modelPath: "models/sales.malloy",
    });
@@ -1300,7 +1300,7 @@ import { DataGrid } from "@mui/x-data-grid";
 
 function DataTable() {
    const resourceUri = encodeResourceUri({
-      projectName: "my-project",
+      environmentName: "my-environment",
       packageName: "analytics",
       modelPath: "models/customers.malloy",
    });
@@ -1353,7 +1353,7 @@ function Explorer() {
    const [selectedQuery, setSelectedQuery] = useState(null);
 
    const resourceUri = encodeResourceUri({
-      projectName: "my-project",
+      environmentName: "my-environment",
       packageName: "analytics",
       modelPath: "models/orders.malloy",
    });
@@ -1395,24 +1395,24 @@ import { ServerProvider, useServer } from "@malloy-publisher/sdk/client";
 function MyApp() {
    return (
       <ServerProvider baseURL="http://localhost:4000/api/v0">
-         <ProjectList />
+         <EnvironmentList />
       </ServerProvider>
    );
 }
 
-function ProjectList() {
+function EnvironmentList() {
    const { apiClients } = useServer();
-   const [projects, setProjects] = useState([]);
+   const [environments, setEnvironments] = useState([]);
 
    useEffect(() => {
-      apiClients.projects
-         .listProjects()
-         .then((response) => setProjects(response.data));
+      apiClients.environments
+         .listEnvironments()
+         .then((response) => setEnvironments(response.data));
    }, []);
 
    return (
       <ul>
-         {projects.map((p) => (
+         {environments.map((p) => (
             <li key={p.name}>{p.name}</li>
          ))}
       </ul>
@@ -1429,8 +1429,8 @@ function ProjectList() {
 | Component                 | Description                                     |
 | ------------------------- | ----------------------------------------------- |
 | `ServerProvider`          | Required context provider for API access        |
-| `Home`                    | Project listing landing page                    |
-| `Project`                 | Package listing for a project                   |
+| `Home`                    | Environment listing landing page                    |
+| `Environment`                 | Package listing for an environment                   |
 | `Package`                 | Package detail (models, notebooks, connections) |
 | `Model`                   | Full model explorer with visual query builder   |
 | `ModelExplorer`           | Lower-level query builder component             |
