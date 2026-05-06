@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+// TODO: Remove this during projects cleanup
 /**
  * Legacy `/projects/...` route registration.
  *
@@ -15,11 +16,12 @@
  *     format between old (`Project`) and new (`Environment`) specs, so they
  *     pass through unchanged.
  *   - The handful of payloads that DO have field-level renames are remapped:
- *       * GET /status                       — `environments` -> `projects`
  *       * Materialization responses         — `environmentId` -> `projectId`
  *
  *   - Watch-mode is intentionally not exposed under the legacy prefix; clients
  *     that need it should use the new `/environments/...` paths directly.
+ *   - `/status` is shared with the new server.ts handler — both old and new
+ *     clients receive the new `environments`-keyed payload.
  */
 
 import bodyParser from "body-parser";
@@ -58,16 +60,6 @@ export interface LegacyControllerSet {
 }
 
 // ─── response/body field mappers ───────────────────────────────────────────
-
-function remapStatusResponse(status: any): any {
-   if (!status || typeof status !== "object") return status;
-   const out: Record<string, any> = { ...status };
-   if ("environments" in out) {
-      out.projects = out.environments;
-      delete out.environments;
-   }
-   return out;
-}
 
 function remapMaterializationResponse(mat: any): any {
    if (!mat || typeof mat !== "object") return mat;
@@ -111,18 +103,6 @@ export function registerLegacyRoutes(
    // paths via `app.use(bodyParser.json(...))`. The legacy routes share the
    // same `${API_PREFIX}` prefix so they inherit it automatically.
    void bodyParser; // keep the import; helper file reference for clarity
-
-   // ── status ──────────────────────────────────────────────────────────────
-   app.get(`${LEGACY_API_PREFIX}/status`, async (_req, res) => {
-      try {
-         const status = await environmentStore.getStatus();
-         res.status(200).json(remapStatusResponse(status));
-      } catch (error) {
-         logger.error("Error getting status", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   });
 
    // ── projects (== environments) ──────────────────────────────────────────
    app.get(`${LEGACY_API_PREFIX}/projects`, async (_req, res) => {

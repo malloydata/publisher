@@ -108,6 +108,24 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    // Process environment variables in config values
    const processedConfig = processConfigValue(rawConfig);
 
+   // TODO: Remove this during projects cleanup
+   // Back-compat: the top-level key was renamed `projects` → `environments`.
+   // If a config still uses the old key, accept it once with a deprecation
+   // warning so existing on-disk configs don't silently parse as empty.
+   if (
+      processedConfig &&
+      typeof processedConfig === "object" &&
+      !("environments" in processedConfig) &&
+      "projects" in processedConfig
+   ) {
+      logger.warn(
+         `${PUBLISHER_CONFIG_NAME} uses deprecated "projects" key; rename to "environments".`,
+      );
+      (processedConfig as Record<string, unknown>).environments = (
+         processedConfig as Record<string, unknown>
+      ).projects;
+   }
+
    if (
       processedConfig &&
       typeof processedConfig === "object" &&

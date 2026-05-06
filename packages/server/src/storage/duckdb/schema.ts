@@ -17,6 +17,15 @@ export async function initializeSchema(
       );
       await dropAllTables(db);
    } else {
+      // TODO: Remove this during projects cleanup
+      // If a pre-rename `projects` schema is on disk, the new
+      // CREATE TABLE IF NOT EXISTS pass below would silently leave child
+      // tables on the old `project_id` column and the first query against
+      // `environment_id` would crash. Drop the legacy tables (with a loud
+      // warning) so the fresh schema can be created cleanly. This is
+      // destructive — operators upgrading should re-create their environments
+      // and packages via the API after the upgrade.
+      await dropLegacyProjectSchema(db);
       logger.info("Creating database schema for the first time...");
    }
 
@@ -123,6 +132,38 @@ export async function initializeSchema(
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_build_manifests_environment_package ON build_manifests(environment_id, package_name)",
    );
+}
+
+// TODO: Remove this during projects cleanup
+// Tables in the pre-rename schema, listed children-first so DROP order
+// satisfies foreign-key dependencies on the legacy `projects` table.
+const LEGACY_TABLES_DROP_ORDER = [
+   "build_manifests",
+   "materializations",
+   "packages",
+   "connections",
+   "projects",
+] as const;
+
+async function dropLegacyProjectSchema(db: DuckDBConnection): Promise<void> {
+   const legacy = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'",
+   );
+   if (!legacy || legacy.length === 0) {
+      return;
+   }
+
+   logger.warn(
+      "Detected legacy 'projects' schema. Dropping legacy tables; existing environments/packages/connections/materializations data will be lost. Re-create them via the API after upgrade.",
+   );
+
+   for (const table of LEGACY_TABLES_DROP_ORDER) {
+      try {
+         await db.run(`DROP TABLE IF EXISTS ${table}`);
+      } catch (err) {
+         logger.warn(`Failed to drop legacy table ${table}:`, err);
+      }
+   }
 }
 
 async function dropAllTables(db: DuckDBConnection): Promise<void> {

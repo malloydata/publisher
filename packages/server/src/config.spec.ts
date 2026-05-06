@@ -856,3 +856,114 @@ describe("Config Environment Variable Substitution", () => {
       });
    });
 });
+
+// TODO: Remove this during projects cleanup
+describe("Config legacy 'projects' key back-compat", () => {
+   const testServerRoot = path.join(process.cwd(), "test-temp-legacy-config");
+   const configPath = path.join(testServerRoot, PUBLISHER_CONFIG_NAME);
+
+   beforeEach(() => {
+      if (!fs.existsSync(testServerRoot)) {
+         fs.mkdirSync(testServerRoot, { recursive: true });
+      }
+   });
+
+   afterEach(() => {
+      if (fs.existsSync(configPath)) {
+         fs.unlinkSync(configPath);
+      }
+      if (fs.existsSync(testServerRoot)) {
+         fs.rmdirSync(testServerRoot, { recursive: true });
+      }
+   });
+
+   it("reads from legacy 'projects' key when 'environments' is absent", async () => {
+      // Pre-rename on-disk shape: top-level key is `projects`, not
+      // `environments`. Without back-compat this silently parses as empty.
+      const legacyConfig = {
+         frozenConfig: false,
+         projects: [
+            {
+               name: "legacy-env",
+               packages: [
+                  {
+                     name: "p1",
+                     location: "./packages/p1",
+                  },
+               ],
+            },
+         ],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(legacyConfig, null, 2));
+
+      // Spy on logger.warn so we can assert the deprecation message fired.
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const warnings: string[] = [];
+      logger.warn = ((msg: unknown, ..._rest: unknown[]) => {
+         warnings.push(typeof msg === "string" ? msg : String(msg));
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environments.length).toBe(1);
+         expect(result.environments[0].name).toBe("legacy-env");
+         expect(result.environments[0].packages[0].name).toBe("p1");
+
+         expect(
+            warnings.some((w) =>
+               w.includes('uses deprecated "projects" key'),
+            ),
+         ).toBe(true);
+      } finally {
+         logger.warn = originalWarn;
+      }
+   });
+
+   it("prefers the new 'environments' key when both are present", async () => {
+      const config = {
+         frozenConfig: false,
+         environments: [
+            {
+               name: "new-env",
+               packages: [{ name: "p1", location: "./packages/p1" }],
+            },
+         ],
+         projects: [
+            {
+               name: "should-be-ignored",
+               packages: [{ name: "p2", location: "./packages/p2" }],
+            },
+         ],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const warnings: string[] = [];
+      logger.warn = ((msg: unknown, ..._rest: unknown[]) => {
+         warnings.push(typeof msg === "string" ? msg : String(msg));
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environments.length).toBe(1);
+         expect(result.environments[0].name).toBe("new-env");
+
+         // No deprecation warning should fire when `environments` is present.
+         expect(
+            warnings.some((w) =>
+               w.includes('uses deprecated "projects" key'),
+            ),
+         ).toBe(false);
+      } finally {
+         logger.warn = originalWarn;
+      }
+   });
+});
