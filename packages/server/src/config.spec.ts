@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import { getPublisherConfig, type PublisherConfig } from "./config";
@@ -66,7 +66,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -92,7 +92,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -120,7 +120,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -137,7 +137,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://my-test-bucket/packages",
          );
       });
@@ -147,13 +147,13 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
                      {
                         name: "test-package",
-                        location: "./projects/${PROJECT_ID}/models",
+                        location: "./environments/${PROJECT_ID}/models",
                      },
                   ],
                },
@@ -164,8 +164,8 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe(
-            "./projects/analytics-2024/models",
+         expect(result.environments[0].packages[0].location).toBe(
+            "./environments/analytics-2024/models",
          );
       });
 
@@ -175,7 +175,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -192,7 +192,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://data-warehouse/prod-analytics/models",
          );
       });
@@ -203,7 +203,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -224,10 +224,10 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://bucket-one/path",
          );
-         expect(result.projects[0].packages[1].location).toBe(
+         expect(result.environments[0].packages[1].location).toBe(
             "gs://bucket-two/path",
          );
       });
@@ -237,7 +237,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -255,7 +255,9 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].connections?.[0].name).toBe("db-localhost");
+         expect(result.environments[0].connections?.[0].name).toBe(
+            "db-localhost",
+         );
       });
 
       it("should substitute variables in nested configuration objects", () => {
@@ -264,7 +266,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -282,7 +284,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
          const projectWithSettings = result
-            .projects[0] as (typeof result.projects)[0] & {
+            .environments[0] as (typeof result.environments)[0] & {
             settings: {
                apiEndpoint: string;
                credentials: {
@@ -304,7 +306,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -322,18 +324,18 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://bucket/prefix-my-project-suffix/models",
          );
       });
 
-      it("should substitute variables across multiple projects", () => {
+      it("should substitute variables across multiple environments", () => {
          process.env.DEV_BUCKET = "dev-data";
          process.env.PROD_BUCKET = "prod-data";
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "development",
                   packages: [
@@ -359,10 +361,10 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://dev-data/models",
          );
-         expect(result.projects[1].packages[0].location).toBe(
+         expect(result.environments[1].packages[0].location).toBe(
             "gs://prod-data/models",
          );
 
@@ -377,7 +379,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -391,9 +393,9 @@ describe("Config Environment Variable Substitution", () => {
          const result = getPublisherConfig(testServerRoot);
 
          // The key should remain as-is (not substituted)
-         expect(result.projects[0]).toHaveProperty("${KEY_NAME}");
+         expect(result.environments[0]).toHaveProperty("${KEY_NAME}");
          expect(
-            (result.projects[0] as Record<string, unknown>)["${KEY_NAME}"],
+            (result.environments[0] as Record<string, unknown>)["${KEY_NAME}"],
          ).toBe("some-value");
       });
 
@@ -402,7 +404,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -417,14 +419,16 @@ describe("Config Environment Variable Substitution", () => {
          const result = getPublisherConfig(testServerRoot);
 
          // Key should not be substituted
-         expect(result.projects[0]).toHaveProperty("${DYNAMIC_KEY}");
+         expect(result.environments[0]).toHaveProperty("${DYNAMIC_KEY}");
          expect(
-            (result.projects[0] as Record<string, unknown>)["${DYNAMIC_KEY}"],
+            (result.environments[0] as Record<string, unknown>)[
+               "${DYNAMIC_KEY}"
+            ],
          ).toBe("value1");
 
          // Value should be substituted
          expect(
-            (result.projects[0] as Record<string, unknown>)["normal_key"],
+            (result.environments[0] as Record<string, unknown>)["normal_key"],
          ).toBe("substituted-value");
       });
 
@@ -433,7 +437,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -447,11 +451,11 @@ describe("Config Environment Variable Substitution", () => {
          const result = getPublisherConfig(testServerRoot);
 
          // Key remains with variable syntax
-         expect(result.projects[0]).toHaveProperty("${KEY_VAR}");
+         expect(result.environments[0]).toHaveProperty("${KEY_VAR}");
 
          // Value is substituted
          expect(
-            (result.projects[0] as Record<string, unknown>)["${KEY_VAR}"],
+            (result.environments[0] as Record<string, unknown>)["${KEY_VAR}"],
          ).toBe("actual-value");
       });
 
@@ -461,7 +465,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -479,10 +483,10 @@ describe("Config Environment Variable Substitution", () => {
          const result = getPublisherConfig(testServerRoot);
 
          // Package name is a property VALUE, so it WILL be substituted
-         expect(result.projects[0].packages[0].name).toBe("my-package");
+         expect(result.environments[0].packages[0].name).toBe("my-package");
 
          // Location should also be substituted
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://my-bucket/models",
          );
 
@@ -494,7 +498,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -511,7 +515,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
          const projectWithMetadata = result
-            .projects[0] as (typeof result.projects)[0] & {
+            .environments[0] as (typeof result.environments)[0] & {
             metadata: Record<string, { setting: string }>;
          };
 
@@ -533,7 +537,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -550,7 +554,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://bucket//path",
          );
       });
@@ -558,7 +562,7 @@ describe("Config Environment Variable Substitution", () => {
       it("should handle non-string values without modification", () => {
          const config: PublisherConfig = {
             frozenConfig: true,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -569,9 +573,9 @@ describe("Config Environment Variable Substitution", () => {
          // Add non-standard properties for testing
          const configWithExtras = {
             ...config,
-            projects: [
+            environments: [
                {
-                  ...config.projects[0],
+                  ...config.environments[0],
                   count: 42,
                   enabled: true,
                   ratio: 3.14,
@@ -588,7 +592,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
          const projectWithExtras = result
-            .projects[0] as (typeof result.projects)[0] & {
+            .environments[0] as (typeof result.environments)[0] & {
             count: number;
             enabled: boolean;
             ratio: number;
@@ -607,7 +611,7 @@ describe("Config Environment Variable Substitution", () => {
       it("should handle config with no environment variables", () => {
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -627,17 +631,17 @@ describe("Config Environment Variable Substitution", () => {
          expect(result).toEqual(config);
       });
 
-      it("should handle empty projects array", () => {
+      it("should handle empty environments array", () => {
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [],
+            environments: [],
          };
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects).toEqual([]);
+         expect(result.environments).toEqual([]);
       });
 
       it("should return default config when file does not exist", () => {
@@ -646,7 +650,7 @@ describe("Config Environment Variable Substitution", () => {
 
          expect(result).toEqual({
             frozenConfig: false,
-            projects: [],
+            environments: [],
          });
       });
 
@@ -655,7 +659,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -674,17 +678,17 @@ describe("Config Environment Variable Substitution", () => {
 
          // Whitespace around variable name means it won't match the pattern
          // Due to bug, the unmatched variable causes duplication
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://${ BUCKET_NAME }/path",
          );
       });
 
-      it("should handle multiple projects with mixed variable usage", () => {
+      it("should handle multiple environments with mixed variable usage", () => {
          process.env.PROD_BUCKET = "production-data";
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "development",
                   packages: [
@@ -710,8 +714,10 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].packages[0].location).toBe("./packages/dev");
-         expect(result.projects[1].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
+            "./packages/dev",
+         );
+         expect(result.environments[1].packages[0].location).toBe(
             "gs://production-data/models",
          );
 
@@ -721,7 +727,7 @@ describe("Config Environment Variable Substitution", () => {
       it("should preserve variable syntax if not matching pattern", () => {
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [
@@ -739,7 +745,7 @@ describe("Config Environment Variable Substitution", () => {
          const result = getPublisherConfig(testServerRoot);
 
          // Variable won't match pattern, so won't be substituted
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://bucket/${lowercase_var}/path",
          );
       });
@@ -750,7 +756,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "test-project",
                   packages: [],
@@ -763,7 +769,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
          const projectWithTags = result
-            .projects[0] as (typeof result.projects)[0] & {
+            .environments[0] as (typeof result.environments)[0] & {
             tags: string[];
          };
 
@@ -786,7 +792,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "${ENV}",
                   packages: [
@@ -807,11 +813,11 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].name).toBe("staging");
-         expect(result.projects[0].packages[0].location).toBe(
+         expect(result.environments[0].name).toBe("staging");
+         expect(result.environments[0].packages[0].location).toBe(
             "gs://company-data-staging/company-project-staging/analytics",
          );
-         expect(result.projects[0].packages[1].location).toBe(
+         expect(result.environments[0].packages[1].location).toBe(
             "gs://company-data-staging/company-project-staging/reporting",
          );
 
@@ -824,7 +830,7 @@ describe("Config Environment Variable Substitution", () => {
 
          const config: PublisherConfig = {
             frozenConfig: false,
-            projects: [
+            environments: [
                {
                   name: "production",
                   packages: [],
@@ -842,9 +848,118 @@ describe("Config Environment Variable Substitution", () => {
 
          const result = getPublisherConfig(testServerRoot);
 
-         expect(result.projects[0].connections?.[0].name).toBe("production-db");
+         expect(result.environments[0].connections?.[0].name).toBe(
+            "production-db",
+         );
 
          delete process.env.DB_CONNECTION;
       });
+   });
+});
+
+// TODO: Remove this during projects cleanup
+describe("Config legacy 'projects' key back-compat", () => {
+   const testServerRoot = path.join(process.cwd(), "test-temp-legacy-config");
+   const configPath = path.join(testServerRoot, PUBLISHER_CONFIG_NAME);
+
+   beforeEach(() => {
+      if (!fs.existsSync(testServerRoot)) {
+         fs.mkdirSync(testServerRoot, { recursive: true });
+      }
+   });
+
+   afterEach(() => {
+      if (fs.existsSync(configPath)) {
+         fs.unlinkSync(configPath);
+      }
+      if (fs.existsSync(testServerRoot)) {
+         fs.rmdirSync(testServerRoot, { recursive: true });
+      }
+   });
+
+   it("reads from legacy 'projects' key when 'environments' is absent", async () => {
+      // Pre-rename on-disk shape: top-level key is `projects`, not
+      // `environments`. Without back-compat this silently parses as empty.
+      const legacyConfig = {
+         frozenConfig: false,
+         projects: [
+            {
+               name: "legacy-env",
+               packages: [
+                  {
+                     name: "p1",
+                     location: "./packages/p1",
+                  },
+               ],
+            },
+         ],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(legacyConfig, null, 2));
+
+      // Spy on logger.warn so we can assert the deprecation message fired.
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const warnings: string[] = [];
+      logger.warn = ((msg: unknown, ..._rest: unknown[]) => {
+         warnings.push(typeof msg === "string" ? msg : String(msg));
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environments.length).toBe(1);
+         expect(result.environments[0].name).toBe("legacy-env");
+         expect(result.environments[0].packages[0].name).toBe("p1");
+
+         expect(
+            warnings.some((w) => w.includes('uses deprecated "projects" key')),
+         ).toBe(true);
+      } finally {
+         logger.warn = originalWarn;
+      }
+   });
+
+   it("prefers the new 'environments' key when both are present", async () => {
+      const config = {
+         frozenConfig: false,
+         environments: [
+            {
+               name: "new-env",
+               packages: [{ name: "p1", location: "./packages/p1" }],
+            },
+         ],
+         projects: [
+            {
+               name: "should-be-ignored",
+               packages: [{ name: "p2", location: "./packages/p2" }],
+            },
+         ],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const warnings: string[] = [];
+      logger.warn = ((msg: unknown, ..._rest: unknown[]) => {
+         warnings.push(typeof msg === "string" ? msg : String(msg));
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environments.length).toBe(1);
+         expect(result.environments[0].name).toBe("new-env");
+
+         // No deprecation warning should fire when `environments` is present.
+         expect(
+            warnings.some((w) => w.includes('uses deprecated "projects" key')),
+         ).toBe(false);
+      } finally {
+         logger.warn = originalWarn;
+      }
    });
 });

@@ -4,7 +4,7 @@ import fs from "fs/promises";
 import path from "path";
 import { components } from "../../../src/api";
 import {
-   createProjectConnections,
+   createEnvironmentConnections,
    deleteDuckLakeConnectionFile,
    testConnectionConfig,
 } from "../../../src/service/connection";
@@ -143,7 +143,7 @@ describe("DuckLake Connection Tests", () => {
             };
 
             const { malloyConnections, apiConnections } =
-               await createProjectConnections(
+               await createEnvironmentConnections(
                   [ducklakeConnection],
                   testProjectPath,
                );
@@ -212,7 +212,7 @@ describe("DuckLake Connection Tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [ducklakeConnection],
                testProjectPath,
             );
@@ -268,7 +268,7 @@ describe("DuckLake Connection Tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [ducklakeConnection],
                testProjectPath,
             );
@@ -333,7 +333,7 @@ describe("DuckLake Connection Tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [ducklakeConnection],
                testProjectPath,
             );
@@ -400,7 +400,7 @@ describe("DuckLake Connection Tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [ducklakeConnection],
                testProjectPath,
             );
@@ -470,7 +470,7 @@ describe("DuckLake Connection Tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [ducklakeConnection],
                testProjectPath,
             );
@@ -529,7 +529,7 @@ describe("DuckLake Connection Tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [ducklakeConnection],
                testProjectPath,
             );
@@ -553,7 +553,7 @@ describe("DuckLake Connection Tests", () => {
    describe("Error Handling", () => {
       it("should throw error if DuckLake catalog connection is missing", async () => {
          await expect(
-            createProjectConnections(
+            createEnvironmentConnections(
                [
                   {
                      name: "ducklake_no_catalog",
@@ -576,7 +576,7 @@ describe("DuckLake Connection Tests", () => {
 
       it("should throw error if DuckLake storage bucketUrl is missing", async () => {
          await expect(
-            createProjectConnections(
+            createEnvironmentConnections(
                [
                   {
                      name: "ducklake_no_bucket",
@@ -607,7 +607,7 @@ describe("DuckLake Connection Tests", () => {
 
       it("should throw error if DuckLake connection config is missing", async () => {
          await expect(
-            createProjectConnections(
+            createEnvironmentConnections(
                [
                   {
                      name: "ducklake_missing_config",
@@ -653,19 +653,21 @@ describe("DuckLake Connection Tests", () => {
          };
 
          // Create connection twice - second should handle already attached gracefully
-         const { malloyConnections: conn1 } = await createProjectConnections(
-            [ducklakeConnection],
-            testProjectPath,
-         );
+         const { malloyConnections: conn1 } =
+            await createEnvironmentConnections(
+               [ducklakeConnection],
+               testProjectPath,
+            );
          const connection1 = conn1.get(
             "ducklake_duplicate_test",
          ) as DuckDBConnection;
          createdConnections.push(connection1);
 
-         const { malloyConnections: conn2 } = await createProjectConnections(
-            [ducklakeConnection],
-            testProjectPath,
-         );
+         const { malloyConnections: conn2 } =
+            await createEnvironmentConnections(
+               [ducklakeConnection],
+               testProjectPath,
+            );
          const connection2 = conn2.get(
             "ducklake_duplicate_test",
          ) as DuckDBConnection;
@@ -714,7 +716,7 @@ describe("DuckLake Connection Tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [ducklakeConnection],
                testProjectPath,
             );
@@ -771,7 +773,7 @@ describe("DuckLake Connection Tests", () => {
             },
          };
 
-         const { malloyConnections } = await createProjectConnections(
+         const { malloyConnections } = await createEnvironmentConnections(
             [ducklakeConnection],
             testProjectPath,
          );
@@ -903,7 +905,7 @@ describe("DuckLake Connection Tests", () => {
                return;
             }
 
-            const { apiConnections } = await createProjectConnections(
+            const { apiConnections } = await createEnvironmentConnections(
                [
                   {
                      name: "ducklake_attrs_test",

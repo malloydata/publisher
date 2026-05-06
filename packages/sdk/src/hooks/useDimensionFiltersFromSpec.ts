@@ -10,8 +10,8 @@ import { useDimensionFiltersQuery } from "./useDimensionFiltersQuery";
  * Configuration for dimensional filters
  */
 export interface DimensionFiltersConfig {
-   /** Project name */
-   project: string;
+   /** Environment name */
+   environment: string;
    /** Package name */
    package: string;
    /** Version ID (optional) */
@@ -37,7 +37,7 @@ export interface UseDimensionFiltersFromSpecOptions {
  * Combined hook that manages dimensional filters, data fetching, and query execution
  * from a single configuration object.
  *
- * @param config - Configuration containing project, package, dimension specs, and index limit
+ * @param config - Configuration containing environment, package, dimension specs, and index limit
  * @param queryLimit - Maximum number of results to return from query (default: 100)
  * @returns All state and methods needed for dimensional filtering UI
  */
@@ -69,7 +69,7 @@ export function useDimensionFiltersFromSpec(
    // The hook handles multiple source/model combos internally
    const { data, noRowsMatchedFilter, isLoading, isError, error, refetch } =
       useDimensionalFilterRangeData({
-         project: config.project,
+         environment: config.environment,
          package: config.package,
          indexLimit: config.indexLimit,
          dimensionSpecs: config.dimensionSpecs,
@@ -83,7 +83,7 @@ export function useDimensionFiltersFromSpec(
    // Generate the embedded query result (uses primary source/model)
    const { embeddedQueryResult, queryString, executeQuery, canExecute } =
       useDimensionFiltersQuery({
-         project: config.project,
+         environment: config.environment,
          package: config.package,
          model: primaryModel,
          source: primarySource,

@@ -21,30 +21,30 @@ import {
    Typography,
 } from "@mui/material";
 import { useState } from "react";
-import { Project } from "../../client";
+import { Environment } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { getProjectDescription } from "../../utils/parsing";
+import { getEnvironmentDescription } from "../../utils/parsing";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
-import AddProjectDialog from "./AddProjectDialog";
-import DeleteProjectDialog from "./DeleteProjectDialog";
-import EditProjectDialog from "./EditProjectDialog";
+import AddEnvironmentDialog from "./AddEnvironmentDialog";
+import DeleteEnvironmentDialog from "./DeleteEnvironmentDialog";
+import EditEnvironmentDialog from "./EditEnvironmentDialog";
 
 interface HomeProps {
-   onClickProject?: (to: string, event?: React.MouseEvent) => void;
+   onClickEnvironment?: (to: string, event?: React.MouseEvent) => void;
 }
 
-export default function Home({ onClickProject }: HomeProps) {
+export default function Home({ onClickEnvironment }: HomeProps) {
    const { apiClients, mutable } = useServer();
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: ["projects"],
-      queryFn: () => apiClients.projects.listProjects(),
+      queryKey: ["environments"],
+      queryFn: () => apiClients.environments.listEnvironments(),
    });
 
    if (isError) {
-      return <ApiErrorDisplay error={error} context="Projects List" />;
+      return <ApiErrorDisplay error={error} context="Environments List" />;
    }
 
    if (isSuccess) {
@@ -247,7 +247,7 @@ export default function Home({ onClickProject }: HomeProps) {
 
             <Divider sx={{ my: 4 }} />
 
-            {/* Project Selection Section */}
+            {/* Environment Selection Section */}
             {data.data.length > 0 ? (
                <>
                   <Box sx={{ textAlign: "center", mb: 4 }}>
@@ -262,24 +262,24 @@ export default function Home({ onClickProject }: HomeProps) {
                            sx={{ color: "primary.main", fontSize: 24 }}
                         />
                         <Typography variant="h4" fontWeight={600}>
-                           Select a Project
+                           Select an Environment
                         </Typography>
                      </Stack>
                      <Typography variant="body1" color="text.secondary">
-                        Choose a project to explore its semantic models and
+                        Choose an environment to explore its semantic models and
                         start analyzing your data
                      </Typography>
-                     {mutable && <AddProjectDialog />}
+                     {mutable && <AddEnvironmentDialog />}
                   </Box>
                   <Grid container spacing={3} justifyContent="center">
-                     {data.data.map((project) => (
+                     {data.data.map((environment) => (
                         <Grid
                            size={{ xs: 12, sm: 6, md: 4 }}
-                           key={project.name}
+                           key={environment.name}
                         >
-                           <ProjectCard
-                              project={project}
-                              onClickProject={onClickProject}
+                           <EnvironmentCard
+                              environment={environment}
+                              onClickEnvironment={onClickEnvironment}
                            />
                         </Grid>
                      ))}
@@ -306,12 +306,12 @@ export default function Home({ onClickProject }: HomeProps) {
                      color="text.secondary"
                      sx={{ mb: 3 }}
                   >
-                     No projects found. Create your first Malloy project to
-                     start exploring semantic models and building data
+                     No environments found. Create your first Malloy environment
+                     to start exploring semantic models and building data
                      experiences.
                   </Typography>
                   {mutable ? (
-                     <AddProjectDialog />
+                     <AddEnvironmentDialog />
                   ) : (
                      <Button
                         variant="contained"
@@ -359,15 +359,15 @@ export default function Home({ onClickProject }: HomeProps) {
          </Container>
       );
    } else {
-      return <Loading text="Loading projects..." />;
+      return <Loading text="Loading environments..." />;
    }
 }
-function ProjectCard({
-   project,
-   onClickProject,
+function EnvironmentCard({
+   environment,
+   onClickEnvironment,
 }: {
-   project: Project;
-   onClickProject: (to: string, event?: React.MouseEvent) => void;
+   environment: Environment;
+   onClickEnvironment: (to: string, event?: React.MouseEvent) => void;
 }) {
    const { mutable } = useServer();
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
@@ -395,7 +395,8 @@ function ProjectCard({
             {mutable && (
                <>
                   <IconButton
-                     aria-controls={isMenuOpen ? "project-menu" : undefined}
+                     aria-label={`Environment actions for ${environment.name}`}
+                     aria-controls={isMenuOpen ? "environment-menu" : undefined}
                      aria-haspopup="true"
                      aria-expanded={isMenuOpen ? "true" : undefined}
                      onClick={openMenu}
@@ -404,7 +405,7 @@ function ProjectCard({
                      <MoreVert fontSize="small" />
                   </IconButton>
                   <Menu
-                     id="project-menu"
+                     id="environment-menu"
                      aria-haspopup="true"
                      aria-expanded={isMenuOpen ? "true" : undefined}
                      open={isMenuOpen}
@@ -420,12 +421,12 @@ function ProjectCard({
                         horizontal: "right",
                      }}
                   >
-                     <EditProjectDialog
-                        project={project}
+                     <EditEnvironmentDialog
+                        environment={environment}
                         onCloseDialog={closeMenu}
                      />
-                     <DeleteProjectDialog
-                        project={project}
+                     <DeleteEnvironmentDialog
+                        environment={environment}
                         onCloseDialog={closeMenu}
                      />
                   </Menu>
@@ -440,14 +441,14 @@ function ProjectCard({
                   }}
                />
                <Typography variant="h6" fontWeight={600} gutterBottom>
-                  {project.name}
+                  {environment.name}
                </Typography>
                <Typography
                   variant="body2"
                   color="text.secondary"
                   sx={{ mb: 2, minHeight: "60px" }}
                >
-                  {getProjectDescription(project.readme)}
+                  {getEnvironmentDescription(environment.readme)}
                </Typography>
                <Button
                   variant="contained"
@@ -455,10 +456,10 @@ function ProjectCard({
                   endIcon={<ArrowForwardRoundedIcon />}
                   fullWidth
                   onClick={(event) =>
-                     onClickProject(`/${project.name}/`, event)
+                     onClickEnvironment(`/${environment.name}/`, event)
                   }
                >
-                  Open Project
+                  Open Environment
                </Button>
             </CardContent>
          </Card>

@@ -32,7 +32,7 @@ export function ModelCell({
    const [resultsDialogOpen, setResultsDialogOpen] = React.useState(false);
    const [hasRun, setHasRun] = React.useState(false);
 
-   const { packageName, projectName, versionId, modelPath } =
+   const { packageName, environmentName, versionId, modelPath } =
       parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
@@ -44,7 +44,7 @@ export function ModelCell({
       queryKey: ["namedQueryResult", resourceUri, queryName],
       queryFn: () =>
          apiClients.models.executeQueryModel(
-            projectName,
+            environmentName,
             packageName,
             modelPath,
             {

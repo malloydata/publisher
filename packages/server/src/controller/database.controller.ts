@@ -1,21 +1,24 @@
 import { components } from "../api";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 
 type ApiDatabase = components["schemas"]["Database"];
 
 export class DatabaseController {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
 
-   constructor(projectStore: ProjectStore) {
-      this.projectStore = projectStore;
+   constructor(environmentStore: EnvironmentStore) {
+      this.environmentStore = environmentStore;
    }
 
    public async listDatabases(
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ): Promise<ApiDatabase[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
       return p.listDatabases();
    }
 }

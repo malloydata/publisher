@@ -18,16 +18,16 @@ type Props = {
 export default function Config({ resourceUri }: Props) {
    const { apiClients } = useServer();
    const {
-      projectName: projectName,
+      environmentName: environmentName,
       packageName: packageName,
       versionId: versionId,
    } = parseResourceUri(resourceUri);
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: ["package", projectName, packageName, versionId],
+      queryKey: ["package", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.packages.getPackage(
-            projectName,
+            environmentName,
             packageName,
             versionId,
             false,
@@ -86,7 +86,7 @@ export default function Config({ resourceUri }: Props) {
                   {isError && (
                      <ApiErrorDisplay
                         error={error}
-                        context={`${projectName} > ${packageName} > ${versionId}`}
+                        context={`${environmentName} > ${packageName} > ${versionId}`}
                      />
                   )}
                </List>

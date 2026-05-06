@@ -16,12 +16,12 @@ interface QueryResultProps {
 
 export function createEmbeddedQueryResult(props: QueryResultProps): string {
    const {
-      projectName: optionalProjectName,
+      environmentName: optionalProjectName,
       packageName: optionalPackageName,
    } = parseResourceUri(props.resourceUri);
    if (!optionalProjectName || !optionalPackageName) {
       throw new Error(
-         "Project and Package name must be provided for query embedding.",
+         "Environment and Package name must be provided for query embedding.",
       );
    }
    return JSON.stringify({
@@ -66,11 +66,11 @@ export default function QueryResult({
    resourceUri,
    height = 400,
 }: QueryResultProps) {
-   const { modelPath, projectName, packageName, versionId } =
+   const { modelPath, environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
-   if (!projectName || !packageName) {
+   if (!environmentName || !packageName) {
       throw new Error(
          "No project or package name provided. A resource URI must be provided.",
       );
@@ -80,7 +80,7 @@ export default function QueryResult({
       queryKey: [resourceUri, query, sourceName, queryName],
       queryFn: () =>
          apiClients.models.executeQueryModel(
-            projectName,
+            environmentName,
             packageName,
             modelPath,
             {
@@ -104,7 +104,7 @@ export default function QueryResult({
          )}
          {isError && (
             <ApiErrorDisplay
-               context={`${projectName} > ${packageName} > ${modelPath}`}
+               context={`${environmentName} > ${packageName} > ${modelPath}`}
                error={error}
             />
          )}

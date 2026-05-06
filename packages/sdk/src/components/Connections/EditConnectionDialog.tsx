@@ -447,6 +447,7 @@ export default function EditConnectionDialog({
    return (
       <React.Fragment>
          <IconButton
+            aria-label={`Edit connection ${connection?.name ?? ""}`.trim()}
             onClick={(event) => {
                event.preventDefault();
                event.stopPropagation();
@@ -737,6 +738,7 @@ export default function EditConnectionDialog({
                                        Database {index + 1}
                                     </Typography>
                                     <IconButton
+                                       aria-label={`Remove attached database ${index + 1}`}
                                        onClick={() =>
                                           removeAttachedDatabase(index)
                                        }

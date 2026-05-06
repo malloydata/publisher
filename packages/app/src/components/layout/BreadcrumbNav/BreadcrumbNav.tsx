@@ -23,12 +23,12 @@ export default function BreadcrumbNav() {
                },
             }}
          >
-            {params.projectName && (
+            {params.environmentName && (
                <Chip
                   onClick={(event) =>
-                     navigate(`/${params.projectName}/`, event)
+                     navigate(`/${params.environmentName}/`, event)
                   }
-                  label={params.projectName}
+                  label={params.environmentName}
                   size="medium"
                   sx={{
                      backgroundColor: "background.paper",
@@ -48,7 +48,7 @@ export default function BreadcrumbNav() {
                <Chip
                   onClick={(event) =>
                      navigate(
-                        `/${params.projectName}/${params.packageName}/`,
+                        `/${params.environmentName}/${params.packageName}/`,
                         event,
                      )
                   }
@@ -72,7 +72,7 @@ export default function BreadcrumbNav() {
                <Chip
                   onClick={(event) =>
                      navigate(
-                        `/${params.projectName}/${params.packageName}/${modelPath}`,
+                        `/${params.environmentName}/${params.packageName}/${modelPath}`,
                         event,
                      )
                   }

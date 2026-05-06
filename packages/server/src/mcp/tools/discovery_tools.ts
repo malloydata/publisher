@@ -1,24 +1,22 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import { buildMalloyUri } from "../handler_utils";
 
 const listPackagesShape = {
-   // projectName is required; other fields mirror SDK expectations
-   projectName: z
+   environmentName: z
       .string()
       .describe(
-         "Project name. Project names are listed in the listProjects tool.",
+         "Environment name. Names are listed in the malloy_environmentList tool.",
       ),
 };
 type listPackagesParams = z.infer<z.ZodObject<typeof listPackagesShape>>;
 
 const getModelsShape = {
-   // projectName is required; other fields mirror SDK expectations
-   projectName: z
+   environmentName: z
       .string()
       .describe(
-         "Project name. Project names are listed in the listProjects tool.",
+         "Environment name. Names are listed in the malloy_environmentList tool.",
       ),
    packageName: z
       .string()
@@ -29,10 +27,10 @@ const getModelsShape = {
 type getModelsParams = z.infer<z.ZodObject<typeof getModelsShape>>;
 
 const getModelTextShape = {
-   projectName: z
+   environmentName: z
       .string()
       .describe(
-         "Project name. Project names are listed in the listProjects tool.",
+         "Environment name. Names are listed in the malloy_environmentList tool.",
       ),
    packageName: z
       .string()
@@ -48,48 +46,53 @@ const getModelTextShape = {
 type getModelTextParams = z.infer<z.ZodObject<typeof getModelTextShape>>;
 
 /**
- * Registers the Malloy Project resource type with the MCP server.
- * Handles getting details for the hardcoded 'home' project and listing packages within it.
+ * Registers Malloy discovery tools with the MCP server.
+ * Lists environments and packages for navigation.
  */
 export function registerTools(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
-      "malloy_projectList",
-      "Lists all Malloy projects",
+      "malloy_environmentList",
+      "Lists all Malloy environments",
       {},
       async () => {
          console.log(
-            "[MCP LOG] Entering ListResources (project) handler (listing ALL packages)...",
+            "[MCP LOG] Entering ListResources (environment) handler (listing ALL packages)...",
          );
-         const allProjects = await Promise.all(
-            (await projectStore.listProjects())
-               .filter((project) => project.name)
-               .map((project) => ({
-                  name: project.name,
-                  project: projectStore.getProject(project.name!, false),
+         const allEnvironments = await Promise.all(
+            (await environmentStore.listEnvironments())
+               .filter((environment) => environment.name)
+               .map((environment) => ({
+                  name: environment.name,
+                  environment: environmentStore.getEnvironment(
+                     environment.name!,
+                     false,
+                  ),
                })),
          );
 
-         console.log(`[MCP LOG] Found ${allProjects.length} projects defined.`);
+         console.log(
+            `[MCP LOG] Found ${allEnvironments.length} environments defined.`,
+         );
 
          const mappedResources = await Promise.all(
-            allProjects.map(async (project) => {
-               const name = project.name;
-               const projectInstance = await project.project;
-               const metadata = await projectInstance.reloadProjectMetadata();
+            allEnvironments.map(async (environment) => {
+               const name = environment.name;
+               const environmentInstance = await environment.environment;
+               const metadata =
+                  await environmentInstance.reloadEnvironmentMetadata();
                const readme = metadata.readme;
                return {
                   name,
-                  type: "project",
+                  type: "environment",
                   description: readme || "NO Description available",
                };
             }),
          );
-         // console.log(mappedResources);
          console.log(
-            `[MCP LOG] ListResources (project): Returning ${mappedResources.length} package resources.`,
+            `[MCP LOG] ListResources (environment): Returning ${mappedResources.length} package resources.`,
          );
          return {
             content: [
@@ -97,7 +100,7 @@ export function registerTools(
                   type: "resource",
                   resource: {
                      type: "application/json",
-                     uri: buildMalloyUri({}, "project"),
+                     uri: buildMalloyUri({}, "environment"),
                      text: JSON.stringify(mappedResources),
                   },
                },
@@ -108,15 +111,18 @@ export function registerTools(
 
    mcpServer.tool(
       "malloy_packageList",
-      "Lists all Malloy packages within a project",
+      "Lists all Malloy packages within an environment",
       listPackagesShape,
       async (params: listPackagesParams) => {
-         const { projectName } = params;
+         const { environmentName } = params;
          console.log(
-            "[MCP LOG] Entering ListResources (project) handler (listing ALL packages)...",
+            "[MCP LOG] Entering ListResources (environment) handler (listing ALL packages)...",
          );
-         const project = await projectStore.getProject(projectName, false);
-         const packages = await project.listPackages();
+         const environment = await environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const packages = await environment.listPackages();
          console.log(`[MCP LOG] Found ${packages.length} packages defined.`);
          const mappedResources = packages.map((pkg) => ({
             modelPath: pkg.name,
@@ -124,7 +130,7 @@ export function registerTools(
             description: pkg.description,
          }));
          console.log(
-            `[MCP LOG] ListResources (project): Returning ${mappedResources.length} package resources.`,
+            `[MCP LOG] ListResources (environment): Returning ${mappedResources.length} package resources.`,
          );
          return {
             content: [
@@ -132,7 +138,10 @@ export function registerTools(
                   type: "resource",
                   resource: {
                      type: "application/json",
-                     uri: buildMalloyUri({ project: projectName }, "package"),
+                     uri: buildMalloyUri(
+                        { environment: environmentName },
+                        "package",
+                     ),
                      text: JSON.stringify(mappedResources),
                   },
                },
@@ -146,12 +155,15 @@ export function registerTools(
       "Lists resources within a package",
       getModelsShape,
       async (params: getModelsParams) => {
-         const { projectName, packageName } = params;
+         const { environmentName, packageName } = params;
          console.log(
-            "[MCP LOG] Entering GetResources (project) handler (listing ALL packages)...",
+            "[MCP LOG] Entering GetResources (environment) handler (listing ALL packages)...",
          );
-         const project = await projectStore.getProject(projectName, false);
-         const pkg = await project.getPackage(packageName, false);
+         const environment = await environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const pkg = await environment.getPackage(packageName, false);
          const models = await pkg.listModels();
          console.log(`[MCP LOG] Found ${models.length} models defined.`);
          const mappedResources = models.map((model) => ({
@@ -159,7 +171,7 @@ export function registerTools(
             type: "model",
          }));
          console.log(
-            `[MCP LOG] ListResources (project): Returning ${mappedResources.length} package resources.`,
+            `[MCP LOG] ListResources (environment): Returning ${mappedResources.length} package resources.`,
          );
          return {
             content: [
@@ -168,7 +180,10 @@ export function registerTools(
                   resource: {
                      type: "application/json",
                      uri: buildMalloyUri(
-                        { project: projectName, package: packageName },
+                        {
+                           environment: environmentName,
+                           package: packageName,
+                        },
                         "model",
                      ),
                      text: JSON.stringify(mappedResources),
@@ -184,14 +199,17 @@ export function registerTools(
       "Gets the raw text content of a model file",
       getModelTextShape,
       async (params: getModelTextParams) => {
-         const { projectName, packageName, modelPath } = params;
+         const { environmentName, packageName, modelPath } = params;
          console.log(
-            `[MCP LOG] Entering GetModelText handler for ${projectName}/${packageName}/${modelPath}...`,
+            `[MCP LOG] Entering GetModelText handler for ${environmentName}/${packageName}/${modelPath}...`,
          );
 
          try {
-            const project = await projectStore.getProject(projectName, false);
-            const pkg = await project.getPackage(packageName, false);
+            const environment = await environmentStore.getEnvironment(
+               environmentName,
+               false,
+            );
+            const pkg = await environment.getPackage(packageName, false);
             const model = pkg.getModel(modelPath);
 
             if (!model) {
@@ -218,7 +236,7 @@ export function registerTools(
                         type: "text/plain",
                         uri: buildMalloyUri(
                            {
-                              project: projectName,
+                              environment: environmentName,
                               package: packageName,
                               model: modelPath,
                            },
@@ -241,7 +259,7 @@ export function registerTools(
                         type: "text/plain",
                         uri: buildMalloyUri(
                            {
-                              project: projectName,
+                              environment: environmentName,
                               package: packageName,
                               model: modelPath,
                            },

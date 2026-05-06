@@ -22,11 +22,11 @@ export class DuckDBManifestStore implements ManifestStore {
     * reference has no manifest entry (e.g. before the first materialization).
     */
    async getManifest(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<BuildManifest> {
       const entries = await this.repository.listManifestEntries(
-         projectId,
+         environmentId,
          packageName,
       );
       const manifest: BuildManifest = {
@@ -40,7 +40,7 @@ export class DuckDBManifestStore implements ManifestStore {
    }
 
    async writeEntry(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       buildId: string,
       tableName: string,
@@ -48,7 +48,7 @@ export class DuckDBManifestStore implements ManifestStore {
       connectionName: string,
    ): Promise<void> {
       await this.repository.upsertManifestEntry({
-         projectId,
+         environmentId,
          packageName,
          buildId,
          tableName,
@@ -62,9 +62,9 @@ export class DuckDBManifestStore implements ManifestStore {
    }
 
    async listEntries(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<ManifestEntry[]> {
-      return this.repository.listManifestEntries(projectId, packageName);
+      return this.repository.listManifestEntries(environmentId, packageName);
    }
 }

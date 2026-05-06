@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
 
 env:
@@ -192,14 +192,14 @@ jobs:
           echo "--- server log ---"
           cat /tmp/server.log
           exit 1
-      - name: Test list projects
+      - name: Test list environments
         run: |
-          response=$(curl -s http://localhost:${{ matrix.port }}/api/v0/projects)
+          response=$(curl -s http://localhost:${{ matrix.port }}/api/v0/environments)
           echo "API Response: $response"
           if echo "$response" | jq -e '. | length == 1' > /dev/null; then
-            echo "✓ API test passed: Found 1 project"
+            echo "✓ API test passed: Found 1 environment"
           else
-            echo "✗ API test failed: Expected 1 project, got different response"
+            echo "✗ API test failed: Expected 1 envrionment, got different response"
             echo "--- server log ---"
             cat /tmp/server.log
             exit 1
@@ -256,14 +256,14 @@ jobs:
           echo "--- container logs ---"
           docker logs malloy-publisher-smoke || true
           exit 1
-      - name: Test /api/v0/projects
+      - name: Test /api/v0/environments
         run: |
-          response=$(curl -s http://localhost:4000/api/v0/projects)
+          response=$(curl -s http://localhost:4000/api/v0/environments)
           echo "API Response: $response"
           if echo "$response" | jq -e '. | type == "array"' > /dev/null; then
-            echo "✓ /api/v0/projects returned a JSON array"
+            echo "✓ /api/v0/environments returned a JSON array"
           else
-            echo "✗ /api/v0/projects did not return a JSON array"
+            echo "✗ /api/v0/environments did not return a JSON array"
             echo "--- container logs ---"
             docker logs malloy-publisher-smoke || true
             exit 1

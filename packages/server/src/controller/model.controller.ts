@@ -1,6 +1,6 @@
 import { components } from "../api";
 import { ModelNotFoundError } from "../errors";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 
 type ApiNotebook = components["schemas"]["Notebook"];
@@ -8,38 +8,47 @@ type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 export class ModelController {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
 
-   constructor(projectStore: ProjectStore) {
-      this.projectStore = projectStore;
+   constructor(environmentStore: EnvironmentStore) {
+      this.environmentStore = environmentStore;
    }
 
    public async listModels(
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ): Promise<ApiModel[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
       return p.listModels();
    }
 
    public async listNotebooks(
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ): Promise<ApiNotebook[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
       return p.listNotebooks();
    }
 
    public async getModel(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       modelPath: string,
    ): Promise<ApiCompiledModel> {
       try {
-         const project = await this.projectStore.getProject(projectName, false);
-         const p = await project.getPackage(packageName, false);
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const p = await environment.getPackage(packageName, false);
          const model = p.getModel(modelPath);
          if (!model) {
             throw new ModelNotFoundError(`${modelPath} does not exist`);
@@ -55,18 +64,21 @@ export class ModelController {
          }
          // Wrap other errors with more context
          throw new Error(
-            `Failed to get model ${modelPath} from package ${packageName} in project ${projectName}: ${error}`,
+            `Failed to get model ${modelPath} from package ${packageName} in environment ${environmentName}: ${error}`,
          );
       }
    }
 
    public async getNotebook(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       notebookPath: string,
    ): Promise<ApiRawNotebook> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
       const model = p.getModel(notebookPath);
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);
@@ -79,7 +91,7 @@ export class ModelController {
    }
 
    public async executeNotebookCell(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       notebookPath: string,
       cellIndex: number,
@@ -92,8 +104,11 @@ export class ModelController {
       result?: string;
       newSources?: string[];
    }> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
       const model = p.getModel(notebookPath);
       if (!model) {
          throw new ModelNotFoundError(`${notebookPath} does not exist`);

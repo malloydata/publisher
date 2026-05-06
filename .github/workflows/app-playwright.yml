@@ -1,0 +1,84 @@
+name: App Playwright E2E
+
+on:
+  pull_request:
+    branches: [ main ]
+
+env:
+  BUN_VERSION: 1.3.13
+
+jobs:
+  playwright:
+    name: Playwright (packages/app)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        id: bun-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+
+      - name: Generate API types
+        run: bun run generate-api-types
+
+      - name: Build SDK + server
+        run: bun run build
+
+      - name: Build app
+        run: bun run build:app
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright browsers
+        working-directory: packages/app
+        run: bunx playwright install --with-deps chromium
+
+      # playwright.config.ts spawns `npm run start:init` from the repo root as
+      # its webServer, polls /api/v0/status in global-setup until the publisher
+      # reaches operationalState=serving, then runs the suite.
+      - name: Run Playwright suite
+        working-directory: packages/app
+        run: bunx playwright test --config=playwright.config.ts
+        env:
+          CI: "true"
+          DISABLE_RESPONSE_LOGGING: true
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: packages/app/playwright-report
+          retention-days: 7
+
+      - name: Upload test results (traces, screenshots, videos)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: packages/app/test-results
+          retention-days: 7

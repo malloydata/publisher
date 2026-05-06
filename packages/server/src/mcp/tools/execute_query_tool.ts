@@ -2,18 +2,18 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { logger } from "../../logger";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, getModelForQuery } from "../handler_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 
 // Zod shape defining required/optional params for executeQuery
 const executeQueryShape = {
-   // projectName is required; other fields mirror SDK expectations
-   projectName: z
+   // environmentName is required; other fields mirror SDK expectations
+   environmentName: z
       .string()
       .describe(
-         "Project name. Project names are listed in the malloy resource list.",
+         "Environment name. Names are listed in the malloy resource list.",
       ),
    packageName: z
       .string()
@@ -39,7 +39,7 @@ const executeQueryShape = {
  */
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
       "malloy_executeQuery",
@@ -47,9 +47,9 @@ export function registerExecuteQueryTool(
       executeQueryShape,
       /** Handles requests for the malloy_executeQuery tool */
       async (params) => {
-         // Destructure projectName as well
+         // Destructure environmentName as well
          const {
-            projectName,
+            environmentName,
             packageName,
             modelPath,
             query,
@@ -79,11 +79,11 @@ export function registerExecuteQueryTool(
 
          // --- Get Package and Model ---
          logger.info(
-            `[MCP Tool executeQuery] Calling getModelForQuery for ${projectName}/${packageName}/${modelPath}`,
+            `[MCP Tool executeQuery] Calling getModelForQuery for ${environmentName}/${packageName}/${modelPath}`,
          );
          const modelResult = await getModelForQuery(
-            projectStore,
-            projectName,
+            environmentStore,
+            environmentName,
             packageName,
             modelPath,
          );
@@ -135,7 +135,7 @@ export function registerExecuteQueryTool(
                const renderLogs = validateRenderTags(result);
 
                const baseUriComponents = {
-                  project: projectName,
+                  environment: environmentName,
                   package: packageName,
                   resourceType: "models" as const,
                   resourceName: modelPath,
@@ -181,7 +181,7 @@ export function registerExecuteQueryTool(
                const renderLogs = validateRenderTags(result);
 
                const baseUriComponents = {
-                  project: projectName,
+                  environment: environmentName,
                   package: packageName,
                   resourceType: "models" as const,
                   resourceName: modelPath,
@@ -227,12 +227,12 @@ export function registerExecuteQueryTool(
          } catch (queryError) {
             // Handle query execution errors (syntax errors, invalid queries, etc.)
             logger.error(
-               `[MCP Server Error] Error executing query in ${projectName}/${packageName}/${modelPath}:`,
+               `[MCP Server Error] Error executing query in ${environmentName}/${packageName}/${modelPath}:`,
                { error: queryError },
             );
             const errorDetails: ErrorDetails = getMalloyErrorDetails(
                "executeQuery",
-               `${projectName}/${packageName}/${modelPath}`, // Include project
+               `${environmentName}/${packageName}/${modelPath}`, // Include environment
                queryError,
             );
 

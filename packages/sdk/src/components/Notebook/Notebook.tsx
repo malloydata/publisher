@@ -45,7 +45,7 @@ export default function Notebook({
 }: NotebookProps) {
    const { apiClients } = useServer();
    const {
-      projectName,
+      environmentName,
       packageName,
       versionId,
       modelPath: notebookPath,
@@ -61,7 +61,7 @@ export default function Notebook({
       queryKey: [resourceUri],
       queryFn: async () => {
          const response = await apiClients.notebooks.getNotebook(
-            projectName,
+            environmentName,
             packageName,
             notebookPath,
             versionId,
@@ -232,7 +232,7 @@ export default function Notebook({
    // current selection. Otherwise selecting "FORD" would hide every other
    // manufacturer from the dropdown.
    const { data: filterValuesData } = useDimensionalFilterRangeData({
-      project: projectName,
+      environment: environmentName,
       package: packageName,
       dimensionSpecs,
       versionId,
@@ -316,7 +316,7 @@ export default function Notebook({
                      // Use notebook cell execution API with optional filter_params
                      const response =
                         await apiClients.notebooks.executeNotebookCell(
-                           projectName,
+                           environmentName,
                            packageName,
                            notebookPath,
                            cellIndex,
@@ -381,7 +381,7 @@ export default function Notebook({
          notebook,
          useServerFilters,
          buildFilterParams,
-         projectName,
+         environmentName,
          packageName,
          notebookPath,
          versionId,
@@ -533,7 +533,7 @@ export default function Notebook({
                {/* Error States */}
                {isError && error.status === 404 && (
                   <Typography variant="body2" sx={{ color: "#666666" }}>
-                     <code>{`${projectName} > ${packageName} > ${notebookPath}`}</code>{" "}
+                     <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
                      not found.
                   </Typography>
                )}
@@ -541,7 +541,7 @@ export default function Notebook({
                {isError && error.status !== 404 && (
                   <ApiErrorDisplay
                      error={error}
-                     context={`${projectName} > ${packageName} > ${notebookPath}`}
+                     context={`${environmentName} > ${packageName} > ${notebookPath}`}
                   />
                )}
 

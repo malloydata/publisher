@@ -22,10 +22,10 @@ import {
    MalloySQLParser,
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
-import { createRequire } from "module";
 import { DataStyles } from "@malloydata/render";
 import { metrics } from "@opentelemetry/api";
 import * as fs from "fs/promises";
+import { createRequire } from "module";
 import * as path from "path";
 import { components } from "../api";
 import {
@@ -426,7 +426,7 @@ export class Model {
          logger.error("Query parsing error", {
             error,
             errorMessage,
-            projectName: this.packageName,
+            environmentName: this.packageName,
             modelPath: this.modelPath,
             query,
             queryName,
@@ -466,7 +466,7 @@ export class Model {
          logger.error("Query execution error", {
             error,
             errorMessage,
-            projectName: this.packageName,
+            environmentName: this.packageName,
             modelPath: this.modelPath,
             query,
             queryName,
@@ -703,7 +703,7 @@ export class Model {
 
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
-      const importBaseURL = new URL(baseUrl.pathname + "/", "file:");
+      const importBaseURL = baseUrl;
       const urlReader = new HackyDataStylesAccumulator(URL_READER);
 
       // Request runtimes borrow the cached package MalloyConfig. The package

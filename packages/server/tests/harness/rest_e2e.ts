@@ -12,8 +12,8 @@ export interface RestE2EEnv {
  * reuses the cached Express app and binds on an OS-assigned port
  * to avoid collisions.
  *
- * Callers are responsible for creating any test-specific projects
- * via the REST API (POST /api/v0/projects) and cleaning them up.
+ * Callers are responsible for creating any test-specific environments
+ * via the REST API (POST /api/v0/environments) and cleaning them up.
  */
 export async function startRestE2E(): Promise<
    RestE2EEnv & { stop(): Promise<void> }
