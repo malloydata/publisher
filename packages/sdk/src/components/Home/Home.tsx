@@ -286,6 +286,7 @@ function EnvironmentCard({
                <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography
                      variant="subtitle1"
+                     component="h6"
                      noWrap
                      sx={{ fontWeight: 600, mb: 0.5 }}
                   >
@@ -313,7 +314,7 @@ function EnvironmentCard({
                      <IconButton
                         size="small"
                         onClick={handleMenuClick}
-                        aria-label="Environment options"
+                        aria-label={`Environment actions for ${environment.name}`}
                         sx={{ flexShrink: 0, mt: -0.5, mr: -0.5 }}
                      >
                         <MoreVert fontSize="small" />

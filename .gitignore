@@ -15,3 +15,7 @@ packages/server/k6-tests/results/
 
 # Playwright MCP artifacts
 .playwright-mcp/*
+
+# Playwright test run artifacts
+packages/app/test-results/
+packages/app/playwright-report/

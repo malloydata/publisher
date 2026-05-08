@@ -93,7 +93,7 @@ export default function AddPackageDialog({
                   px: 3,
                }}
             >
-               Create new package
+               Create New Package
             </DialogTitle>
             <DialogContent sx={{ px: 3, pb: 0 }}>
                <Box sx={{ mb: 3 }}>
@@ -137,7 +137,7 @@ export default function AddPackageDialog({
                         required
                         id="name"
                         name="name"
-                        label="Package name"
+                        label="Package Name"
                         type="text"
                         fullWidth
                         variant="outlined"
@@ -183,7 +183,7 @@ export default function AddPackageDialog({
                   variant="contained"
                   loading={addPackage.isPending}
                >
-                  Create package
+                  Save Changes
                </Button>
             </DialogActions>
          </Dialog>

@@ -134,6 +134,7 @@ function PackageCard({
                <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography
                      variant="subtitle1"
+                     component="h6"
                      noWrap
                      sx={{ fontWeight: 600, mb: 0.5 }}
                   >
@@ -161,7 +162,7 @@ function PackageCard({
                      <IconButton
                         size="small"
                         onClick={handleMenuClick}
-                        aria-label="Package options"
+                        aria-label={`Package actions for ${pkg.name}`}
                         sx={{ flexShrink: 0, mt: -0.5, mr: -0.5 }}
                      >
                         <MoreVert fontSize="small" />

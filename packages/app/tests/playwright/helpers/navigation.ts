@@ -12,8 +12,11 @@ export async function openEnvironment(
    page: Page,
    name: string = DEFAULT_ENV,
 ): Promise<void> {
-   await expect(page.getByRole("heading", { name, level: 6 })).toBeVisible();
-   await page.getByRole("button", { name: "Open Environment" }).first().click();
+   // Redesigned env cards on Home are themselves the click target — no
+   // separate "Open Environment" button. Click the env's heading.
+   const heading = page.getByRole("heading", { name, level: 6 });
+   await expect(heading).toBeVisible();
+   await heading.click();
    await expect(page).toHaveURL(new RegExp(`/${name}/?$`));
 }
 
@@ -22,10 +25,10 @@ export async function openPackage(
    env: string,
    pkg: string,
 ): Promise<void> {
-   // Scope to the packages heading's section; the word can otherwise match
-   // descriptions, breadcrumbs, or env card text.
+   // Redesigned env page renders the env name as h4 and the section header
+   // as h6 "Packages" (separate, not concatenated).
    await expect(
-      page.getByRole("heading", { name: `${env} packages`, level: 6 }),
+      page.getByRole("heading", { name: "Packages", level: 6 }),
    ).toBeVisible();
    await page.getByText(pkg, { exact: true }).first().click();
    await expect(page).toHaveURL(new RegExp(`/${env}/${pkg}/?$`));

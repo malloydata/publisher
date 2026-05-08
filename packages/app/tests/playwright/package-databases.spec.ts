@@ -4,17 +4,20 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 import { getPublisherStatus } from "./helpers/publisherStatus";
 
 test.describe("package-databases — embedded", () => {
-   test("Embedded Databases section is visible with at least one row", async ({
+   test("Package Data section is visible with at least one parquet row", async ({
       page,
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
 
-      await expect(page.getByText("Embedded Databases")).toBeVisible();
-      // Section renders `Fetching Databases...` until the API resolves; wait for the first row.
-      const rows = page.locator("tr").filter({ hasText: ".parquet" });
-      await expect(rows.first()).toBeVisible();
+      // Redesigned package page lists databases under a "Package Data"
+      // section as flat rows (no <table>). The h6 heading + at least one
+      // .parquet row are the load-bearing affordances.
+      await expect(
+         page.getByRole("heading", { name: "Package Data", level: 6 }),
+      ).toBeVisible();
+      await expect(page.getByText(/\.parquet/).first()).toBeVisible();
    });
 
    test("clicking a parquet row opens a schema dialog that can close", async ({
@@ -24,11 +27,7 @@ test.describe("package-databases — embedded", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
 
-      const firstRow = page
-         .locator("tr")
-         .filter({ hasText: ".parquet" })
-         .first();
-      await firstRow.click();
+      await page.getByText(/\.parquet/).first().click();
 
       const dialog = page.getByRole("dialog");
       await expect(dialog).toBeVisible();

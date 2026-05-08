@@ -1,6 +1,14 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, Page } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+
+// Redesigned package page also renders the README.malloynb inline at the
+// bottom, which contains the literal text "imdb.malloy" inside a <strong>
+// tag. The flat-row label is rendered first in DOM order (Semantic Models
+// section is above the README), so .first() reliably hits the row.
+function modelRow(page: Page, name: string) {
+   return page.getByText(name, { exact: true }).first();
+}
 
 test.describe("package-models", () => {
    test("Semantic Models section lists .malloy files", async ({ page }) => {
@@ -8,10 +16,7 @@ test.describe("package-models", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
 
-      // exact: true so `imdb.malloy` doesn't also match `imdb.malloynb`.
-      await expect(
-         page.getByRole("treeitem", { name: "imdb.malloy", exact: true }),
-      ).toBeVisible();
+      await expect(modelRow(page, "imdb.malloy")).toBeVisible();
    });
 
    test("opening a model routes to /:env/:pkg/:model and loads Sources", async ({
@@ -21,9 +26,7 @@ test.describe("package-models", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
 
-      await page
-         .getByRole("treeitem", { name: "imdb.malloy", exact: true })
-         .click();
+      await modelRow(page, "imdb.malloy").click();
       await expect(page).toHaveURL(
          new RegExp(`/${DEFAULT_ENV}/${PACKAGES.imdb}/imdb\\.malloy$`),
       );
@@ -38,9 +41,7 @@ test.describe("package-models", () => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
-      await page
-         .getByRole("treeitem", { name: "imdb.malloy", exact: true })
-         .click();
+      await modelRow(page, "imdb.malloy").click();
 
       // MUI Autocomplete: input value, not innerText.
       await expect(page.getByRole("combobox").first()).toHaveValue("people");
@@ -50,9 +51,7 @@ test.describe("package-models", () => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
-      await page
-         .getByRole("treeitem", { name: "imdb.malloy", exact: true })
-         .click();
+      await modelRow(page, "imdb.malloy").click();
 
       const sourceSelect = page.getByRole("combobox").first();
       await expect(sourceSelect).toHaveValue("people");
