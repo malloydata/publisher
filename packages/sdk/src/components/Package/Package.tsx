@@ -1,6 +1,23 @@
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import { Box, Container, Link, Stack, Typography } from "@mui/material";
-import React from "react";
+import CloseIcon from "@mui/icons-material/Close";
+import {
+   Box,
+   Container,
+   Dialog,
+   DialogContent,
+   DialogTitle,
+   IconButton,
+   Link,
+   Stack,
+   Table,
+   TableBody,
+   TableCell,
+   TableHead,
+   TableRow,
+   Typography,
+} from "@mui/material";
+import React, { useState } from "react";
+import { Database } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { RetrievalFunction } from "../filter/DimensionFilter";
@@ -9,6 +26,9 @@ import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import ContentTypeIcon from "./ContentTypeIcon";
+// TODO(redesign-followup): port the Connections section into the redesigned
+// flat-row aesthetic (currently rendered with its original card/table styling).
+import Connections from "./Connections";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -39,6 +59,8 @@ export default function Package({
       });
    const { environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
+
+   const [schemaDatabase, setSchemaDatabase] = useState<Database | null>(null);
 
    const pkgQuery = useQueryWithApiError({
       queryKey: ["package", environmentName, packageName, versionId],
@@ -191,10 +213,15 @@ export default function Package({
                         tint={malloyDarkBlue}
                         label={database.path}
                         rightLabel={formatRowCount(database.info.rowCount)}
+                        onClick={() => setSchemaDatabase(database)}
                      />
                   ))}
                   {databases.length === 0 && <EmptyRow label="No data files" />}
                </PackageSection>
+
+               <Box sx={{ mb: 4 }}>
+                  <Connections resourceUri={resourceUri} />
+               </Box>
 
                {hasReadme && (
                   <Box sx={{ mt: 6 }}>
@@ -206,6 +233,46 @@ export default function Package({
                )}
             </>
          )}
+
+         <Dialog
+            open={schemaDatabase !== null}
+            onClose={() => setSchemaDatabase(null)}
+            maxWidth="sm"
+            fullWidth
+         >
+            <DialogTitle sx={{ pr: 6 }}>
+               {schemaDatabase?.path}
+               <IconButton
+                  aria-label="close"
+                  onClick={() => setSchemaDatabase(null)}
+                  sx={{ position: "absolute", right: 8, top: 8 }}
+               >
+                  <CloseIcon fontSize="small" />
+               </IconButton>
+            </DialogTitle>
+            <DialogContent>
+               {schemaDatabase?.info?.columns && (
+                  <Table size="small">
+                     <TableHead>
+                        <TableRow>
+                           <TableCell>Column</TableCell>
+                           <TableCell>Type</TableCell>
+                        </TableRow>
+                     </TableHead>
+                     <TableBody>
+                        {schemaDatabase.info.columns.map((column) => (
+                           <TableRow key={column.name}>
+                              <TableCell component="th" scope="row">
+                                 {column.name}
+                              </TableCell>
+                              <TableCell>{column.type}</TableCell>
+                           </TableRow>
+                        ))}
+                     </TableBody>
+                  </Table>
+               )}
+            </DialogContent>
+         </Dialog>
       </Container>
    );
 }
