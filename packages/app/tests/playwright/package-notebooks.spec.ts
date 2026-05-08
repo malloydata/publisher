@@ -9,10 +9,10 @@ test.describe("package-notebooks", () => {
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
 
       await expect(
-         page.getByRole("treeitem", { name: "imdb.malloynb", exact: true }),
+         page.getByText("imdb.malloynb", { exact: true }),
       ).toBeVisible();
       await expect(
-         page.getByRole("treeitem", { name: "README.malloynb", exact: true }),
+         page.getByText("README.malloynb", { exact: true }),
       ).toBeVisible();
    });
 
@@ -23,9 +23,7 @@ test.describe("package-notebooks", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
 
-      await page
-         .getByRole("treeitem", { name: "imdb.malloynb", exact: true })
-         .click();
+      await page.getByText("imdb.malloynb", { exact: true }).click();
 
       // Router uses a workbook-scoped path; assert we navigated off the package route.
       await expect(page).not.toHaveURL(
@@ -40,9 +38,7 @@ test.describe("package-notebooks", () => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
-      await page
-         .getByRole("treeitem", { name: "imdb.malloynb", exact: true })
-         .click();
+      await page.getByText("imdb.malloynb", { exact: true }).click();
       // The imdb.malloynb renders an authored H1 ("IMDB Analysis in Malloy") —
       // presence confirms the Workbook mounted and executed the notebook.
       await expect(

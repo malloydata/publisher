@@ -72,7 +72,7 @@ export default function QueryResult({
 
    if (!environmentName || !packageName) {
       throw new Error(
-         "No project or package name provided. A resource URI must be provided.",
+         "No environment or package name provided. A resource URI must be provided.",
       );
    }
 

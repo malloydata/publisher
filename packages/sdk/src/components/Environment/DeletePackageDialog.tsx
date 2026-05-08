@@ -13,6 +13,7 @@ import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { useServer } from "../ServerProvider";
 import { useQueryClient } from "@tanstack/react-query";
 import { parseResourceUri } from "../../utils/formatting";
+import { MALLOY_BRAND } from "../styles";
 
 export default function DeletePackageDialog({
    resourceUri,
@@ -90,8 +91,8 @@ export default function DeletePackageDialog({
                   variant="outlined"
                   onClick={handleClose}
                   style={{
-                     borderColor: "#14b3cb",
-                     color: "#14b3cb",
+                     borderColor: MALLOY_BRAND.teal,
+                     color: MALLOY_BRAND.teal,
                   }}
                >
                   Cancel

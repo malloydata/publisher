@@ -8,10 +8,7 @@ test.describe("packages — read", () => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await expect(
-         page.getByRole("heading", {
-            name: `${DEFAULT_ENV} packages`,
-            level: 6,
-         }),
+         page.getByRole("heading", { name: "Packages", level: 6 }),
       ).toBeVisible();
    });
 
@@ -90,19 +87,13 @@ test.describe("packages — mutable CRUD", () => {
       ).toBeVisible();
 
       // --- 2. Open it ---
-      // Walk from the env's heading up to its containing card, then click that card's Open Environment.
-      const envCard = page
-         .getByRole("heading", { name: envName, level: 6 })
-         .locator("xpath=ancestor::div[contains(@class,'MuiCard-root')][1]");
-      await envCard.getByRole("button", { name: "Open Environment" }).click();
+      // Redesigned env cards are click-targets themselves; click the heading.
+      await page.getByRole("heading", { name: envName, level: 6 }).click();
       await expect(page).toHaveURL(new RegExp(`/${envName}/?$`));
 
       // Fresh env: no packages yet.
       await expect(
-         page.getByRole("heading", {
-            name: `${envName} packages`,
-            level: 6,
-         }),
+         page.getByRole("heading", { name: "Packages", level: 6 }),
       ).toBeVisible();
 
       // --- 3. Add ecommerce package from git ---
@@ -134,10 +125,7 @@ test.describe("packages — mutable CRUD", () => {
       await page.goBack();
       await expect(page).toHaveURL(new RegExp(`/${envName}/?$`));
       await expect(
-         page.getByRole("heading", {
-            name: `${envName} packages`,
-            level: 6,
-         }),
+         page.getByRole("heading", { name: "Packages", level: 6 }),
       ).toBeVisible();
 
       // --- 6. Delete the package ---

@@ -13,6 +13,7 @@ import { Environment } from "../../client";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { useServer } from "../ServerProvider";
 import { useQueryClient } from "@tanstack/react-query";
+import { MALLOY_BRAND } from "../styles";
 
 export default function DeleteEnvironmentDialog({
    environment,
@@ -89,8 +90,8 @@ export default function DeleteEnvironmentDialog({
                   variant="outlined"
                   onClick={handleClose}
                   style={{
-                     borderColor: "#14b3cb",
-                     color: "#14b3cb",
+                     borderColor: MALLOY_BRAND.teal,
+                     color: MALLOY_BRAND.teal,
                   }}
                >
                   Cancel

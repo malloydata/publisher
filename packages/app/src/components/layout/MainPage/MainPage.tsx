@@ -1,37 +1,129 @@
 import { Loading } from "@malloy-publisher/sdk";
+import SidebarToggleIcon from "../Sidebar/SidebarToggleIcon";
 import Box from "@mui/material/Box";
-import Container from "@mui/material/Container";
-import { Suspense } from "react";
+import IconButton from "@mui/material/IconButton";
+import { useTheme } from "@mui/material/styles";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { Suspense, useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
-import Header, { HeaderProps } from "../Header/Header";
+import { layout } from "../../../theme";
+import { HeaderProps } from "../Header/Header";
+import BreadcrumbNav from "../BreadcrumbNav/BreadcrumbNav";
+import Sidebar from "../Sidebar/Sidebar";
+import SideMenuMobile from "../SideMenuMobile/SideMenuMobile";
 
-interface PublisherConfigProps {
+interface MainPageProps {
    headerProps?: HeaderProps;
 }
 
-export default function MainPage({ headerProps }: PublisherConfigProps) {
+export default function MainPage({ headerProps }: MainPageProps) {
+   const theme = useTheme();
+   const isMdUp = useMediaQuery(theme.breakpoints.up("md"));
+   const [mobileOpen, setMobileOpen] = useState(false);
+   const [collapsed, setCollapsed] = useState(false);
+
+   useEffect(() => {
+      if (isMdUp && mobileOpen) {
+         setMobileOpen(false);
+      }
+   }, [isMdUp, mobileOpen]);
+
    return (
       <Box
-         sx={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}
+         sx={{
+            height: "100dvh",
+            display: "flex",
+            flexDirection: "row",
+            bgcolor: "background.default",
+         }}
       >
-         <Header {...headerProps} />
-         <Container
-            maxWidth="xl"
+         {isMdUp && (
+            <Sidebar
+               isCollapsed={collapsed}
+               onToggleCollapse={() => setCollapsed((prev) => !prev)}
+               logoHeader={headerProps?.logoHeader}
+            />
+         )}
+
+         <Box
             component="main"
             sx={{
                flex: 1,
                display: "flex",
                flexDirection: "column",
-               py: 2,
-               gap: 2,
+               minWidth: 0,
             }}
          >
-            <Box sx={{ flex: 1 }}>
+            <Box
+               sx={{
+                  flexShrink: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  height: layout.headerHeight,
+                  px: { xs: 1, md: 3 },
+                  backgroundColor: "background.default",
+               }}
+            >
+               <Box
+                  sx={{
+                     display: { xs: "flex", md: "none" },
+                     alignItems: "center",
+                     mr: 1,
+                  }}
+               >
+                  <IconButton
+                     size="small"
+                     onClick={() => setMobileOpen(true)}
+                     aria-label="Open navigation"
+                  >
+                     <SidebarToggleIcon fontSize="small" />
+                  </IconButton>
+               </Box>
+
+               <Box
+                  sx={{
+                     flex: 1,
+                     minWidth: 0,
+                     display: "flex",
+                     alignItems: "center",
+                  }}
+               >
+                  <BreadcrumbNav />
+               </Box>
+
+               <Box
+                  id="header-actions-portal"
+                  sx={{
+                     display: "flex",
+                     alignItems: "center",
+                     flexShrink: 0,
+                     gap: 1,
+                  }}
+               >
+                  {headerProps?.endCap}
+               </Box>
+            </Box>
+
+            <Box
+               sx={{
+                  flex: 1,
+                  overflow: "auto",
+                  minWidth: 320,
+                  minHeight: 0,
+               }}
+            >
                <Suspense fallback={<Loading />}>
                   <Outlet />
                </Suspense>
             </Box>
-         </Container>
+         </Box>
+
+         <SideMenuMobile
+            open={mobileOpen}
+            onClose={() => setMobileOpen(false)}
+            logoHeader={headerProps?.logoHeader}
+         />
       </Box>
    );
 }

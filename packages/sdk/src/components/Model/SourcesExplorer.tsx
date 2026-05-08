@@ -348,16 +348,16 @@ export function SourceExplorerComponent(props: SourceExplorerComponentProps) {
       return (
          <StyledExplorerPage>
             <StyledExplorerContent>
-               <div
-                  style={{
+               <Box
+                  sx={{
                      alignItems: "center",
                      justifyContent: "center",
                      height: "200px",
-                     color: "#666",
+                     color: "text.secondary",
                   }}
                >
                   Loading explorer...
-               </div>
+               </Box>
             </StyledExplorerContent>
          </StyledExplorerPage>
       );
