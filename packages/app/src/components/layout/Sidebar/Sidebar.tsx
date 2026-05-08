@@ -56,7 +56,7 @@ export default function Sidebar({
          />
          <Box sx={{ flex: 1, overflowY: "auto", overflowX: "hidden", py: 1 }}>
             <PrimaryNav isCollapsed={isCollapsed} />
-            <ProjectsSection isCollapsed={isCollapsed} />
+            <EnvironmentsSection isCollapsed={isCollapsed} />
          </Box>
          <DocsFooter isCollapsed={isCollapsed} />
       </Box>
@@ -171,17 +171,17 @@ function PrimaryNav({ isCollapsed }: { isCollapsed: boolean }) {
    );
 }
 
-function ProjectsSection({ isCollapsed }: { isCollapsed: boolean }) {
+function EnvironmentsSection({ isCollapsed }: { isCollapsed: boolean }) {
    const { apiClients } = useServer();
    const params = useParams();
 
    // Match the SDK <Home /> query key so cache is shared across both surfaces.
-   const { data: projects } = useQuery({
-      queryKey: ["projects"],
-      queryFn: () => apiClients.projects.listProjects(),
+   const { data: environments } = useQuery({
+      queryKey: ["environments"],
+      queryFn: () => apiClients.environments.listEnvironments(),
    });
 
-   const list = projects?.data ?? [];
+   const list = environments?.data ?? [];
 
    if (list.length === 0) {
       return null;
@@ -203,19 +203,19 @@ function ProjectsSection({ isCollapsed }: { isCollapsed: boolean }) {
                   letterSpacing: "0.5px",
                }}
             >
-               Projects
+               Environments
             </Typography>
          )}
          <List sx={{ py: 0 }}>
-            {list.map((project) => {
-               const name = project.name ?? "";
+            {list.map((environment) => {
+               const name = environment.name ?? "";
                return (
                   <SidebarItem
                      key={name}
                      icon={<FolderOutlinedIcon fontSize="small" />}
                      label={name}
                      to={`/${name}`}
-                     selected={params.projectName === name}
+                     selected={params.environmentName === name}
                      isCollapsed={isCollapsed}
                   />
                );

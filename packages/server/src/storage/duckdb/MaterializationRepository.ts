@@ -7,19 +7,19 @@ const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
    "CANCELLED",
 ]);
 
-function activeKeyFor(projectId: string, packageName: string): string {
-   return `${projectId}|${packageName}`;
+function activeKeyFor(environmentId: string, packageName: string): string {
+   return `${environmentId}|${packageName}`;
 }
 
 /**
- * Thrown when an atomic insert loses a race on (project, package) active
+ * Thrown when an atomic insert loses a race on (environment, package) active
  * materialization. Surfaced separately from a generic DB error so the service
  * layer can translate to `MaterializationConflictError`.
  */
 export class DuplicateActiveMaterializationError extends Error {
-   constructor(projectId: string, packageName: string) {
+   constructor(environmentId: string, packageName: string) {
       super(
-         `Active materialization already exists for (${projectId}, ${packageName})`,
+         `Active materialization already exists for (${environmentId}, ${packageName})`,
       );
    }
 }
@@ -27,7 +27,7 @@ export class DuplicateActiveMaterializationError extends Error {
 /**
  * DuckDB-backed repository for package materializations.
  *
- * A Materialization tracks a single build run for a (project, package) pair
+ * A Materialization tracks a single build run for an (environment, package) pair
  * through its lifecycle: PENDING -> RUNNING -> SUCCESS | FAILED | CANCELLED.
  */
 export class MaterializationRepository {
@@ -42,13 +42,13 @@ export class MaterializationRepository {
    }
 
    async list(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]> {
       let sql =
-         "SELECT * FROM materializations WHERE project_id = ? AND package_name = ? ORDER BY created_at DESC";
-      const params: unknown[] = [projectId, packageName];
+         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC";
+      const params: unknown[] = [environmentId, packageName];
       if (options?.limit !== undefined) {
          sql += " LIMIT ?";
          params.push(options.limit);
@@ -70,18 +70,18 @@ export class MaterializationRepository {
    }
 
    async getActive(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<Materialization | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM materializations WHERE project_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')",
-         [projectId, packageName],
+         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')",
+         [environmentId, packageName],
       );
       return row ? this.mapRow(row) : null;
    }
 
    async create(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
@@ -91,21 +91,21 @@ export class MaterializationRepository {
       const iso = now.toISOString();
       // Set active_key iff the row is in a non-terminal state. The unique
       // index on active_key makes the race-free conditional insert: a second
-      // concurrent create on the same (project, package) fails here rather
+      // concurrent create on the same (environment, package) fails here rather
       // than in a check-then-write window.
       const activeKey = TERMINAL_STATUSES.has(status)
          ? null
-         : activeKeyFor(projectId, packageName);
+         : activeKeyFor(environmentId, packageName);
       const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            `INSERT INTO materializations (id, project_id, package_name, status, active_key, metadata, created_at, updated_at)
+            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *`,
             [
                id,
-               projectId,
+               environmentId,
                packageName,
                status,
                activeKey,
@@ -118,7 +118,7 @@ export class MaterializationRepository {
       } catch (err) {
          if (isUniqueViolation(err, "idx_materializations_active_key")) {
             throw new DuplicateActiveMaterializationError(
-               projectId,
+               environmentId,
                packageName,
             );
          }
@@ -146,11 +146,13 @@ export class MaterializationRepository {
          // Clear active_key on any transition to a terminal state; set it on
          // any transition to a non-terminal state. The unique index
          // guarantees we can never end up with two active rows for the same
-         // (project, package).
+         // (environment, package).
          if (TERMINAL_STATUSES.has(updates.status)) {
             setClauses.push(`active_key = NULL`);
          } else {
-            setClauses.push(`active_key = project_id || '|' || package_name`);
+            setClauses.push(
+               `active_key = environment_id || '|' || package_name`,
+            );
          }
       }
       if (updates.startedAt !== undefined) {
@@ -188,10 +190,11 @@ export class MaterializationRepository {
       return updated;
    }
 
-   async deleteByProjectId(projectId: string): Promise<void> {
-      await this.db.run("DELETE FROM materializations WHERE project_id = ?", [
-         projectId,
-      ]);
+   async deleteByEnvironmentId(environmentId: string): Promise<void> {
+      await this.db.run(
+         "DELETE FROM materializations WHERE environment_id = ?",
+         [environmentId],
+      );
    }
 
    async deleteById(id: string): Promise<void> {
@@ -199,12 +202,12 @@ export class MaterializationRepository {
    }
 
    async deleteByPackage(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<void> {
       await this.db.run(
-         "DELETE FROM materializations WHERE project_id = ? AND package_name = ?",
-         [projectId, packageName],
+         "DELETE FROM materializations WHERE environment_id = ? AND package_name = ?",
+         [environmentId, packageName],
       );
    }
 
@@ -220,7 +223,7 @@ export class MaterializationRepository {
 
       return {
          id: row.id as string,
-         projectId: row.project_id as string,
+         environmentId: row.environment_id as string,
          packageName: row.package_name as string,
          status: row.status as MaterializationStatus,
          startedAt: row.started_at ? new Date(row.started_at as string) : null,

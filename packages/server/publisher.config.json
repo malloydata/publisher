@@ -1,6 +1,6 @@
 {
   "frozenConfig": false,
-  "projects": [
+  "environments": [
     {
       "name": "malloy-samples",
       "packages": [

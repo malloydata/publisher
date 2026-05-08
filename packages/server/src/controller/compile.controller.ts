@@ -1,22 +1,25 @@
 import type { LogMessage } from "@malloydata/malloy";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 
 export class CompileController {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
 
-   constructor(projectStore: ProjectStore) {
-      this.projectStore = projectStore;
+   constructor(environmentStore: EnvironmentStore) {
+      this.environmentStore = environmentStore;
    }
 
    public async compile(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       modelName: string,
       source: string,
       includeSql: boolean = false,
    ): Promise<{ status: string; problems: LogMessage[]; sql?: string }> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const { problems, sql } = await project.compileSource(
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const { problems, sql } = await environment.compileSource(
          packageName,
          modelName,
          source,

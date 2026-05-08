@@ -46,7 +46,7 @@ export default function BreadcrumbNav() {
    const modelPath = params["*"];
    const navigate = useRouterClickHandler();
 
-   if (!params.projectName && !params.packageName && !modelPath) {
+   if (!params.environmentName && !params.packageName && !modelPath) {
       return null;
    }
 
@@ -58,11 +58,11 @@ export default function BreadcrumbNav() {
                <ChevronRight sx={{ fontSize: 14, color: "text.secondary" }} />
             }
          >
-            {params.projectName && (
+            {params.environmentName && (
                <BreadcrumbChip
-                  label={params.projectName}
+                  label={params.environmentName}
                   onClick={(event) =>
-                     navigate(`/${params.projectName}/`, event)
+                     navigate(`/${params.environmentName}/`, event)
                   }
                />
             )}
@@ -72,7 +72,7 @@ export default function BreadcrumbNav() {
                   label={params.packageName}
                   onClick={(event) =>
                      navigate(
-                        `/${params.projectName}/${params.packageName}/`,
+                        `/${params.environmentName}/${params.packageName}/`,
                         event,
                      )
                   }
@@ -84,7 +84,7 @@ export default function BreadcrumbNav() {
                   label={modelPath}
                   onClick={(event) =>
                      navigate(
-                        `/${params.projectName}/${params.packageName}/${modelPath}`,
+                        `/${params.environmentName}/${params.packageName}/${modelPath}`,
                         event,
                      )
                   }

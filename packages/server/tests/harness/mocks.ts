@@ -1,12 +1,14 @@
 import sinon from "sinon";
-import { ProjectStore } from "../../src/service/project_store";
+import { EnvironmentStore } from "../../src/service/environment_store";
 
-/** Return a stubbed ProjectStore where every lookup throws or returns minimal objects. */
-export function fakeProjectStore(): sinon.SinonStubbedInstance<ProjectStore> {
-   const ps = sinon.createStubInstance(ProjectStore);
-   // For now just have getProject reject; suites can stub more.
-   ps.getProject.rejects(new Error("fakeProjectStore: getProject not stubbed"));
-   return ps;
+/** Return a stubbed EnvironmentStore where every lookup throws or returns minimal objects. */
+export function fakeEnvironmentStore(): sinon.SinonStubbedInstance<EnvironmentStore> {
+   const es = sinon.createStubInstance(EnvironmentStore);
+   // For now just have getEnvironment reject; suites can stub more.
+   es.getEnvironment.rejects(
+      new Error("fakeEnvironmentStore: getEnvironment not stubbed"),
+   );
+   return es;
 }
 
 // The runtime implementation of `McpServer` lives in the MCP SDK package, which
@@ -27,7 +29,7 @@ export type McpServer = DummyMcpServer;
 /** Convenience helper mimicking the old mocks used in integration specs. */
 export function createMalloyServiceMocks() {
    return {
-      projectStore: fakeProjectStore(),
+      environmentStore: fakeEnvironmentStore(),
    } as const;
 }
 

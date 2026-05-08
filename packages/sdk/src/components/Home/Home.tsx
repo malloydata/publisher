@@ -15,18 +15,18 @@ import {
    Typography,
 } from "@mui/material";
 import { useState } from "react";
-import { Project } from "../../client";
+import { Environment } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { getProjectDescription } from "../../utils/parsing";
+import { getEnvironmentDescription } from "../../utils/parsing";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
-import AddProjectDialog from "./AddProjectDialog";
-import DeleteProjectDialog from "./DeleteProjectDialog";
-import EditProjectDialog from "./EditProjectDialog";
+import AddEnvironmentDialog from "./AddEnvironmentDialog";
+import DeleteEnvironmentDialog from "./DeleteEnvironmentDialog";
+import EditEnvironmentDialog from "./EditEnvironmentDialog";
 
 interface HomeProps {
-   onClickProject?: (to: string, event?: React.MouseEvent) => void;
+   onClickEnvironment?: (to: string, event?: React.MouseEvent) => void;
 }
 
 const FEATURES: Array<{ title: string; body: string; href: string }> = [
@@ -47,23 +47,23 @@ const FEATURES: Array<{ title: string; body: string; href: string }> = [
    },
 ];
 
-export default function Home({ onClickProject }: HomeProps) {
+export default function Home({ onClickEnvironment }: HomeProps) {
    const { apiClients, mutable } = useServer();
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: ["projects"],
-      queryFn: () => apiClients.projects.listProjects(),
+      queryKey: ["environments"],
+      queryFn: () => apiClients.environments.listEnvironments(),
    });
 
    if (isError) {
-      return <ApiErrorDisplay error={error} context="Projects List" />;
+      return <ApiErrorDisplay error={error} context="Environments List" />;
    }
 
    if (!isSuccess) {
-      return <Loading text="Loading projects..." />;
+      return <Loading text="Loading environments..." />;
    }
 
-   const projects = data.data ?? [];
+   const environments = data.data ?? [];
 
    return (
       <Container maxWidth="md" sx={{ py: 6 }}>
@@ -124,7 +124,7 @@ export default function Home({ onClickProject }: HomeProps) {
 
          <Divider sx={{ my: 4 }} />
 
-         {projects.length > 0 ? (
+         {environments.length > 0 ? (
             <Box sx={{ mb: 4 }}>
                <Stack
                   direction="row"
@@ -141,20 +141,23 @@ export default function Home({ onClickProject }: HomeProps) {
                            mb: 0.5,
                         }}
                      >
-                        Projects
+                        Environments
                      </Typography>
                      <Typography variant="body2" color="text.secondary">
-                        Published projects available on this server
+                        Published environments available on this server
                      </Typography>
                   </Box>
-                  {mutable && <AddProjectDialog />}
+                  {mutable && <AddEnvironmentDialog />}
                </Stack>
                <Grid container spacing={2}>
-                  {projects.map((project) => (
-                     <Grid size={{ xs: 12, sm: 6, md: 4 }} key={project.name}>
-                        <ProjectCard
-                           project={project}
-                           onClickProject={onClickProject}
+                  {environments.map((environment) => (
+                     <Grid
+                        size={{ xs: 12, sm: 6, md: 4 }}
+                        key={environment.name}
+                     >
+                        <EnvironmentCard
+                           environment={environment}
+                           onClickEnvironment={onClickEnvironment}
                         />
                      </Grid>
                   ))}
@@ -173,11 +176,11 @@ export default function Home({ onClickProject }: HomeProps) {
                   color="text.secondary"
                   sx={{ mb: 3, maxWidth: 600 }}
                >
-                  Create your first Malloy project to start exploring semantic
-                  models and building data experiences.
+                  Create your first Malloy environment to start exploring
+                  semantic models and building data experiences.
                </Typography>
                {mutable ? (
-                  <AddProjectDialog />
+                  <AddEnvironmentDialog />
                ) : (
                   <Button
                      variant="contained"
@@ -215,22 +218,22 @@ export default function Home({ onClickProject }: HomeProps) {
    );
 }
 
-function ProjectCard({
-   project,
-   onClickProject,
+function EnvironmentCard({
+   environment,
+   onClickEnvironment,
 }: {
-   project: Project;
-   onClickProject?: (to: string, event?: React.MouseEvent) => void;
+   environment: Environment;
+   onClickEnvironment?: (to: string, event?: React.MouseEvent) => void;
 }) {
    const { mutable } = useServer();
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
    const menuOpen = Boolean(menuAnchorEl);
 
-   const description = getProjectDescription(project.readme);
+   const description = getEnvironmentDescription(environment.readme);
 
    const handleClick = (event: React.MouseEvent) => {
-      if (project.name && onClickProject) {
-         onClickProject(`/${project.name}/`, event);
+      if (environment.name && onClickEnvironment) {
+         onClickEnvironment(`/${environment.name}/`, event);
       }
    };
 
@@ -286,7 +289,7 @@ function ProjectCard({
                      noWrap
                      sx={{ fontWeight: 600, mb: 0.5 }}
                   >
-                     {project.name}
+                     {environment.name}
                   </Typography>
                   <Tooltip title={description} followCursor enterDelay={1000}>
                      <Typography
@@ -310,7 +313,7 @@ function ProjectCard({
                      <IconButton
                         size="small"
                         onClick={handleMenuClick}
-                        aria-label="Project options"
+                        aria-label="Environment options"
                         sx={{ flexShrink: 0, mt: -0.5, mr: -0.5 }}
                      >
                         <MoreVert fontSize="small" />
@@ -329,12 +332,12 @@ function ProjectCard({
                            horizontal: "right",
                         }}
                      >
-                        <EditProjectDialog
-                           project={project}
+                        <EditEnvironmentDialog
+                           environment={environment}
                            onCloseDialog={handleMenuClose}
                         />
-                        <DeleteProjectDialog
-                           project={project}
+                        <DeleteEnvironmentDialog
+                           environment={environment}
                            onCloseDialog={handleMenuClose}
                         />
                      </Menu>

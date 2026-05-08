@@ -316,7 +316,7 @@ describe("service/package", () => {
             expect(models).toEqual([
                {
                   // @ts-expect-error TODO: Fix missing projectName type in API
-                  projectName: "testProject",
+                  environmentName: "testProject",
                   packageName: "testPackage",
                   path: "model1.malloy",
                   error: undefined,
@@ -327,7 +327,7 @@ describe("service/package", () => {
             expect(notebooks).toEqual([
                {
                   // @ts-expect-error TODO: Fix missing projectName type in API
-                  projectName: "testProject",
+                  environmentName: "testProject",
                   packageName: "testPackage",
                   path: "model2.malloynb",
                   error: "This is the error",

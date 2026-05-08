@@ -10,8 +10,8 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
 } from "../service/db_utils";
-import type { Project } from "../service/project";
-import { ProjectStore } from "../service/project_store";
+import type { Environment } from "../service/environment";
+import { EnvironmentStore } from "../service/environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -103,19 +103,19 @@ function validateAdminAuthoredConnection(
 }
 
 export class ConnectionController {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
    private connectionService: ConnectionService;
-   constructor(projectStore: ProjectStore) {
-      this.projectStore = projectStore;
-      this.connectionService = new ConnectionService(projectStore);
+   constructor(environmentStore: EnvironmentStore) {
+      this.environmentStore = environmentStore;
+      this.connectionService = new ConnectionService(environmentStore);
    }
 
    /**
     * Gets the appropriate Malloy connection for a given connection name.
-    * For DuckDB connections, retrieves from package level; for others, from project level.
+    * For DuckDB connections, retrieves from package level; for others, from environment level.
     */
    private getApiConnectionForLookup(
-      project: Project,
+      environment: Environment,
       connectionName: string,
    ): ApiConnection {
       if (connectionName === "duckdb") {
@@ -125,35 +125,38 @@ export class ConnectionController {
             duckdbConnection: { attachedDatabases: [] },
          };
       }
-      return project.getApiConnection(connectionName);
+      return environment.getApiConnection(connectionName);
    }
 
    private async getMalloyConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       packageName?: string,
    ): Promise<Connection> {
-      const project = await this.projectStore.getProject(projectName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
 
       // "duckdb" is the per-package sandbox; its rootDirectory is the
-      // package's directory. There is no project-level "duckdb" — the name is
+      // package's directory. There is no environment-level "duckdb" — the name is
       // reserved at config time. So the lookup is intrinsically per-package
       // and the caller must say which package to use.
       if (connectionName === "duckdb") {
-         const packages = await project.listPackages();
+         const packages = await environment.listPackages();
          if (packages.length === 0) {
-            // Fall through to project; this will surface the standard
+            // Fall through to environment; this will surface the standard
             // "connection not found" rather than silently inventing one.
-            return await project.getMalloyConnection(connectionName);
+            return await environment.getMalloyConnection(connectionName);
          }
          if (packageName) {
             const known = packages.some((p) => p.name === packageName);
             if (!known) {
                throw new BadRequestError(
-                  `Package "${packageName}" not found in project "${projectName}"`,
+                  `Package "${packageName}" not found in environment "${environmentName}"`,
                );
             }
-            const pkg = await project.getPackage(packageName);
+            const pkg = await environment.getPackage(packageName);
             return await pkg.getMalloyConnection(connectionName);
          }
          if (packages.length === 1) {
@@ -161,15 +164,15 @@ export class ConnectionController {
             if (!onlyPackage) {
                throw new ConnectionError("Package name is undefined");
             }
-            const pkg = await project.getPackage(onlyPackage);
+            const pkg = await environment.getPackage(onlyPackage);
             return await pkg.getMalloyConnection(connectionName);
          }
          throw new BadRequestError(
-            `Ambiguous "duckdb" connection lookup: project "${projectName}" has multiple packages. ` +
-               `Use /projects/${projectName}/packages/{packageName}/connections/duckdb/... to disambiguate.`,
+            `Ambiguous "duckdb" connection lookup: environment "${environmentName}" has multiple packages. ` +
+               `Use /environments/${environmentName}/packages/{packageName}/connections/duckdb/... to disambiguate.`,
          );
       } else {
-         return await project.getMalloyConnection(connectionName);
+         return await environment.getMalloyConnection(connectionName);
       }
    }
 
@@ -188,7 +191,7 @@ export class ConnectionController {
                fetchTableSchema: (
                   tableKey: string,
                   tablePath: string,
-               ) => Promise<TableSourceDef | undefined>;
+               ) => Promise<TableSourceDef | string | undefined>;
             }
          ).fetchTableSchema(tableKey, tablePath);
          if (!source) {
@@ -198,6 +201,7 @@ export class ConnectionController {
          if (typeof source === "string") {
             throw new ConnectionError(source);
          }
+
          return {
             source: JSON.stringify(source),
             resource: tablePath,
@@ -223,39 +227,50 @@ export class ConnectionController {
    }
 
    public async getConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
    ): Promise<ApiConnection> {
-      if (!projectName || !connectionName) {
+      if (!environmentName || !connectionName) {
          throw new BadRequestError("Connection payload is required");
       }
       // Prefer the in-memory API connection (which was materialized by the
-      // project on load and carries `attributes`). The DB row stores the
+      // environment on load and carries `attributes`). The DB row stores the
       // raw config and FK columns, which aren't the ApiConnection shape.
-      const project = await this.projectStore.getProject(projectName, false);
-      return project.getApiConnection(connectionName);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      return environment.getApiConnection(connectionName);
    }
 
-   public async listConnections(projectName: string): Promise<ApiConnection[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      return project.listApiConnections();
+   public async listConnections(
+      environmentName: string,
+   ): Promise<ApiConnection[]> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      return environment.listApiConnections();
    }
 
    // Lists schemas (namespaces) available in a connection.
    // For "duckdb", the per-package sandbox, packageName disambiguates which
-   // package's DuckDB to browse in a multi-package project.
+   // package's DuckDB to browse in a multi-package environment.
    public async listSchemas(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       packageName?: string,
    ): Promise<ApiSchema[]> {
-      const project = await this.projectStore.getProject(projectName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const connection = this.getApiConnectionForLookup(
-         project,
+         environment,
          connectionName,
       );
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
          packageName,
       );
@@ -266,19 +281,22 @@ export class ConnectionController {
    // Lists tables available in a schema. For postgres the schema is usually "public".
    // packageName disambiguates per-package "duckdb" lookups (see listSchemas).
    public async listTables(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       schemaName: string,
       tableNames?: string[],
       packageName?: string,
    ): Promise<ApiTable[]> {
-      const project = await this.projectStore.getProject(projectName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const connection = this.getApiConnectionForLookup(
-         project,
+         environment,
          connectionName,
       );
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
          packageName,
       );
@@ -292,13 +310,13 @@ export class ConnectionController {
    }
 
    public async getConnectionSqlSource(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
    ): Promise<ApiSqlSource> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
          packageName,
       );
@@ -329,21 +347,24 @@ export class ConnectionController {
    }
 
    public async getTable(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       schemaName: string,
       tablePath: string,
       packageName?: string,
    ): Promise<ApiTable> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
          packageName,
       );
       // Use getApiConnection to get the unwrapped ApiConnection config, consistent with listSchemas and listTables.
-      const project = await this.projectStore.getProject(projectName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       const connection = this.getApiConnectionForLookup(
-         project,
+         environment,
          connectionName,
       );
 
@@ -415,14 +436,14 @@ export class ConnectionController {
    }
 
    public async getConnectionQueryData(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       sqlStatement: string,
       options: string,
       packageName?: string,
    ): Promise<ApiQueryData> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
          packageName,
       );
@@ -449,13 +470,13 @@ export class ConnectionController {
    }
 
    public async getConnectionTemporaryTable(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       sqlStatement: string,
       packageName?: string,
    ): Promise<ApiTemporaryTable> {
       const malloyConnection = await this.getMalloyConnection(
-         projectName,
+         environmentName,
          connectionName,
          packageName,
       );
@@ -509,7 +530,7 @@ export class ConnectionController {
    }
 
    public async addConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       connectionConfig: ApiConnection,
    ): Promise<{ message: string }> {
@@ -529,11 +550,11 @@ export class ConnectionController {
       validateAdminAuthoredConnection(connectionName, connectionConfig);
 
       logger.info(
-         `Creating connection "${connectionName}" in project "${projectName}"`,
+         `Creating connection "${connectionName}" in environment "${environmentName}"`,
       );
 
       await this.connectionService.addConnection(
-         projectName,
+         environmentName,
          connectionName,
          connectionConfig,
       );
@@ -544,7 +565,7 @@ export class ConnectionController {
    }
 
    public async updateConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
       connection: Partial<ApiConnection>,
    ): Promise<{ message: string }> {
@@ -556,11 +577,11 @@ export class ConnectionController {
       validateAdminAuthoredConnection(connectionName, connection);
 
       logger.info(
-         `Updating connection "${connectionName}" in project "${projectName}"`,
+         `Updating connection "${connectionName}" in environment "${environmentName}"`,
       );
 
       await this.connectionService.updateConnection(
-         projectName,
+         environmentName,
          connectionName,
          connection,
       );
@@ -571,15 +592,15 @@ export class ConnectionController {
    }
 
    public async deleteConnection(
-      projectName: string,
+      environmentName: string,
       connectionName: string,
    ): Promise<{ message: string }> {
       logger.info(
-         `Deleting connection "${connectionName}" from project "${projectName}"`,
+         `Deleting connection "${connectionName}" from environment "${environmentName}"`,
       );
 
       await this.connectionService.deleteConnection(
-         projectName,
+         environmentName,
          connectionName,
       );
 

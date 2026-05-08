@@ -426,7 +426,7 @@ export class Model {
          logger.error("Query parsing error", {
             error,
             errorMessage,
-            projectName: this.packageName,
+            environmentName: this.packageName,
             modelPath: this.modelPath,
             query,
             queryName,
@@ -466,7 +466,7 @@ export class Model {
          logger.error("Query execution error", {
             error,
             errorMessage,
-            projectName: this.packageName,
+            environmentName: this.packageName,
             modelPath: this.modelPath,
             query,
             queryName,

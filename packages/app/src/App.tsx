@@ -31,8 +31,8 @@ const ModelPage = React.lazy(
 const PackagePage = React.lazy(
    () => import("./components/pages/PackagePage/PackagePage"),
 );
-const ProjectPage = React.lazy(
-   () => import("./components/pages/ProjectPage/ProjectPage"),
+const EnvironmentPage = React.lazy(
+   () => import("./components/pages/EnvironmentPage/EnvironmentPage"),
 );
 const RouteError = React.lazy(
    () => import("./components/common/RouteError/RouteError"),
@@ -68,19 +68,19 @@ export const createMalloyRouter = (
                element: <HomePage />,
             },
             {
-               path: ":projectName",
-               element: <ProjectPage />,
+               path: ":environmentName",
+               element: <EnvironmentPage />,
             },
             {
-               path: ":projectName/:packageName",
+               path: ":environmentName/:packageName",
                element: <PackagePage />,
             },
             {
-               path: ":projectName/:packageName/*",
+               path: ":environmentName/:packageName/*",
                element: <ModelPage />,
             },
             {
-               path: ":projectName/:packageName/workbook/:workspace/:workbookPath",
+               path: ":environmentName/:packageName/workbook/:workspace/:workbookPath",
                element: <WorkbookPage />,
             },
          ],

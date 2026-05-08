@@ -1,18 +1,18 @@
-import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-bigquery";
+import type { BigQueryConnection } from "@malloydata/db-bigquery";
+import "@malloydata/db-databricks";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
-import type { MySQLConnection } from "@malloydata/db-mysql";
 import "@malloydata/db-mysql";
-import type { PostgresConnection } from "@malloydata/db-postgres";
+import type { MySQLConnection } from "@malloydata/db-mysql";
 import "@malloydata/db-postgres";
+import type { PostgresConnection } from "@malloydata/db-postgres";
 import {
    buildPoolOptions,
    SnowflakeConnection,
 } from "@malloydata/db-snowflake";
-import type { TrinoConnection } from "@malloydata/db-trino";
 import "@malloydata/db-trino";
-import "@malloydata/db-databricks";
+import type { TrinoConnection } from "@malloydata/db-trino";
 import {
    Connection,
    contextOverlay,
@@ -26,10 +26,10 @@ import path from "path";
 import { components } from "../api";
 import { logAxiosError, logger } from "../logger";
 import {
-   assembleProjectConnections,
+   assembleEnvironmentConnections,
    CoreConnectionEntry,
+   EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
-   ProjectConnectionMetadata,
 } from "./connection_config";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
 
@@ -807,17 +807,17 @@ class DuckLakeConnection extends DuckDBConnection {
 
 export async function deleteDuckLakeConnectionFile(
    connectionName: string,
-   projectPath: string,
+   environmentPath: string,
 ): Promise<void> {
    const ducklakePath = path.join(
-      projectPath,
+      environmentPath,
       `${connectionName}_ducklake.duckdb`,
    );
    try {
       await fs.access(ducklakePath);
       await fs.rm(ducklakePath);
       logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${projectPath}`,
+         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
       );
    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -826,14 +826,14 @@ export async function deleteDuckLakeConnectionFile(
          );
       } else {
          logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${projectPath}`,
+            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
             { error },
          );
       }
    }
 }
 
-export type ProjectMalloyConfig = {
+export type EnvironmentMalloyConfig = {
    malloyConfig: MalloyConfig;
    apiConnections: InternalConnection[];
    // Releases both core-managed connections and Publisher wrapper-managed
@@ -863,7 +863,7 @@ function removeUndefined<T extends object>(value: T): Partial<T> {
 }
 
 function buildSnowflakePrivateKeyConnection(
-   metadata: ProjectConnectionMetadata,
+   metadata: EnvironmentConnectionMetadata,
 ): SnowflakeConnection {
    const name = metadata.apiConnection.name!;
    const snowflake = metadata.apiConnection.snowflakeConnection;
@@ -905,7 +905,7 @@ function buildSnowflakePrivateKeyConnection(
 }
 
 function buildDuckLakeConnection(
-   metadata: ProjectConnectionMetadata,
+   metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
 ): DuckLakeConnection {
    return new DuckLakeConnection(
@@ -918,7 +918,7 @@ function buildDuckLakeConnection(
 }
 
 function buildAzureDuckDBConnection(
-   metadata: ProjectConnectionMetadata,
+   metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
 ): AzureDuckDBConnection {
    return new AzureDuckDBConnection(
@@ -932,9 +932,9 @@ function buildAzureDuckDBConnection(
 }
 
 function getMetadataForLookup(
-   metadata: Map<string, ProjectConnectionMetadata>,
+   metadata: Map<string, EnvironmentConnectionMetadata>,
    name?: string,
-): ProjectConnectionMetadata | undefined {
+): EnvironmentConnectionMetadata | undefined {
    return name ? metadata.get(name) : undefined;
 }
 
@@ -951,15 +951,18 @@ function isDuckDBConnection(
  *   to a connection-config change, so the new generation rebinds against the
  *   updated DuckLake settings (catalog DSN, storage secrets) rather than
  *   trusting whatever attach state the prior generation left behind. On a
- *   fresh project the existing-attach check fails anyway, so the flag is a
+ *   fresh environment the existing-attach check fails anyway, so the flag is a
  *   no-op there. Only the DuckLake branch consults it today.
  */
-export function buildProjectMalloyConfig(
+export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
-   projectPath: string = "",
+   environmentPath: string = "",
    isUpdateConnectionRequest: boolean = false,
-): ProjectMalloyConfig {
-   const assembled = assembleProjectConnections(connections, projectPath);
+): EnvironmentMalloyConfig {
+   const assembled = assembleEnvironmentConnections(
+      connections,
+      environmentPath,
+   );
    // Cache the build Promise rather than the resolved Connection so two
    // concurrent lookupConnection() calls for the same name share one build
    // and we never leak a losing-instance pool/handle. Per-branch caches
@@ -970,12 +973,12 @@ export function buildProjectMalloyConfig(
    const attachPromises = new WeakMap<Connection, Promise<void>>();
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
-      config: contextOverlay({ rootDirectory: projectPath }),
+      config: contextOverlay({ rootDirectory: environmentPath }),
    });
 
    async function attachOnce(
       connection: Connection,
-      metadata: ProjectConnectionMetadata,
+      metadata: EnvironmentConnectionMetadata,
    ): Promise<void> {
       if (
          metadata.attachedDatabases.length === 0 ||
@@ -1086,23 +1089,23 @@ export function buildProjectMalloyConfig(
          // already let every branch run, and a single AggregateError otherwise
          // hides per-branch detail from callers that just log the error.
          for (const failure of failures) {
-            logger.error("Failed to release project connection", {
+            logger.error("Failed to release environment connection", {
                error: failure.reason,
             });
          }
          if (failures.length > 0) {
             throw new AggregateError(
                failures.map((failure) => failure.reason),
-               "Failed to release one or more project connections",
+               "Failed to release one or more environment connections",
             );
          }
       },
    };
 }
 
-export async function createProjectConnections(
+export async function createEnvironmentConnections(
    connections: ApiConnection[] = [],
-   projectPath: string = "",
+   environmentPath: string = "",
    isUpdateConnectionRequest: boolean = false,
 ): Promise<{
    malloyConnections: Map<string, Connection>;
@@ -1110,17 +1113,17 @@ export async function createProjectConnections(
    releaseConnections: () => Promise<void>;
 }> {
    const connectionMap = new Map<string, Connection>();
-   const projectConfig = buildProjectMalloyConfig(
+   const environmentConfig = buildEnvironmentMalloyConfig(
       connections,
-      projectPath,
+      environmentPath,
       isUpdateConnectionRequest,
    );
 
-   for (const connection of projectConfig.apiConnections) {
+   for (const connection of environmentConfig.apiConnections) {
       if (!connection.name) continue;
       logger.info(`Adding connection ${connection.name}`, { connection });
       const malloyConnection =
-         await projectConfig.malloyConfig.connections.lookupConnection(
+         await environmentConfig.malloyConfig.connections.lookupConnection(
             connection.name,
          );
       connection.attributes = getConnectionAttributes(malloyConnection);
@@ -1129,8 +1132,8 @@ export async function createProjectConnections(
 
    return {
       malloyConnections: connectionMap,
-      apiConnections: projectConfig.apiConnections,
-      releaseConnections: projectConfig.releaseConnections,
+      apiConnections: environmentConfig.apiConnections,
+      releaseConnections: environmentConfig.releaseConnections,
    };
 }
 
@@ -1280,16 +1283,16 @@ async function testDuckDBConnection(
 export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
-   let projectConfig: ProjectMalloyConfig | null = null;
+   let environmentConfig: EnvironmentMalloyConfig | null = null;
    try {
       // Validate that connection name is provided
       if (!connectionConfig.name) {
          throw new Error("Connection name is required");
       }
 
-      projectConfig = buildProjectMalloyConfig([connectionConfig]);
+      environmentConfig = buildEnvironmentMalloyConfig([connectionConfig]);
       const connection =
-         await projectConfig.malloyConfig.connections.lookupConnection(
+         await environmentConfig.malloyConfig.connections.lookupConnection(
             connectionConfig.name,
          );
 
@@ -1346,9 +1349,9 @@ export async function testConnectionConfig(
          errorMessage: (error as Error).message,
       };
    } finally {
-      if (projectConfig) {
+      if (environmentConfig) {
          try {
-            await projectConfig.releaseConnections();
+            await environmentConfig.releaseConnections();
          } catch (closeError) {
             logger.warn("Error releasing temporary connection test config", {
                error: closeError,

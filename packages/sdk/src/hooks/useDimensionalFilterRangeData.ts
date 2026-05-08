@@ -80,8 +80,8 @@ export type DimensionValues = Map<string, DimensionValue[]>;
  * Parameters for the useDimensionalFilterRangeData hook
  */
 export interface UseDimensionalFilterRangeDataParams {
-   /** Project name */
-   project: string;
+   /** Environment name */
+   environment: string;
    /** Package name */
    package: string;
    /** List of dimension specifications (each includes source and model) */
@@ -611,13 +611,13 @@ function parseIndexQueryResult(
  * The hook groups dimension specs by source/model combination and runs separate
  * index queries for each group, then merges the results.
  *
- * @param params - Parameters including project, package, and dimension specs (each with source/model)
+ * @param params - Parameters including environment, package, and dimension specs (each with source/model)
  * @returns Query result with dimension values map, loading state, and error information
  *
  * @example
  * ```tsx
  * const { data, isLoading, error } = useDimensionalFilterRangeData({
- *   project: "my-project",
+ *   environment: "my-environment",
  *   package: "my-package",
  *   dimensionSpecs: [
  *     { dimensionName: "category", filterType: "Star", source: "my_source", model: "model.malloy" },
@@ -632,7 +632,7 @@ export function useDimensionalFilterRangeData(
    params: UseDimensionalFilterRangeDataParams,
 ): DimensionalFilterRangeDataResult {
    const {
-      project,
+      environment,
       package: packageName,
       dimensionSpecs,
       versionId,
@@ -695,7 +695,7 @@ export function useDimensionalFilterRangeData(
    const queryResult = useQueryWithApiError({
       queryKey: [
          "dimensionalFilter",
-         project,
+         environment,
          packageName,
          dimensionSpecs,
          versionId,
@@ -716,7 +716,7 @@ export function useDimensionalFilterRangeData(
          const results = await Promise.all(
             queryConfigs.map(async (config) => {
                const response = await apiClients.models.executeQueryModel(
-                  project,
+                  environment,
                   packageName,
                   config.model,
                   {

@@ -5,12 +5,12 @@ import { logSuccess, logInfo, logOutput } from "../utils/logger.js";
 
 export async function listConnections(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
 ): Promise<void> {
-  const connections = await client.listConnections(projectName);
+  const connections = await client.listConnections(environmentName);
 
   if (connections.length === 0) {
-    logInfo(`No connections in project: ${projectName}`);
+    logInfo(`No connections in environment: ${environmentName}`);
     return;
   }
 
@@ -27,16 +27,16 @@ export async function listConnections(
 
 export async function getConnection(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   connectionName: string,
 ): Promise<void> {
-  const conn = await client.getConnection(projectName, connectionName);
+  const conn = await client.getConnection(environmentName, connectionName);
   logOutput(JSON.stringify(conn, null, 2));
 }
 
 export async function createConnection(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   options: { file?: string; json?: string; name?: string },
 ): Promise<void> {
   let connection;
@@ -55,7 +55,7 @@ export async function createConnection(
       } else {
         // Bulk create
         for (const conn of fileContent.connections) {
-          await client.createConnection(projectName, conn);
+          await client.createConnection(environmentName, conn);
           logSuccess(`Created connection: ${conn.name}`);
         }
         return;
@@ -69,13 +69,13 @@ export async function createConnection(
     throw new Error("Either --file or --json is required");
   }
 
-  await client.createConnection(projectName, connection);
+  await client.createConnection(environmentName, connection);
   logSuccess(`Created connection: ${connection.name}`);
 }
 
 export async function updateConnection(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   connectionName: string,
   options: { file?: string; json?: string },
 ): Promise<void> {
@@ -92,15 +92,15 @@ export async function updateConnection(
     throw new Error("Either --file or --json is required");
   }
 
-  await client.updateConnection(projectName, connectionName, connection);
+  await client.updateConnection(environmentName, connectionName, connection);
   logSuccess(`Updated connection: ${connectionName}`);
 }
 
 export async function deleteConnection(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   connectionName: string,
 ): Promise<void> {
-  await client.deleteConnection(projectName, connectionName);
+  await client.deleteConnection(environmentName, connectionName);
   logSuccess(`Deleted connection: ${connectionName}`);
 }

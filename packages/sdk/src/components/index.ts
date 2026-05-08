@@ -1,12 +1,12 @@
 export { AnalyzePackageButton } from "./AnalyzePackageButton";
 export { useRouterClickHandler } from "./click_helper";
+export * from "./Environment";
 export * from "./filter";
 export * from "./Home";
 export * from "./Loading";
 export * from "./Model";
 export * from "./Notebook";
 export * from "./Package";
-export * from "./Project";
 export * from "./QueryResult";
 export * from "./RenderedResult";
 export { ServerProvider, useServer } from "./ServerProvider";

@@ -9,7 +9,7 @@ import { dropManifestEntries, liveTableKey } from "./materialized_table_gc";
 function makeEntry(overrides: Partial<ManifestEntry> = {}): ManifestEntry {
    return {
       id: "entry-1",
-      projectId: "proj-1",
+      environmentId: "proj-1",
       packageName: "pkg",
       buildId: "abcdef1234567890abcdef1234567890",
       tableName: "my_table",
@@ -67,7 +67,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries([entry], {
          connections: ctx.connections,
          manifestService: ctx.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
       });
 
       expect(result.dropped).toHaveLength(1);
@@ -102,7 +102,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries([entry], {
          connections: ctx.connections,
          manifestService: ctx.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
       });
 
       expect(result.dropped).toHaveLength(0);
@@ -122,7 +122,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries([entry], {
          connections: ctx.connections,
          manifestService: ctx.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
       });
 
       // Manifest row is gone → entry is authoritatively dropped. The
@@ -146,7 +146,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries([entry], {
          connections: ctx.connections,
          manifestService: ctx.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
       });
 
       expect(result.dropped).toHaveLength(1);
@@ -162,7 +162,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries([entry], {
          connections: ctx.connections,
          manifestService: ctx.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
       });
 
       expect(result.dropped).toHaveLength(0);
@@ -181,7 +181,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries([entry], {
          connections: ctx2.connections,
          manifestService: ctx2.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
       });
 
       expect(result.dropped).toHaveLength(0);
@@ -199,7 +199,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries(entries, {
          connections: ctx.connections,
          manifestService: ctx.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
          dryRun: true,
       });
 
@@ -222,7 +222,7 @@ describe("dropManifestEntries", () => {
       const result = await dropManifestEntries([bad, good], {
          connections: ctx.connections,
          manifestService: ctx.manifestService,
-         projectId: "proj-1",
+         environmentId: "proj-1",
       });
 
       expect(result.dropped).toHaveLength(1);
@@ -250,7 +250,7 @@ describe("dropManifestEntries", () => {
          const result = await dropManifestEntries([staleEntry], {
             connections: ctx.connections,
             manifestService: ctx.manifestService,
-            projectId: "proj-1",
+            environmentId: "proj-1",
             liveTables: live,
          });
 
@@ -280,7 +280,7 @@ describe("dropManifestEntries", () => {
          const result = await dropManifestEntries([staleEntry], {
             connections: ctx.connections,
             manifestService: ctx.manifestService,
-            projectId: "proj-1",
+            environmentId: "proj-1",
             liveTables: live,
          });
 
@@ -296,7 +296,7 @@ describe("dropManifestEntries", () => {
          const result = await dropManifestEntries([staleEntry], {
             connections: ctx.connections,
             manifestService: ctx.manifestService,
-            projectId: "proj-1",
+            environmentId: "proj-1",
             dryRun: true,
             liveTables: live,
          });
@@ -317,7 +317,7 @@ describe("dropManifestEntries", () => {
          const result = await dropManifestEntries([entry], {
             connections: ctx.connections,
             manifestService: ctx.manifestService,
-            projectId: "proj-1",
+            environmentId: "proj-1",
             forceDeleteRowOnMissingConnection: true,
          });
 
@@ -339,7 +339,7 @@ describe("dropManifestEntries", () => {
          const result = await dropManifestEntries([entry], {
             connections: ctx.connections,
             manifestService: ctx.manifestService,
-            projectId: "proj-1",
+            environmentId: "proj-1",
             forceDeleteRowOnMissingConnection: true,
          });
 
@@ -354,7 +354,7 @@ describe("dropManifestEntries", () => {
          const result = await dropManifestEntries([entry], {
             connections: ctx.connections,
             manifestService: ctx.manifestService,
-            projectId: "proj-1",
+            environmentId: "proj-1",
             forceDeleteRowOnMissingConnection: true,
             dryRun: true,
          });

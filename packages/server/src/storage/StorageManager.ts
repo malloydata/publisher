@@ -57,9 +57,9 @@ function catalogNameForConfig(c: DuckLakeManifestConfig): string {
 }
 
 /**
- * Manages the storage backend (DuckDB, Postgres, etc.) and per-project
- * manifest stores. Projects without `materializationStorage` config use
- * the default DuckDB manifest store. Projects with the config get a
+ * Manages the storage backend (DuckDB, Postgres, etc.) and per-environment
+ * manifest stores. Environments without `materializationStorage` config use
+ * the default DuckDB manifest store. Environments with the config get a
  * DuckLake-backed store attached lazily on first access.
  */
 export class StorageManager {
@@ -68,8 +68,8 @@ export class StorageManager {
    private repository: ResourceRepository | null = null;
    private defaultManifestStore: ManifestStore | null = null;
 
-   /** Per-project DuckLake manifest stores, keyed by projectId. */
-   private projectManifestStores = new Map<string, ManifestStore>();
+   /** Per-environment DuckLake manifest stores, keyed by environmentId. */
+   private environmentManifestStores = new Map<string, ManifestStore>();
 
    /**
     * Tracks attached DuckLake catalogs as `configKey -> catalogName`. Each
@@ -122,18 +122,18 @@ export class StorageManager {
    }
 
    /**
-    * Lazily initializes a DuckLake manifest store for a project.
+    * Lazily initializes a DuckLake manifest store for an environment.
     *
-    * One shared catalog per materializationStorage config: every project
+    * One shared catalog per materializationStorage config: every environment
     * pointing at the same (catalogUrl, dataPath) shares one `build_manifests`
-    * table inside it, partitioned by `project_id` (set to the project's name
+    * table inside it, partitioned by `environment_id` (set to the environment's name
     * so it's stable across worker replicas — required for cross-pod manifest
     * visibility in orchestrated mode). Different configs (e.g. different
     * orgs) attach as separate catalogs under distinct deterministic aliases.
     */
-   async initializeDuckLakeForProject(
-      projectId: string,
-      projectName: string,
+   async initializeDuckLakeForEnvironment(
+      environmentId: string,
+      environmentName: string,
       config: DuckLakeManifestConfig,
    ): Promise<void> {
       if (!this.duckDbConnection) {
@@ -153,14 +153,14 @@ export class StorageManager {
       const store = new DuckLakeManifestStore(
          this.duckDbConnection,
          catalogName,
-         projectName,
+         environmentName,
       );
       await store.bootstrapSchema();
 
-      this.projectManifestStores.set(projectId, store);
-      logger.info("DuckLake manifest store initialized for project", {
-         projectId,
-         projectName,
+      this.environmentManifestStores.set(environmentId, store);
+      logger.info("DuckLake manifest store initialized for environment", {
+         environmentId,
+         environmentName,
          catalogName,
       });
    }
@@ -210,15 +210,16 @@ export class StorageManager {
    }
 
    /**
-    * Returns the manifest store for a project. If the project has a
+    * Returns the manifest store for an environment. If the environment has a
     * DuckLake store configured, returns that; otherwise returns the
     * default DuckDB-backed store.
     */
-   getManifestStore(projectId?: string): ManifestStore {
-      if (projectId) {
-         const projectStore = this.projectManifestStores.get(projectId);
-         if (projectStore) {
-            return projectStore;
+   getManifestStore(environmentId?: string): ManifestStore {
+      if (environmentId) {
+         const environmentStore =
+            this.environmentManifestStores.get(environmentId);
+         if (environmentStore) {
+            return environmentStore;
          }
       }
       if (!this.defaultManifestStore) {
@@ -234,7 +235,7 @@ export class StorageManager {
          this.duckDbConnection = null;
          this.repository = null;
          this.defaultManifestStore = null;
-         this.projectManifestStores.clear();
+         this.environmentManifestStores.clear();
          this.attachedCatalogs.clear();
       }
    }

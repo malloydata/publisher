@@ -14,7 +14,7 @@ export type CoreConnectionsPojo = {
    connections: Record<string, CoreConnectionEntry>;
 };
 
-export type ProjectConnectionMetadata = {
+export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
    hasAzureAttachment: boolean;
@@ -24,9 +24,9 @@ export type ProjectConnectionMetadata = {
    workingDirectory: string;
 };
 
-export type AssembledProjectConnections = {
+export type AssembledEnvironmentConnections = {
    pojo: CoreConnectionsPojo;
-   metadata: Map<string, ProjectConnectionMetadata>;
+   metadata: Map<string, EnvironmentConnectionMetadata>;
    apiConnections: ApiConnection[];
 };
 
@@ -105,10 +105,10 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
    return privateKeyContent;
 }
 
-// NOTE: This narrows the project-author API surface (it rejects securityPolicy,
+// NOTE: This narrows the environment-author API surface (it rejects securityPolicy,
 // allowedDirectories, setupSQL, etc.). It is NOT a filesystem isolation
 // boundary: attachedDatabases[].path is not normalized or constrained to stay
-// under the project root, and DuckDB's local-file access is unchanged.
+// under the environment root, and DuckDB's local-file access is unchanged.
 // Adversarial filesystem isolation is explicit non-goal of the MalloyConfig
 // adoption — see PR #682 release notes ("DuckDB hardening knobs are not
 // exposed", "no adversarial DuckDB filesystem isolation"). Future work owns
@@ -127,7 +127,7 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
       throw new Error(
          `Unsupported DuckDB connection field(s): ${unsupportedFields.join(
             ", ",
-         )}. Publisher only supports attachedDatabases for project-authored DuckDB connections.`,
+         )}. Publisher only supports attachedDatabases for environment-authored DuckDB connections.`,
       );
    }
 }
@@ -198,7 +198,7 @@ function getStaticConnectionAttributes(
 
 type ServiceAccountKey = {
    type?: string;
-   project_id?: string;
+   environment_id?: string;
    private_key?: string;
    client_email?: string;
    [key: string]: unknown;
@@ -248,12 +248,12 @@ function buildPostgresConnectionString(
 
 function buildDuckdbEntry(
    name: string,
-   projectPath: string,
+   environmentPath: string,
    databaseFilename = `${name}.duckdb`,
 ): CoreConnectionEntry {
    return {
       is: "duckdb",
-      databasePath: path.join(projectPath, databaseFilename),
+      databasePath: path.join(environmentPath, databaseFilename),
    };
 }
 
@@ -266,6 +266,15 @@ function validateConnectionShape(connection: ApiConnection): void {
       case "duckdb":
          if (!connection.duckdbConnection) {
             throw new Error("DuckDB connection configuration is missing.");
+         }
+         {
+            const attached =
+               connection.duckdbConnection.attachedDatabases ?? [];
+            if (attached.length === 0) {
+               throw new Error(
+                  "DuckDB connection must have at least one attached database",
+               );
+            }
          }
          break;
       case "motherduck":
@@ -330,12 +339,12 @@ function validateConnectionShape(connection: ApiConnection): void {
    }
 }
 
-export function assembleProjectConnections(
+export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
-   projectPath = "",
-): AssembledProjectConnections {
+   environmentPath = "",
+): AssembledEnvironmentConnections {
    const pojo: CoreConnectionsPojo = { connections: {} };
-   const metadata = new Map<string, ProjectConnectionMetadata>();
+   const metadata = new Map<string, EnvironmentConnectionMetadata>();
    const apiConnections: ApiConnection[] = [];
    const processedConnections = new Set<string>();
 
@@ -365,9 +374,9 @@ export function assembleProjectConnections(
       const isDuckLake = connection.type === "ducklake";
       const isDuckdb = connection.type === "duckdb";
       const databasePath = isDuckLake
-         ? path.join(projectPath, `${connection.name}_ducklake.duckdb`)
+         ? path.join(environmentPath, `${connection.name}_ducklake.duckdb`)
          : isDuckdb
-           ? path.join(projectPath, `${connection.name}.duckdb`)
+           ? path.join(environmentPath, `${connection.name}.duckdb`)
            : undefined;
 
       metadata.set(connection.name, {
@@ -381,7 +390,7 @@ export function assembleProjectConnections(
             !!connection.snowflakeConnection?.privateKey,
          isDuckLake,
          databasePath,
-         workingDirectory: projectPath,
+         workingDirectory: environmentPath,
       });
 
       switch (connection.type) {
@@ -423,7 +432,7 @@ export function assembleProjectConnections(
                is: "bigquery",
                projectId:
                   connection.bigqueryConnection?.defaultProjectId ??
-                  serviceAccountKey?.project_id,
+                  serviceAccountKey?.environment_id,
                serviceAccountKey,
                location: connection.bigqueryConnection?.location,
                maximumBytesBilled:
@@ -499,7 +508,7 @@ export function assembleProjectConnections(
             }
             pojo.connections[connection.name] = buildDuckdbEntry(
                connection.name,
-               projectPath,
+               environmentPath,
                `${connection.name}.duckdb`,
             );
             break;
@@ -531,7 +540,7 @@ export function assembleProjectConnections(
             }
             pojo.connections[connection.name] = buildDuckdbEntry(
                connection.name,
-               projectPath,
+               environmentPath,
                `${connection.name}_ducklake.duckdb`,
             );
             break;

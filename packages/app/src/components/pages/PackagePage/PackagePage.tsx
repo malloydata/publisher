@@ -3,12 +3,12 @@ import { encodeResourceUri, Package } from "@malloy-publisher/sdk";
 import { useRouterClickHandler } from "@malloy-publisher/sdk";
 
 function PackagePage() {
-   const { projectName, packageName } = useParams();
+   const { environmentName, packageName } = useParams();
    const navigate = useRouterClickHandler();
-   if (!projectName) {
+   if (!environmentName) {
       return (
          <div>
-            <h2>Missing project name</h2>
+            <h2>Missing environment name</h2>
          </div>
       );
    } else if (!packageName) {
@@ -19,7 +19,7 @@ function PackagePage() {
       );
    } else {
       const resourceUri = encodeResourceUri({
-         projectName,
+         environmentName,
          packageName,
       });
       return (

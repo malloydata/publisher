@@ -14,7 +14,7 @@ process.on("warning", (warning) => {
 import { Command } from "commander";
 import { PublisherClient } from "./api/client";
 import { logError, logOutput, logWarning } from "./utils/logger.js";
-import * as projectCommands from "./commands/projects.js";
+import * as environmentCommands from "./commands/environments.js";
 import * as packageCommands from "./commands/packages.js";
 import * as connectionCommands from "./commands/connections.js";
 
@@ -44,33 +44,36 @@ function getClient(): PublisherClient {
 // LIST COMMAND
 program
   .command("list <resource>")
-  .description("List resources (project, package, connection)")
-  .option("--project <n>", "Project name (required for package/connection)")
+  .description("List resources (environment, package, connection)")
+  .option(
+    "--environment <n>",
+    "Environment name (required for package/connection)",
+  )
   .action(async (resource, options) => {
     try {
       const client = getClient();
 
       switch (resource) {
-        case "project":
-          await projectCommands.listProjects(client);
+        case "environment":
+          await environmentCommands.listEnvironments(client);
           break;
         case "package":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
-          await packageCommands.listPackages(client, options.project);
+          await packageCommands.listPackages(client, options.environment);
           break;
         case "connection":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
-          await connectionCommands.listConnections(client, options.project);
+          await connectionCommands.listConnections(client, options.environment);
           break;
         default:
           logError(`Unknown resource: ${resource}`);
-          logOutput("Valid types: project, package, connection");
+          logOutput("Valid types: environment, package, connection");
           process.exit(1);
       }
     } catch (error: any) {
@@ -83,33 +86,40 @@ program
 program
   .command("get <resource> [name]")
   .description("Get resource details")
-  .option("--project <n>", "Project name (required for package/connection)")
+  .option(
+    "--environment <n>",
+    "Environment name (required for package/connection)",
+  )
   .option("--package <n>", "Package name")
   .action(async (resource, name, options) => {
     try {
       const client = getClient();
 
       switch (resource) {
-        case "project":
-          await projectCommands.getProject(client, name);
+        case "environment":
+          await environmentCommands.getEnvironment(client, name);
           break;
         case "package":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
           await packageCommands.getPackage(
             client,
-            options.project,
+            options.environment,
             options.package,
           );
           break;
         case "connection":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
-          await connectionCommands.getConnection(client, options.project, name);
+          await connectionCommands.getConnection(
+            client,
+            options.environment,
+            name,
+          );
           break;
         default:
           logError(`Unknown resource: ${resource}`);
@@ -125,7 +135,7 @@ program
 program
   .command("create <resource> [name]")
   .description("Create a resource")
-  .option("--project <n>", "Project name")
+  .option("--environment <n>", "Environment name")
   .option("--package <n>", "Package name")
   .option("--location <path>", "Package location")
   .option("--description <text>", "Description")
@@ -137,34 +147,34 @@ program
       const client = getClient();
 
       switch (resource) {
-        case "project":
+        case "environment":
           if (!name) {
-            logError("Project name is required");
+            logError("Environment name is required");
             process.exit(1);
           }
-          await projectCommands.createProject(client, name);
+          await environmentCommands.createEnvironment(client, name);
           break;
         case "package":
-          if (!options.project || !options.package || !options.location) {
-            logError("--project, --package, and --location required");
+          if (!options.environment || !options.package || !options.location) {
+            logError("--environment, --package, and --location required");
             process.exit(1);
           }
           await packageCommands.createPackage(
             client,
-            options.project,
+            options.environment,
             options.package,
             options.location,
             options.description,
           );
           break;
         case "connection":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
           await connectionCommands.createConnection(
             client,
-            options.project,
+            options.environment,
             options,
           );
           break;
@@ -182,9 +192,9 @@ program
 program
   .command("update <resource> [name]")
   .description("Update a resource")
-  .option("--project <n>", "Project name")
+  .option("--environment <n>", "Environment name")
   .option("--package <n>", "Package name")
-  .option("--readme <text>", "Project readme")
+  .option("--readme <text>", "Environment readme")
   .option("--location <path>", "Location")
   .option("--description <text>", "Description")
   .option("--file <path>", "JSON file (for connections)")
@@ -194,29 +204,29 @@ program
       const client = getClient();
 
       switch (resource) {
-        case "project":
-          await projectCommands.updateProject(client, name, options);
+        case "environment":
+          await environmentCommands.updateEnvironment(client, name, options);
           break;
         case "package":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
           await packageCommands.updatePackage(
             client,
-            options.project,
+            options.environment,
             options.package,
             options,
           );
           break;
         case "connection":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
           await connectionCommands.updateConnection(
             client,
-            options.project,
+            options.environment,
             name,
             options,
           );
@@ -235,35 +245,38 @@ program
 program
   .command("delete <resource> [name]")
   .description("Delete a resource")
-  .option("--project <n>", "Project name (required for package/connection)")
+  .option(
+    "--environment <n>",
+    "Environment name (required for package/connection)",
+  )
   .option("--package <n>", "Package name")
   .action(async (resource, name, options) => {
     try {
       const client = getClient();
 
       switch (resource) {
-        case "project":
-          await projectCommands.deleteProject(client, name);
+        case "environment":
+          await environmentCommands.deleteEnvironment(client, name);
           break;
         case "package":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
           await packageCommands.deletePackage(
             client,
-            options.project,
+            options.environment,
             options.package,
           );
           break;
         case "connection":
-          if (!options.project) {
-            logError("--project is required");
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
           await connectionCommands.deleteConnection(
             client,
-            options.project,
+            options.environment,
             name,
           );
           break;

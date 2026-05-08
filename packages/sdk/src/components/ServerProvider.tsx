@@ -4,17 +4,17 @@ import React, {
    createContext,
    ReactNode,
    useContext,
-   useMemo,
    useEffect,
+   useMemo,
    useState,
 } from "react";
 import {
    ConnectionsApi,
    DatabasesApi,
+   EnvironmentsApi,
    ModelsApi,
    NotebooksApi,
    PackagesApi,
-   ProjectsApi,
    PublisherApi,
    WatchModeApi,
 } from "../client";
@@ -52,8 +52,8 @@ export interface ServerProviderProps {
     * Will send "Bearer 123" in the Authorization header.
     */
    getAccessToken?: () => Promise<string>;
-   /** Whether the publisher should allow project and package management operations.
-    * When false, users can only view and explore existing projects and packages.
+   /** Whether the publisher should allow environment and package management operations.
+    * When false, users can only view and explore existing environments and packages.
     * @default true
     */
    mutable?: boolean;
@@ -83,7 +83,7 @@ const getApiClients = (
    return {
       models: new ModelsApi(config, basePath, axiosInstance),
       publisher: new PublisherApi(config, basePath, axiosInstance),
-      projects: new ProjectsApi(config, basePath, axiosInstance),
+      environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),

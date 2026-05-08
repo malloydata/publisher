@@ -33,7 +33,7 @@ type Props = {
 export default function Databases({ resourceUri }: Props) {
    const { apiClients } = useServer();
    const {
-      projectName: projectName,
+      environmentName: environmentName,
       packageName: packageName,
       versionId: versionId,
    } = parseResourceUri(resourceUri);
@@ -53,10 +53,10 @@ export default function Databases({ resourceUri }: Props) {
    };
 
    const { data, isError, error, isSuccess } = useQueryWithApiError({
-      queryKey: ["databases", projectName, packageName, versionId],
+      queryKey: ["databases", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.databases.listDatabases(
-            projectName,
+            environmentName,
             packageName,
             versionId,
          ),
@@ -89,7 +89,7 @@ export default function Databases({ resourceUri }: Props) {
                   {isError && (
                      <ApiErrorDisplay
                         error={error}
-                        context={`${projectName} > ${packageName} > Databases`}
+                        context={`${environmentName} > ${packageName} > Databases`}
                      />
                   )}
                   {isSuccess && data.data.length > 0 && (

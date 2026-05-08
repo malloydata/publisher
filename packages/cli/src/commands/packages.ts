@@ -4,12 +4,12 @@ import { logSuccess, logInfo, logOutput } from "../utils/logger.js";
 
 export async function listPackages(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
 ): Promise<void> {
-  const packages = await client.listPackages(projectName);
+  const packages = await client.listPackages(environmentName);
 
   if (packages.length === 0) {
-    logInfo(`No packages in project: ${projectName}`);
+    logInfo(`No packages in environment: ${environmentName}`);
     return;
   }
 
@@ -26,27 +26,32 @@ export async function listPackages(
 
 export async function getPackage(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   packageName: string,
 ): Promise<void> {
-  const pkg = await client.getPackage(projectName, packageName);
+  const pkg = await client.getPackage(environmentName, packageName);
   logOutput(JSON.stringify(pkg, null, 2));
 }
 
 export async function createPackage(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   packageName: string,
   location: string,
   description?: string,
 ): Promise<void> {
-  await client.createPackage(projectName, packageName, location, description);
+  await client.createPackage(
+    environmentName,
+    packageName,
+    location,
+    description,
+  );
   logSuccess(`Created package: ${packageName}`);
 }
 
 export async function updatePackage(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   packageName: string,
   options: { location?: string; description?: string },
 ): Promise<void> {
@@ -54,15 +59,15 @@ export async function updatePackage(
   if (options.location) updates.location = options.location;
   if (options.description) updates.description = options.description;
 
-  await client.updatePackage(projectName, packageName, updates);
+  await client.updatePackage(environmentName, packageName, updates);
   logSuccess(`Updated package: ${packageName}`);
 }
 
 export async function deletePackage(
   client: PublisherClient,
-  projectName: string,
+  environmentName: string,
   packageName: string,
 ): Promise<void> {
-  await client.deletePackage(projectName, packageName);
+  await client.deletePackage(environmentName, packageName);
   logSuccess(`Deleted package: ${packageName}`);
 }

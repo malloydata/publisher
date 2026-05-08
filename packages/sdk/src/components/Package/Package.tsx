@@ -37,14 +37,14 @@ export default function Package({
       ((to: string) => {
          window.location.href = to;
       });
-   const { projectName, packageName, versionId } =
+   const { environmentName, packageName, versionId } =
       parseResourceUri(resourceUri);
 
    const pkgQuery = useQueryWithApiError({
-      queryKey: ["package", projectName, packageName, versionId],
+      queryKey: ["package", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.packages.getPackage(
-            projectName,
+            environmentName,
             packageName,
             versionId,
             false,
@@ -52,26 +52,26 @@ export default function Package({
    });
 
    const notebooksQuery = useQueryWithApiError({
-      queryKey: ["notebooks", projectName, packageName, versionId],
+      queryKey: ["notebooks", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.notebooks.listNotebooks(
-            projectName,
+            environmentName,
             packageName,
             versionId,
          ),
    });
 
    const modelsQuery = useQueryWithApiError({
-      queryKey: ["models", projectName, packageName, versionId],
+      queryKey: ["models", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.models.listModels(projectName, packageName, versionId),
+         apiClients.models.listModels(environmentName, packageName, versionId),
    });
 
    const databasesQuery = useQueryWithApiError({
-      queryKey: ["databases", projectName, packageName, versionId],
+      queryKey: ["databases", environmentName, packageName, versionId],
       queryFn: () =>
          apiClients.databases.listDatabases(
-            projectName,
+            environmentName,
             packageName,
             versionId,
          ),
@@ -90,7 +90,7 @@ export default function Package({
    const description = pkgQuery.data?.data?.description ?? "";
    const hasReadme = notebooks.some((n) => n.path === README_NOTEBOOK);
    const readmeResourceUri = encodeResourceUri({
-      projectName,
+      environmentName,
       packageName,
       versionId,
       modelPath: README_NOTEBOOK,
@@ -102,7 +102,7 @@ export default function Package({
       return (
          <ApiErrorDisplay
             error={pkgQuery.error}
-            context={`${projectName} > ${packageName}`}
+            context={`${environmentName} > ${packageName}`}
          />
       );
    }
@@ -115,7 +115,7 @@ export default function Package({
          <Box sx={{ mb: 4 }}>
             <Link
                onClick={(event: React.MouseEvent) =>
-                  onClick(`/${projectName}/`, event)
+                  onClick(`/${environmentName}/`, event)
                }
                underline="none"
                sx={{
@@ -130,7 +130,7 @@ export default function Package({
                }}
             >
                <ArrowBackIcon sx={{ fontSize: 18 }} />
-               Back to {projectName}
+               Back to {environmentName}
             </Link>
             <Typography
                variant="h4"

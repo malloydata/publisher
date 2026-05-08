@@ -1,11 +1,14 @@
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
 import sinon from "sinon";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { createProjectConnections, testConnectionConfig } from "./connection";
-import { assembleProjectConnections } from "./connection_config";
 import { components } from "../api";
+import {
+   createEnvironmentConnections,
+   testConnectionConfig,
+} from "./connection";
+import { assembleEnvironmentConnections } from "./connection_config";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -43,11 +46,14 @@ const readBigQueryServiceAccountJson = async (): Promise<string> =>
    fs.readFile(process.env.GOOGLE_APPLICATION_CREDENTIALS!, "utf-8");
 
 describe("connection integration tests", () => {
-   const testProjectPath = path.join(process.cwd(), "test-project-connections");
+   const testEnvironmentPath = path.join(
+      process.cwd(),
+      "test-environment-connections",
+   );
    let createdConnections: DuckDBConnection[] = [];
 
    beforeEach(async () => {
-      await fs.mkdir(testProjectPath, { recursive: true });
+      await fs.mkdir(testEnvironmentPath, { recursive: true });
    });
 
    afterEach(async () => {
@@ -68,7 +74,7 @@ describe("connection integration tests", () => {
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
          try {
-            await fs.rm(testProjectPath, { recursive: true, force: true });
+            await fs.rm(testEnvironmentPath, { recursive: true, force: true });
             return;
          } catch (error) {
             lastError = error;
@@ -87,7 +93,7 @@ describe("connection integration tests", () => {
       }
    });
 
-   describe("createProjectConnections", () => {
+   describe("createEnvironmentConnections", () => {
       describe("DuckDB with PostgreSQL attachment", () => {
          it(
             "should create DuckDB connection with attached PostgreSQL database",
@@ -118,9 +124,9 @@ describe("connection integration tests", () => {
                };
 
                const { malloyConnections, apiConnections } =
-                  await createProjectConnections(
+                  await createEnvironmentConnections(
                      [duckdbConnection],
-                     testProjectPath,
+                     testEnvironmentPath,
                   );
 
                expect(malloyConnections.size).toBe(1);
@@ -178,9 +184,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -233,9 +239,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -287,9 +293,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -340,9 +346,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -390,9 +396,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -444,9 +450,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -502,9 +508,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -558,9 +564,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -614,9 +620,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -637,7 +643,7 @@ describe("connection integration tests", () => {
             "should validate BigQuery service account key format",
             async () => {
                await expect(
-                  createProjectConnections(
+                  createEnvironmentConnections(
                      [
                         {
                            name: "duckdb_bq_invalid",
@@ -648,7 +654,7 @@ describe("connection integration tests", () => {
                                     name: "bq_invalid",
                                     type: "bigquery",
                                     bigqueryConnection: {
-                                       defaultProjectId: "test-project",
+                                       defaultProjectId: "test-environment",
                                        serviceAccountKeyJson: JSON.stringify({
                                           invalid: "key",
                                        }),
@@ -658,7 +664,7 @@ describe("connection integration tests", () => {
                            },
                         },
                      ],
-                     testProjectPath,
+                     testEnvironmentPath,
                   ),
                ).rejects.toThrow(/Invalid service account key/);
             },
@@ -696,9 +702,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -723,7 +729,7 @@ describe("connection integration tests", () => {
 
          it("should validate required Snowflake fields", async () => {
             await expect(
-               createProjectConnections(
+               createEnvironmentConnections(
                   [
                      {
                         name: "duckdb_sf_incomplete",
@@ -742,7 +748,7 @@ describe("connection integration tests", () => {
                         },
                      },
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                ),
             ).rejects.toThrow(/required/);
          });
@@ -776,9 +782,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -828,9 +834,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -869,9 +875,9 @@ describe("connection integration tests", () => {
                   },
                };
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [duckdbConnection],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -946,7 +952,7 @@ describe("connection integration tests", () => {
                   return;
                }
 
-               const { malloyConnections } = await createProjectConnections(
+               const { malloyConnections } = await createEnvironmentConnections(
                   [
                      {
                         name: "duckdb_multi",
@@ -954,7 +960,7 @@ describe("connection integration tests", () => {
                         duckdbConnection: { attachedDatabases: attachments },
                      },
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                const connection = malloyConnections.get(
@@ -987,41 +993,45 @@ describe("connection integration tests", () => {
                      return;
                   }
 
-                  const { malloyConnections } = await createProjectConnections(
-                     [
-                        {
-                           name: "ducklake_test",
-                           type: "ducklake",
-                           ducklakeConnection: {
-                              catalog: {
-                                 postgresConnection: {
-                                    host: process.env.POSTGRES_TEST_HOST,
-                                    port: parseInt(
-                                       process.env.POSTGRES_TEST_PORT || "5432",
-                                    ),
-                                    userName: process.env.POSTGRES_TEST_USER!,
-                                    password:
-                                       process.env.POSTGRES_TEST_PASSWORD!,
-                                    databaseName:
-                                       process.env.POSTGRES_TEST_DATABASE,
+                  const { malloyConnections } =
+                     await createEnvironmentConnections(
+                        [
+                           {
+                              name: "ducklake_test",
+                              type: "ducklake",
+                              ducklakeConnection: {
+                                 catalog: {
+                                    postgresConnection: {
+                                       host: process.env.POSTGRES_TEST_HOST,
+                                       port: parseInt(
+                                          process.env.POSTGRES_TEST_PORT ||
+                                             "5432",
+                                       ),
+                                       userName:
+                                          process.env.POSTGRES_TEST_USER!,
+                                       password:
+                                          process.env.POSTGRES_TEST_PASSWORD!,
+                                       databaseName:
+                                          process.env.POSTGRES_TEST_DATABASE,
+                                    },
                                  },
-                              },
-                              storage: {
-                                 bucketUrl:
-                                    process.env.S3_TEST_BUCKET_URL ||
-                                    "s3://test-bucket",
-                                 s3Connection: {
-                                    accessKeyId:
-                                       process.env.S3_TEST_ACCESS_KEY_ID!,
-                                    secretAccessKey:
-                                       process.env.S3_TEST_SECRET_ACCESS_KEY!,
+                                 storage: {
+                                    bucketUrl:
+                                       process.env.S3_TEST_BUCKET_URL ||
+                                       "s3://test-bucket",
+                                    s3Connection: {
+                                       accessKeyId:
+                                          process.env.S3_TEST_ACCESS_KEY_ID!,
+                                       secretAccessKey:
+                                          process.env
+                                             .S3_TEST_SECRET_ACCESS_KEY!,
+                                    },
                                  },
                               },
                            },
-                        },
-                     ],
-                     testProjectPath,
-                  );
+                        ],
+                        testEnvironmentPath,
+                     );
 
                   const connection = malloyConnections.get(
                      "ducklake_test",
@@ -1041,7 +1051,7 @@ describe("connection integration tests", () => {
 
             it("should throw error if DuckLake catalog connection is missing", async () => {
                await expect(
-                  createProjectConnections(
+                  createEnvironmentConnections(
                      [
                         {
                            name: "ducklake_no_catalog",
@@ -1057,7 +1067,7 @@ describe("connection integration tests", () => {
                            },
                         } as ApiConnection,
                      ],
-                     testProjectPath,
+                     testEnvironmentPath,
                   ),
                ).rejects.toThrow(
                   /PostgreSQL connection configuration is required/,
@@ -1066,14 +1076,14 @@ describe("connection integration tests", () => {
 
             it("should throw error if DuckLake connection config is missing", async () => {
                await expect(
-                  createProjectConnections(
+                  createEnvironmentConnections(
                      [
                         {
                            name: "ducklake_missing_config",
                            type: "ducklake",
                         },
                      ],
-                     testProjectPath,
+                     testEnvironmentPath,
                   ),
                ).rejects.toThrow(
                   /DuckLake connection configuration is missing/,
@@ -1083,7 +1093,7 @@ describe("connection integration tests", () => {
 
          it("should throw error if DuckDB connection name conflicts with attached database", async () => {
             await expect(
-               createProjectConnections(
+               createEnvironmentConnections(
                   [
                      {
                         name: "conflict_db",
@@ -1102,14 +1112,14 @@ describe("connection integration tests", () => {
                         },
                      },
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                ),
             ).rejects.toThrow(/cannot conflict/);
          });
 
          it("should throw error if connection name is 'duckdb'", async () => {
             await expect(
-               createProjectConnections(
+               createEnvironmentConnections(
                   [
                      {
                         name: "duckdb",
@@ -1117,30 +1127,31 @@ describe("connection integration tests", () => {
                         duckdbConnection: { attachedDatabases: [] },
                      },
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                ),
             ).rejects.toThrow(/cannot be 'duckdb'/);
          });
 
-         it("should allow DuckDB connections with no attachments", async () => {
-            const { malloyConnections } = await createProjectConnections(
-               [
-                  {
-                     name: "empty_duckdb",
-                     type: "duckdb",
-                     duckdbConnection: { attachedDatabases: [] },
-                  },
-               ],
-               testProjectPath,
+         it("should reject DuckDB connections with no attachments", async () => {
+            await expect(
+               createEnvironmentConnections(
+                  [
+                     {
+                        name: "empty_duckdb",
+                        type: "duckdb",
+                        duckdbConnection: { attachedDatabases: [] },
+                     },
+                  ],
+                  testEnvironmentPath,
+               ),
+            ).rejects.toThrow(
+               "DuckDB connection must have at least one attached database",
             );
-
-            const connection = malloyConnections.get("empty_duckdb");
-            expect(connection).toBeDefined();
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {
             await expect(
-               createProjectConnections(
+               createEnvironmentConnections(
                   [
                      {
                         name: "duckdb_with_setup_sql",
@@ -1151,14 +1162,14 @@ describe("connection integration tests", () => {
                         },
                      } as unknown as ApiConnection,
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                ),
             ).rejects.toThrow(/Unsupported DuckDB connection field/);
          });
 
-         it("should reject project-authored DuckDB policy fields", async () => {
+         it("should reject environment-authored DuckDB policy fields", async () => {
             await expect(
-               createProjectConnections(
+               createEnvironmentConnections(
                   [
                      {
                         name: "duckdb_with_policy",
@@ -1169,14 +1180,14 @@ describe("connection integration tests", () => {
                         },
                      } as unknown as ApiConnection,
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                ),
             ).rejects.toThrow(/Unsupported DuckDB connection field/);
          });
 
          it("should preserve Snowflake private-key auth options", async () => {
             const { malloyConnections, releaseConnections } =
-               await createProjectConnections(
+               await createEnvironmentConnections(
                   [
                      {
                         name: "sf_private_key",
@@ -1190,7 +1201,7 @@ describe("connection integration tests", () => {
                         },
                      },
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
             try {
@@ -1209,7 +1220,7 @@ describe("connection integration tests", () => {
          });
 
          it("should translate Trino Peaka credentials to core extraCredential", () => {
-            const assembled = assembleProjectConnections(
+            const assembled = assembleEnvironmentConnections(
                [
                   {
                      name: "trino_peaka",
@@ -1224,7 +1235,7 @@ describe("connection integration tests", () => {
                      },
                   },
                ],
-               testProjectPath,
+               testEnvironmentPath,
             );
 
             expect(
@@ -1235,29 +1246,29 @@ describe("connection integration tests", () => {
             ).toBeUndefined();
          });
 
-         it("should validate project-level BigQuery service account keys", () => {
+         it("should validate environment-level BigQuery service account keys", () => {
             expect(() =>
-               assembleProjectConnections(
+               assembleEnvironmentConnections(
                   [
                      {
                         name: "bq_invalid",
                         type: "bigquery",
                         bigqueryConnection: {
-                           defaultProjectId: "test-project",
+                           defaultProjectId: "test-environment",
                            serviceAccountKeyJson: '{"invalid":"key"}',
                         },
                      },
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                ),
             ).toThrow(/missing "type" field/);
          });
 
-         it("should preserve PGSSLMODE for project-level Postgres", () => {
+         it("should preserve PGSSLMODE for environment-level Postgres", () => {
             const previousPgSslMode = process.env.PGSSLMODE;
             process.env.PGSSLMODE = "require";
             try {
-               const assembled = assembleProjectConnections(
+               const assembled = assembleEnvironmentConnections(
                   [
                      {
                         name: "pg_ssl",
@@ -1271,7 +1282,7 @@ describe("connection integration tests", () => {
                         },
                      },
                   ],
-                  testProjectPath,
+                  testEnvironmentPath,
                );
 
                expect(
@@ -1286,42 +1297,56 @@ describe("connection integration tests", () => {
             }
          });
 
-         it("should use project-root-relative file paths for project-level DuckDB", async () => {
-            const insideCsvPath = path.join(testProjectPath, "inside.csv");
+         it("should use environment-root-relative file paths for environment-level DuckDB", async () => {
+            const insideCsvPath = path.join(testEnvironmentPath, "inside.csv");
             await fs.writeFile(insideCsvPath, "id\n1\n");
 
-            const { malloyConnections } = await createProjectConnections(
+            const minimalGcsAttachment = {
+               name: "test_gcs",
+               type: "gcs" as const,
+               gcsConnection: {
+                  keyId: "test-key-id",
+                  secret: "test-secret",
+               },
+            };
+
+            const { malloyConnections } = await createEnvironmentConnections(
                [
                   {
-                     name: "project_scoped_duckdb",
+                     name: "environment_scoped_duckdb",
                      type: "duckdb",
-                     duckdbConnection: { attachedDatabases: [] },
+                     duckdbConnection: {
+                        attachedDatabases: [minimalGcsAttachment],
+                     },
                   },
                ],
-               testProjectPath,
+               testEnvironmentPath,
             );
 
             const connection = malloyConnections.get(
-               "project_scoped_duckdb",
+               "environment_scoped_duckdb",
             ) as DuckDBConnection;
             createdConnections.push(connection);
 
-            const assembled = assembleProjectConnections(
+            const assembled = assembleEnvironmentConnections(
                [
                   {
-                     name: "project_scoped_duckdb",
+                     name: "environment_scoped_duckdb",
                      type: "duckdb",
-                     duckdbConnection: { attachedDatabases: [] },
+                     duckdbConnection: {
+                        attachedDatabases: [minimalGcsAttachment],
+                     },
                   },
                ],
-               testProjectPath,
+               testEnvironmentPath,
             );
             expect(
-               assembled.pojo.connections.project_scoped_duckdb
+               assembled.pojo.connections.environment_scoped_duckdb
                   .workingDirectory,
             ).toBeUndefined();
             expect(
-               assembled.pojo.connections.project_scoped_duckdb.securityPolicy,
+               assembled.pojo.connections.environment_scoped_duckdb
+                  .securityPolicy,
             ).toBeUndefined();
 
             await expect(
@@ -1330,7 +1355,7 @@ describe("connection integration tests", () => {
          });
 
          it("should keep external access available for federated DuckDB entries", () => {
-            const assembled = assembleProjectConnections(
+            const assembled = assembleEnvironmentConnections(
                [
                   {
                      name: "federated_duckdb",
@@ -1352,7 +1377,7 @@ describe("connection integration tests", () => {
                      },
                   },
                ],
-               testProjectPath,
+               testEnvironmentPath,
             );
 
             const entry = assembled.pojo.connections.federated_duckdb;
@@ -1362,7 +1387,7 @@ describe("connection integration tests", () => {
          });
 
          it("should keep external access available for MotherDuck entries", () => {
-            const assembled = assembleProjectConnections(
+            const assembled = assembleEnvironmentConnections(
                [
                   {
                      name: "md",
@@ -1373,7 +1398,7 @@ describe("connection integration tests", () => {
                      },
                   },
                ],
-               testProjectPath,
+               testEnvironmentPath,
             );
 
             const entry = assembled.pojo.connections.md;
@@ -1400,7 +1425,7 @@ describe("connection integration tests", () => {
                },
             };
 
-            const { malloyConnections } = await createProjectConnections(
+            const { malloyConnections } = await createEnvironmentConnections(
                [
                   {
                      name: "duckdb_duplicate_test",
@@ -1413,7 +1438,7 @@ describe("connection integration tests", () => {
                      },
                   },
                ],
-               testProjectPath,
+               testEnvironmentPath,
             );
 
             const connection = malloyConnections.get(
@@ -1492,7 +1517,7 @@ describe("connection integration tests", () => {
             return;
          }
 
-         const { malloyConnections } = await createProjectConnections(
+         const { malloyConnections } = await createEnvironmentConnections(
             [
                {
                   name: "duckdb_special_chars",
@@ -1516,7 +1541,7 @@ describe("connection integration tests", () => {
                   },
                },
             ],
-            testProjectPath,
+            testEnvironmentPath,
          );
 
          const connection = malloyConnections.get(
@@ -1536,7 +1561,7 @@ describe("connection integration tests", () => {
                return;
             }
 
-            const { apiConnections } = await createProjectConnections(
+            const { apiConnections } = await createEnvironmentConnections(
                [
                   {
                      name: "duckdb_attrs",
@@ -1561,7 +1586,7 @@ describe("connection integration tests", () => {
                      },
                   },
                ],
-               testProjectPath,
+               testEnvironmentPath,
             );
 
             const connection = apiConnections[0];

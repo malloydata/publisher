@@ -12,10 +12,10 @@ export class PackageRepository {
       return new Date();
    }
 
-   async listPackages(projectId: string): Promise<Package[]> {
+   async listPackages(environmentId: string): Promise<Package[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM packages WHERE project_id = ? ORDER BY name",
-         [projectId],
+         "SELECT * FROM packages WHERE environment_id = ? ORDER BY name",
+         [environmentId],
       );
       return rows.map(this.mapToPackage);
    }
@@ -29,12 +29,12 @@ export class PackageRepository {
    }
 
    async getPackageByName(
-      projectId: string,
+      environmentId: string,
       name: string,
    ): Promise<Package | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM packages WHERE project_id = ? AND name = ?",
-         [projectId, name],
+         "SELECT * FROM packages WHERE environment_id = ? AND name = ?",
+         [environmentId, name],
       );
       return row ? this.mapToPackage(row) : null;
    }
@@ -46,11 +46,11 @@ export class PackageRepository {
       const now = this.now();
 
       await this.db.run(
-         `INSERT INTO packages (id, project_id, name, description, manifest_path, metadata, created_at, updated_at)
+         `INSERT INTO packages (id, environment_id, name, description, manifest_path, metadata, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
          [
             id,
-            pkg.projectId,
+            pkg.environmentId,
             pkg.name,
             pkg.description || null,
             pkg.manifestPath,
@@ -114,14 +114,14 @@ export class PackageRepository {
       await this.db.run("DELETE FROM packages WHERE id = ?", [id]);
    }
 
-   async deletePackagesByProjectId(id: string): Promise<void> {
-      await this.db.run("DELETE FROM packages WHERE project_id = ?", [id]);
+   async deletePackagesByEnvironmentId(id: string): Promise<void> {
+      await this.db.run("DELETE FROM packages WHERE environment_id = ?", [id]);
    }
 
    private mapToPackage(row: Record<string, unknown>): Package {
       return {
          id: row.id as string,
-         projectId: row.project_id as string,
+         environmentId: row.environment_id as string,
          name: row.name as string,
          description: row.description as string | undefined,
          manifestPath: row.manifest_path as string,

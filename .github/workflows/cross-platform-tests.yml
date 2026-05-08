@@ -86,5 +86,22 @@ jobs:
         shell: bash
 
       - name: Run integration tests
-        run: bun run --cwd packages/server test:integration --serial
+        # TODO: Remove this retry logic once we clone the samples and mount them for CI.
+        # Retry up to 3 times. The suite boots a real server which clones
+        # `malloy-samples` from GitHub on startup; that clone occasionally
+        # fails on hosted runners with transient git/disk errors
+        # (`fetch-pack: invalid index-pack output`). A retry is cheaper and
+        # less invasive than wrapping the clone in server code.
+        run: |
+          attempt=1
+          max_attempts=3
+          until bun run --cwd packages/server test:integration --serial; do
+            status=$?
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "Integration tests failed after $attempt attempts."
+              exit "$status"
+            fi
+            echo "Integration tests failed on attempt $attempt; retrying..."
+            attempt=$((attempt + 1))
+          done
         shell: bash

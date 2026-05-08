@@ -1,4 +1,4 @@
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 
 // Type alias for compiled model pulled from OpenAPI-generated types.
@@ -7,20 +7,20 @@ import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 export type ApiCompiledModel = any;
 
 export interface ParsedMalloyUri {
-   projectName: string;
+   environmentName: string;
    packageName: string;
    modelPath: string;
 }
 
 /**
  * Parse a canonical Malloy model URI of the form:
- *   malloy://project/{project}/package/{package}/models/{modelPath}
+ *   malloy://environment/{environment}/package/{package}/models/{modelPath}
  *
  * Throws an McpError(InvalidParams) if the URI is malformed.
  */
 export function parseMalloyUri(uri: string): ParsedMalloyUri {
    const match = uri.match(
-      /^malloy:\/\/project\/([^/]+)\/package\/([^/]+)\/models\/(.+)$/,
+      /^malloy:\/\/environment\/([^/]+)\/package\/([^/]+)\/models\/(.+)$/,
    );
 
    if (!match) {
@@ -28,7 +28,7 @@ export function parseMalloyUri(uri: string): ParsedMalloyUri {
    }
 
    return {
-      projectName: match[1],
+      environmentName: match[1],
       packageName: match[2],
       modelPath: match[3],
    };
@@ -36,18 +36,18 @@ export function parseMalloyUri(uri: string): ParsedMalloyUri {
 
 /**
  * Retrieve the compiled model for the given Malloy URI, using the provided
- * ProjectStore. Results are memoised in `compiledModelCache`.
+ * EnvironmentStore. Results are memoised in `compiledModelCache`.
  */
 export async function getCompiledModel(
    uri: string,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): Promise<ApiCompiledModel> {
-   const { projectName, packageName, modelPath } = parseMalloyUri(uri);
+   const { environmentName, packageName, modelPath } = parseMalloyUri(uri);
 
-   // Look up the model via the ProjectStore hierarchy.
-   const model = await projectStore
-      .getProject(projectName, false)
-      .then((p) => p.getPackage(packageName, false))
+   // Look up the model via the EnvironmentStore hierarchy.
+   const model = await environmentStore
+      .getEnvironment(environmentName, false)
+      .then((e) => e.getPackage(packageName, false))
       .then((pkg) => pkg.getModel(modelPath));
 
    if (!model || model.getModelType() === "notebook") {
