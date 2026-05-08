@@ -22,13 +22,6 @@ export const colors = {
    },
 } as const;
 
-export const contentTypeColors = {
-   report: colors.accent.sage,
-   model: colors.accent.steel,
-   conversation: colors.accent.brown,
-   dashboard: colors.accent.olive,
-} as const;
-
 export const MONO_FONT_FAMILY =
    '"JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", monospace';
 export const SANS_FONT_FAMILY =

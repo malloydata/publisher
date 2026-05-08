@@ -1,3 +1,4 @@
+import { Box } from "@mui/material";
 import React, { Suspense, useLayoutEffect, useRef } from "react";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
@@ -156,36 +157,36 @@ export default function RenderedResult(props: RenderedResultProps) {
    // Show loading state if we're in server-side rendering
    if (typeof window === "undefined") {
       return (
-         <div
-            style={{
+         <Box
+            sx={{
                width: "100%",
                height: props.height ? `${props.height}px` : "100%",
                display: "flex",
                alignItems: "center",
                justifyContent: "center",
-               color: "#666",
+               color: "text.secondary",
             }}
          >
             Loading...
-         </div>
+         </Box>
       );
    }
 
    return (
       <Suspense
          fallback={
-            <div
-               style={{
+            <Box
+               sx={{
                   width: "100%",
                   height: props.height ? `${props.height}px` : "100%",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  color: "#666",
+                  color: "text.secondary",
                }}
             >
                Loading visualization...
-            </div>
+            </Box>
          }
       >
          <RenderedResultInner {...props} />

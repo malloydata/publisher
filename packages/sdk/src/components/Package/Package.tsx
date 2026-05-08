@@ -25,19 +25,13 @@ import { Loading } from "../Loading";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
+import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon from "./ContentTypeIcon";
 // TODO(redesign-followup): port the Connections section into the redesigned
 // flat-row aesthetic (currently rendered with its original card/table styling).
 import Connections from "./Connections";
 
 const README_NOTEBOOK = "README.malloynb";
-
-// Malloy brand colors — exact hex values from publisher/packages/app/public/logo.svg.
-const malloyTeal = "#14b3cb"; // report — light wing of the M
-const malloyOrange = "#e47404"; // model — right wing of the M
-const malloyDarkBlue = "#1474a4"; // data — deep shadow of the M
-const monoFontFamily =
-   '"JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", monospace';
 
 interface PackageProps {
    onClickPackageFile?: (to: string, event?: React.MouseEvent) => void;
@@ -184,7 +178,7 @@ export default function Package({
                      <PackageItemRow
                         key={notebook.path}
                         icon={<ContentTypeIcon type="report" />}
-                        tint={malloyTeal}
+                        tint={MALLOY_BRAND.teal}
                         label={notebook.path}
                         onClick={(event) => onClick(notebook.path, event)}
                      />
@@ -197,7 +191,7 @@ export default function Package({
                      <PackageItemRow
                         key={model.path}
                         icon={<ContentTypeIcon type="model" />}
-                        tint={malloyOrange}
+                        tint={MALLOY_BRAND.orange}
                         label={model.path}
                         onClick={(event) => onClick(model.path, event)}
                      />
@@ -210,7 +204,7 @@ export default function Package({
                      <PackageItemRow
                         key={database.path}
                         icon={<ContentTypeIcon type="data" />}
-                        tint={malloyDarkBlue}
+                        tint={MALLOY_BRAND.darkBlue}
                         label={database.path}
                         rightLabel={formatRowCount(database.info.rowCount)}
                         onClick={() => setSchemaDatabase(database)}
@@ -323,9 +317,19 @@ function PackageItemRow({
    onClick?: (event: React.MouseEvent) => void;
 }) {
    const interactive = !!onClick;
+   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!onClick) return;
+      if (event.key === "Enter" || event.key === " ") {
+         event.preventDefault();
+         onClick(event as unknown as React.MouseEvent);
+      }
+   };
    return (
       <Box
          onClick={onClick}
+         onKeyDown={interactive ? handleKeyDown : undefined}
+         role={interactive ? "button" : undefined}
+         tabIndex={interactive ? 0 : undefined}
          sx={{
             display: "flex",
             alignItems: "center",
@@ -338,6 +342,13 @@ function PackageItemRow({
             transition: "background-color 0.1s",
             "&:hover": interactive
                ? { backgroundColor: "grey.100" }
+               : undefined,
+            "&:focus-visible": interactive
+               ? {
+                    outline: "2px solid",
+                    outlineColor: "primary.main",
+                    outlineOffset: 2,
+                 }
                : undefined,
          }}
       >
@@ -359,7 +370,7 @@ function PackageItemRow({
          <Typography
             variant="body2"
             sx={{
-               fontFamily: monoFontFamily,
+               fontFamily: MONO_FONT_FAMILY,
                flex: 1,
                minWidth: 0,
                overflow: "hidden",

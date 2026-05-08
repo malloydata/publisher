@@ -1,5 +1,24 @@
 import { Card, CardContent, CardMedia, styled } from "@mui/material";
 
+/**
+ * Malloy brand colors — exact hex values from
+ * `publisher/packages/app/public/logo.svg`. Use these instead of hardcoding
+ * the hex values inline so the brand can be retuned in one place.
+ */
+export const MALLOY_BRAND = {
+   teal: "#14b3cb", // light wing of the M (governed reports)
+   orange: "#e47404", // right wing of the M (semantic models)
+   darkBlue: "#1474a4", // deep shadow of the M (package data)
+} as const;
+
+/**
+ * Monospace font stack used by code-like surfaces inside the SDK
+ * (file-path labels in PackageItemRow, code blocks, etc.). Matches the
+ * `MONO_FONT_FAMILY` defined in the publisher app's theme.
+ */
+export const MONO_FONT_FAMILY =
+   '"JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", monospace';
+
 export const StyledCard = styled(Card)({
    display: "flex",
    flexDirection: "column",
