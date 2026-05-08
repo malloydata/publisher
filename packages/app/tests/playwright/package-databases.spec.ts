@@ -27,7 +27,10 @@ test.describe("package-databases — embedded", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
 
-      await page.getByText(/\.parquet/).first().click();
+      await page
+         .getByText(/\.parquet/)
+         .first()
+         .click();
 
       const dialog = page.getByRole("dialog");
       await expect(dialog).toBeVisible();
