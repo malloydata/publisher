@@ -294,7 +294,7 @@ export function injectFilterRefinement(
 
    if (sourceName) {
       const escaped = sourceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const sourceRegex = new RegExp(`\\b${escaped}\\b(?=\\s*(?:->|$))`);
+      const sourceRegex = new RegExp(`\\b${escaped}\\b(?=\\s*->)`);
       const match = query.match(sourceRegex);
       if (match && match.index !== undefined) {
          const insertAt = match.index + sourceName.length;
