@@ -14,6 +14,8 @@ npx @malloy-publisher/server --port 4000 --server_root .
 
 Open http://localhost:4000 to explore the sample models.
 
+The default config runs three sample packages (`ecommerce`, `imdb`, `faa`) against per-package DuckDB sandboxes — no credentials required. To enable the `bigquery-hackernews` sample, copy [`publisher.config.example.bigquery.json`](packages/server/publisher.config.example.bigquery.json) over `publisher.config.json` (or point `--server_root` at a directory containing it) and set `GOOGLE_APPLICATION_CREDENTIALS`.
+
 ### Verify it's working
 
 ```bash
