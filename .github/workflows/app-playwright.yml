@@ -57,6 +57,19 @@ jobs:
         working-directory: packages/app
         run: bunx playwright install --with-deps chromium
 
+      # Tests in packages/app/tests/playwright/package-databases.spec.ts assume
+      # the malloy-samples environment exposes a top-level `bigquery`
+      # connection (rows for list/edit/delete affordances). The committed
+      # default config ships only DuckDB sandboxes for first-run UX, so swap
+      # in the BigQuery example fixture before the suite runs. No
+      # GOOGLE_APPLICATION_CREDENTIALS is set here — the connection-row tests
+      # only check that the row renders from config; they don't query
+      # BigQuery. Once the BigQuery service-account secret lands, add
+      # `GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.BIGQUERY_TEST_SA }}` to
+      # the env block on the next step to enable bigquery-hackernews queries.
+      - name: Use BigQuery example config (CI fixture)
+        run: cp packages/server/publisher.config.example.bigquery.json packages/server/publisher.config.json
+
       # playwright.config.ts spawns `npm run start:init` from the repo root as
       # its webServer, polls /api/v0/status in global-setup until the publisher
       # reaches operationalState=serving, then runs the suite.
