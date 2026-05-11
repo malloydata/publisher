@@ -25,8 +25,6 @@ npx @malloy-publisher/server --port 4000 --server_root .
 
 Open http://localhost:4000 to explore the sample models.
 
-The default config runs three sample packages (`ecommerce`, `imdb`, `faa`) against per-package DuckDB sandboxes — no credentials required. To enable the `bigquery-hackernews` sample, copy [`publisher.config.example.bigquery.json`](packages/server/publisher.config.example.bigquery.json) over `publisher.config.json` (or point `--server_root` at a directory containing it) and set `GOOGLE_APPLICATION_CREDENTIALS`.
-
 ### Verify it's working
 
 ```bash
@@ -79,7 +77,7 @@ A React component library for building custom data applications powered by Publi
 - **API communication** — Talks to the Publisher Server via REST
 - **Query execution** — Submits queries and retrieves results
 - **Result visualization** — Integrates Malloy Render to display results
-- **UI components** — Pre-built pages for browsing projects, packages, models, and notebooks
+- **UI components** — Pre-built pages for browsing environments, packages, models, and notebooks
 - **Source filters** — Automatically renders filter widgets for models with [`#(filter)` annotations](docs/filters.md)
 
 The Publisher App is built entirely with the SDK, but the SDK is a standalone NPM package for building your own applications.
@@ -99,6 +97,8 @@ Publisher consists of four packages:
 ## Development
 
 This project uses [bun](https://bun.sh/) as the JavaScript runtime. Sample packages are fetched at runtime per [`publisher.config.json`](packages/server/publisher.config.json) — no submodule checkout needed.
+
+The bundled `publisher.config.json` ships three samples (`ecommerce`, `imdb`, `faa`) that run via per-package DuckDB sandboxes — no GCP credentials needed. To enable the BigQuery-required `bigquery-hackernews` sample, copy [`publisher.config.example.bigquery.json`](packages/server/publisher.config.example.bigquery.json) over `publisher.config.json` (or point `--server_root` at a directory containing it) and set `GOOGLE_APPLICATION_CREDENTIALS`.
 
 ### Production build
 
@@ -138,37 +138,23 @@ bun run typecheck                     # tsc --noEmit across sdk/app/server
 
 ## Configuration
 
-Publisher reads its runtime configuration from `publisher.config.json` (see [Quick Start](#quick-start) for the BigQuery opt-in path) and a handful of environment variables. CLI flags on `npx @malloy-publisher/server` set most of these directly.
+Publisher reads its runtime configuration from `publisher.config.json` (see [Development](#development) for the BigQuery opt-in) and a handful of environment variables. Every CLI flag below has an env-var equivalent; pass either.
 
-### CLI flags
-
-| Flag | Env equivalent | Meaning |
-|---|---|---|
-| `--port <n>` | `PUBLISHER_PORT` | REST + static-app HTTP port (default 4000). |
-| `--host <addr>` | `PUBLISHER_HOST` | Host binding (default `0.0.0.0`). |
-| `--mcp_port <n>` | `MCP_PORT` | MCP HTTP port (default 4040). |
-| `--server_root <dir>` | `SERVER_ROOT` | Directory containing `publisher.config.json`. |
-| `--init` | `INITIALIZE_STORAGE=true` | Initialize storage on boot. Set on the first run with new persistent storage; safe to omit afterward. Also exposed as the `start:init` and `start:dev:init` scripts. |
-| `--shutdown_drain_duration <s>` | `SHUTDOWN_DRAIN_DURATION_SECONDS` | Time to keep `/health` returning OK after SIGTERM. |
-| `--shutdown_graceful_close_timeout <s>` | `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | Time to drain in-flight requests. |
-| `--help`, `-h` | — | Print the full flag list. |
-
-### Environment variables
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `PUBLISHER_PORT` | `4000` | REST + static-app HTTP port. CLI: `--port`. |
-| `PUBLISHER_HOST` | `0.0.0.0` | Host binding for the main server. CLI: `--host`. |
-| `MCP_PORT` | `4040` | MCP HTTP port. CLI: `--mcp_port`. |
-| `SERVER_ROOT` | `.` (cwd) | Directory containing `publisher.config.json`. CLI: `--server_root`. |
-| `INITIALIZE_STORAGE` | _unset_ | Set to `true` to initialize storage on boot. Equivalent to the `--init` flag and the `start:init` / `start:dev:init` scripts. |
-| `NODE_ENV` | _unset_ | Set to `development` to proxy non-API traffic to the Vite dev server on `:5173`. |
-| `LOG_LEVEL` | `debug` | One of `error`, `warn`, `info`, `debug`, `trace`. |
-| `DISABLE_RESPONSE_LOGGING` | _unset_ | Set to `true` or `1` to suppress response-body logging. |
-| `SHUTDOWN_DRAIN_DURATION_SECONDS` | `0` | Time to keep `/health` returning OK after SIGTERM before refusing new traffic. |
-| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `0` | Time to wait for in-flight requests to drain before forcing close. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | _unset_ | OpenTelemetry collector endpoint. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | _unset_ | Path to a GCP service-account JSON. Used only when running the BigQuery example config. |
+| Env var | CLI flag | Default | Meaning |
+|---|---|---|---|
+| `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
+| `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for the main server. |
+| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. |
+| `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Directory containing `publisher.config.json`. |
+| `INITIALIZE_STORAGE` | `--init` | _unset_ | Set to `true` (or pass `--init`) to initialize storage on boot. Set on the first run with new persistent storage; safe to omit afterward. Also exposed as the `start:init` / `start:dev:init` scripts. |
+| `SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown_drain_duration_seconds <s>` | `0` | Time to keep `/health` returning OK after SIGTERM before refusing new traffic. |
+| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown_graceful_close_timeout_seconds <s>` | `0` | Time to wait for in-flight requests to drain before forcing close. |
+| `NODE_ENV` | — | _unset_ | Set to `development` to proxy non-API traffic to the Vite dev server on `:5173`. |
+| `LOG_LEVEL` | — | `debug` | One of `error`, `warn`, `info`, `verbose`, `debug`, `silly`. |
+| `DISABLE_RESPONSE_LOGGING` | — | _unset_ | Set to `true` or `1` to suppress response-body logging. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | _unset_ | OpenTelemetry collector endpoint. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | — | _unset_ | Path to a GCP service-account JSON. Used only when running the BigQuery example config. |
+| — | `--help`, `-h` | — | Print the full flag list. |
 
 PostgreSQL and other database-specific connections may also honor their respective driver env vars (e.g. `PGSSLMODE`).
 
