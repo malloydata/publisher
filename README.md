@@ -159,6 +159,17 @@ make lint && make format # eslint + prettier
 make typecheck           # tsc --noEmit across sdk/app/server
 ```
 
+`make typecheck` (and the underlying `bun run typecheck`) depends on the SDK's emitted `.d.ts` files, which in turn depend on the OpenAPI codegen. On a fresh clone, run the build prerequisites first:
+
+```bash
+bun install
+bun run generate-api-types
+bun run build:sdk
+bun run typecheck
+```
+
+After that, `bun run typecheck` works on its own as long as the SDK build artifacts stay current. Re-run the prereqs whenever `api-doc.yaml` or the SDK source changes.
+
 ## Configuration
 
 Publisher reads its runtime configuration from `publisher.config.json` (see [Development](#development) for the BigQuery opt-in) and a handful of environment variables. Every CLI flag below has an env-var equivalent; pass either.

@@ -38,7 +38,7 @@
     "typecheck:app": "cd packages/app && bun run tsc --noEmit",
     "typecheck:server": "cd packages/server && bun run tsc --noEmit",
     "typecheck:cli": "cd packages/cli && bun run typecheck",
-    "typecheck": "bun run generate-api-types && bun run build:sdk && bun run typecheck:sdk && bun run typecheck:app && bun run typecheck:server",
+    "typecheck": "bun run typecheck:sdk && bun run typecheck:app && bun run typecheck:server",
     "format:sdk": "cd packages/sdk && bun run format",
     "format:app": "cd packages/app && bun run format",
     "format:server": "cd packages/server && bun run format",

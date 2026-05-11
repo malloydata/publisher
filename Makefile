@@ -107,7 +107,7 @@ format: ## prettier --write across sdk/app/server
 prettier-check: ## CI's exact prettier check (fails on unformatted files)
 	bun run prettier:check
 
-typecheck: ## tsc --noEmit across sdk/app/server (chains codegen + SDK build)
+typecheck: ## tsc --noEmit across sdk/app/server (run `make build` first on a fresh clone)
 	bun run typecheck
 
 # ── codegen ───────────────────────────────────────────────────────────
