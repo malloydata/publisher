@@ -14,6 +14,15 @@ npx @malloy-publisher/server --port 4000 --server_root .
 
 Open http://localhost:4000 to explore the sample models.
 
+### Verify it's working
+
+```bash
+curl -s http://localhost:4000/api/v0/status | jq .operationalState   # → "serving"
+curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list of environments
+```
+
+If `operationalState` is anything other than `serving`, the server is wedged but still responding — check the server logs.
+
 ## Documentation
 
 Full documentation is available at **[docs.malloydata.dev/documentation/user_guides/publishing](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**:
@@ -76,19 +85,42 @@ Publisher consists of four packages:
 
 ## Development
 
-This project uses [bun](https://bun.sh/) as the JavaScript runtime.
+This project uses [bun](https://bun.sh/) as the JavaScript runtime. Sample packages are fetched at runtime per [`publisher.config.json`](packages/server/publisher.config.json) — no submodule checkout needed.
+
+### Production build
+
+One command builds the SDK, app, and server bundle in order:
 
 ```bash
-git submodule init && git submodule update  # Get malloy-samples
 bun install
 bun run build:server-deploy
-bun run start                               # Production server
+bun run start                # Run the built server (REST on :4000, MCP on :4040)
 ```
 
+### Dev mode (two terminals)
+
+The dev workflow runs Express and Vite as separate processes. Express on :4000 proxies non-API traffic to Vite on :5173 when `NODE_ENV=development`, so visit `http://localhost:4000` for the full app — `:5173` won't have API access.
+
+In one terminal, run the server (REST :4000 + MCP :4040, watch mode):
+
 ```bash
-bun run start:dev       # Dev server with watch
-bun run test            # Run tests
-bun run lint && bun run format  # Code quality
+bun run start:dev
+```
+
+In a second terminal, run the Vite dev server (:5173, proxied through :4000):
+
+```bash
+bun run start:dev:react
+```
+
+Open http://localhost:4000.
+
+### Tests and quality gates
+
+```bash
+bun run test                          # unit + integration server tests
+bun run lint && bun run format        # eslint + prettier
+bun run typecheck                     # tsc --noEmit across sdk/app/server
 ```
 
 ## Community
