@@ -10,6 +10,10 @@ Each loaded package automatically gets its own DuckDB connection named `duckdb`.
 
 You do not have to declare these sandboxes — they're created on package load.
 
+## Environment-level DuckDB connections
+
+You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
+
 ## Connection naming rules
 
 A few names are reserved or have special meaning. Picking the wrong name causes a clear error at server startup:
@@ -20,10 +24,10 @@ You cannot define a top-level connection named `duckdb`. The name is claimed by 
 
 ```
 Connection name 'duckdb' is reserved for per-package sandboxes. Choose a different name
-for project-level DuckDB connections (e.g. 'duckdb_main').
+for environment-level DuckDB connections (e.g. 'shared_duckdb').
 ```
 
-For a project-level DuckDB connection — e.g. one pointing at a shared `.duckdb` file across packages — use any other name. Common choice: `duckdb_main`.
+Use any other name for an environment-level DuckDB connection.
 
 ### Uniqueness within an environment
 
@@ -39,12 +43,25 @@ Connection names must be unique within a single environment. Duplicate names aft
       "packages": [...],
       "connections": [
         {
-          "name": "duckdb_main",
+          "name": "shared_duckdb",
           "type": "duckdb",
-          "duckdbConnection": { "databasePath": "data/warehouse.duckdb" }
+          "duckdbConnection": {
+            "attachedDatabases": [
+              {
+                "name": "warehouse_pg",
+                "type": "postgres",
+                "postgresConnection": {
+                  "host": "warehouse.example.com",
+                  "port": 5432,
+                  "userName": "publisher",
+                  "databaseName": "analytics"
+                }
+              }
+            ]
+          }
         },
         {
-          "name": "warehouse",
+          "name": "warehouse_bq",
           "type": "bigquery",
           "bigqueryConnection": { "defaultProjectId": "my-gcp-project" }
         }
@@ -54,4 +71,4 @@ Connection names must be unique within a single environment. Duplicate names aft
 }
 ```
 
-The package's own DuckDB sandbox (`duckdb`) remains available alongside `duckdb_main` and `warehouse`.
+The package's own DuckDB sandbox (`duckdb`) remains available alongside `shared_duckdb` and `warehouse_bq`.
