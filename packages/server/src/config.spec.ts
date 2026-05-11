@@ -992,11 +992,13 @@ describe("Committed example configs", () => {
             expect(
                (env.connections ?? []).some((c) => c.type === "bigquery"),
             ).toBe(true);
-            expect(env.packages.some((p) => p.name === "bigquery-hackernews"))
-               .toBe(true);
+            expect(
+               env.packages.some((p) => p.name === "bigquery-hackernews"),
+            ).toBe(true);
          } else {
-            expect(env.packages.some((p) => p.name === "bigquery-hackernews"))
-               .toBe(false);
+            expect(
+               env.packages.some((p) => p.name === "bigquery-hackernews"),
+            ).toBe(false);
          }
       },
    );
