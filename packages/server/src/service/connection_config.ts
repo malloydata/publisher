@@ -359,7 +359,7 @@ export function assembleEnvironmentConnections(
 
       if (connection.name === "duckdb") {
          throw new Error(
-            "Connection name 'duckdb' is reserved for per-package sandboxes. Choose a different name for project-level DuckDB connections (e.g. 'duckdb_main').",
+            "Connection name 'duckdb' is reserved for per-package sandboxes. Choose a different name for environment-level DuckDB connections (e.g. 'shared_duckdb').",
          );
       }
 
