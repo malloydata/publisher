@@ -855,7 +855,7 @@ describe("createEnvironmentConnections - DuckDB", () => {
 
          await expect(
             createEnvironmentConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
+         ).rejects.toThrow("Connection name 'duckdb' is reserved");
       });
 
       it("should throw when DuckDB connection name is 'duckdb' with attached databases", async () => {
@@ -885,7 +885,7 @@ describe("createEnvironmentConnections - DuckDB", () => {
 
          await expect(
             createEnvironmentConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow("DuckDB connection name cannot be 'duckdb'");
+         ).rejects.toThrow("Connection name 'duckdb' is reserved");
       });
 
       it("should throw when DuckDB connection has no attached databases", async () => {

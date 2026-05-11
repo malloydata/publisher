@@ -91,7 +91,7 @@ function validateAdminAuthoredConnection(
 ): void {
    if (connectionName === "duckdb" || connectionConfig.name === "duckdb") {
       throw new BadRequestError(
-         "DuckDB connection name cannot be 'duckdb'; it is reserved for Publisher package sandboxes.",
+         "Connection name 'duckdb' is reserved for per-package sandboxes. Choose a different name for project-level DuckDB connections (e.g. 'duckdb_main').",
       );
    }
 
