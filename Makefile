@@ -3,7 +3,6 @@
 # Run `make` or `make help` for the target list.
 
 URL := http://localhost:4000
-MCP_URL := http://localhost:4040
 
 .DEFAULT_GOAL := help
 .PHONY: help doctor \
@@ -16,7 +15,7 @@ MCP_URL := http://localhost:4040
         lint format prettier-check typecheck \
         regen-api
 
-# ── workspace ─────────────────────────────────────────────────────────
+# ── general ───────────────────────────────────────────────────────────
 help: ## Show this help
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]*:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -83,8 +82,8 @@ status: ## GET /api/v0/status
 environments: ## List environments
 	@curl -sf $(URL)/api/v0/environments | python3 -m json.tool
 
-packages: ## List packages in malloy-samples
-	@curl -sf $(URL)/api/v0/environments/malloy-samples/packages | python3 -m json.tool
+packages: ## List packages in the default `malloy-samples` env (override: ENV=foo make packages)
+	@curl -sf $(URL)/api/v0/environments/$(or $(ENV),malloy-samples)/packages | python3 -m json.tool
 
 open: ## Open the Publisher UI in the default browser (macOS)
 	@open $(URL)
