@@ -8,8 +8,8 @@ MCP_URL := http://localhost:4040
 .DEFAULT_GOAL := help
 .PHONY: help doctor \
         install reinstall clean \
-        build start stop \
-        dev dev-server dev-react \
+        build start start-init stop \
+        dev dev-init dev-server dev-react \
         status environments packages \
         open \
         test test-unit test-integration \
@@ -42,6 +42,9 @@ build: ## Production build: SDK → app → server bundle
 start: ## Run the built server (production, foreground; Ctrl+C to stop)
 	bun run start
 
+start-init: ## Run the built server with INITIALIZE_STORAGE=true (clears persisted state)
+	bun run start:init
+
 stop: ## Kill any process listening on port 4000 or 4040
 	@kill $$(lsof -ti:4000) 2>/dev/null || true
 	@kill $$(lsof -ti:4040) 2>/dev/null || true
@@ -57,6 +60,14 @@ dev: ## Run Express (:4000) + Vite (:5173) together, combined logs
 		--prefix-colors "cyan,magenta" \
 		--kill-others-on-fail \
 		"bun run start:dev" \
+		"bun run start:dev:react"
+
+dev-init: ## Same as `dev` but with INITIALIZE_STORAGE=true on the server
+	bunx concurrently \
+		--names "server,react" \
+		--prefix-colors "cyan,magenta" \
+		--kill-others-on-fail \
+		"bun run start:dev:init" \
 		"bun run start:dev:react"
 
 dev-server: ## Express server alone (NODE_ENV=development, watch mode)
