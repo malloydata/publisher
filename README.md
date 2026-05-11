@@ -140,6 +140,19 @@ bun run typecheck                     # tsc --noEmit across sdk/app/server
 
 Publisher reads its runtime configuration from `publisher.config.json` (see [Quick Start](#quick-start) for the BigQuery opt-in path) and a handful of environment variables. CLI flags on `npx @malloy-publisher/server` set most of these directly.
 
+### CLI flags
+
+| Flag | Env equivalent | Meaning |
+|---|---|---|
+| `--port <n>` | `PUBLISHER_PORT` | REST + static-app HTTP port (default 4000). |
+| `--host <addr>` | `PUBLISHER_HOST` | Host binding (default `0.0.0.0`). |
+| `--mcp_port <n>` | `MCP_PORT` | MCP HTTP port (default 4040). |
+| `--server_root <dir>` | `SERVER_ROOT` | Directory containing `publisher.config.json`. |
+| `--init` | `INITIALIZE_STORAGE=true` | Initialize storage on boot. Set on the first run with new persistent storage; safe to omit afterward. Also exposed as the `start:init` and `start:dev:init` scripts. |
+| `--shutdown_drain_duration <s>` | `SHUTDOWN_DRAIN_DURATION_SECONDS` | Time to keep `/health` returning OK after SIGTERM. |
+| `--shutdown_graceful_close_timeout <s>` | `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | Time to drain in-flight requests. |
+| `--help`, `-h` | — | Print the full flag list. |
+
 ### Environment variables
 
 | Variable | Default | Meaning |
