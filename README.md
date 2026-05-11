@@ -4,6 +4,17 @@
 
 **Publisher** is the open-source semantic model server for [Malloy](https://malloydata.dev). It serves Malloy models through REST and MCP APIs, enabling consistent data access for applications, tools, and AI agents.
 
+## Prerequisites
+
+| Tool | Version | Required for |
+|---|---|---|
+| [Bun](https://bun.sh/) | ≥ 1.3.13 | Primary runtime + package manager |
+| [Node.js](https://nodejs.org/) | ≥ 20 | DuckDB postinstall scripts and the `npx @malloy-publisher/server` bin shebang |
+| [Python](https://www.python.org/) | ≥ 3.12 | Only if you build the Python client (`packages/python-client`) |
+| Java | ≥ 21 (Corretto recommended) | Only if you regenerate API clients via `bun run generate-api-types` |
+
+The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.dev/) and [asdf](https://asdf-vm.com/), so `mise install` (or `asdf install`) provisions all four versions at once.
+
 ## Quick Start
 
 ```bash
@@ -124,6 +135,29 @@ bun run test                          # unit + integration server tests
 bun run lint && bun run format        # eslint + prettier
 bun run typecheck                     # tsc --noEmit across sdk/app/server
 ```
+
+## Configuration
+
+Publisher reads its runtime configuration from `publisher.config.json` (see [Quick Start](#quick-start) for the BigQuery opt-in path) and a handful of environment variables. CLI flags on `npx @malloy-publisher/server` set most of these directly.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PUBLISHER_PORT` | `4000` | REST + static-app HTTP port. CLI: `--port`. |
+| `PUBLISHER_HOST` | `0.0.0.0` | Host binding for the main server. CLI: `--host`. |
+| `MCP_PORT` | `4040` | MCP HTTP port. CLI: `--mcp_port`. |
+| `SERVER_ROOT` | `.` (cwd) | Directory containing `publisher.config.json`. CLI: `--server_root`. |
+| `INITIALIZE_STORAGE` | _unset_ | Set to `true` to initialize storage on boot. Equivalent to the `--init` flag and the `start:init` / `start:dev:init` scripts. |
+| `NODE_ENV` | _unset_ | Set to `development` to proxy non-API traffic to the Vite dev server on `:5173`. |
+| `LOG_LEVEL` | `debug` | One of `error`, `warn`, `info`, `debug`, `trace`. |
+| `DISABLE_RESPONSE_LOGGING` | _unset_ | Set to `true` or `1` to suppress response-body logging. |
+| `SHUTDOWN_DRAIN_DURATION_SECONDS` | `0` | Time to keep `/health` returning OK after SIGTERM before refusing new traffic. |
+| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `0` | Time to wait for in-flight requests to drain before forcing close. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | _unset_ | OpenTelemetry collector endpoint. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | _unset_ | Path to a GCP service-account JSON. Used only when running the BigQuery example config. |
+
+PostgreSQL and other database-specific connections may also honor their respective driver env vars (e.g. `PGSSLMODE`).
 
 ## Community
 
