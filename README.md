@@ -32,7 +32,11 @@ curl -s http://localhost:4000/api/v0/status | jq .operationalState   # → "serv
 curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list of environments
 ```
 
-If `operationalState` is anything other than `serving`, the server is wedged but still responding — check the server logs.
+`operationalState` reports the current server lifecycle:
+
+- **`serving`** — ready to handle requests.
+- **`initializing`** — loading packages and connections from `publisher.config.json`. Normal on boot, and especially noticeable on the first run when sample packages need to be cloned from GitHub. Wait for `serving`.
+- **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS`.
 
 ## Documentation
 
