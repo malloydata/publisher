@@ -359,7 +359,7 @@ export function assembleEnvironmentConnections(
 
       if (connection.name === "duckdb") {
          throw new Error(
-            "DuckDB connection name cannot be 'duckdb'; it is reserved for Publisher package sandboxes.",
+            "Connection name 'duckdb' is reserved for per-package sandboxes. Choose a different name for environment-level DuckDB connections (e.g. 'shared_duckdb').",
          );
       }
 

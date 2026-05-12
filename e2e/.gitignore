@@ -6,3 +6,7 @@ node_modules/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# Repos cloned by tests (e.g. `Verify git clone and bun run start commands`)
+/publisher/
+/next.js/

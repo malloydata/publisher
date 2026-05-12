@@ -2,6 +2,12 @@
 
 The Malloy Publisher Server is an Express.js server that provides an API for managing and accessing Malloy data models, packages, and queries
 
+## Configuration
+
+`publisher.config.json` lives in this directory. The repository root also contains a symlink (`/publisher.config.json` → `./packages/server/publisher.config.json`) so that running the server from either location picks up the same config. Edit one and you've edited both.
+
+For the BigQuery-enabled variant, see [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) and the [Quick Start in the repo root README](../../README.md#quick-start).
+
 ## K6 Test Presets
 
 The Malloy Publisher Server includes several K6 test presets to help you test its performance and stability.

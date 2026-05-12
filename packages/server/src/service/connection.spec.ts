@@ -1129,7 +1129,7 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(/cannot be 'duckdb'/);
+            ).rejects.toThrow(/'duckdb' is reserved/);
          });
 
          it("should reject DuckDB connections with no attachments", async () => {

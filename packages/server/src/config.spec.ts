@@ -963,3 +963,43 @@ describe("Config legacy 'projects' key back-compat", () => {
       }
    });
 });
+
+describe("Committed example configs", () => {
+   const serverDir = path.resolve(__dirname, "..");
+
+   it.each([
+      ["publisher.config.json", false],
+      ["publisher.config.example.bigquery.json", true],
+   ])(
+      "%s parses as a valid PublisherConfig",
+      (filename, expectsBigQueryConnection) => {
+         const filePath = path.join(serverDir, filename);
+         expect(fs.existsSync(filePath)).toBe(true);
+
+         const raw = fs.readFileSync(filePath, "utf-8");
+         const parsed = JSON.parse(raw) as PublisherConfig;
+
+         expect(parsed).toHaveProperty("environments");
+         expect(Array.isArray(parsed.environments)).toBe(true);
+         expect(parsed.environments.length).toBeGreaterThan(0);
+
+         const env = parsed.environments[0];
+         expect(env.name).toBeTruthy();
+         expect(Array.isArray(env.packages)).toBe(true);
+         expect(env.packages.length).toBeGreaterThan(0);
+
+         if (expectsBigQueryConnection) {
+            expect(
+               (env.connections ?? []).some((c) => c.type === "bigquery"),
+            ).toBe(true);
+            expect(
+               env.packages.some((p) => p.name === "bigquery-hackernews"),
+            ).toBe(true);
+         } else {
+            expect(
+               env.packages.some((p) => p.name === "bigquery-hackernews"),
+            ).toBe(false);
+         }
+      },
+   );
+});
