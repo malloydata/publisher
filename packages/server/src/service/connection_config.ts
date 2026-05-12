@@ -267,15 +267,6 @@ function validateConnectionShape(connection: ApiConnection): void {
          if (!connection.duckdbConnection) {
             throw new Error("DuckDB connection configuration is missing.");
          }
-         {
-            const attached =
-               connection.duckdbConnection.attachedDatabases ?? [];
-            if (attached.length === 0) {
-               throw new Error(
-                  "DuckDB connection must have at least one attached database",
-               );
-            }
-         }
          break;
       case "motherduck":
          if (!connection.motherduckConnection) {

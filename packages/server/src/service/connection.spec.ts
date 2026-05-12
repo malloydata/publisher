@@ -1132,9 +1132,9 @@ describe("connection integration tests", () => {
             ).rejects.toThrow(/'duckdb' is reserved/);
          });
 
-         it("should reject DuckDB connections with no attachments", async () => {
-            await expect(
-               createEnvironmentConnections(
+         it("should accept DuckDB connections with no attachments (base DuckDB instance)", async () => {
+            const { malloyConnections, apiConnections } =
+               await createEnvironmentConnections(
                   [
                      {
                         name: "empty_duckdb",
@@ -1143,10 +1143,16 @@ describe("connection integration tests", () => {
                      },
                   ],
                   testEnvironmentPath,
-               ),
-            ).rejects.toThrow(
-               "DuckDB connection must have at least one attached database",
-            );
+               );
+
+            expect(malloyConnections.size).toBe(1);
+            expect(apiConnections.length).toBe(1);
+
+            const connection = malloyConnections.get(
+               "empty_duckdb",
+            ) as DuckDBConnection;
+            expect(connection).toBeDefined();
+            createdConnections.push(connection);
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {
