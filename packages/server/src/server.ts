@@ -55,8 +55,6 @@ function parseArgs() {
    let sawConfig = false;
    for (let i = 0; i < args.length; i++) {
       const arg = args[i];
-      if (arg === "--server_root") sawServerRoot = true;
-      if (arg === "--config") sawConfig = true;
       if (arg === "--port" && args[i + 1]) {
          process.env.PUBLISHER_PORT = args[i + 1];
          i++;
@@ -64,9 +62,11 @@ function parseArgs() {
          process.env.PUBLISHER_HOST = args[i + 1];
          i++;
       } else if (arg === "--server_root" && args[i + 1]) {
+         sawServerRoot = true;
          process.env.SERVER_ROOT = args[i + 1];
          i++;
       } else if (arg === "--config" && args[i + 1]) {
+         sawConfig = true;
          process.env.PUBLISHER_CONFIG_PATH = args[i + 1];
          i++;
       } else if (arg === "--mcp_port" && args[i + 1]) {
