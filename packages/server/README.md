@@ -8,6 +8,10 @@ The Malloy Publisher Server is an Express.js server that provides an API for man
 
 For the BigQuery-enabled variant, see [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) and the [Quick Start in the repo root README](../../README.md#quick-start).
 
+### Upstream-owned deprecation warnings
+
+`npx @malloy-publisher/server` may emit one `npm warn deprecated q@1.5.1` line during install. This comes from `thrift@^0.16.0` (a transitive of `@databricks/sql`, which is in turn a transitive of `@malloydata/db-databricks`). Removing it requires either an upstream bump in the Databricks driver chain or replacing the Databricks driver entirely; tracked separately. All other deprecated transitives have been pruned by removing an unused `trino` CLI dep that pulled in `@google-cloud/translate@0.7.x`.
+
 ## K6 Test Presets
 
 The Malloy Publisher Server includes several K6 test presets to help you test its performance and stability.
