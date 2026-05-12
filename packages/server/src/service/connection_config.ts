@@ -267,6 +267,15 @@ function validateConnectionShape(connection: ApiConnection): void {
          if (!connection.duckdbConnection) {
             throw new Error("DuckDB connection configuration is missing.");
          }
+         {
+            const attached =
+               connection.duckdbConnection.attachedDatabases ?? [];
+            if (attached.length === 0) {
+               throw new Error(
+                  `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
+               );
+            }
+         }
          break;
       case "motherduck":
          if (!connection.motherduckConnection) {
