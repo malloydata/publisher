@@ -2,7 +2,7 @@ name: App Playwright E2E
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
   BUN_VERSION: 1.3.13
@@ -61,12 +61,14 @@ jobs:
       # the malloy-samples environment exposes a top-level `bigquery`
       # connection (rows for list/edit/delete affordances). The committed
       # default config ships only DuckDB sandboxes for first-run UX, so swap
-      # in the BigQuery example fixture before the suite runs. No
-      # GOOGLE_APPLICATION_CREDENTIALS is set here — the connection-row tests
-      # only check that the row renders from config; they don't query
-      # BigQuery. Once the BigQuery service-account secret lands, add
-      # `GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.BIGQUERY_TEST_SA }}` to
-      # the env block on the next step to enable bigquery-hackernews queries.
+      # in the BigQuery example fixture before the suite runs. The
+      # connection-row tests only check that the row renders from config;
+      # they don't query BigQuery, so no service-account credentials are
+      # needed at this stage. To enable real bigquery-hackernews query
+      # tests later, follow the decode-and-expose pattern already used in
+      # `connection-integration-tests.yml` and `k6-tests.yml` (decode the
+      # BQ secret to `/tmp/bq-credentials.json`, then export
+      # `GOOGLE_APPLICATION_CREDENTIALS`).
       - name: Use BigQuery example config (CI fixture)
         run: cp packages/server/publisher.config.example.bigquery.json packages/server/publisher.config.json
 

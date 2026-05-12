@@ -36,7 +36,7 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 
 - **`serving`** — ready to handle requests.
 - **`initializing`** — loading packages and connections from `publisher.config.json`. Normal on boot, and especially noticeable on the first run when sample packages need to be cloned from GitHub. Wait for `serving`.
-- **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS`.
+- **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` (see [Configuration](#configuration)).
 
 ## Documentation
 
@@ -163,7 +163,7 @@ make lint && make format # eslint + prettier
 make typecheck           # tsc --noEmit across sdk/app/server
 ```
 
-`make typecheck` (and the underlying `bun run typecheck`) depends on the SDK's emitted `.d.ts` files, which in turn depend on the OpenAPI codegen. On a fresh clone, run the build prerequisites first:
+`make typecheck` (and the underlying `bun run typecheck`) depends on the SDK's emitted `.d.ts` files, which in turn depend on the OpenAPI codegen. On a fresh clone, build first — either with `make build` (full SDK + app + server bundle), or with the targeted minimum:
 
 ```bash
 bun install
@@ -172,7 +172,10 @@ bun run build:sdk
 bun run typecheck
 ```
 
-After that, `bun run typecheck` works on its own as long as the SDK build artifacts stay current. Re-run the prereqs whenever `api-doc.yaml` or the SDK source changes.
+After that, `bun run typecheck` works on its own as long as the SDK build artifacts stay current:
+
+- After editing `api-doc.yaml` → re-run `bun run generate-api-types && bun run build:sdk`.
+- After editing SDK source → re-run `bun run build:sdk`.
 
 ## Configuration
 
