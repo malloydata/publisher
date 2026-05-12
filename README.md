@@ -18,12 +18,25 @@ The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.d
 ## Quick Start
 
 ```bash
-git clone https://github.com/credibledata/malloy-samples.git
-cd malloy-samples
-npx @malloy-publisher/server --port 4000 --server_root .
+npx @malloy-publisher/server --port 4000
 ```
 
-Open http://localhost:4000 to explore the sample models.
+Open http://localhost:4000 to explore the sample models. Three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`) are cloned from GitHub on first launch — expect a 30–60s wait before `operationalState` reports `serving`. No credentials required.
+
+### Bring your own config
+
+Pass `--config <path>` to point the server at a specific `publisher.config.json`, or place a `publisher.config.json` in the directory you launch from. Both forms override the bundled default.
+
+```bash
+# Existing repo of Malloy samples or your own packages
+git clone https://github.com/credibledata/malloy-samples.git
+npx @malloy-publisher/server --port 4000 --config malloy-samples/publisher.config.json
+
+# Or cd in and rely on the implicit lookup
+cd malloy-samples && npx @malloy-publisher/server --port 4000
+```
+
+To enable the BigQuery samples (`bigquery-hackernews`, etc.), copy [`packages/server/publisher.config.example.bigquery.json`](packages/server/publisher.config.example.bigquery.json) over your `publisher.config.json` and set `GOOGLE_APPLICATION_CREDENTIALS`.
 
 ### Verify it's working
 

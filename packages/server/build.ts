@@ -29,6 +29,14 @@ await build({
 
 fs.cpSync("../app/dist", "./dist/app", { recursive: true });
 
+// Ship a default publisher.config.json inside the bundle so that
+// `npx @malloy-publisher/server` works with zero args (uses
+// DuckDB-only samples). config.ts looks for this file next to server.mjs.
+fs.copyFileSync(
+   "./src/default-publisher.config.json",
+   "./dist/default-publisher.config.json",
+);
+
 // Rename ESM outputs to .mjs so both Node and Bun can execute them
 fs.renameSync("./dist/server.js", "./dist/server.mjs");
 fs.renameSync("./dist/instrumentation.js", "./dist/instrumentation.mjs");
