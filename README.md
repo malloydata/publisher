@@ -54,6 +54,8 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 - **`degraded`** — initialization completed, but one or more environments failed to load. The surviving environments are served; the failures are listed under `failedEnvironments` in the status response (`curl -s http://localhost:4000/api/v0/status | jq .failedEnvironments`).
 - **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` (see [Configuration](#configuration)).
 
+---
+
 ## Docker
 
 Build the image and run it with your own `publisher.config.json` mounted in:
@@ -66,7 +68,7 @@ docker run -d \
   malloy-publisher
 ```
 
-The container's `WORKDIR` is `/publisher`, so your config belongs at `/publisher/publisher.config.json`. REST is on `:4000`, MCP on `:4040`. If you don't have a config yet, copy [`packages/server/publisher.config.json`](packages/server/publisher.config.json) (DuckDB-only samples, no credentials needed) as a starting point.
+The container's `WORKDIR` is `/publisher`, so your config belongs at `/publisher/publisher.config.json`. REST is on `:4000`, MCP on `:4040`. If you don't have a config yet, copy [`packages/server/publisher.config.example.duckdb.json`](packages/server/publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials needed) as a starting point.
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
 

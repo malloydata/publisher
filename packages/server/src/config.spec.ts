@@ -969,6 +969,7 @@ describe("Committed example configs", () => {
 
    it.each([
       ["publisher.config.json", false],
+      ["publisher.config.example.duckdb.json", false],
       ["publisher.config.example.bigquery.json", true],
    ])(
       "%s parses as a valid PublisherConfig",

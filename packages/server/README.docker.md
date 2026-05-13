@@ -17,7 +17,7 @@ docker run -d \
 
 Once `/api/v0/status` reports `operationalState: "serving"`, the REST API is at `http://localhost:4000` and MCP at `http://localhost:4040/mcp`.
 
-If you don't have a config of your own yet, copy [`packages/server/publisher.config.json`](./publisher.config.json) (DuckDB-only samples, no credentials required) and mount that.
+If you don't have a config of your own yet, copy [`packages/server/publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials required) and mount that. There's also a [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) sibling for the BigQuery samples.
 
 ## Runtime layout
 
@@ -51,7 +51,7 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST API port. |
 | `PUBLISHER_HOST` | `--host <h>` | `0.0.0.0` | Bind address. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
-| `SERVER_ROOT` | `--server_root <path>` | `/publisher` (set by CMD) | Directory the server treats as its working dir. The default in the image is set so the zero-arg `npx` bundled-default trigger doesn't fire — override only if you also override CMD. |
+| `SERVER_ROOT` | `--server_root <path>` | `.` (cwd) at the server level; overridden to `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--server_root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. If you override CMD with your own entrypoint, set `SERVER_ROOT` yourself to keep this behaviour. |
 | `PUBLISHER_CONFIG_PATH` | `--config <path>` | unset | Absolute path to a `publisher.config.json`. Wins over `<SERVER_ROOT>/publisher.config.json`. Use this if you want to mount your config somewhere other than `/publisher/`. |
 | `INITIALIZE_STORAGE` | `--init` | `false` | Wipes persisted storage state on startup. Useful when `frozenConfig: false` has let `publisher_data/` drift from the on-disk config; destructive otherwise. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS` | — | `0` | On SIGTERM, how long to keep accepting requests while draining before closing server sockets. Set this to your typical request duration to avoid 502s from K8s rolling deploys. |
@@ -72,7 +72,7 @@ docker run -d \
   malloy-publisher
 ```
 
-`/etc/publisher/` is created by the Dockerfile specifically as a place to mount credential material — it isn't part of the application tree.
+The Dockerfile creates `/etc/publisher/` as an empty directory outside the application tree at `/publisher/`. By the convention this doc establishes, mount credential material there to keep it separated from the app — but any writable path inside the container works.
 
 ## The CI Dockerfile (`docker/Dockerfile.ci`)
 
