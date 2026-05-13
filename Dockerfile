@@ -61,6 +61,16 @@ RUN --mount=type=cache,target=/root/.bun \
 FROM base-deps AS final
 WORKDIR /publisher
 
+# OCI image metadata — surfaces in `docker inspect`, registry UIs
+# (Docker Hub / GHCR), and Docker Desktop. The description calls out the
+# mount path explicitly because that's the single most-asked Docker
+# question (the audit reports nothing else in the repo documents it).
+LABEL org.opencontainers.image.title="Malloy Publisher"
+LABEL org.opencontainers.image.description="Open-source semantic model server for Malloy. REST API on :4000, MCP API on :4040. Mount your publisher.config.json at /publisher/publisher.config.json (the server's WORKDIR)."
+LABEL org.opencontainers.image.source="https://github.com/malloydata/publisher"
+LABEL org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker"
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
 COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
