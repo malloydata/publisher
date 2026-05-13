@@ -474,10 +474,21 @@ export interface components {
          /** @description Whether the server is fully initialized and ready to serve requests */
          initialized?: boolean;
          /**
-          * @description Status of the server; initializing when the server is loading environments, packages and connections, serving when the server is initialized and ready to serve requests, and draining when the server is going to shut down
+          * @description Status of the server; initializing when the server is loading environments, packages and connections, serving when the server is initialized and ready to serve requests, degraded when initialization completed but one or more environments failed to load (the surviving environments are served; see failedEnvironments), and draining when the server is going to shut down
           * @enum {string}
           */
-         operationalState?: "initializing" | "serving" | "draining";
+         operationalState?:
+            | "initializing"
+            | "serving"
+            | "degraded"
+            | "draining";
+         /** @description Environments that failed to initialize. Present only when operationalState is "degraded". Healthy environments are listed under "environments". */
+         failedEnvironments?: {
+            /** @description Environment name as declared in publisher.config.json */
+            name: string;
+            /** @description Error message from the initialization failure */
+            error: string;
+         }[];
          /** @description Whether the server configuration is frozen (read-only mode). When true, all mutation operations are disabled. */
          frozenConfig?: boolean;
       };

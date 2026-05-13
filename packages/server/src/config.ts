@@ -1,8 +1,67 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { components } from "./api";
 import { API_PREFIX, PUBLISHER_CONFIG_NAME } from "./constants";
 import { logger } from "./logger";
+
+/**
+ * Path to the publisher.config.json file shipped inside the published
+ * package. Used as a last-resort fallback so `npx @malloy-publisher/server`
+ * with no args still boots with the DuckDB-only sample packages.
+ *
+ * The file is copied next to the running module by `build.ts` at production
+ * build time. In a source/dev checkout it lives alongside this file.
+ */
+const BUNDLED_DEFAULT_CONFIG_PATH = path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "default-publisher.config.json",
+);
+
+/**
+ * Decide which `publisher.config.json` to read.
+ *
+ * Precedence:
+ *   1. `--config <path>` (surfaced via `process.env.PUBLISHER_CONFIG_PATH`)
+ *   2. `<serverRoot>/publisher.config.json`
+ *   3. The bundled default shipped inside the package — ONLY when
+ *      `process.env.PUBLISHER_USE_BUNDLED_DEFAULT === "true"`. server.ts
+ *      sets that flag when the user passed neither `--server_root` nor
+ *      `--config`, so `npx @malloy-publisher/server` with zero args
+ *      boots into something usable. Callers that construct an
+ *      EnvironmentStore programmatically (tests, embeds) don't get
+ *      surprise filesystem fallbacks they didn't ask for.
+ *
+ * Returns `null` if step 1 was requested but the file doesn't exist —
+ * that's an explicit user mistake and the caller should surface it as
+ * an error rather than silently falling back.
+ */
+function resolvePublisherConfigPath(serverRoot: string): {
+   path: string;
+   isBundledDefault: boolean;
+} | null {
+   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
+   if (explicitPath && explicitPath.length > 0) {
+      if (!fs.existsSync(explicitPath)) {
+         return null;
+      }
+      return { path: explicitPath, isBundledDefault: false };
+   }
+
+   const serverRootPath = path.join(serverRoot, PUBLISHER_CONFIG_NAME);
+   if (fs.existsSync(serverRootPath)) {
+      return { path: serverRootPath, isBundledDefault: false };
+   }
+
+   if (
+      process.env.PUBLISHER_USE_BUNDLED_DEFAULT === "true" &&
+      fs.existsSync(BUNDLED_DEFAULT_CONFIG_PATH)
+   ) {
+      return { path: BUNDLED_DEFAULT_CONFIG_PATH, isBundledDefault: true };
+   }
+
+   return null;
+}
 
 type FilesystemPath = `./${string}` | `../${string}` | `/${string}`;
 type GcsPath = `gs://${string}`;
@@ -77,12 +136,29 @@ function processConfigValue(value: unknown): unknown {
 }
 
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
-   const publisherConfigPath = path.join(serverRoot, PUBLISHER_CONFIG_NAME);
-   if (!fs.existsSync(publisherConfigPath)) {
+   const resolved = resolvePublisherConfigPath(serverRoot);
+   if (!resolved) {
+      if (
+         process.env.PUBLISHER_CONFIG_PATH &&
+         process.env.PUBLISHER_CONFIG_PATH.length > 0
+      ) {
+         // Explicit --config was given but the path didn't exist. Loud
+         // failure here so a typo in the flag doesn't silently boot the
+         // server with an empty environment list.
+         logger.error(
+            `--config path not found: ${process.env.PUBLISHER_CONFIG_PATH}. Using default empty config.`,
+         );
+      }
       return {
          frozenConfig: false,
          environments: [],
       };
+   }
+   const publisherConfigPath = resolved.path;
+   if (resolved.isBundledDefault) {
+      logger.info(
+         `No publisher.config.json found at ${path.join(serverRoot, PUBLISHER_CONFIG_NAME)}; falling back to bundled DuckDB-only default. Pass --config <path> or place a config in the server root to override.`,
+      );
    }
 
    let rawConfig: unknown;

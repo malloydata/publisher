@@ -355,6 +355,15 @@ describe("EnvironmentStore Service", () => {
       expect(projects.length).toBe(2);
       expect(projects.map((p) => p.name)).toContain(projectName1);
       expect(projects.map((p) => p.name)).toContain(projectName2);
+
+      // All envs initialized cleanly → status is "serving" (not
+      // "degraded") and there's no failedEnvironments key on the
+      // response. This is the happy-path companion to the
+      // "should skip a project with invalid startup connection config"
+      // test which exercises the degraded path.
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.operationalState).toBe("serving");
+      expect(status.failedEnvironments).toBeUndefined();
    });
 
    it("should skip a project with invalid startup connection config", async () => {
@@ -427,6 +436,16 @@ describe("EnvironmentStore Service", () => {
       await expect(
          newEnvironmentStore.getEnvironment(invalidProjectName),
       ).rejects.toThrow();
+
+      // The skipped environment should surface in the status response
+      // so external callers (CI smoke tests, dashboards) can tell the
+      // server is only partially serving.
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.operationalState).toBe("degraded");
+      expect(status.failedEnvironments).toBeDefined();
+      expect(status.failedEnvironments?.map((f) => f.name)).toContain(
+         invalidProjectName,
+      );
    });
 
    it("should handle project updates", async () => {

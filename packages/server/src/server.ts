@@ -51,6 +51,8 @@ export function normalizeQueryArray(value: unknown): string[] | undefined {
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
+   let sawServerRoot = false;
+   let sawConfig = false;
    for (let i = 0; i < args.length; i++) {
       const arg = args[i];
       if (arg === "--port" && args[i + 1]) {
@@ -60,7 +62,12 @@ function parseArgs() {
          process.env.PUBLISHER_HOST = args[i + 1];
          i++;
       } else if (arg === "--server_root" && args[i + 1]) {
+         sawServerRoot = true;
          process.env.SERVER_ROOT = args[i + 1];
+         i++;
+      } else if (arg === "--config" && args[i + 1]) {
+         sawConfig = true;
+         process.env.PUBLISHER_CONFIG_PATH = args[i + 1];
          i++;
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
@@ -92,6 +99,9 @@ function parseArgs() {
             "  --server_root <path>   Root directory to serve files from (default: .)",
          );
          console.log(
+            "  --config <path>        Path to publisher.config.json (default: <server_root>/publisher.config.json; falls back to bundled DuckDB-only sample config if missing)",
+         );
+         console.log(
             "  --mcp_port <number>    Port for MCP server (default: 4040)",
          );
          console.log(
@@ -106,6 +116,16 @@ function parseArgs() {
          console.log("  --help, -h             Show this help message");
          process.exit(0);
       }
+   }
+   // Zero-config invocation (`npx @malloy-publisher/server`) opts in to
+   // the bundled DuckDB-only sample config so the Quick Start works
+   // without any flags. Any explicit --server_root or --config disables
+   // this — the user told us where to look. Skip in NODE_ENV=test so
+   // specs that import this module for utility helpers (e.g.
+   // db_utils.spec.ts -> normalizeQueryArray) don't get the bundled
+   // default leaked into their EnvironmentStore construction.
+   if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
+      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
 }
 

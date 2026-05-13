@@ -8,6 +8,15 @@ The Malloy Publisher Server is an Express.js server that provides an API for man
 
 For the BigQuery-enabled variant, see [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) and the [Quick Start in the repo root README](../../README.md#quick-start).
 
+### Remaining deprecation warnings
+
+Removing the unused `trino` CLI direct dep (it pulled in `@google-cloud/translate@0.7.x` → `request@2.x` → `har-validator` → `hawk` → `cryptiles`) cleaned the worst chain. About 25 `npm warn deprecated` lines remain on `npx @malloy-publisher/server` install, all upstream-owned:
+
+- **npm CLI tooling**: `npmlog`, `gauge`, `are-we-there-yet`, `glob@7/8/10`, `rimraf@3`, `tar@6.2.1`, `inflight`, `@npmcli/move-file`, `node-domexception`, `querystring` — pulled in by npm itself and by `node-pre-gyp`/`node-gyp`. Not actionable from this repo.
+- **`uuid@8.x` / `uuid@9.x`**: surfaced across multiple transitives (Malloy, AWS SDKs, others). Resolves when each upstream bumps to `uuid@11`.
+- **`q@1.5.1`**: pulled in via `thrift` → `@databricks/sql` → `@malloydata/db-databricks`. Resolves when Databricks upgrades `@databricks/sql` past the thrift dep, or when we replace the Databricks driver.
+- **`aws-sdk@2.1693.0`**: listed as a direct dep in `packages/server/package.json` but not imported anywhere in source — leftover, candidate for removal in a follow-up PR. The actual consumer is `@aws-sdk/client-s3` v3.
+
 ## K6 Test Presets
 
 The Malloy Publisher Server includes several K6 test presets to help you test its performance and stability.

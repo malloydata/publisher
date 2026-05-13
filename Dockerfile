@@ -80,4 +80,11 @@ ENV PATH="/root/.duckdb/cli/latest:$PATH"
 RUN mkdir -p /etc/publisher
 EXPOSE 4000
 
-CMD ["bun", "run", "./packages/server/dist/server.mjs"]
+# Pass --server_root explicitly so the zero-arg bundled-default trigger
+# in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire
+# inside the production container. Without this, a Docker image launched
+# with no mounted config would try to clone the bundled DuckDB samples
+# from GitHub at startup, blowing past the docker_smoke_test 90s timeout.
+# Operators that want a config provide it at /publisher/publisher.config.json
+# (mount as volume) or override CMD with --config <path>.
+CMD ["bun", "run", "./packages/server/dist/server.mjs", "--server_root", "/publisher"]

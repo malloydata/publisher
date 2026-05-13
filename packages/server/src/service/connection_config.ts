@@ -272,7 +272,7 @@ function validateConnectionShape(connection: ApiConnection): void {
                connection.duckdbConnection.attachedDatabases ?? [];
             if (attached.length === 0) {
                throw new Error(
-                  "DuckDB connection must have at least one attached database",
+                  `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
                );
             }
          }

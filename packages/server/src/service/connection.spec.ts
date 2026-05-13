@@ -1133,6 +1133,10 @@ describe("connection integration tests", () => {
          });
 
          it("should reject DuckDB connections with no attachments", async () => {
+            // Env-level DuckDB connections must declare at least one
+            // attached foreign database; the empty-array case is operator
+            // confusion (the per-package "duckdb" sandbox already covers
+            // the plain-in-memory use case).
             await expect(
                createEnvironmentConnections(
                   [
@@ -1144,9 +1148,7 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(
-               "DuckDB connection must have at least one attached database",
-            );
+            ).rejects.toThrow(/has no attached databases/);
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {

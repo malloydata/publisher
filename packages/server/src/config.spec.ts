@@ -1003,3 +1003,80 @@ describe("Committed example configs", () => {
       },
    );
 });
+
+describe("Config path resolution (--config and bundled default)", () => {
+   const emptyServerRoot = path.join(process.cwd(), "test-empty-server-root");
+   const customConfigPath = path.join(
+      process.cwd(),
+      "test-custom-publisher.config.json",
+   );
+
+   beforeEach(() => {
+      if (!fs.existsSync(emptyServerRoot)) {
+         fs.mkdirSync(emptyServerRoot, { recursive: true });
+      }
+      delete process.env.PUBLISHER_CONFIG_PATH;
+      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
+   });
+
+   afterEach(() => {
+      delete process.env.PUBLISHER_CONFIG_PATH;
+      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
+      if (fs.existsSync(customConfigPath)) {
+         fs.unlinkSync(customConfigPath);
+      }
+      if (fs.existsSync(emptyServerRoot)) {
+         fs.rmSync(emptyServerRoot, { recursive: true, force: true });
+      }
+   });
+
+   it("falls back to the bundled default config when serverRoot has no publisher.config.json and bundled-default opt-in is set", () => {
+      // The bundled default is opt-in (server.ts sets the env var when
+      // the user passed neither --server_root nor --config) so embedded
+      // callers don't get a surprise filesystem read.
+      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
+      const result = getPublisherConfig(emptyServerRoot);
+
+      expect(result.environments.length).toBeGreaterThan(0);
+      const env = result.environments[0];
+      expect(env.name).toBe("malloy-samples");
+      expect(env.packages.some((p) => p.name === "ecommerce")).toBe(true);
+      expect(env.packages.some((p) => p.name === "bigquery-hackernews")).toBe(
+         false,
+      );
+   });
+
+   it("does NOT fall back to the bundled default when opt-in flag is unset (programmatic construction)", () => {
+      // No PUBLISHER_USE_BUNDLED_DEFAULT, no PUBLISHER_CONFIG_PATH, no
+      // file in emptyServerRoot — result should be the original empty
+      // shape, preserving prior behavior for embeds and tests.
+      const result = getPublisherConfig(emptyServerRoot);
+      expect(result.environments).toEqual([]);
+   });
+
+   it("honors PUBLISHER_CONFIG_PATH (set by --config) over the server root", () => {
+      const customConfig = {
+         frozenConfig: false,
+         environments: [
+            { name: "custom-env", packages: [{ name: "foo", location: "/x" }] },
+         ],
+      };
+      fs.writeFileSync(customConfigPath, JSON.stringify(customConfig));
+      process.env.PUBLISHER_CONFIG_PATH = customConfigPath;
+
+      const result = getPublisherConfig(emptyServerRoot);
+      expect(result.environments[0].name).toBe("custom-env");
+   });
+
+   it("returns empty environments (not the bundled default) when --config points at a missing file", () => {
+      process.env.PUBLISHER_CONFIG_PATH = path.join(
+         process.cwd(),
+         "does-not-exist.json",
+      );
+      // Even with bundled-default opt-in, --config with a missing target
+      // is a user error and we don't paper over it.
+      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
+      const result = getPublisherConfig(emptyServerRoot);
+      expect(result.environments).toEqual([]);
+   });
+});

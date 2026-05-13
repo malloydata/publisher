@@ -19,3 +19,12 @@ packages/server/k6-tests/results/
 # Playwright test run artifacts
 packages/app/test-results/
 packages/app/playwright-report/
+
+# Publisher runtime artifacts (DuckDB metadata + per-env package clones).
+# Created wherever the server is launched from; already covered by
+# packages/server/.gitignore for the canonical launch location, but
+# anyone running from the repo root (smoke tests, make publisher-start,
+# Playwright via the webServer block) gets them here too.
+publisher.db
+publisher.db.wal
+publisher_data/

@@ -18,12 +18,27 @@ The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.d
 ## Quick Start
 
 ```bash
-git clone https://github.com/credibledata/malloy-samples.git
-cd malloy-samples
-npx @malloy-publisher/server --port 4000 --server_root .
+npx @malloy-publisher/server --port 4000
 ```
 
-Open http://localhost:4000 to explore the sample models.
+Open http://localhost:4000 to explore the sample models. Three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`) are cloned from GitHub on first launch — expect a 30–60s wait before `operationalState` reports `serving`. No credentials required.
+
+> **Heads up — npx + DuckDB native binding.** On some Node 24 setups, `npx` does not install DuckDB's native binding (`node_modules/duckdb/lib/binding/duckdb.node`), so the server exits at startup with `Cannot find module ...duckdb.node`. This is an upstream `duckdb` install-script issue tracked separately. Workaround until that's fixed: clone this repo and run `make start-init` (or `bun run build && bun run start`) from the repo root — the workspace's `install-duckdb-bindings` script handles the binding install during `bun run build`.
+
+### Bring your own config
+
+Pass `--config <path>` to point the server at a specific `publisher.config.json`, or place a `publisher.config.json` in the directory you launch from. Both forms override the bundled default.
+
+```bash
+# Existing repo of Malloy samples or your own packages
+git clone https://github.com/credibledata/malloy-samples.git
+npx @malloy-publisher/server --port 4000 --config malloy-samples/publisher.config.json
+
+# Or cd in and rely on the implicit lookup
+cd malloy-samples && npx @malloy-publisher/server --port 4000
+```
+
+To enable the BigQuery samples (`bigquery-hackernews`, etc.), copy [`packages/server/publisher.config.example.bigquery.json`](packages/server/publisher.config.example.bigquery.json) over your `publisher.config.json` and set `GOOGLE_APPLICATION_CREDENTIALS`.
 
 ### Verify it's working
 
@@ -36,6 +51,7 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 
 - **`serving`** — ready to handle requests.
 - **`initializing`** — loading packages and connections from `publisher.config.json`. Normal on boot, and especially noticeable on the first run when sample packages need to be cloned from GitHub. Wait for `serving`.
+- **`degraded`** — initialization completed, but one or more environments failed to load. The surviving environments are served; the failures are listed under `failedEnvironments` in the status response (`curl -s http://localhost:4000/api/v0/status | jq .failedEnvironments`).
 - **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` (see [Configuration](#configuration)).
 
 ## Documentation

@@ -14,6 +14,8 @@ You do not have to declare these sandboxes — they're created on package load.
 
 You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
 
+An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+
 ## Connection naming rules
 
 A few names are reserved or have special meaning. Picking the wrong name causes a clear error at server startup:

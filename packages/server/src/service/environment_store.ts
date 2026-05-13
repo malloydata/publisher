@@ -25,7 +25,12 @@ import {
    FrozenConfigError,
    PackageNotFoundError,
 } from "../errors";
-import { getOperationalState, markNotReady, markReady } from "../health";
+import {
+   getOperationalState,
+   markDegraded,
+   markNotReady,
+   markReady,
+} from "../health";
 import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
@@ -96,6 +101,7 @@ export class EnvironmentStore {
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
+   private failedEnvironments: Array<{ name: string; error: string }> = [];
    public storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
@@ -142,6 +148,10 @@ export class EnvironmentStore {
          `Error initializing environment${label}; skipping environment`,
          this.extractErrorDataFromError(error),
       );
+      this.failedEnvironments.push({
+         name: environmentName ?? "<unknown>",
+         error: error instanceof Error ? error.message : String(error),
+      });
    }
 
    private async initialize() {
@@ -275,7 +285,11 @@ export class EnvironmentStore {
          }
 
          this.isInitialized = true;
-         markReady();
+         if (this.failedEnvironments.length > 0) {
+            markDegraded();
+         } else {
+            markReady();
+         }
          const initializationDuration = performance.now() - initialTime;
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
@@ -689,6 +703,11 @@ export class EnvironmentStore {
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState:
             getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
+         ...(this.failedEnvironments.length > 0 && {
+            failedEnvironments: [
+               ...this.failedEnvironments,
+            ] as components["schemas"]["ServerStatus"]["failedEnvironments"],
+         }),
       };
 
       const environments = await this.listEnvironments(true);
