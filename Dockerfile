@@ -78,7 +78,10 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 ENV NODE_ENV=production
 ENV PATH="/root/.duckdb/cli/latest:$PATH"
 RUN mkdir -p /etc/publisher
-EXPOSE 4000
+# Declare both runtime ports so `docker run -P` and Docker Desktop's
+# port-preview surface MCP as well as REST. The server already listens
+# on both — this just makes them discoverable.
+EXPOSE 4000 4040
 
 # Pass --server_root explicitly so the zero-arg bundled-default trigger
 # in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire
