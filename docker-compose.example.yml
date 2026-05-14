@@ -1,0 +1,49 @@
+# docker-compose.example.yml
+#
+# Example Compose file for running the Malloy Publisher from the
+# pre-built `ms2data/malloy-publisher` image. Copy this to
+# `docker-compose.yml` in your own project (or symlink it) and
+# adjust the volume mounts to point at your own publisher.config.json
+# before bringing the stack up.
+#
+# REST is on :4000; MCP is on :4040. See the root README "Docker"
+# section for tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`).
+#
+# The `publisher_data` named volume persists the per-environment
+# package clones and DuckDB extension cache across container
+# restarts, so the first-boot clone of sample packages from GitHub
+# only happens once.
+
+services:
+  publisher:
+    # For production deployments, pin a specific release rather than
+    # tracking `:latest` (e.g. `ms2data/malloy-publisher:0.0.196`).
+    image: ms2data/malloy-publisher:latest
+    ports:
+      - "4000:4000" # REST
+      - "4040:4040" # MCP
+    volumes:
+      - ./publisher.config.json:/publisher/publisher.config.json:ro
+      - publisher_data:/publisher/publisher_data
+    # Uncomment to override defaults. See packages/server/README.docker.md
+    # for the full env-var table.
+    # environment:
+    #   LOG_LEVEL: info
+    #   SHUTDOWN_DRAIN_DURATION_SECONDS: "10"
+    restart: unless-stopped
+    # The first boot clones sample packages from GitHub, which can
+    # take ~30s on a slow link; `start_period` keeps the container
+    # marked "starting" (not "unhealthy") during that window.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fs http://localhost:4000/api/v0/status | grep -q '\"operationalState\":\"serving\"' || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+volumes:
+  publisher_data:
