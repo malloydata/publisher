@@ -90,18 +90,15 @@ docker run -d \
 - `:X.Y.Z` — pinned to a specific release; recommended for production.
 - `:next` — pre-release builds; not recommended for production.
 
-`*-dev` tags (e.g. `:0.0.198-dev`) are deprecated in favor of `:next`; pin to a specific `:X.Y.Z` for stable deployments.
+`*-dev` tags (e.g. `:0.0.198-dev`) are frozen — no new ones are being published, and `:next` is the current pre-release channel. Existing `*-dev` tags still resolve in the registry; don't use them for new deployments.
 
 ### Docker Compose
 
-A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compose.example.yml) — it runs the pre-built image with both ports mapped and a named volume for `publisher_data/` so first-boot package clones survive restarts:
+A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compose.example.yml) — it runs the pre-built image with both ports mapped, a healthcheck against `/api/v0/status`, and a named volume for `publisher_data/` so first-boot package clones survive restarts. To use it:
 
-```bash
-cp docker-compose.example.yml docker-compose.yml
-docker compose up -d
-```
-
-Adjust the `publisher.config.json` volume mount to point at your own config before bringing the stack up.
+1. Copy it into your project: `cp docker-compose.example.yml docker-compose.yml`.
+2. Place a `publisher.config.json` next to it (or change the volume mount). No config of your own yet? Copy [`packages/server/publisher.config.example.duckdb.json`](packages/server/publisher.config.example.duckdb.json) — DuckDB-only samples, no credentials needed.
+3. `docker compose up -d`
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
 
