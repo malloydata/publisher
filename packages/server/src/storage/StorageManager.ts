@@ -1,5 +1,12 @@
 import * as crypto from "crypto";
+import { ConnectionAuthError } from "../errors";
 import { logger } from "../logger";
+import {
+   handlePgAttachError,
+   pgConnectTimeoutSeconds,
+   redactPgSecrets,
+   withPgConnectTimeout,
+} from "../pg_helpers";
 import {
    DatabaseConnection,
    ManifestStore,
@@ -178,7 +185,15 @@ export class StorageManager {
          await connection.run("INSTALL postgres; LOAD postgres;");
       }
 
-      const escapedCatalogUrl = escapeSQL(config.catalogUrl);
+      // For PG-backed catalogs, inject connect_timeout so a wedged libpq
+      // handshake fails the caller in seconds rather than hanging the
+      // worker until the K8s liveness probe trips (the 2026-05 incident).
+      // Non-PG catalogs (e.g. SQLite, MySQL) pass through unchanged.
+      const catalogUrl = isPostgres
+         ? withPgConnectTimeout(config.catalogUrl, pgConnectTimeoutSeconds())
+         : config.catalogUrl;
+
+      const escapedCatalogUrl = escapeSQL(catalogUrl);
       const escapedDataPath = escapeSQL(config.dataPath);
       const isCloudStorage =
          config.dataPath.startsWith("gs://") ||
@@ -198,8 +213,29 @@ export class StorageManager {
       }
       attachCmd += ` (${attachOpts.join(", ")});`;
 
-      logger.info(`Attaching DuckLake manifest catalog: ${attachCmd}`);
-      await connection.run(attachCmd);
+      logger.info(
+         `Attaching DuckLake manifest catalog: ${redactPgSecrets(attachCmd)}`,
+      );
+      try {
+         await connection.run(attachCmd);
+      } catch (error) {
+         const outcome = handlePgAttachError(
+            error,
+            `DuckLake catalog credentials rejected for ${catalogName}`,
+         );
+         if (outcome.action === "swallow") {
+            logger.info(
+               `DuckLake catalog ${catalogName} is already attached, skipping`,
+            );
+            return;
+         }
+         if (outcome.error instanceof ConnectionAuthError) {
+            logger.warn("DuckLake catalog credentials rejected", {
+               catalogName,
+            });
+         }
+         throw outcome.error;
+      }
    }
 
    getRepository(): ResourceRepository {

@@ -25,6 +25,7 @@ import fs from "fs/promises";
 import path from "path";
 import { components } from "../api";
 import { logAxiosError, logger } from "../logger";
+import { redactPgSecrets } from "../pg_helpers";
 import {
    assembleEnvironmentConnections,
    CoreConnectionEntry,
@@ -365,13 +366,17 @@ async function attachDuckLake(
    const pgConnString: string = buildPgConnectionString(pg);
    // Attach DuckLake with Postgres catalog and cloud storage data path in READ_ONLY mode
    // The client manages metadata - we only read from the catalogs
-   logger.info(`pgConnString: ${pgConnString}`);
+   logger.info(`pgConnString: ${redactPgSecrets(pgConnString)}`);
    const escapedPgConnString = escapeSQL(pgConnString);
-   logger.info(`Final escaped connection string: ${escapedPgConnString}`);
+   logger.info(
+      `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
+   );
    const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
    logger.info(`escapedBucketUrl: ${escapedBucketUrl}`);
    const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true, READ_ONLY true);`;
-   logger.info(`Attaching DuckLake database using command: ${attachCommand}`);
+   logger.info(
+      `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
+   );
    try {
       await connection.runSQL(attachCommand);
       logger.info(
