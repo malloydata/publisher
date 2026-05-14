@@ -92,6 +92,17 @@ docker run -d \
 
 `*-dev` tags (e.g. `:0.0.198-dev`) are deprecated in favor of `:next`; pin to a specific `:X.Y.Z` for stable deployments.
 
+### Docker Compose
+
+A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compose.example.yml) — it runs the pre-built image with both ports mapped and a named volume for `publisher_data/` so first-boot package clones survive restarts:
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d
+```
+
+Adjust the `publisher.config.json` volume mount to point at your own config before bringing the stack up.
+
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
 
 ## Documentation
