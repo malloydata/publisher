@@ -57,6 +57,8 @@ docker run -d \
 
 The first request after a fresh start clones sample packages from GitHub — a named volume turns that one-time cost into a one-time cost across all container lifecycles.
 
+The repo ships a ready-to-use [`docker-compose.example.yml`](../../docker-compose.example.yml) that wires up the same named-volume pattern against the pre-built image; copy it to `docker-compose.yml` in your own project and `docker compose up -d`.
+
 ## Configuration via environment variables
 
 All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, so they're easy to set from `docker run -e` or compose:
