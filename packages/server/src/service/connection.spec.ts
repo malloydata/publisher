@@ -9,6 +9,7 @@ import {
    testConnectionConfig,
 } from "./connection";
 import { assembleEnvironmentConnections } from "./connection_config";
+import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -44,6 +45,21 @@ const hasGCSCredentials = () =>
 
 const readBigQueryServiceAccountJson = async (): Promise<string> =>
    fs.readFile(process.env.GOOGLE_APPLICATION_CREDENTIALS!, "utf-8");
+
+// `BIGQUERY_PUBLIC_DATA_*` env vars are populated by the
+// `Setup BigQuery public-data credentials` step in
+// `.github/workflows/connection-integration-tests.yml`. Kept separate
+// from the existing `BIGQUERY_TEST_*` vars (which point at the
+// org-scoped BQ_PRESTO_TRINO_KEY service account) so the two SAs can
+// coexist without one overwriting the other.
+const hasPublicDataBigQueryCredentials = () =>
+   !!(
+      process.env.BIGQUERY_PUBLIC_DATA_CREDENTIALS &&
+      process.env.BIGQUERY_PUBLIC_DATA_PROJECT_ID
+   );
+
+const readPublicDataBigQueryServiceAccountJson = async (): Promise<string> =>
+   fs.readFile(process.env.BIGQUERY_PUBLIC_DATA_CREDENTIALS!, "utf-8");
 
 describe("connection integration tests", () => {
    const testEnvironmentPath = path.join(
@@ -669,6 +685,236 @@ describe("connection integration tests", () => {
                ).rejects.toThrow(/Invalid service account key/);
             },
             { timeout: 30000 },
+         );
+      });
+
+      describe("BigQuery direct connection (public-data)", () => {
+         // Single end-to-end check that a real `bigquery`-typed
+         // connection authenticated by the BIGQUERY_PUBLIC_DATA_SA
+         // service account can actually round-trip a query against
+         // bigquery-public-data. Skips locally if the creds aren't
+         // set; runs in CI under .github/workflows/connection-integration-tests.yml.
+         //
+         // Picked `samples.shakespeare` because (a) it's tiny (~6 MB
+         // / ~165k rows) so the BigQuery byte-scanned cost is well
+         // under the 1 TB/month free tier even across many PR runs,
+         // (b) it's a long-stable public table so the assertion stays
+         // valid across years of reruns. If this assertion ever fails
+         // the cause is almost certainly auth, not data drift.
+         it(
+            "should query bigquery-public-data via real BigQuery connection",
+            async () => {
+               if (!hasPublicDataBigQueryCredentials()) {
+                  console.log(
+                     "Skipping: BIGQUERY_PUBLIC_DATA_CREDENTIALS or BIGQUERY_PUBLIC_DATA_PROJECT_ID not configured",
+                  );
+                  return;
+               }
+
+               const serviceAccountJson =
+                  await readPublicDataBigQueryServiceAccountJson();
+
+               const bqConnection: ApiConnection = {
+                  name: "bq_public_data",
+                  type: "bigquery",
+                  bigqueryConnection: {
+                     // Billing/auth project (the SA's own project_id);
+                     // the queried tables live in bigquery-public-data
+                     // and are referenced explicitly in the SQL below.
+                     defaultProjectId:
+                        process.env.BIGQUERY_PUBLIC_DATA_PROJECT_ID!,
+                     serviceAccountKeyJson: serviceAccountJson,
+                  },
+               };
+
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [bqConnection],
+                  testEnvironmentPath,
+               );
+
+               const connection = malloyConnections.get("bq_public_data");
+               expect(connection).toBeDefined();
+
+               try {
+                  const result = await connection!.runSQL(
+                     "SELECT COUNT(*) AS row_count FROM `bigquery-public-data.samples.shakespeare`",
+                  );
+                  expect(result.rows.length).toBe(1);
+                  // Shakespeare has ~165k rows; bound on both sides so
+                  // we catch both "auth succeeded but query returned
+                  // nothing" and "got a confusingly large value" failure
+                  // modes, while staying tolerant of any minor row-count
+                  // jitter Google might introduce.
+                  const row = result.rows[0] as Record<string, unknown>;
+                  const rowCount = Number(row.row_count);
+                  expect(rowCount).toBeGreaterThan(100_000);
+                  expect(rowCount).toBeLessThan(200_000);
+               } finally {
+                  // BigQuery driver holds an HTTP/2 client + auth refresh
+                  // state; close it explicitly so we don't leak across
+                  // the rest of the test run. (createdConnections is
+                  // typed for DuckDBConnection, so we can't use the
+                  // shared cleanup array here.)
+                  await connection?.close();
+               }
+            },
+            { timeout: 60000 },
+         );
+      });
+
+      describe("BigQuery package end-to-end (bq-hackernews)", () => {
+         // Step 2 of Sagar's bun-setup-fixes ask: not just "does the
+         // BigQuery driver round-trip a SQL query" (the previous
+         // describe block covers that), but "does the publisher's
+         // package-loading path successfully use the BigQuery
+         // connection on behalf of a Malloy package."
+         //
+         // Mechanism: stand up a real EnvironmentStore against a
+         // temp publisher.config.json that declares both the BQ
+         // connection (with the BIGQUERY_PUBLIC_DATA_SA injected via
+         // serviceAccountKeyJson) AND the bq-hackernews package
+         // (loaded from credibledata/malloy-samples on GitHub).
+         // EnvironmentStore.initialize then: clones the malloy-samples
+         // repo, extracts the bigquery-hackernews subdirectory, parses
+         // the package's Malloy models, and — crucially — introspects
+         // their BigQuery table schemas during model compilation. A
+         // successful Package.listModels() call therefore proves the
+         // entire package-uses-connection path, not just the bare
+         // driver auth.
+         //
+         // Cost: ~50 MB git clone (one time per test run since
+         // publisher_data lives under testEnvironmentPath which the
+         // afterEach cleans up) + ~6 MB BQ schema scan. Both well
+         // under any meaningful free-tier limit. Test budget: 3 min
+         // (clone is ~30-60s on GH runners; compile is ~10s).
+         it(
+            "should load bq-hackernews package and compile its models via real BQ",
+            async () => {
+               if (!hasPublicDataBigQueryCredentials()) {
+                  console.log(
+                     "Skipping: BIGQUERY_PUBLIC_DATA_CREDENTIALS or BIGQUERY_PUBLIC_DATA_PROJECT_ID not configured",
+                  );
+                  return;
+               }
+
+               const serviceAccountJson =
+                  await readPublicDataBigQueryServiceAccountJson();
+
+               // Each test gets its own serverRoot so publisher_data
+               // doesn't leak across tests; afterEach removes
+               // testEnvironmentPath which carries the whole tree
+               // away.
+               const tempServerRoot = path.join(
+                  testEnvironmentPath,
+                  "bq-hackernews-pkg-test",
+               );
+               await fs.mkdir(tempServerRoot, { recursive: true });
+
+               const config = {
+                  frozenConfig: false,
+                  environments: [
+                     {
+                        name: "malloy-samples",
+                        packages: [
+                           {
+                              name: "bigquery-hackernews",
+                              location:
+                                 "https://github.com/credibledata/malloy-samples/tree/main/bigquery-hackernews",
+                           },
+                        ],
+                        connections: [
+                           {
+                              name: "bigquery",
+                              type: "bigquery",
+                              bigqueryConnection: {
+                                 defaultProjectId:
+                                    process.env
+                                       .BIGQUERY_PUBLIC_DATA_PROJECT_ID!,
+                                 serviceAccountKeyJson: serviceAccountJson,
+                              },
+                           },
+                        ],
+                     },
+                  ],
+               };
+               await fs.writeFile(
+                  path.join(tempServerRoot, "publisher.config.json"),
+                  JSON.stringify(config),
+               );
+
+               // Force the load-from-config init path. Without this,
+               // EnvironmentStore.initialize() takes the load-from-DB
+               // branch and only falls back to config when the DB is
+               // empty (which it is here, by construction, but relying
+               // on that is brittle if the test pattern is reused).
+               //
+               // SAFETY PRECONDITION: this flag is the SAME one users
+               // opt into via `--init` / `start:init` to wipe persisted
+               // storage and re-initialize from config (see CLAUDE.md
+               // and `environment_store.ts:158`). It is destructive on
+               // a real serverRoot. We only set it here because
+               // `tempServerRoot` is a freshly-created empty directory
+               // (path.join(testEnvironmentPath, "bq-hackernews-pkg-test")
+               // mkdir'd ~20 lines above), so there is nothing to wipe.
+               // DO NOT copy this pattern into a test that points
+               // EnvironmentStore at a non-empty or shared serverRoot
+               // — it will delete state.
+               const previousInitializeStorage = process.env.INITIALIZE_STORAGE;
+               process.env.INITIALIZE_STORAGE = "true";
+
+               try {
+                  const envStore = new EnvironmentStore(tempServerRoot);
+                  await envStore.finishedInitialization;
+
+                  // operationalState=serving is the only signal that
+                  // initialize() actually succeeded — it swallows
+                  // top-level errors and just calls markNotReady() (see
+                  // environment_store.ts:297-301), so
+                  // finishedInitialization always resolves. By
+                  // construction (env_store:288-292), serving implies
+                  // failedEnvironments is empty; the second assertion
+                  // is defensive against future API normalization.
+                  const status = await envStore.getStatus();
+                  expect(status.operationalState).toBe("serving");
+                  expect(status.failedEnvironments ?? []).toEqual([]);
+
+                  const env = await envStore.getEnvironment("malloy-samples");
+                  const apiPackages = await env.listPackages();
+                  expect(apiPackages.map((p) => p.name)).toContain(
+                     "bigquery-hackernews",
+                  );
+
+                  const apiConnections = env.listApiConnections();
+                  expect(apiConnections.map((c) => c.name)).toContain(
+                     "bigquery",
+                  );
+
+                  // The actual integration assertion. Package.listModels()
+                  // collects compile errors per-model and returns ALL
+                  // models in the result (with `error` populated on
+                  // failures) — so models.length>0 alone would pass even
+                  // if every BQ schema introspection failed. Filter for
+                  // models that compiled cleanly: at least one is the
+                  // real proof that BQ-on-behalf-of-a-package works.
+                  const pkg = await env.getPackage("bigquery-hackernews");
+                  const models = await pkg.listModels();
+                  const okModels = models.filter((m) => !m.error);
+                  if (okModels.length === 0) {
+                     console.error(
+                        "All bq-hackernews model compilations failed:",
+                        models.map((m) => `${m.path}: ${m.error}`),
+                     );
+                  }
+                  expect(okModels.length).toBeGreaterThan(0);
+               } finally {
+                  if (previousInitializeStorage === undefined) {
+                     delete process.env.INITIALIZE_STORAGE;
+                  } else {
+                     process.env.INITIALIZE_STORAGE = previousInitializeStorage;
+                  }
+               }
+            },
+            { timeout: 180000 },
          );
       });
 
