@@ -57,22 +57,62 @@ jobs:
         working-directory: packages/app
         run: bunx playwright install --with-deps chromium
 
+      # Decode the BigQuery service-account key from the GH secret and
+      # expose it via GOOGLE_APPLICATION_CREDENTIALS for the rest of the
+      # job. The publisher's BigQuery driver picks up Application Default
+      # Credentials at request time, so any `bigquery`-typed connection in
+      # publisher.config.json authenticates automatically — no need to
+      # embed serviceAccountKeyJson per-connection. Mirrors the pattern
+      # already used in `connection-integration-tests.yml` and
+      # `k6-tests.yml`.
+      #
+      # Secret source: `BIGQUERY_PUBLIC_DATA_SA` is a repo-level secret on
+      # `malloydata/publisher` containing the JSON for the "GCP SA BQ
+      # public-data for Integration Tests" service account
+      # (project_id: vscode-demo-453414, default_project_id:
+      # bigquery-public-data). Read access to bigquery-public-data only;
+      # safe to expose to PR-triggered workflows.
+      - name: Setup BigQuery credentials
+        env:
+          BIGQUERY_PUBLIC_DATA_SA: ${{ secrets.BIGQUERY_PUBLIC_DATA_SA }}
+        run: |
+          if [ -z "$BIGQUERY_PUBLIC_DATA_SA" ]; then
+            echo "BIGQUERY_PUBLIC_DATA_SA secret is not set on the repo"
+            echo "(or org-level secret allow-list is missing this repo)."
+            echo "Without it, BigQuery-querying Playwright specs fail at request time."
+            exit 1
+          fi
+          # Detect base64 vs raw JSON (the existing org-level BQ secret in
+          # connection-integration-tests.yml is base64; this one's
+          # encoding may differ — handle both shapes so we don't depend
+          # on caller convention).
+          if echo "$BIGQUERY_PUBLIC_DATA_SA" | grep -qE '^\s*eyJ'; then
+            echo "Detected base64 credentials. Decoding..."
+            echo "$BIGQUERY_PUBLIC_DATA_SA" | base64 --decode > /tmp/bq-credentials.json
+          else
+            echo "Detected raw JSON credentials."
+            echo "$BIGQUERY_PUBLIC_DATA_SA" > /tmp/bq-credentials.json
+          fi
+          jq . /tmp/bq-credentials.json > /dev/null
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/bq-credentials.json" >> $GITHUB_ENV
+          echo "✓ BigQuery SA decoded to /tmp/bq-credentials.json (project_id: $(jq -r '.project_id' /tmp/bq-credentials.json))"
+
       # Tests in packages/app/tests/playwright/package-databases.spec.ts assume
       # the malloy-samples environment exposes a top-level `bigquery`
       # connection (rows for list/edit/delete affordances). The committed
       # default config ships only DuckDB sandboxes for first-run UX, so
-      # inject a stub BigQuery connection into the existing default before
-      # the suite runs. We deliberately don't swap in the full
-      # publisher.config.example.bigquery.json fixture — that adds a fourth
-      # sample package (bigquery-hackernews) whose extra clone + failed
-      # compile (no GCP credentials) pushes cold-init past the 5-min
-      # global-setup timeout in CI. The connection-row tests only need the
-      # connection metadata to be present; they don't query BigQuery. To
-      # enable real bigquery-hackernews query tests later, follow the
-      # decode-and-expose pattern already used in
-      # `connection-integration-tests.yml` and `k6-tests.yml` (decode the
-      # BQ secret to `/tmp/bq-credentials.json`, then export
-      # `GOOGLE_APPLICATION_CREDENTIALS`).
+      # inject a `bigquery` connection into the existing default before
+      # the suite runs. With the SA decoded above into
+      # GOOGLE_APPLICATION_CREDENTIALS, the publisher's BQ driver picks
+      # up auth automatically when these connections are queried.
+      #
+      # We deliberately don't swap in the full
+      # publisher.config.example.bigquery.json fixture — that adds a
+      # fourth sample package (bigquery-hackernews) whose extra clone +
+      # compile pushes cold-init past the 5-min global-setup timeout in
+      # CI. The connection-row tests only need the connection metadata
+      # to be present; they don't query BigQuery (the SA above unblocks
+      # actual BQ queries in any future spec that wants them).
       - name: Inject BigQuery connection (CI fixture for connection-row tests)
         run: |
           jq '.environments[0].connections = [{"name":"bigquery","type":"bigquery","bigqueryConnection":{}}]' \
