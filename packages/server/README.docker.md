@@ -19,6 +19,21 @@ Once `/api/v0/status` reports `operationalState: "serving"`, the REST API is at 
 
 If you don't have a config of your own yet, copy [`packages/server/publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials required) and mount that. There's also a [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) sibling for the BigQuery samples.
 
+## Pre-built image
+
+If you don't want to build the image yourself, the official pre-built image is published to Docker Hub under the **`ms2data/`** namespace (not `malloydata/`):
+
+```bash
+docker pull ms2data/malloy-publisher
+docker run -d \
+  --name malloy-publisher \
+  -p 4000:4000 -p 4040:4040 \
+  -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
+  ms2data/malloy-publisher
+```
+
+See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`) lives in the root README's [Docker section](../../README.md#docker).
+
 ## Runtime layout
 
 | Path inside container | What's there |

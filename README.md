@@ -58,7 +58,9 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 
 ## Docker
 
-Build the image and run it with your own `publisher.config.json` mounted in:
+Two ways to run the Publisher in Docker: build the image from source, or pull the pre-built image from Docker Hub. Either way, the container's `WORKDIR` is `/publisher` (mount your `publisher.config.json` there), REST is on `:4000`, and MCP is on `:4040`.
+
+### Build from source
 
 ```bash
 docker build -t malloy-publisher .
@@ -68,7 +70,27 @@ docker run -d \
   malloy-publisher
 ```
 
-The container's `WORKDIR` is `/publisher`, so your config belongs at `/publisher/publisher.config.json`. REST is on `:4000`, MCP on `:4040`. If you don't have a config yet, copy [`packages/server/publisher.config.example.duckdb.json`](packages/server/publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials needed) as a starting point.
+If you don't have a config yet, copy [`packages/server/publisher.config.example.duckdb.json`](packages/server/publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials needed) as a starting point.
+
+### Pre-built image
+
+The official pre-built image is published to Docker Hub at [`ms2data/malloy-publisher`](https://hub.docker.com/r/ms2data/malloy-publisher).
+
+```bash
+docker pull ms2data/malloy-publisher
+docker run -d \
+  -p 4000:4000 -p 4040:4040 \
+  -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
+  ms2data/malloy-publisher
+```
+
+**Tags:**
+
+- `:latest` — most recent stable release.
+- `:X.Y.Z` — pinned to a specific release; recommended for production.
+- `:next` — pre-release builds; not recommended for production.
+
+`*-dev` tags (e.g. `:0.0.198-dev`) are deprecated in favor of `:next`; pin to a specific `:X.Y.Z` for stable deployments.
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
 
