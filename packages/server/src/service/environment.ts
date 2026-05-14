@@ -389,6 +389,16 @@ export class Environment {
       }
    }
 
+   /** One mutex per package name; never replace after create (avoids parallel loads). */
+   private getOrCreatePackageMutex(packageName: string): Mutex {
+      let packageMutex = this.packageMutexes.get(packageName);
+      if (packageMutex === undefined) {
+         packageMutex = new Mutex();
+         this.packageMutexes.set(packageName, packageMutex);
+      }
+      return packageMutex;
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,
@@ -399,25 +409,23 @@ export class Environment {
          return _package;
       }
 
-      // We need to acquire the mutex to prevent a thundering herd of requests from creating the
-      // package multiple times.
-      let packageMutex = this.packageMutexes.get(packageName);
-      if (packageMutex?.isLocked()) {
+      // Serialize load per package name so concurrent callers share one Mutex and
+      // failed loads cannot rm the tree while another load is still scanning it.
+      const packageMutex = this.getOrCreatePackageMutex(packageName);
+
+      if (packageMutex.isLocked()) {
          logger.debug(
             `Package ${packageName} is being loaded, waiting for unlock...`,
          );
          await packageMutex.waitForUnlock();
          logger.debug(`Package ${packageName} unlocked`);
          const existingPackage = this.packages.get(packageName);
-         if (existingPackage) {
+         if (existingPackage !== undefined && !reload) {
             logger.debug(`Package ${packageName} loaded by another request`);
             return existingPackage;
          }
-         // If package still doesn't exist after unlock, it might have failed to load
-         // Continue to try loading it ourselves
+         // Reload, or prior load failed — continue under the same mutex.
       }
-      packageMutex = new Mutex();
-      this.packageMutexes.set(packageName, packageMutex);
 
       return packageMutex.runExclusive(async () => {
          // Double-check after acquiring mutex
@@ -479,24 +487,44 @@ export class Environment {
             malloyConfig: this.malloyConfig.malloyConfig,
          },
       );
-      this.setPackageStatus(packageName, PackageStatus.LOADING);
-      try {
-         this.packages.set(
-            packageName,
-            await Package.create(
-               this.environmentName,
-               packageName,
-               packagePath,
-               () => this.malloyConfig.malloyConfig,
-            ),
+
+      const packageMutex = this.getOrCreatePackageMutex(packageName);
+      if (packageMutex.isLocked()) {
+         logger.debug(
+            `Package ${packageName} is being loaded, waiting before addPackage...`,
          );
-      } catch (error) {
-         logger.error("Error adding package", { error });
-         this.deletePackageStatus(packageName);
-         throw error;
+         await packageMutex.waitForUnlock();
+         const alreadyLoaded = this.packages.get(packageName);
+         if (alreadyLoaded !== undefined) {
+            return alreadyLoaded;
+         }
       }
-      this.setPackageStatus(packageName, PackageStatus.SERVING);
-      return this.packages.get(packageName);
+
+      return packageMutex.runExclusive(async () => {
+         const existingPackage = this.packages.get(packageName);
+         if (existingPackage !== undefined) {
+            return existingPackage;
+         }
+
+         this.setPackageStatus(packageName, PackageStatus.LOADING);
+         try {
+            this.packages.set(
+               packageName,
+               await Package.create(
+                  this.environmentName,
+                  packageName,
+                  packagePath,
+                  () => this.malloyConfig.malloyConfig,
+               ),
+            );
+         } catch (error) {
+            logger.error("Error adding package", { error });
+            this.deletePackageStatus(packageName);
+            throw error;
+         }
+         this.setPackageStatus(packageName, PackageStatus.SERVING);
+         return this.packages.get(packageName);
+      });
    }
 
    private async writePackageManifest(

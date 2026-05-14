@@ -24,6 +24,7 @@ import {
 import { PackageNotFoundError } from "../errors";
 import { formatDuration, logger } from "../logger";
 import { BuildManifest } from "../storage/DatabaseInterface";
+import { ignoreDotfiles } from "../utils";
 import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -42,6 +43,7 @@ type PackageConnectionInput =
    | (() => MalloyConfig);
 
 const ENABLE_LIST_MODEL_COMPILATION = true;
+
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -380,7 +382,7 @@ export class Package {
    private static async getModelPaths(packagePath: string): Promise<string[]> {
       let files = undefined;
       try {
-         files = await recursive(packagePath);
+         files = await recursive(packagePath, [ignoreDotfiles]);
       } catch (error) {
          logger.error(error);
          throw new PackageNotFoundError(
@@ -449,8 +451,7 @@ export class Package {
    private static async getDatabasePaths(
       packagePath: string,
    ): Promise<string[]> {
-      let files = undefined;
-      files = await recursive(packagePath);
+      const files = await recursive(packagePath, [ignoreDotfiles]);
       return files
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");

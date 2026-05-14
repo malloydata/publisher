@@ -28,9 +28,7 @@ export const logger = winston.createLogger({
       ? winston.format.combine(
            winston.format.uncolorize(),
            winston.format.timestamp(),
-           winston.format.metadata({
-              fillExcept: ["message", "level", "timestamp"],
-           }),
+           winston.format.errors({ stack: true }),
            winston.format.json(),
         )
       : winston.format.combine(

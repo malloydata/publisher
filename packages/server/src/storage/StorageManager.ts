@@ -1,3 +1,4 @@
+import { Mutex } from "async-mutex";
 import * as crypto from "crypto";
 import { ConnectionAuthError } from "../errors";
 import { logger } from "../logger";
@@ -85,6 +86,13 @@ export class StorageManager {
     */
    private attachedCatalogs = new Map<string, string>();
 
+   // Serializes DuckLake catalog attaches. Concurrent POST /environments calls
+   // hitting the same DuckDB connection would otherwise race on extension
+   // autoload (httpfs/azure/etc.), where multiple connections download the
+   // extension to `.tmp-<uuid>` files in parallel; only one wins the rename
+   // and the rest crash with "Could not remove file ... No such file or directory".
+   private duckLakeAttachMutex: Mutex = new Mutex();
+
    private config: StorageConfig;
 
    constructor(config: StorageConfig) {
@@ -148,14 +156,18 @@ export class StorageManager {
       }
 
       const key = configKey(config);
-      let catalogName = this.attachedCatalogs.get(key);
-      if (!catalogName) {
-         // Catalog name derived from the config so multiple configs can coexist as
-         // separate ATTACHments without colliding on the name.
-         catalogName = catalogNameForConfig(config);
-         await this.attachDuckLakeCatalog(config, catalogName);
-         this.attachedCatalogs.set(key, catalogName);
-      }
+      const catalogName = await this.duckLakeAttachMutex.runExclusive(
+         async () => {
+            const existing = this.attachedCatalogs.get(key);
+            if (existing) return existing;
+            // Catalog name derived from the config so multiple configs can coexist as
+            // separate ATTACHments without colliding on the name.
+            const name = catalogNameForConfig(config);
+            await this.attachDuckLakeCatalog(config, name);
+            this.attachedCatalogs.set(key, name);
+            return name;
+         },
+      );
 
       const store = new DuckLakeManifestStore(
          this.duckDbConnection,
@@ -199,6 +211,17 @@ export class StorageManager {
          config.dataPath.startsWith("gs://") ||
          config.dataPath.startsWith("s3://");
 
+      // Pre-install httpfs explicitly so the ATTACH below doesn't trigger
+      // DuckDB's autoloader. The autoloader downloads extensions to
+      // `<ext>.tmp-<uuid>` and races when multiple connections within the
+      // same process hit it concurrently — losers fail with
+      // "Could not remove file ... No such file or directory" on cleanup
+      // of their .tmp file. INSTALL/LOAD here is idempotent and serialized
+      // by the caller's mutex.
+      if (isCloudStorage) {
+         await connection.run("INSTALL httpfs; LOAD httpfs;");
+      }
+
       let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${catalogName}`;
       const attachOpts: string[] = [
          `DATA_PATH '${escapedDataPath}'`,
@@ -208,6 +231,7 @@ export class StorageManager {
          // sidestepping object-storage auth issues entirely for this path.
          "DATA_INLINING_ROW_LIMIT 100000",
       ];
+
       if (isCloudStorage) {
          attachOpts.push("OVERRIDE_DATA_PATH true");
       }
