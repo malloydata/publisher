@@ -1,10 +1,10 @@
+import type { GivenValue } from "@malloydata/malloy";
 import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
-import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 

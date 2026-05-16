@@ -1,7 +1,7 @@
+import type { GivenValue } from "@malloydata/malloy";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";

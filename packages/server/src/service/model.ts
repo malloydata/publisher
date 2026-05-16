@@ -1011,7 +1011,7 @@ export class Model {
                      const queryName = query.as || query.name;
                      const anonymousQuery =
                         currentModelInfo.anonymous_queries[
-                           currentModelInfo.anonymous_queries.length - 1
+                        currentModelInfo.anonymous_queries.length - 1
                         ];
 
                      if (anonymousQuery) {
