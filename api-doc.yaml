@@ -3466,6 +3466,13 @@ components:
           description: If true, returns the generated SQL alongside compilation results
             (only available when compilation succeeds and the source contains a
             runnable query).
+        givens:
+          type: object
+          description: Per-query given values that override model defaults. Keys are
+            given names declared in the model's `given:` block. Values must match
+            the declared type (string, number, boolean, date, etc.). See Malloy
+            givens documentation for accepted value shapes.
+          additionalProperties: true
       required:
         - source
 

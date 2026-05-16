@@ -1179,9 +1179,7 @@ app.post(
                   | Record<string, string | string[]>
                   | undefined,
                req.body.bypassFilters === true ? true : undefined,
-               req.body.givens as
-                  | Record<string, GivenValue>
-                  | undefined,
+               req.body.givens as Record<string, GivenValue> | undefined,
             ),
          );
       } catch (error) {
@@ -1225,6 +1223,7 @@ app.post(
             req.params.modelName,
             req.body.source,
             req.body.includeSql === true,
+            req.body.givens as Record<string, GivenValue> | undefined,
          );
          res.status(200).json(result);
       } catch (error) {
