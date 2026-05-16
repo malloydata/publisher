@@ -1210,6 +1210,7 @@ app.post(
             req.params.modelName,
             req.body.source,
             req.body.includeSql === true,
+            req.body.givens as Record<string, GivenValue> | undefined,
          );
          res.status(200).json(result);
       } catch (error) {

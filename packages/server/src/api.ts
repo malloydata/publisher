@@ -1060,6 +1060,10 @@ export interface components {
           * @default false
           */
          includeSql?: boolean;
+         /** @description Per-query given values that override model defaults. Keys are given names declared in the model's `given:` block. Values must match the declared type (string, number, boolean, date, etc.). See Malloy givens documentation for accepted value shapes. */
+         givens?: {
+            [key: string]: unknown;
+         };
       };
       /** @description Result of a Malloy source compilation check */
       CompileResult: {

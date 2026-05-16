@@ -1,4 +1,4 @@
-import type { LogMessage } from "@malloydata/malloy";
+import type { GivenValue, LogMessage } from "@malloydata/malloy";
 import { EnvironmentStore } from "../service/environment_store";
 
 export class CompileController {
@@ -14,6 +14,7 @@ export class CompileController {
       modelName: string,
       source: string,
       includeSql: boolean = false,
+      givens?: Record<string, GivenValue>,
    ): Promise<{ status: string; problems: LogMessage[]; sql?: string }> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -24,6 +25,7 @@ export class CompileController {
          modelName,
          source,
          includeSql,
+         givens,
       );
 
       // Determine overall status based on presence of errors

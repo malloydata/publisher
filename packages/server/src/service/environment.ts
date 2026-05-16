@@ -1,4 +1,4 @@
-import type { LogMessage } from "@malloydata/malloy";
+import type { GivenValue, LogMessage } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { Mutex } from "async-mutex";
 import * as fs from "fs";
@@ -194,6 +194,7 @@ export class Environment {
       modelName: string,
       source: string,
       includeSql: boolean = false,
+      givens?: Record<string, GivenValue>,
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
       // Place the virtual file in the model's directory so relative imports resolve correctly.
       const modelDir = path.dirname(
@@ -245,7 +246,7 @@ export class Environment {
          if (includeSql) {
             try {
                const queryMaterializer = modelMaterializer.loadFinalQuery();
-               sql = await queryMaterializer.getSQL();
+               sql = await queryMaterializer.getSQL({ givens });
             } catch {
                // Source may not contain a runnable query (e.g. only source definitions),
                // in which case we simply omit the sql field.
