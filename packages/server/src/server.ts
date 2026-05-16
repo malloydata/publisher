@@ -1,4 +1,5 @@
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
+import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -1165,6 +1166,9 @@ app.post(
                   | Record<string, string | string[]>
                   | undefined,
                req.body.bypassFilters === true ? true : undefined,
+               req.body.givens as
+                  | Record<string, GivenValue>
+                  | undefined,
             ),
          );
       } catch (error) {

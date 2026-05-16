@@ -2806,6 +2806,13 @@ components:
           type: boolean
           default: false
           description: When true, skip server-side \#(filter) injection entirely.
+        givens:
+          type: object
+          description: Per-query given values that override model defaults. Keys are
+            given names declared in the model's `given:` block. Values must match
+            the declared type (string, number, boolean, date, etc.). See Malloy
+            givens documentation for accepted value shapes.
+          additionalProperties: true
 
     NotebookCell:
       type: object
