@@ -20,8 +20,6 @@ What that PR does:
 - Adds `givens` to the `malloy_executeQuery` Zod schema in [packages/server/src/mcp/tools/execute_query_tool.ts](../packages/server/src/mcp/tools/execute_query_tool.ts) and passes it at both `getQueryResults()` call sites.
 - Regenerates [packages/server/src/api.ts](../packages/server/src/api.ts).
 
-Crucially, this confirms `@malloydata/malloy@^0.0.394` already supports `givens` on `.run()` and `.getSQL()` natively — no spike or version bump is needed.
-
 What PR #744 explicitly does **not** do (per its own scope statement, which is our hand-off list):
 
 - No notebook-cell givens (the endpoint is GET-based; deferred).
@@ -30,8 +28,6 @@ What PR #744 explicitly does **not** do (per its own scope statement, which is o
 - No `finalizeGivens` security enforcement.
 - No `Runtime`-constructor givens.
 - No deprecation work on `#(filter)` / `filterParams`.
-
-That defines this starter project.
 
 ## Ground truth in this repo
 
@@ -70,7 +66,7 @@ flowchart LR
 
 The two paths run independently and compose. Models that adopt `given:` get the native path; models still using `#(filter)` keep the WHERE-injection path; models that use both get both.
 
-## Recommended PR breakdown (one engineer, ~1.5–2 weeks of work after #744 merges)
+## Recommended PR breakdown
 
 Each item below is a self-contained PR that ships independently. Land in order; flip the deprecation copy in the docs PR.
 
@@ -134,7 +130,7 @@ PR #744 explicitly defers this because the notebook-cell endpoint is GET. Symmet
 - Smoke-test the customer's existing `#(filter)`+`filterParams` integration shape continues to pass — extend [packages/server/src/service/filter_integration.spec.ts](../packages/server/src/service/filter_integration.spec.ts) with a regression case that hits the legacy code paths after the new code paths exist.
 - Bonus: a fixture model that uses **both** `given:` and `#(filter)` to confirm they compose.
 
-## Future (out of scope for this starter project)
+## Future (out of scope for this project)
 
 - Per-runtime defaults: `givensPath` in [packages/server/publisher.config.json](../packages/server/publisher.config.json) and `Runtime`-constructor givens. Most useful for multi-tenant deployments.
 - `finalizeGivens` security primitive — only meaningful once per-runtime givens exist, and most useful for RLAC.
