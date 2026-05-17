@@ -1,4 +1,4 @@
-# Givens Migration — Starter Project Plan
+# Givens Migration — Project Plan
 
 Adopt Malloy native [`given:`](https://docs.malloydata.dev/documentation/experiments/givens) (givens) as the going-forward way for callers to supply runtime parameters, while keeping the existing `#(filter)` + `filterParams` path working unchanged so the current customer integration doesn't break. Builds on top of upstream PR #744, which already lands the basic per-query plumbing.
 
