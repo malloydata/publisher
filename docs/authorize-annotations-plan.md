@@ -1,14 +1,14 @@
 # Authorize Annotations — Project Plan
 
-Implement Publisher-side `# authorize` source-level and `## authorize` file-level annotations whose boolean expressions are written in Malloy expression syntax, reference declared givens (`$NAME`), and gate access to a source at query time. Evaluated by Publisher (not core Malloy) using a synthetic Malloy probe query so we don't have to ship our own expression parser.
+Implement Publisher-side `#(authorize)` source-level and `##(authorize)` file-level annotations whose boolean expressions are written in Malloy expression syntax, reference declared givens (`$NAME`), and gate access to a source at query time. Evaluated by Publisher (not core Malloy) using a synthetic Malloy probe query so we don't have to ship our own expression parser.
 
 ## Goal
 
-Add `# authorize "<malloy-bool-expr>"` (source-level) and `## authorize "<malloy-bool-expr>"` (file/model-level) annotations to Publisher. Before running any query that touches an authorize-annotated source, Publisher evaluates each in-scope expression against the request's supplied `givens`. If at least one expression returns `true`, the request proceeds. If none do, the request is rejected with `403 Access Denied`.
+Add `#(authorize) "<malloy-bool-expr>"` (source-level) and `##(authorize) "<malloy-bool-expr>"` (file/model-level) annotations to Publisher. Before running any query that touches an authorize-annotated source, Publisher evaluates each in-scope expression against the request's supplied `givens`. If at least one expression returns `true`, the request proceeds. If none do, the request is rejected with `403 Access Denied`.
 
-A source may carry multiple `# authorize` annotations; if **any** evaluates to `true`, access is granted (`or` semantics). File-level `## authorize` annotations are folded into the same disjunction — any in-scope annotation returning `true` is sufficient. A source with no annotations in scope is unrestricted.
+A source may carry multiple `#(authorize)` annotations; if **any** evaluates to `true`, access is granted (`or` semantics). File-level `##(authorize)` annotations are folded into the same disjunction — any in-scope annotation returning `true` is sufficient. A source with no annotations in scope is unrestricted.
 
-Authorize is checked **only on the source the query directly references**. Annotations on base sources that an extension extends are not inherited. The recommended pattern is to lock down sensitive base sources with `# authorize "false"` and re-expose curated subsets through extension sources gated by their own `# authorize` annotations and Malloy [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) — see the example below.
+Authorize is checked **only on the source the query directly references**. Annotations on base sources that an extension extends are not inherited. The recommended pattern is to lock down sensitive base sources with `#(authorize) "false"` and re-expose curated subsets through extension sources gated by their own `#(authorize)` annotations and Malloy [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) — see the example below.
 
 ## Prerequisite
 
@@ -27,10 +27,10 @@ Authorize expressions are Malloy expressions that:
 
 The expected idiom for a source carrying sensitive columns is:
 
-1. Define the sensitive table as a base source with `# authorize "false"` so it is never directly queryable.
-2. Define one or more extension sources via `<base> include { ... } extend { ... }`, using Malloy's [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) to choose which base columns the extension re-exposes, and attach a real `# authorize` gate to each extension.
+1. Define the sensitive table as a base source with `#(authorize) "false"` so it is never directly queryable.
+2. Define one or more extension sources via `<base> include { ... } extend { ... }`, using Malloy's [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) to choose which base columns the extension re-exposes, and attach a real `#(authorize)` gate to each extension.
 
-Consumers query the extension sources, never the base. The base's `# authorize "false"` annotation is a defense-in-depth backstop: if anyone tries `run: <base> -> ...` directly, they get a 403 before any field access is even considered.
+Consumers query the extension sources, never the base. The base's `#(authorize) "false"` annotation is a defense-in-depth backstop: if anyone tries `run: <base> -> ...` directly, they get a 403 before any field access is even considered.
 
 ```malloy
 ##! experimental.givens
@@ -42,12 +42,12 @@ given:
 
 // Base source: locked. Direct queries are denied because the only
 // in-scope authorize expression is the constant `false`.
-# authorize "false"
+#(authorize) "false"
 source: customers_raw is duckdb.table("customers.parquet")
 
 // Extension: re-exposes a curated subset of fields and adds an
 // analyst-role gate. `private: *` hides every other column on the base.
-# authorize "$ROLE = 'analyst'"
+#(authorize) "$ROLE = 'analyst'"
 source: customers_marketing is customers_raw include {
   public: name, region, signup_date
   private: *
@@ -56,7 +56,7 @@ source: customers_marketing is customers_raw include {
 }
 
 // A second extension with a different gate and a different field surface.
-# authorize "$REGION = 'us-west'"
+#(authorize) "$REGION = 'us-west'"
 source: customers_us_west is customers_raw include {
   public: name, region, signup_date, lifetime_value
   private: *
@@ -80,13 +80,13 @@ given:
   TENANT :: string
   ALLOWED_TENANTS :: string[]
 
-## authorize "$ROLE = 'admin'"
+##(authorize) "$ROLE = 'admin'"
 
-# authorize "$REGION = 'us-west'"
+#(authorize) "$REGION = 'us-west'"
 source: regional_view is duckdb.table("regional.parquet")
 
-# authorize "$TENANT in $ALLOWED_TENANTS"
-# authorize "$ROLE = 'tenant_manager'"
+#(authorize) "$TENANT in $ALLOWED_TENANTS"
+#(authorize) "$ROLE = 'tenant_manager'"
 source: tenant_view is duckdb.table("tenants.parquet")
 ```
 
@@ -153,13 +153,13 @@ The DuckDB round-trip disappears entirely once Malloy exposes an in-process expr
 
 ### Translation-time validation
 
-Run the same probe pattern at `Model.create` time (with empty `givens`) to catch malformed annotations during model load, not first-request. Pre-flight failures attach to the `compilationError` that `Model.create` already surfaces today (~[packages/server/src/service/model.ts](../packages/server/src/service/model.ts) line 269). Goal: a typo in `# authorize` shows up at model-load time, not as a 500 the first time someone runs a query.
+Run the same probe pattern at `Model.create` time (with empty `givens`) to catch malformed annotations during model load, not first-request. Pre-flight failures attach to the `compilationError` that `Model.create` already surfaces today (~[packages/server/src/service/model.ts](../packages/server/src/service/model.ts) line 269). Goal: a typo in `#(authorize)` shows up at model-load time, not as a 500 the first time someone runs a query.
 
 ## Scope: top-level source only
 
-Authorize is checked **only on the source the query directly references**. We do not walk extension chains, joins, or any other transitive references. A query like `run: customers_marketing -> ...` evaluates `customers_marketing`'s in-scope annotations (its own `# authorize` plus any file-level `## authorize` in the same file). It does **not** evaluate `customers_raw`'s annotations, even though `customers_marketing` extends `customers_raw`.
+Authorize is checked **only on the source the query directly references**. We do not walk extension chains, joins, or any other transitive references. A query like `run: customers_marketing -> ...` evaluates `customers_marketing`'s in-scope annotations (its own `#(authorize)` plus any file-level `##(authorize)` in the same file). It does **not** evaluate `customers_raw`'s annotations, even though `customers_marketing` extends `customers_raw`.
 
-This is intentional. The recommended-pattern example above shows how the access-modifier layer (`include { public: ..., private: * }`) is what controls which base-source fields an extension can re-expose, and the extension's own `# authorize` is what gates consumer access to that curated surface. Walking the extension chain would conflate two separate concerns and — under our `or` semantics — would tend to widen rather than narrow access in surprising ways.
+This is intentional. The recommended-pattern example above shows how the access-modifier layer (`include { public: ..., private: * }`) is what controls which base-source fields an extension can re-expose, and the extension's own `#(authorize)` is what gates consumer access to that curated surface. Walking the extension chain would conflate two separate concerns and — under our `or` semantics — would tend to widen rather than narrow access in surprising ways.
 
 Source-name extraction from ad-hoc query strings reuses the existing `extractSourceName(query)` helper in [packages/server/src/service/model.ts](../packages/server/src/service/model.ts) line ~154.
 
@@ -185,12 +185,12 @@ Open a Malloy GitHub issue (and follow it with a PR or a design doc as the maint
 ### PR 1 — Annotation parser + introspection
 
 - New `packages/server/src/service/authorize.ts`:
-  - `parseAuthorizeAnnotation(text)` — accepts both source-level `# authorize "<expr>"` and file/model-level `## authorize "<expr>"`. Body is a single quoted Malloy expression; the parser strips the wrapper quotes and returns the expression string. Multiple gates on the same source are expressed as multiple annotations (each parsed independently and concatenated).
+  - `parseAuthorizeAnnotation(text)` — accepts both source-level `#(authorize) "<expr>"` and file/model-level `##(authorize) "<expr>"`. Body is a single quoted Malloy expression; the parser strips the wrapper quotes and returns the expression string. Multiple gates on the same source are expressed as multiple annotations (each parsed independently and concatenated).
   - `AuthorizeMap = Map<sourceName, string[]>` — source → effective expression list (file-level annotations followed by source-level annotations declared directly on that source). All entries are evaluated as a single disjunction at request time.
   - Tests in `authorize.spec.ts` mirroring [packages/server/src/service/filter.spec.ts](../packages/server/src/service/filter.spec.ts). Cover: bare quoted expression, multiple annotations stacking, malformed annotations (no quotes, mismatched quotes, no expression), file-level annotation collection.
 - Wire into [packages/server/src/service/model.ts](../packages/server/src/service/model.ts):
   - In `Model.create`, after compilation, collect file-level annotations from `modelDef.annotation.notes` (the `##` annotations at the top of the file).
-  - In `getSources()` (~line 758), collect each source's `# authorize` annotations directly off the source's `annotation.blockNotes` (the existing `annotation.inherits` walk that the filter parser uses is intentionally **not** used here — authorize annotations on extended base sources do not flow through). Cache as `authorizeMap` next to `filterMap`.
+  - In `getSources()` (~line 758), collect each source's `#(authorize)` annotations directly off the source's `annotation.blockNotes` (the existing `annotation.inherits` walk that the filter parser uses is intentionally **not** used here — authorize annotations on extended base sources do not flow through). Cache as `authorizeMap` next to `filterMap`.
   - Surface the per-source effective expressions on the `Source` API shape so SDK / UI can show "this source is gated by …" if we want to later. Add an `Authorize` schema in [api-doc.yaml](../api-doc.yaml) similar to `Filter`. (Display only — server still enforces.)
 - Tests: extend [packages/server/src/service/model.spec.ts](../packages/server/src/service/model.spec.ts) with a fixture model exercising file-level + source-level annotations, plus a fixture that verifies a base source's authorize annotation does **not** propagate to its extensions.
 
@@ -209,7 +209,7 @@ Open a Malloy GitHub issue (and follow it with a PR or a design doc as the maint
   - `getQueryResults` (line ~339): immediately after `extractSourceName` / `sourceName` resolution and before `loadQuery`, call `authorize(this, effectiveSource, givens ?? {})`.
   - `executeNotebookCell` (line ~567): same — extract source from cell text, call `authorize`.
   - `compileSource` in [packages/server/src/service/environment.ts](../packages/server/src/service/environment.ts): same gate; `getSQL` should fail with 403 if authorize denies.
-- Tests: extend [packages/server/src/service/filter_integration.spec.ts](../packages/server/src/service/filter_integration.spec.ts) with cases for: gate allows when at least one expression matches, gate denies when no expression matches, gate denies when all referenced givens are missing, multiple-expression disjunction (any one true is sufficient), file-level + source-level disjunction (file-level annotation alone is sufficient), source with no annotations is unrestricted, base source with `# authorize "false"` is unqueryable directly, extension of a locked base source is queryable when its own gate is satisfied.
+- Tests: extend [packages/server/src/service/filter_integration.spec.ts](../packages/server/src/service/filter_integration.spec.ts) with cases for: gate allows when at least one expression matches, gate denies when no expression matches, gate denies when all referenced givens are missing, multiple-expression disjunction (any one true is sufficient), file-level + source-level disjunction (file-level annotation alone is sufficient), source with no annotations is unrestricted, base source with `#(authorize) "false"` is unqueryable directly, extension of a locked base source is queryable when its own gate is satisfied.
 
 ### PR 4 — MCP + HTTP surface alignment
 
@@ -227,7 +227,7 @@ Open a Malloy GitHub issue (and follow it with a PR or a design doc as the maint
 
 - Add a sample model in [examples/](../examples/) that exercises both file-level and source-level authorize against givens — useful as a customer-migration demo.
 - Playwright test in [e2e/tests/](../e2e/tests/) covering: a notebook that triggers a 403 when the user lacks the required given value; the same notebook succeeding with the correct given.
-- Bonus: a fixture combining `#(filter)` (legacy) + `given:` + `# authorize` to confirm the three layers compose as expected and don't interfere.
+- Bonus: a fixture combining `#(filter)` (legacy) + `given:` + `#(authorize)` to confirm the three layers compose as expected and don't interfere.
 
 ## Future (out of scope)
 
@@ -238,10 +238,10 @@ Open a Malloy GitHub issue (and follow it with a PR or a design doc as the maint
 
 ## Definition of done
 
-- A model with `# authorize` and/or `## authorize` annotations refuses to compile when an annotation is malformed at the syntactic level (missing quotes, no expression body) or at the semantic level (unknown given, type mismatch, references a source field).
+- A model with `#(authorize)` and/or `##(authorize)` annotations refuses to compile when an annotation is malformed at the syntactic level (missing quotes, no expression body) or at the semantic level (unknown given, type mismatch, references a source field).
 - A request that touches an authorize-annotated source whose `givens` satisfy at least one in-scope expression executes normally.
 - A request whose `givens` satisfy no in-scope expression — including the case where referenced givens are missing — gets a 403 naming the source.
 - File-level and source-level annotations on the queried source are evaluated as a single disjunction; access is granted if any returns `true`.
-- A source's authorize annotations are **not** inherited by sources that extend it. A base source locked with `# authorize "false"` is unqueryable directly, but extensions of it are governed solely by their own annotations and any file-level annotations in the file where they are declared.
+- A source's authorize annotations are **not** inherited by sources that extend it. A base source locked with `#(authorize) "false"` is unqueryable directly, but extensions of it are governed solely by their own annotations and any file-level annotations in the file where they are declared.
 - Authorize behaves correctly across all four execution entry points: `POST /…/query`, `POST /…/compile`, the notebook-cell GET, and the MCP `malloy_executeQuery` tool.
 - Docs cover annotation syntax, the supported operator subset, the recommended locked-base + curated-extension pattern, and the 403 error contract.
