@@ -37,15 +37,31 @@ export class PackageController {
          environmentName,
          false,
       );
-      const _package = await environment.getPackage(packageName, reload);
-      const packageLocation = _package.getPackageMetadata().location;
-      if (reload && packageLocation) {
-         await this.downloadPackage(
-            environmentName,
-            packageName,
-            packageLocation,
-         );
+      // On reload, re-download fresh bits *before* Package.create reads from
+      // disk, and run the download inside the per-package mutex so concurrent
+      // reloads can't race on the same target path. Look up the location from
+      // the currently-loaded package (without triggering a load): if the
+      // package isn't loaded yet, the normal non-reload path will populate it.
+      let downloadFn: (() => Promise<void>) | undefined;
+      if (reload) {
+         const cached = await environment
+            .getPackage(packageName, false)
+            .catch(() => undefined);
+         const packageLocation = cached?.getPackageMetadata().location;
+         if (packageLocation) {
+            downloadFn = () =>
+               this.downloadPackage(
+                  environmentName,
+                  packageName,
+                  packageLocation,
+               );
+         }
       }
+      const _package = await environment.getPackage(
+         packageName,
+         reload,
+         downloadFn,
+      );
       return _package.getPackageMetadata();
    }
 
@@ -64,17 +80,19 @@ export class PackageController {
          environmentName,
          false,
       );
-      if (body.location) {
-         await this.downloadPackage(environmentName, body.name, body.location);
-      }
-      const result = await environment.addPackage(body.name);
+      const packageName = body.name;
+      const location = body.location;
+      const downloadFn = location
+         ? () => this.downloadPackage(environmentName, packageName, location)
+         : undefined;
+      const result = await environment.addPackage(packageName, downloadFn);
       await this.environmentStore.addPackageToDatabase(
          environmentName,
-         body.name,
+         packageName,
       );
 
       if (options?.autoLoadManifest === true) {
-         await this.tryLoadExistingManifest(environmentName, body.name);
+         await this.tryLoadExistingManifest(environmentName, packageName);
       }
 
       return result;
@@ -150,14 +168,15 @@ export class PackageController {
          environmentName,
          false,
       );
-      if (body.location) {
-         await this.downloadPackage(
-            environmentName,
-            packageName,
-            body.location,
-         );
-      }
-      const result = await environment.updatePackage(packageName, body);
+      const location = body.location;
+      const downloadFn = location
+         ? () => this.downloadPackage(environmentName, packageName, location)
+         : undefined;
+      const result = await environment.updatePackage(
+         packageName,
+         body,
+         downloadFn,
+      );
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
