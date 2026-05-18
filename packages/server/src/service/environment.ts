@@ -402,7 +402,6 @@ export class Environment {
    public async getPackage(
       packageName: string,
       reload: boolean = false,
-      downloadFn?: () => Promise<void>,
    ): Promise<Package> {
       // Check if package is already loaded first
       const _package = this.packages.get(packageName);
@@ -412,8 +411,6 @@ export class Environment {
 
       // Serialize load per package name so concurrent callers share one Mutex and
       // failed loads cannot rm the tree while another load is still scanning it.
-      // Holding the mutex around downloadFn also prevents concurrent
-      // download/unzip from racing on the same target directory.
       const packageMutex = this.getOrCreatePackageMutex(packageName);
 
       if (packageMutex.isLocked()) {
@@ -433,7 +430,7 @@ export class Environment {
       return packageMutex.runExclusive(async () => {
          // Double-check after acquiring mutex
          const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined && !reload && !downloadFn) {
+         if (existingPackage !== undefined && !reload) {
             return existingPackage;
          }
 
@@ -441,9 +438,6 @@ export class Environment {
          this.setPackageStatus(packageName, PackageStatus.LOADING);
 
          try {
-            if (downloadFn) {
-               await downloadFn();
-            }
             logger.debug(`Loading package ${packageName}...`);
             const packagePath = path.join(this.environmentPath, packageName);
             const _package = await Package.create(
@@ -475,11 +469,24 @@ export class Environment {
       });
    }
 
-   public async addPackage(
-      packageName: string,
-      downloadFn?: () => Promise<void>,
-   ) {
+   public async addPackage(packageName: string) {
       const packagePath = path.join(this.environmentPath, packageName);
+      if (
+         !(await fs.promises
+            .access(packagePath)
+            .then(() => true)
+            .catch(() => false)) ||
+         !(await fs.promises.stat(packagePath))?.isDirectory()
+      ) {
+         throw new PackageNotFoundError(`Package ${packageName} not found`);
+      }
+      logger.info(
+         `Adding package ${packageName} to environment ${this.environmentName}`,
+         {
+            packagePath,
+            malloyConfig: this.malloyConfig.malloyConfig,
+         },
+      );
 
       const packageMutex = this.getOrCreatePackageMutex(packageName);
       if (packageMutex.isLocked()) {
@@ -488,42 +495,19 @@ export class Environment {
          );
          await packageMutex.waitForUnlock();
          const alreadyLoaded = this.packages.get(packageName);
-         if (alreadyLoaded !== undefined && !downloadFn) {
+         if (alreadyLoaded !== undefined) {
             return alreadyLoaded;
          }
       }
 
       return packageMutex.runExclusive(async () => {
          const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined && !downloadFn) {
+         if (existingPackage !== undefined) {
             return existingPackage;
          }
 
          this.setPackageStatus(packageName, PackageStatus.LOADING);
          try {
-            if (downloadFn) {
-               await downloadFn();
-            }
-            // Existence check happens after download so callers that supply a
-            // downloadFn don't need to pre-populate the directory.
-            if (
-               !(await fs.promises
-                  .access(packagePath)
-                  .then(() => true)
-                  .catch(() => false)) ||
-               !(await fs.promises.stat(packagePath))?.isDirectory()
-            ) {
-               throw new PackageNotFoundError(
-                  `Package ${packageName} not found`,
-               );
-            }
-            logger.info(
-               `Adding package ${packageName} to environment ${this.environmentName}`,
-               {
-                  packagePath,
-                  malloyConfig: this.malloyConfig.malloyConfig,
-               },
-            );
             this.packages.set(
                packageName,
                await Package.create(
@@ -581,41 +565,27 @@ export class Environment {
       }
    }
 
-   public async updatePackage(
-      packageName: string,
-      body: ApiPackage,
-      downloadFn?: () => Promise<void>,
-   ) {
-      const packageMutex = this.getOrCreatePackageMutex(packageName);
-      return packageMutex.runExclusive(async () => {
-         // Existence check happens *before* downloadFn so a PATCH that races
-         // ahead of its create can't rewrite disk and then 404. The package
-         // must already exist for PATCH semantics; callers that want
-         // create-or-update should POST.
-         const _package = this.packages.get(packageName);
-         if (!_package) {
-            throw new PackageNotFoundError(`Package ${packageName} not found`);
-         }
-         if (downloadFn) {
-            await downloadFn();
-         }
-         if (body.name) {
-            _package.setName(body.name);
-         }
-         _package.setPackageMetadata({
-            name: body.name,
-            description: body.description,
-            resource: body.resource,
-            location: body.location,
-         });
-
-         await this.writePackageManifest(packageName, {
-            name: packageName,
-            description: body.description,
-         });
-
-         return _package.getPackageMetadata();
+   public async updatePackage(packageName: string, body: ApiPackage) {
+      const _package = this.packages.get(packageName);
+      if (!_package) {
+         throw new PackageNotFoundError(`Package ${packageName} not found`);
+      }
+      if (body.name) {
+         _package.setName(body.name);
+      }
+      _package.setPackageMetadata({
+         name: body.name,
+         description: body.description,
+         resource: body.resource,
+         location: body.location,
       });
+
+      await this.writePackageManifest(packageName, {
+         name: packageName,
+         description: body.description,
+      });
+
+      return _package.getPackageMetadata();
    }
 
    public getPackageStatus(packageName: string): PackageInfo | undefined {
