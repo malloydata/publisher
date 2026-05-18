@@ -592,7 +592,14 @@ export class EnvironmentStore {
       const pkg = packages.find((p) => p.name === packageName);
 
       if (!pkg) {
-         logger.warn(`Package "${packageName}" not found in environment`);
+         const status = environment.getPackageStatus(packageName)?.status;
+         if (status === PackageStatus.LOADING) {
+            logger.debug(
+               `Package "${packageName}" is still loading; skipping DB sync - a subsequent sync will catch up.`,
+            );
+         } else {
+            logger.warn(`Package "${packageName}" not found in environment`);
+         }
          return;
       }
 
