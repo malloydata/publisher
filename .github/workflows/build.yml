@@ -228,6 +228,31 @@ jobs:
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Inspect image metadata
+        run: |
+          # Lock in the Dockerfile claims made for audit findings #7 and #8:
+          # both runtime ports must be EXPOSEd, and the OCI image labels
+          # that surface mount-path docs must be present. A LABEL syntax
+          # typo or a dropped EXPOSE line would otherwise only surface to
+          # users at deploy time.
+          set -e
+          exposed=$(docker inspect malloy-publisher:smoke-test \
+            --format='{{json .Config.ExposedPorts}}')
+          echo "ExposedPorts: $exposed"
+          echo "$exposed" | jq -e '."4000/tcp"' >/dev/null \
+            || { echo "✗ Missing EXPOSE 4000"; exit 1; }
+          echo "$exposed" | jq -e '."4040/tcp"' >/dev/null \
+            || { echo "✗ Missing EXPOSE 4040"; exit 1; }
+          echo "✓ Both runtime ports declared"
+          labels=$(docker inspect malloy-publisher:smoke-test \
+            --format='{{json .Config.Labels}}')
+          echo "Labels: $labels"
+          for key in title description source documentation licenses; do
+            echo "$labels" | jq -e --arg k "org.opencontainers.image.$key" \
+              '.[$k] | strings | length > 0' >/dev/null \
+              || { echo "✗ Missing/empty OCI label: org.opencontainers.image.$key"; exit 1; }
+          done
+          echo "✓ All five OCI image labels present"
       - name: Start container
         run: |
           docker run -d --name malloy-publisher-smoke \

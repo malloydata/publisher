@@ -1,5 +1,13 @@
+import { Mutex } from "async-mutex";
 import * as crypto from "crypto";
+import { ConnectionAuthError } from "../errors";
 import { logger } from "../logger";
+import {
+   handlePgAttachError,
+   pgConnectTimeoutSeconds,
+   redactPgSecrets,
+   withPgConnectTimeout,
+} from "../pg_helpers";
 import {
    DatabaseConnection,
    ManifestStore,
@@ -78,6 +86,13 @@ export class StorageManager {
     */
    private attachedCatalogs = new Map<string, string>();
 
+   // Serializes DuckLake catalog attaches. Concurrent POST /environments calls
+   // hitting the same DuckDB connection would otherwise race on extension
+   // autoload (httpfs/azure/etc.), where multiple connections download the
+   // extension to `.tmp-<uuid>` files in parallel; only one wins the rename
+   // and the rest crash with "Could not remove file ... No such file or directory".
+   private duckLakeAttachMutex: Mutex = new Mutex();
+
    private config: StorageConfig;
 
    constructor(config: StorageConfig) {
@@ -141,14 +156,18 @@ export class StorageManager {
       }
 
       const key = configKey(config);
-      let catalogName = this.attachedCatalogs.get(key);
-      if (!catalogName) {
-         // Catalog name derived from the config so multiple configs can coexist as
-         // separate ATTACHments without colliding on the name.
-         catalogName = catalogNameForConfig(config);
-         await this.attachDuckLakeCatalog(config, catalogName);
-         this.attachedCatalogs.set(key, catalogName);
-      }
+      const catalogName = await this.duckLakeAttachMutex.runExclusive(
+         async () => {
+            const existing = this.attachedCatalogs.get(key);
+            if (existing) return existing;
+            // Catalog name derived from the config so multiple configs can coexist as
+            // separate ATTACHments without colliding on the name.
+            const name = catalogNameForConfig(config);
+            await this.attachDuckLakeCatalog(config, name);
+            this.attachedCatalogs.set(key, name);
+            return name;
+         },
+      );
 
       const store = new DuckLakeManifestStore(
          this.duckDbConnection,
@@ -178,11 +197,30 @@ export class StorageManager {
          await connection.run("INSTALL postgres; LOAD postgres;");
       }
 
-      const escapedCatalogUrl = escapeSQL(config.catalogUrl);
+      // For PG-backed catalogs, inject connect_timeout so a wedged libpq
+      // handshake fails the caller in seconds rather than hanging the
+      // worker until the K8s liveness probe trips (the 2026-05 incident).
+      // Non-PG catalogs (e.g. SQLite, MySQL) pass through unchanged.
+      const catalogUrl = isPostgres
+         ? withPgConnectTimeout(config.catalogUrl, pgConnectTimeoutSeconds())
+         : config.catalogUrl;
+
+      const escapedCatalogUrl = escapeSQL(catalogUrl);
       const escapedDataPath = escapeSQL(config.dataPath);
       const isCloudStorage =
          config.dataPath.startsWith("gs://") ||
          config.dataPath.startsWith("s3://");
+
+      // Pre-install httpfs explicitly so the ATTACH below doesn't trigger
+      // DuckDB's autoloader. The autoloader downloads extensions to
+      // `<ext>.tmp-<uuid>` and races when multiple connections within the
+      // same process hit it concurrently — losers fail with
+      // "Could not remove file ... No such file or directory" on cleanup
+      // of their .tmp file. INSTALL/LOAD here is idempotent and serialized
+      // by the caller's mutex.
+      if (isCloudStorage) {
+         await connection.run("INSTALL httpfs; LOAD httpfs;");
+      }
 
       let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${catalogName}`;
       const attachOpts: string[] = [
@@ -193,13 +231,35 @@ export class StorageManager {
          // sidestepping object-storage auth issues entirely for this path.
          "DATA_INLINING_ROW_LIMIT 100000",
       ];
+
       if (isCloudStorage) {
          attachOpts.push("OVERRIDE_DATA_PATH true");
       }
       attachCmd += ` (${attachOpts.join(", ")});`;
 
-      logger.info(`Attaching DuckLake manifest catalog: ${attachCmd}`);
-      await connection.run(attachCmd);
+      logger.info(
+         `Attaching DuckLake manifest catalog: ${redactPgSecrets(attachCmd)}`,
+      );
+      try {
+         await connection.run(attachCmd);
+      } catch (error) {
+         const outcome = handlePgAttachError(
+            error,
+            `DuckLake catalog credentials rejected for ${catalogName}`,
+         );
+         if (outcome.action === "swallow") {
+            logger.info(
+               `DuckLake catalog ${catalogName} is already attached, skipping`,
+            );
+            return;
+         }
+         if (outcome.error instanceof ConnectionAuthError) {
+            logger.warn("DuckLake catalog credentials rejected", {
+               catalogName,
+            });
+         }
+         throw outcome.error;
+      }
    }
 
    getRepository(): ResourceRepository {

@@ -54,6 +54,54 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 - **`degraded`** — initialization completed, but one or more environments failed to load. The surviving environments are served; the failures are listed under `failedEnvironments` in the status response (`curl -s http://localhost:4000/api/v0/status | jq .failedEnvironments`).
 - **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` (see [Configuration](#configuration)).
 
+---
+
+## Docker
+
+Two ways to run the Publisher in Docker: build the image from source, or pull the pre-built image from Docker Hub. Either way, the container's `WORKDIR` is `/publisher` (mount your `publisher.config.json` there), REST is on `:4000`, and MCP is on `:4040`.
+
+### Build from source
+
+```bash
+docker build -t malloy-publisher .
+docker run -d \
+  -p 4000:4000 -p 4040:4040 \
+  -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
+  malloy-publisher
+```
+
+If you don't have a config yet, copy [`packages/server/publisher.config.example.duckdb.json`](packages/server/publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials needed) as a starting point.
+
+### Pre-built image
+
+The official pre-built image is published to Docker Hub at [`ms2data/malloy-publisher`](https://hub.docker.com/r/ms2data/malloy-publisher).
+
+```bash
+docker pull ms2data/malloy-publisher
+docker run -d \
+  -p 4000:4000 -p 4040:4040 \
+  -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
+  ms2data/malloy-publisher
+```
+
+**Tags:**
+
+- `:latest` — most recent stable release.
+- `:X.Y.Z` — pinned to a specific release; recommended for production.
+- `:next` — pre-release builds; not recommended for production.
+
+`*-dev` tags (e.g. `:0.0.198-dev`) are frozen — no new ones are being published, and `:next` is the current pre-release channel. Existing `*-dev` tags still resolve in the registry; don't use them for new deployments.
+
+### Docker Compose
+
+A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compose.example.yml) — it runs the pre-built image with both ports mapped, a healthcheck against `/api/v0/status`, and a named volume for `publisher_data/` so first-boot package clones survive restarts. To use it:
+
+1. Copy it into your project: `cp docker-compose.example.yml docker-compose.yml`.
+2. Place a `publisher.config.json` next to it (or change the volume mount). No config of your own yet? Copy [`packages/server/publisher.config.example.duckdb.json`](packages/server/publisher.config.example.duckdb.json) — DuckDB-only samples, no credentials needed.
+3. `docker compose up -d`
+
+For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
+
 ## Documentation
 
 Full documentation is available at **[docs.malloydata.dev/documentation/user_guides/publishing](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**:

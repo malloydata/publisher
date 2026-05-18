@@ -1,5 +1,6 @@
 import { URLReader } from "@malloydata/malloy";
 import * as fs from "fs";
+import * as path from "path";
 import { fileURLToPath } from "url";
 
 export const URL_READER: URLReader = {
@@ -11,3 +12,13 @@ export const URL_READER: URLReader = {
       return fs.promises.readFile(path, "utf8");
    },
 };
+
+/**
+ * Skip dotfiles/dotdirs (.vscode, .git, .DS_Store, etc.) when walking a
+ * package tree. These come from editors/VCS, never contain Malloy models
+ * or databases, and have been a source of spurious ENOENTs when their
+ * contents disappear mid-scan.
+ */
+export function ignoreDotfiles(file: string): boolean {
+   return path.basename(file).startsWith(".");
+}

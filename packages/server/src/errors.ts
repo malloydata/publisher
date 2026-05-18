@@ -16,6 +16,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(400, error.message);
    } else if (error instanceof ConnectionNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof ConnectionAuthError) {
+      return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
@@ -78,6 +80,12 @@ export class ConnectionNotFoundError extends Error {
 }
 
 export class ConnectionError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+export class ConnectionAuthError extends Error {
    constructor(message: string) {
       super(message);
    }
