@@ -139,6 +139,24 @@ mock.module("../storage/StorageManager", () => {
 
                deletePackage: async (_id: string): Promise<void> => {},
 
+               swapPackageDirectory: async (args: {
+                  environmentId: string;
+                  name: string;
+                  newDirectoryPath: string;
+                  description?: string;
+                  metadata?: Record<string, unknown>;
+               }): Promise<{
+                  id: string;
+                  oldDirectoryPath: string | null;
+               }> => ({
+                  id: `swap-${args.name}`,
+                  oldDirectoryPath: null,
+               }),
+
+               listPackageDirectoryPaths: async (
+                  _environmentId: string,
+               ): Promise<Set<string>> => new Set<string>(),
+
                // ===== CONNECTION METHODS =====
                listConnections: async (
                   _environmentId: string,

@@ -34,6 +34,24 @@ export interface ResourceRepository {
    ): Promise<Package>;
    updatePackage(id: string, updates: Partial<Package>): Promise<Package>;
    deletePackage(id: string): Promise<void>;
+   /**
+    * Atomically point a package at a new on-disk directory.
+    *
+    * Inserts the package row when it does not exist, otherwise updates the
+    * existing row. Returns the directory path the package was previously
+    * pointed at (`null` for a brand-new row) so the caller can schedule the
+    * obsolete directory for sweeping. This is the ordering point that
+    * replaces filesystem mutexes for package write operations.
+    */
+   swapPackageDirectory(args: {
+      environmentId: string;
+      name: string;
+      newDirectoryPath: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+   }): Promise<{ id: string; oldDirectoryPath: string | null }>;
+   /** Set of every directory path currently referenced by some package row in the env. */
+   listPackageDirectoryPaths(environmentId: string): Promise<Set<string>>;
 
    // Connections
    listConnections(environmentId: string): Promise<Connection[]>;
@@ -105,6 +123,13 @@ export interface Package {
    environmentId: string;
    name: string;
    description?: string;
+   /**
+    * Absolute path to the directory that currently holds the package's
+    * contents on disk. Updated atomically via `swapPackageDirectory` whenever
+    * a write operation produces a new version of the package. Empty string
+    * for legacy rows that predate versioned directories — callers should
+    * fall back to `<environmentPath>/<packageName>` in that case.
+    */
    manifestPath: string;
    createdAt: Date;
    updatedAt: Date;

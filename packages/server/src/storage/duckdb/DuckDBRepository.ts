@@ -113,6 +113,22 @@ export class DuckDBRepository implements ResourceRepository {
       return this.packageRepo.deletePackagesByEnvironmentId(id);
    }
 
+   async swapPackageDirectory(args: {
+      environmentId: string;
+      name: string;
+      newDirectoryPath: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+   }): Promise<{ id: string; oldDirectoryPath: string | null }> {
+      return this.packageRepo.swapPackageDirectory(args);
+   }
+
+   async listPackageDirectoryPaths(
+      environmentId: string,
+   ): Promise<Set<string>> {
+      return this.packageRepo.listPackageDirectoryPaths(environmentId);
+   }
+
    // ==================== CONNECTIONS ====================
 
    async listConnections(environmentId: string): Promise<Connection[]> {

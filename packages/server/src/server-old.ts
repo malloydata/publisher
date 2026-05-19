@@ -662,7 +662,7 @@ export function registerLegacyRoutes(
                req.body,
                { autoLoadManifest },
             );
-            res.status(200).json(_package?.getPackageMetadata());
+            res.status(200).json(_package);
          } catch (error) {
             logger.error(error);
             const { json, status } = internalErrorToHttpError(error as Error);

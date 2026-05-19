@@ -11,6 +11,7 @@ import {
    PackageNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { ResourceRepository } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -44,13 +45,26 @@ type RetiredConnectionGeneration = {
 const RETIRED_CONNECTION_DRAIN_MS = 30_000;
 
 export class Environment {
-   private packages: Map<string, Package> = new Map();
-   // Lock ordering: connectionMutex (environment) MUST be acquired before any
-   // packageMutex. Connection updates may invalidate cached package
-   // MalloyConfigs and force reloads, so the environment lock is the outer one.
-   // Never acquire connectionMutex while holding a packageMutex — that's the
-   // AB/BA deadlock path.
-   private packageMutexes = new Map<string, Mutex>();
+   /**
+    * Compiled-package cache, keyed by the package's *current on-disk
+    * directory*. Two writes for the same package name produce two distinct
+    * directory paths (UUID-scoped versioned dirs) and therefore two distinct
+    * cache entries; the package row in the DB carries the indirection from
+    * name → path. Entries are evicted by `PackageSweeper` once their
+    * directory is no longer referenced and the quiescence window has
+    * elapsed, so an in-flight reader holding a `Package` for an older path
+    * can keep using it until the sweeper retires both the cache entry and
+    * the directory together.
+    */
+   private packagesByPath: Map<string, Package> = new Map();
+   /**
+    * Promise-dedup for concurrent first-loads of the same path. Two readers
+    * arriving simultaneously after a swap both miss `packagesByPath`; without
+    * this map they would each call `Package.create` and one would leak its
+    * MalloyConfig into the cache only to be overwritten. With it, the second
+    * arrival simply awaits the first arrival's promise.
+    */
+   private loadsByPath: Map<string, Promise<Package>> = new Map();
    private packageStatuses: Map<string, PackageInfo> = new Map();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
@@ -59,6 +73,15 @@ export class Environment {
    private apiConnections: ApiConnection[];
    private environmentPath: string;
    private environmentName: string;
+   /**
+    * Optional repository injection. When present, package paths are resolved
+    * via the database and the controller's UUID-versioned write path is in
+    * effect. When absent (unit tests, callers that construct Environment
+    * without the storage layer) the resolver falls back to the deterministic
+    * legacy path `<environmentPath>/<packageName>`.
+    */
+   private repository?: ResourceRepository;
+   private cachedEnvironmentDbId?: string;
    public metadata: ApiEnvironment;
 
    constructor(
@@ -66,17 +89,27 @@ export class Environment {
       environmentPath: string,
       malloyConfig: EnvironmentMalloyConfig,
       apiConnections: InternalConnection[],
+      repository?: ResourceRepository,
    ) {
       this.environmentName = environmentName;
       this.environmentPath = environmentPath;
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
+      this.repository = repository;
       this.metadata = {
          resource: `${API_PREFIX}/environments/${this.environmentName}`,
          name: this.environmentName,
          location: this.environmentPath,
       };
       void this.reloadEnvironmentMetadata();
+   }
+
+   public getEnvironmentName(): string {
+      return this.environmentName;
+   }
+
+   public getEnvironmentPath(): string {
+      return this.environmentPath;
    }
 
    private async writeEnvironmentReadme(readme?: string): Promise<void> {
@@ -139,6 +172,7 @@ export class Environment {
       environmentName: string,
       environmentPath: string,
       connections: ApiConnection[],
+      repository?: ResourceRepository,
    ): Promise<Environment> {
       if (!(await fs.promises.stat(environmentPath))?.isDirectory()) {
          throw new EnvironmentNotFoundError(
@@ -164,6 +198,7 @@ export class Environment {
          environmentPath,
          malloyConfig,
          malloyConfig.apiConnections,
+         repository,
       );
 
       return environment;
@@ -195,16 +230,22 @@ export class Environment {
       source: string,
       includeSql: boolean = false,
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
+      // Resolve the package against its current on-disk directory (the
+      // versioned UUID dir, or the legacy `<env>/<pkg>` fallback) so the
+      // virtual file lives under the same root that `getPackage` will use
+      // for compilation. Computing it from `<env>/<pkg>` directly would
+      // break any package that has been re-downloaded since startup.
+      const pkg = await this.getPackage(packageName);
+      const packagePath = pkg.getPackagePath();
+
       // Place the virtual file in the model's directory so relative imports resolve correctly.
-      const modelDir = path.dirname(
-         path.join(this.environmentPath, packageName, modelName),
-      );
+      const modelDir = path.dirname(path.join(packagePath, modelName));
       const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
       const virtualUrl = new URL(virtualUri);
 
       // Read the full model file so the submitted source inherits the model's
       // complete namespace — imports, source definitions, queries, etc.
-      const modelPath = path.join(this.environmentPath, packageName, modelName);
+      const modelPath = path.join(packagePath, modelName);
       let modelContent = "";
       try {
          modelContent = await fs.promises.readFile(modelPath, "utf8");
@@ -224,8 +265,6 @@ export class Environment {
             return URL_READER.readURL(url);
          },
       };
-
-      const pkg = await this.getPackage(packageName);
 
       // Initialize Runtime with the package's active MalloyConfig so compile
       // checks see the same package-scoped duckdb as execution. This runtime
@@ -347,14 +386,12 @@ export class Environment {
          environmentPath: this.environmentPath,
       });
       try {
+         const packageNames = await this.listPackageNames();
          const packageMetadata = await Promise.all(
-            Array.from(this.packageStatuses.keys()).map(async (packageName) => {
+            packageNames.map(async (packageName) => {
                try {
                   const packageMetadata = (
-                     this.packageStatuses.get(packageName)?.status ===
-                     PackageStatus.LOADING
-                        ? undefined
-                        : await this.getPackage(packageName, false)
+                     await this.getPackage(packageName)
                   )?.getPackageMetadata();
                   if (packageMetadata) {
                      packageMetadata.name = packageName;
@@ -364,18 +401,20 @@ export class Environment {
                   logger.error(
                      `Failed to load package: ${packageName} due to : ${error}`,
                   );
-                  // Directory did not contain a valid package.json file -- therefore, it's not a package.
-                  // Or it timed out
+                  // Directory did not contain a valid publisher.json — therefore,
+                  // it's not a package; or it timed out.
                   return undefined;
                }
             }),
          );
-         // Get rid of undefined entries (i.e, directories without publisher.json files).
+
          const filteredMetadata = packageMetadata.filter(
             (metadata) => metadata,
          ) as ApiPackage[];
 
-         // Filter out packages that are being unloaded
+         // Hide packages that are mid-unload (deletePackage already retired
+         // their connections; their cache entry may briefly survive until the
+         // sweeper claims the directory).
          const finalMetadata = filteredMetadata.filter((metadata) => {
             const packageStatus = this.packageStatuses.get(metadata.name || "");
             return packageStatus?.status !== PackageStatus.UNLOADING;
@@ -389,203 +428,178 @@ export class Environment {
       }
    }
 
-   /** One mutex per package name; never replace after create (avoids parallel loads). */
-   private getOrCreatePackageMutex(packageName: string): Mutex {
-      let packageMutex = this.packageMutexes.get(packageName);
-      if (packageMutex === undefined) {
-         packageMutex = new Mutex();
-         this.packageMutexes.set(packageName, packageMutex);
+   /**
+    * Source of truth for "what packages exist in this environment".
+    *
+    * Returns the union of:
+    *   1. Names of every row in `packages` for this environment, when a
+    *      repository was injected. This is the durable source of truth in
+    *      production.
+    *   2. Keys of `packageStatuses`. This catches the bootstrap window
+    *      where the environment row exists but `addPackages` has not yet
+    *      written package rows — the names live in `packageStatuses` until
+    *      that sync completes — and also unit-test fixtures that construct
+    *      `Environment` without a repository at all.
+    *
+    * Names that are mid-unload (UNLOADING) are excluded. The downstream
+    * `listPackages` loops `getPackage` over each remaining name, which
+    * tolerates a name appearing only in `packageStatuses` (legacy fallback
+    * resolver) or only in the database (full DB-driven path) interchangeably.
+    */
+   private async listPackageNames(): Promise<string[]> {
+      const names = new Set<string>();
+      for (const [name, info] of this.packageStatuses) {
+         if (info.status === PackageStatus.UNLOADING) continue;
+         names.add(name);
       }
-      return packageMutex;
+      if (this.repository) {
+         const dbId = await this.getEnvironmentDbId();
+         if (dbId) {
+            const rows = await this.repository.listPackages(dbId);
+            for (const row of rows) names.add(row.name);
+         }
+      }
+      return Array.from(names);
    }
 
+   private async getEnvironmentDbId(): Promise<string | undefined> {
+      if (this.cachedEnvironmentDbId) return this.cachedEnvironmentDbId;
+      if (!this.repository) return undefined;
+      const dbEnv = await this.repository.getEnvironmentByName(
+         this.environmentName,
+      );
+      this.cachedEnvironmentDbId = dbEnv?.id;
+      return this.cachedEnvironmentDbId;
+   }
+
+   /**
+    * Resolve a package name to its current physical directory. Reads the
+    * `manifest_path` column written by `swapPackageDirectory`. Falls back to
+    * `<environmentPath>/<packageName>` for legacy / test callers that do
+    * not go through the repository — that fallback only succeeds when the
+    * directory actually exists, so an unknown package still surfaces as
+    * "not found".
+    */
+   public async resolvePackagePath(
+      packageName: string,
+   ): Promise<string | undefined> {
+      if (this.repository) {
+         const dbId = await this.getEnvironmentDbId();
+         if (dbId) {
+            const pkg = await this.repository.getPackageByName(
+               dbId,
+               packageName,
+            );
+            if (pkg?.manifestPath) return pkg.manifestPath;
+         }
+      }
+      const legacy = path.join(this.environmentPath, packageName);
+      try {
+         const stat = await fs.promises.stat(legacy);
+         if (stat.isDirectory()) return legacy;
+      } catch {
+         // Falls through to undefined.
+      }
+      return undefined;
+   }
+
+   /**
+    * Look up the package's current directory and return the cached compiled
+    * `Package`, loading it on first access. Concurrent first-loads of the
+    * same path are deduped through `loadsByPath` so the cost is paid once
+    * even under a request storm.
+    *
+    * The `_reloadDeprecated` argument is preserved for source compatibility
+    * with the old API. Reloads are now driven by the controller writing a
+    * fresh directory and calling `swapPackageDirectory`; that pivots the
+    * resolver to a new path, which automatically misses the cache and
+    * triggers a fresh load with no extra logic here.
+    */
    public async getPackage(
       packageName: string,
-      reload: boolean = false,
+      _reloadDeprecated: boolean = false,
    ): Promise<Package> {
-      // Check if package is already loaded first
-      const _package = this.packages.get(packageName);
-      if (_package !== undefined && !reload) {
-         return _package;
-      }
-
-      // Serialize load per package name so concurrent callers share one Mutex and
-      // failed loads cannot rm the tree while another load is still scanning it.
-      const packageMutex = this.getOrCreatePackageMutex(packageName);
-
-      if (packageMutex.isLocked()) {
-         logger.debug(
-            `Package ${packageName} is being loaded, waiting for unlock...`,
-         );
-         await packageMutex.waitForUnlock();
-         logger.debug(`Package ${packageName} unlocked`);
-         const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined && !reload) {
-            logger.debug(`Package ${packageName} loaded by another request`);
-            return existingPackage;
-         }
-         // Reload, or prior load failed — continue under the same mutex.
-      }
-
-      return packageMutex.runExclusive(async () => {
-         // Double-check after acquiring mutex
-         const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined && !reload) {
-            return existingPackage;
-         }
-
-         // Set package status to loading
-         this.setPackageStatus(packageName, PackageStatus.LOADING);
-
-         try {
-            logger.debug(`Loading package ${packageName}...`);
-            const packagePath = path.join(this.environmentPath, packageName);
-            const _package = await Package.create(
-               this.environmentName,
-               packageName,
-               packagePath,
-               () => this.malloyConfig.malloyConfig,
-            );
-            if (existingPackage !== undefined && reload) {
-               this.retireConnectionGeneration(`package ${packageName}`, () =>
-                  existingPackage.getMalloyConfig().releaseConnections(),
-               );
-            }
-            this.packages.set(packageName, _package);
-
-            // Set package status to serving
-            this.setPackageStatus(packageName, PackageStatus.SERVING);
-            logger.debug(`Successfully loaded package ${packageName}`);
-
-            return _package;
-         } catch (error) {
-            logger.error(`Failed to load package ${packageName}`, { error });
-            // Clean up on error - mutex will be automatically released by runExclusive
-            this.packages.delete(packageName);
-            this.packageStatuses.delete(packageName);
-            throw error;
-         }
-         // Mutex is automatically released here by runExclusive
-      });
-   }
-
-   public async addPackage(packageName: string) {
-      const packagePath = path.join(this.environmentPath, packageName);
-      if (
-         !(await fs.promises
-            .access(packagePath)
-            .then(() => true)
-            .catch(() => false)) ||
-         !(await fs.promises.stat(packagePath))?.isDirectory()
-      ) {
+      const packagePath = await this.resolvePackagePath(packageName);
+      if (!packagePath) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
-      logger.info(
-         `Adding package ${packageName} to environment ${this.environmentName}`,
-         {
-            packagePath,
-            malloyConfig: this.malloyConfig.malloyConfig,
-         },
-      );
+      return this.loadPackageAtPath(packageName, packagePath);
+   }
 
-      const packageMutex = this.getOrCreatePackageMutex(packageName);
-      if (packageMutex.isLocked()) {
-         logger.debug(
-            `Package ${packageName} is being loaded, waiting before addPackage...`,
-         );
-         await packageMutex.waitForUnlock();
-         const alreadyLoaded = this.packages.get(packageName);
-         if (alreadyLoaded !== undefined) {
-            return alreadyLoaded;
-         }
-      }
+   private async loadPackageAtPath(
+      packageName: string,
+      packagePath: string,
+   ): Promise<Package> {
+      const cached = this.packagesByPath.get(packagePath);
+      if (cached !== undefined) return cached;
 
-      return packageMutex.runExclusive(async () => {
-         const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined) {
-            return existingPackage;
-         }
+      const inflight = this.loadsByPath.get(packagePath);
+      if (inflight) return inflight;
 
-         this.setPackageStatus(packageName, PackageStatus.LOADING);
-         try {
-            this.packages.set(
-               packageName,
-               await Package.create(
-                  this.environmentName,
-                  packageName,
-                  packagePath,
-                  () => this.malloyConfig.malloyConfig,
-               ),
-            );
-         } catch (error) {
-            logger.error("Error adding package", { error });
+      this.setPackageStatus(packageName, PackageStatus.LOADING);
+      const promise = Package.create(
+         this.environmentName,
+         packageName,
+         packagePath,
+         () => this.malloyConfig.malloyConfig,
+      )
+         .then((pkg) => {
+            this.packagesByPath.set(packagePath, pkg);
+            this.setPackageStatus(packageName, PackageStatus.SERVING);
+            return pkg;
+         })
+         .catch((error) => {
+            // Roll status forward only on success; failed loads leave no
+            // entry in `packagesByPath` so the next caller will retry.
             this.deletePackageStatus(packageName);
             throw error;
-         }
-         this.setPackageStatus(packageName, PackageStatus.SERVING);
-         return this.packages.get(packageName);
-      });
+         })
+         .finally(() => {
+            this.loadsByPath.delete(packagePath);
+         });
+
+      this.loadsByPath.set(packagePath, promise);
+      return promise;
    }
 
-   private async writePackageManifest(
+   /**
+    * Drop the cached `Package` for `packagePath` and retire the connections
+    * it owns. Called by `PackageSweeper` immediately before the directory is
+    * `rm -rf`'d so we never observe a `Package` whose backing files are
+    * gone.
+    */
+   public evictPackageAtPath(packagePath: string): void {
+      const pkg = this.packagesByPath.get(packagePath);
+      if (!pkg) return;
+      this.packagesByPath.delete(packagePath);
+      this.retireConnectionGeneration(`package-evict ${packagePath}`, () =>
+         pkg.getMalloyConfig().releaseConnections(),
+      );
+   }
+
+   /**
+    * Update the in-memory metadata for a package after the controller has
+    * persisted the same change to the database. The directory swap (if
+    * any) is the controller's responsibility; this method only refreshes
+    * what the cached `Package` reports as its metadata so reads coming
+    * back from the cache reflect the latest description / location until
+    * the next directory swap repaves it.
+    */
+   public async updatePackage(
       packageName: string,
-      metadata: { name: string; description?: string },
-   ): Promise<void> {
-      const packagePath = path.join(this.environmentPath, packageName);
-      const manifestPath = path.join(packagePath, "publisher.json");
-
-      try {
-         // Read existing manifest
-         let existingManifest: Record<string, unknown> = {};
-         try {
-            const content = await fs.promises.readFile(manifestPath, "utf-8");
-            existingManifest = JSON.parse(content);
-         } catch (_err) {
-            logger.warn(`Could not read manifest for ${packageName}`);
-         }
-
-         // Update with new metadata
-         const updatedManifest = {
-            ...existingManifest,
-            name: metadata.name,
-            description: metadata.description,
-         };
-
-         // Write back to file
-         await fs.promises.writeFile(
-            manifestPath,
-            JSON.stringify(updatedManifest, null, 2),
-            "utf-8",
-         );
-
-         logger.info(`Updated publisher.json for ${packageName}`);
-      } catch (error) {
-         logger.error(`Failed to update publisher.json`, { error });
-         throw new Error(`Failed to update package manifest`);
-      }
-   }
-
-   public async updatePackage(packageName: string, body: ApiPackage) {
-      const _package = this.packages.get(packageName);
-      if (!_package) {
-         throw new PackageNotFoundError(`Package ${packageName} not found`);
-      }
+      body: ApiPackage,
+   ): Promise<ApiPackage> {
+      const pkg = await this.getPackage(packageName);
       if (body.name) {
-         _package.setName(body.name);
+         pkg.setName(body.name);
       }
-      _package.setPackageMetadata({
+      pkg.setPackageMetadata({
          name: body.name,
          description: body.description,
          resource: body.resource,
          location: body.location,
       });
-
-      await this.writePackageManifest(packageName, {
-         name: packageName,
-         description: body.description,
-      });
-
-      return _package.getPackageMetadata();
+      return pkg.getPackageMetadata();
    }
 
    public getPackageStatus(packageName: string): PackageInfo | undefined {
@@ -605,13 +619,17 @@ export class Environment {
       this.packageStatuses.delete(packageName);
    }
 
-   public async deletePackage(packageName: string): Promise<void> {
-      const _package = this.packages.get(packageName);
-      if (!_package) {
-         return;
-      }
+   /**
+    * Tear down the in-memory state for a package. Returns the directory
+    * the package was bound to so the controller can hand it to the sweeper
+    * for deferred deletion. The actual `rm -rf` does NOT happen here:
+    * dropping the directory while in-flight readers still hold a reference
+    * to the cached `Package` would yank files out from under their lazy
+    * imports. The sweeper owns that step and waits out the quiescence
+    * window first.
+    */
+   public async deletePackage(packageName: string): Promise<string | undefined> {
       const packageStatus = this.packageStatuses.get(packageName);
-
       if (packageStatus?.status === PackageStatus.LOADING) {
          logger.error("Package loading. Can't unload.", {
             environmentName: this.environmentName,
@@ -623,31 +641,16 @@ export class Environment {
                " " +
                packageName,
          );
-      } else if (packageStatus?.status === PackageStatus.SERVING) {
-         this.setPackageStatus(packageName, PackageStatus.UNLOADING);
+      }
+      this.setPackageStatus(packageName, PackageStatus.UNLOADING);
+
+      const packagePath = await this.resolvePackagePath(packageName);
+      if (packagePath) {
+         this.evictPackageAtPath(packagePath);
       }
 
-      await _package.getMalloyConfig().releaseConnections();
-
-      try {
-         await fs.promises.rm(path.join(this.environmentPath, packageName), {
-            recursive: true,
-            force: true,
-         });
-      } catch (err) {
-         logger.error(
-            "Error removing package directory while unloading package",
-            {
-               error: err,
-               environmentName: this.environmentName,
-               packageName,
-            },
-         );
-      }
-
-      // Remove from internal tracking
-      this.packages.delete(packageName);
       this.packageStatuses.delete(packageName);
+      return packagePath;
    }
 
    public updateConnections(
@@ -697,7 +700,7 @@ export class Environment {
       // sandbox `duckdb` connection) before tearing down the environment config
       // they wrap. Without this, hard unload leaks per-package DuckDB handles.
       const packageReleases = await Promise.allSettled(
-         Array.from(this.packages.values(), (pkg) =>
+         Array.from(this.packagesByPath.values(), (pkg) =>
             pkg.getMalloyConfig().releaseConnections(),
          ),
       );
@@ -709,7 +712,8 @@ export class Environment {
             );
          }
       }
-      this.packages.clear();
+      this.packagesByPath.clear();
+      this.loadsByPath.clear();
       this.packageStatuses.clear();
 
       try {

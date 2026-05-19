@@ -237,6 +237,7 @@ export class EnvironmentStore {
                               resource: `${API_PREFIX}/connections/${conn.name}`,
                               ...conn.config,
                            })),
+                           repository,
                         );
 
                         // Get packages from database
@@ -398,76 +399,33 @@ export class EnvironmentStore {
    ): Promise<void> {
       const packages = await environment.listPackages();
 
-      // Sync each package
+      // Bootstrap-time sync. Each package was downloaded into the legacy
+      // `<env>/<pkg>` path by `scaffoldEnvironment`, so we point the row at
+      // that path. Subsequent API writes go through the controller's
+      // versioned-dir + `swapPackageDirectory` path and pivot the row to a
+      // UUID-scoped directory.
       for (const pkg of packages) {
          if (!pkg.name) {
             logger.warn("Skipping package with undefined name");
             continue;
          }
 
-         await this.addPackage(pkg, environmentId, repository);
-      }
-   }
-
-   private async addPackage(
-      pkg: components["schemas"]["Package"],
-      environmentId: string,
-      repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      const pkgs = pkg as {
-         name: string;
-         description?: string;
-         manifestPath?: string;
-         metadata?: Record<string, unknown>;
-      };
-
-      const packageData = {
-         environmentId,
-         name: pkgs.name,
-         description: pkgs.description ?? undefined,
-         manifestPath: pkgs.manifestPath ?? "",
-         metadata: pkgs.metadata ?? {},
-      };
-
-      try {
-         await repository.createPackage(packageData);
-         logger.info(`Synced package: ${pkg.name}`);
-      } catch (err: unknown) {
-         const error = err as Error;
-         if (
-            error.message?.includes("UNIQUE") ||
-            error.message?.includes("Constraint")
-         ) {
-            await this.updatePackage(
-               pkgs.name,
+         try {
+            await repository.swapPackageDirectory({
                environmentId,
-               packageData,
-               repository,
-            );
-         } else {
+               name: pkg.name,
+               newDirectoryPath: path.join(
+                  environment.getEnvironmentPath(),
+                  pkg.name,
+               ),
+               description: pkg.description,
+               metadata: pkg.location ? { location: pkg.location } : undefined,
+            });
+            logger.info(`Synced package: ${pkg.name}`);
+         } catch (err: unknown) {
+            const error = err as Error;
             logger.warn(`Failed to sync package ${pkg.name}:`, error.message);
          }
-      }
-   }
-
-   private async updatePackage(
-      packageName: string,
-      environmentId: string,
-      packageData: {
-         description: string | undefined;
-         manifestPath: string;
-         metadata: Record<string, unknown>;
-      },
-      repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<void> {
-      const existingPackage = await repository.getPackageByName(
-         environmentId,
-         packageName,
-      );
-
-      if (existingPackage) {
-         await repository.updatePackage(existingPackage.id, packageData);
-         logger.info(`Updated existing package: ${packageName}`);
       }
    }
 
@@ -569,6 +527,14 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Legacy compatibility shim. The controller's add/update/delete paths
+    * now write to the database directly via `swapPackageDirectory`, so this
+    * is retained only for callers that bootstrap a package's row from a
+    * pre-existing on-disk directory (e.g. integration tests that scaffold
+    * a package by hand). It always points the row at the legacy
+    * `<env>/<pkg>` path.
+    */
    public async addPackageToDatabase(
       environmentName: string,
       packageName: string,
@@ -576,7 +542,6 @@ export class EnvironmentStore {
       const environment = await this.getEnvironment(environmentName, false);
       const repository = this.storageManager.getRepository();
 
-      // Get the environment ID from database
       const dbEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
@@ -587,17 +552,23 @@ export class EnvironmentStore {
          );
       }
 
-      // Get the package from the environment
       const packages = await environment.listPackages();
       const pkg = packages.find((p) => p.name === packageName);
-
       if (!pkg) {
          logger.warn(`Package "${packageName}" not found in environment`);
          return;
       }
 
-      // Sync the specific package
-      await this.addPackage(pkg, dbEnvironment.id, repository);
+      await repository.swapPackageDirectory({
+         environmentId: dbEnvironment.id,
+         name: packageName,
+         newDirectoryPath: path.join(
+            environment.getEnvironmentPath(),
+            packageName,
+         ),
+         description: pkg.description,
+         metadata: pkg.location ? { location: pkg.location } : undefined,
+      });
       logger.info(`Synced package "${packageName}" to database`);
    }
 
@@ -668,6 +639,17 @@ export class EnvironmentStore {
 
       const uploadDocsPath = path.join(this.serverRootPath, PUBLISHER_DATA_DIR);
       await fs.promises.mkdir(uploadDocsPath, { recursive: true });
+   }
+
+   /**
+    * Snapshot of the currently in-memory `Environment` instances. Used by
+    * `PackageSweeper` to walk every environment without serializing each
+    * one through `Environment.serialize()`. Returns a fresh array so callers
+    * can iterate without worrying about live mutations of the underlying
+    * `Map`.
+    */
+   public listInMemoryEnvironments(): Environment[] {
+      return Array.from(this.environments.values());
    }
 
    public async listEnvironments(skipInitializationCheck: boolean = false) {
@@ -836,6 +818,7 @@ export class EnvironmentStore {
          environmentName,
          absoluteEnvironmentPath,
          environment.connections || [],
+         this.storageManager.getRepository(),
       );
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};

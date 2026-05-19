@@ -40,6 +40,7 @@ import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
+import { PackageSweeper } from "./service/package_sweeper";
 
 /** Normalize an Express query param into a string[] or undefined. */
 export function normalizeQueryArray(value: unknown): string[] | undefined {
@@ -158,9 +159,14 @@ const manifestService = new ManifestService(environmentStore);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
+const packageSweeper = new PackageSweeper(environmentStore);
+// Defer the periodic sweep until the environment store has finished its
+// initial bootstrap so we don't race the very first batch of package loads.
+void environmentStore.finishedInitialization.then(() => packageSweeper.start());
 const packageController = new PackageController(
    environmentStore,
    manifestService,
+   packageSweeper,
 );
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
@@ -918,7 +924,7 @@ app.post(
             req.body,
             { autoLoadManifest },
          );
-         res.status(200).json(_package?.getPackageMetadata());
+         res.status(200).json(_package);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
