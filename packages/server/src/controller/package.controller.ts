@@ -1,8 +1,11 @@
+import { randomUUID } from "crypto";
+import * as fs from "fs";
 import * as path from "path";
 import { components } from "../api";
 import { PUBLISHER_DATA_DIR } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
+import { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
 import { ManifestService } from "../service/manifest_service";
 
@@ -37,16 +40,47 @@ export class PackageController {
          environmentName,
          false,
       );
-      const _package = await environment.getPackage(packageName, reload);
-      const packageLocation = _package.getPackageMetadata().location;
-      if (reload && packageLocation) {
-         await this.downloadPackage(
-            environmentName,
-            packageName,
-            packageLocation,
-         );
+
+      const cached = await environment.getPackage(packageName, false);
+      const packageLocation = cached.getPackageMetadata().location;
+
+      if (!reload) {
+         return cached.getPackageMetadata();
       }
-      return _package.getPackageMetadata();
+
+      // Reload path: stage the download OUTSIDE the dir lock so concurrent
+      // reloads can run in parallel, then swap + reload under the lock.
+      const stagingPath = packageLocation
+         ? await this.downloadAndStagePackage(
+              environment,
+              packageName,
+              packageLocation,
+           )
+         : undefined;
+      try {
+         return await environment.withPackageDirectoryLock(
+            packageName,
+            async () => {
+               if (stagingPath) {
+                  await this.swapStagedPackage(
+                     stagingPath,
+                     this.packageTargetPath(environmentName, packageName),
+                  );
+               }
+               const reloaded = await environment.getPackage(
+                  packageName,
+                  true,
+                  {
+                     dirLockHeld: true,
+                  },
+               );
+               return reloaded.getPackageMetadata();
+            },
+         );
+      } catch (error) {
+         if (stagingPath) await this.cleanupStagedPackage(stagingPath);
+         throw error;
+      }
    }
 
    async addPackage(
@@ -64,17 +98,40 @@ export class PackageController {
          environmentName,
          false,
       );
-      if (body.location) {
-         await this.downloadPackage(environmentName, body.name, body.location);
+      const packageName = body.name;
+
+      const stagingPath = body.location
+         ? await this.downloadAndStagePackage(
+              environment,
+              packageName,
+              body.location,
+           )
+         : undefined;
+      let result;
+      try {
+         result = await environment.withPackageDirectoryLock(
+            packageName,
+            async () => {
+               if (stagingPath) {
+                  await this.swapStagedPackage(
+                     stagingPath,
+                     this.packageTargetPath(environmentName, packageName),
+                  );
+               }
+               return environment.addPackage(packageName);
+            },
+         );
+      } catch (error) {
+         if (stagingPath) await this.cleanupStagedPackage(stagingPath);
+         throw error;
       }
-      const result = await environment.addPackage(body.name);
       await this.environmentStore.addPackageToDatabase(
          environmentName,
-         body.name,
+         packageName,
       );
 
       if (options?.autoLoadManifest === true) {
-         await this.tryLoadExistingManifest(environmentName, body.name);
+         await this.tryLoadExistingManifest(environmentName, packageName);
       }
 
       return result;
@@ -129,7 +186,10 @@ export class PackageController {
          environmentName,
          false,
       );
-      const result = await environment.deletePackage(packageName);
+      const result = await environment.withPackageDirectoryLock(
+         packageName,
+         () => environment.deletePackage(packageName),
+      );
       await this.environmentStore.deletePackageFromDatabase(
          environmentName,
          packageName,
@@ -150,14 +210,32 @@ export class PackageController {
          environmentName,
          false,
       );
-      if (body.location) {
-         await this.downloadPackage(
-            environmentName,
+
+      const stagingPath = body.location
+         ? await this.downloadAndStagePackage(
+              environment,
+              packageName,
+              body.location,
+           )
+         : undefined;
+      let result;
+      try {
+         result = await environment.withPackageDirectoryLock(
             packageName,
-            body.location,
+            async () => {
+               if (stagingPath) {
+                  await this.swapStagedPackage(
+                     stagingPath,
+                     this.packageTargetPath(environmentName, packageName),
+                  );
+               }
+               return environment.updatePackage(packageName, body);
+            },
          );
+      } catch (error) {
+         if (stagingPath) await this.cleanupStagedPackage(stagingPath);
+         throw error;
       }
-      const result = await environment.updatePackage(packageName, body);
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
@@ -166,51 +244,80 @@ export class PackageController {
       return result;
    }
 
-   private async downloadPackage(
+   private packageTargetPath(
       environmentName: string,
       packageName: string,
-      packageLocation: string,
-   ) {
-      const absoluteTargetPath = path.join(
+   ): string {
+      return path.join(
          this.environmentStore.serverRootPath,
          PUBLISHER_DATA_DIR,
          environmentName,
          packageName,
       );
+   }
+
+   private async downloadAndStagePackage(
+      environment: Environment,
+      packageName: string,
+      packageLocation: string,
+   ): Promise<string> {
+      const environmentName = environment.getEnvironmentName();
+      const finalPath = this.packageTargetPath(environmentName, packageName);
+      const stagingPath = `${finalPath}.staging-${randomUUID()}`;
       const isCompressedFile = packageLocation.endsWith(".zip");
+
       if (
          packageLocation.startsWith("https://") ||
          packageLocation.startsWith("git@")
       ) {
          await this.environmentStore.downloadGitHubDirectory(
             packageLocation,
-            absoluteTargetPath,
+            stagingPath,
          );
       } else if (packageLocation.startsWith("gs://")) {
          await this.environmentStore.downloadGcsDirectory(
             packageLocation,
             environmentName,
-            absoluteTargetPath,
+            stagingPath,
             isCompressedFile,
          );
       } else if (packageLocation.startsWith("s3://")) {
          await this.environmentStore.downloadS3Directory(
             packageLocation,
             environmentName,
-            absoluteTargetPath,
+            stagingPath,
             isCompressedFile,
          );
-      }
-
-      if (packageLocation.startsWith("/")) {
+      } else if (packageLocation.startsWith("/")) {
          // Absolute paths from the publisher.config could be placed outside of /etc/publisher,
          // so we need to mount them on the right place.
          await this.environmentStore.mountLocalDirectory(
             packageLocation,
-            absoluteTargetPath,
+            stagingPath,
             environmentName,
             packageName,
          );
+      }
+
+      return stagingPath;
+   }
+
+   private async swapStagedPackage(
+      stagingPath: string,
+      finalPath: string,
+   ): Promise<void> {
+      await fs.promises.rm(finalPath, { recursive: true, force: true });
+      await fs.promises.rename(stagingPath, finalPath);
+   }
+
+   private async cleanupStagedPackage(stagingPath: string): Promise<void> {
+      try {
+         await fs.promises.rm(stagingPath, { recursive: true, force: true });
+      } catch (err) {
+         logger.warn("Failed to clean up staging directory", {
+            stagingPath,
+            error: err,
+         });
       }
    }
 }

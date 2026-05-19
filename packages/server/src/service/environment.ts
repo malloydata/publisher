@@ -51,6 +51,7 @@ export class Environment {
    // Never acquire connectionMutex while holding a packageMutex — that's the
    // AB/BA deadlock path.
    private packageMutexes = new Map<string, Mutex>();
+   private packageDirectoryMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
@@ -77,6 +78,10 @@ export class Environment {
          location: this.environmentPath,
       };
       void this.reloadEnvironmentMetadata();
+   }
+
+   public getEnvironmentName(): string {
+      return this.environmentName;
    }
 
    private async writeEnvironmentReadme(readme?: string): Promise<void> {
@@ -399,9 +404,28 @@ export class Environment {
       return packageMutex;
    }
 
+   /** One mutex per package directory; never replace after create (avoids parallel loads). */
+   public getOrCreatePackageDirectoryMutex(packageName: string): Mutex {
+      let packageDirectoryMutex = this.packageDirectoryMutexes.get(packageName);
+      if (packageDirectoryMutex === undefined) {
+         packageDirectoryMutex = new Mutex();
+         this.packageDirectoryMutexes.set(packageName, packageDirectoryMutex);
+      }
+      return packageDirectoryMutex;
+   }
+
+   public async withPackageDirectoryLock<T>(
+      packageName: string,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      const dirMutex = this.getOrCreatePackageDirectoryMutex(packageName);
+      return dirMutex.runExclusive(fn);
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,
+      opts: { dirLockHeld?: boolean } = {},
    ): Promise<Package> {
       // Check if package is already loaded first
       const _package = this.packages.get(packageName);
@@ -409,8 +433,17 @@ export class Environment {
          return _package;
       }
 
-      // Serialize load per package name so concurrent callers share one Mutex and
-      // failed loads cannot rm the tree while another load is still scanning it.
+      const load = (): Promise<Package> =>
+         this.loadPackageLocked(packageName, reload);
+      return opts.dirLockHeld
+         ? load()
+         : this.withPackageDirectoryLock(packageName, load);
+   }
+
+   private async loadPackageLocked(
+      packageName: string,
+      reload: boolean,
+   ): Promise<Package> {
       const packageMutex = this.getOrCreatePackageMutex(packageName);
 
       if (packageMutex.isLocked()) {
@@ -428,7 +461,7 @@ export class Environment {
       }
 
       return packageMutex.runExclusive(async () => {
-         // Double-check after acquiring mutex
+         // Double-check after acquiring the package mutex
          const existingPackage = this.packages.get(packageName);
          if (existingPackage !== undefined && !reload) {
             return existingPackage;
@@ -471,40 +504,29 @@ export class Environment {
 
    public async addPackage(packageName: string) {
       const packagePath = path.join(this.environmentPath, packageName);
-      if (
-         !(await fs.promises
-            .access(packagePath)
-            .then(() => true)
-            .catch(() => false)) ||
-         !(await fs.promises.stat(packagePath))?.isDirectory()
-      ) {
-         throw new PackageNotFoundError(`Package ${packageName} not found`);
-      }
-      logger.info(
-         `Adding package ${packageName} to environment ${this.environmentName}`,
-         {
-            packagePath,
-            malloyConfig: this.malloyConfig.malloyConfig,
-         },
-      );
-
       const packageMutex = this.getOrCreatePackageMutex(packageName);
-      if (packageMutex.isLocked()) {
-         logger.debug(
-            `Package ${packageName} is being loaded, waiting before addPackage...`,
-         );
-         await packageMutex.waitForUnlock();
-         const alreadyLoaded = this.packages.get(packageName);
-         if (alreadyLoaded !== undefined) {
-            return alreadyLoaded;
-         }
-      }
-
       return packageMutex.runExclusive(async () => {
          const existingPackage = this.packages.get(packageName);
          if (existingPackage !== undefined) {
             return existingPackage;
          }
+
+         if (
+            !(await fs.promises
+               .access(packagePath)
+               .then(() => true)
+               .catch(() => false)) ||
+            !(await fs.promises.stat(packagePath))?.isDirectory()
+         ) {
+            throw new PackageNotFoundError(`Package ${packageName} not found`);
+         }
+         logger.info(
+            `Adding package ${packageName} to environment ${this.environmentName}`,
+            {
+               packagePath,
+               malloyConfig: this.malloyConfig.malloyConfig,
+            },
+         );
 
          this.setPackageStatus(packageName, PackageStatus.LOADING);
          try {
@@ -566,26 +588,29 @@ export class Environment {
    }
 
    public async updatePackage(packageName: string, body: ApiPackage) {
-      const _package = this.packages.get(packageName);
-      if (!_package) {
-         throw new PackageNotFoundError(`Package ${packageName} not found`);
-      }
-      if (body.name) {
-         _package.setName(body.name);
-      }
-      _package.setPackageMetadata({
-         name: body.name,
-         description: body.description,
-         resource: body.resource,
-         location: body.location,
-      });
+      const pkgMutex = this.getOrCreatePackageMutex(packageName);
+      return pkgMutex.runExclusive(async () => {
+         const _package = this.packages.get(packageName);
+         if (!_package) {
+            throw new PackageNotFoundError(`Package ${packageName} not found`);
+         }
+         if (body.name) {
+            _package.setName(body.name);
+         }
+         _package.setPackageMetadata({
+            name: body.name,
+            description: body.description,
+            resource: body.resource,
+            location: body.location,
+         });
 
-      await this.writePackageManifest(packageName, {
-         name: packageName,
-         description: body.description,
-      });
+         await this.writePackageManifest(packageName, {
+            name: packageName,
+            description: body.description,
+         });
 
-      return _package.getPackageMetadata();
+         return _package.getPackageMetadata();
+      });
    }
 
    public getPackageStatus(packageName: string): PackageInfo | undefined {
