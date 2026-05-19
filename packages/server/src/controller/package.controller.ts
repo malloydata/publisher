@@ -42,45 +42,26 @@ export class PackageController {
       );
 
       const cached = await environment.getPackage(packageName, false);
-      const packageLocation = cached.getPackageMetadata().location;
-
       if (!reload) {
          return cached.getPackageMetadata();
       }
 
       // Reload path: stage the download OUTSIDE the dir lock so concurrent
       // reloads can run in parallel, then swap + reload under the lock.
-      const stagingPath = packageLocation
-         ? await this.downloadAndStagePackage(
-              environment,
-              packageName,
-              packageLocation,
-           )
-         : undefined;
-      try {
-         return await environment.withPackageDirectoryLock(
-            packageName,
-            async () => {
-               if (stagingPath) {
-                  await this.swapStagedPackage(
-                     stagingPath,
-                     this.packageTargetPath(environmentName, packageName),
-                  );
-               }
-               const reloaded = await environment.getPackage(
-                  packageName,
-                  true,
-                  {
-                     dirLockHeld: true,
-                  },
-               );
-               return reloaded.getPackageMetadata();
-            },
-         );
-      } catch (error) {
-         if (stagingPath) await this.cleanupStagedPackage(stagingPath);
-         throw error;
-      }
+      const packageLocation = cached.getPackageMetadata().location;
+      return this.runWithStagedPackage(
+         environment,
+         packageName,
+         packageLocation,
+         async () => {
+            const reloaded = await environment.getPackage(
+               packageName,
+               true,
+               true,
+            );
+            return reloaded.getPackageMetadata();
+         },
+      );
    }
 
    async addPackage(
@@ -100,31 +81,12 @@ export class PackageController {
       );
       const packageName = body.name;
 
-      const stagingPath = body.location
-         ? await this.downloadAndStagePackage(
-              environment,
-              packageName,
-              body.location,
-           )
-         : undefined;
-      let result;
-      try {
-         result = await environment.withPackageDirectoryLock(
-            packageName,
-            async () => {
-               if (stagingPath) {
-                  await this.swapStagedPackage(
-                     stagingPath,
-                     this.packageTargetPath(environmentName, packageName),
-                  );
-               }
-               return environment.addPackage(packageName);
-            },
-         );
-      } catch (error) {
-         if (stagingPath) await this.cleanupStagedPackage(stagingPath);
-         throw error;
-      }
+      const result = await this.runWithStagedPackage(
+         environment,
+         packageName,
+         body.location,
+         () => environment.addPackage(packageName),
+      );
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
@@ -211,31 +173,12 @@ export class PackageController {
          false,
       );
 
-      const stagingPath = body.location
-         ? await this.downloadAndStagePackage(
-              environment,
-              packageName,
-              body.location,
-           )
-         : undefined;
-      let result;
-      try {
-         result = await environment.withPackageDirectoryLock(
-            packageName,
-            async () => {
-               if (stagingPath) {
-                  await this.swapStagedPackage(
-                     stagingPath,
-                     this.packageTargetPath(environmentName, packageName),
-                  );
-               }
-               return environment.updatePackage(packageName, body);
-            },
-         );
-      } catch (error) {
-         if (stagingPath) await this.cleanupStagedPackage(stagingPath);
-         throw error;
-      }
+      const result = await this.runWithStagedPackage(
+         environment,
+         packageName,
+         body.location,
+         () => environment.updatePackage(packageName, body),
+      );
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
@@ -254,6 +197,49 @@ export class PackageController {
          environmentName,
          packageName,
       );
+   }
+
+   /**
+    * Common write-path orchestration for `addPackage` and `updatePackage`:
+    *   1. If a `packageLocation` is given, download into a unique staging
+    *      directory OUTSIDE the dir mutex so concurrent callers parallelize.
+    *   2. Acquire the per-package dir mutex.
+    *   3. Atomically swap staging → canonical (rm + rename).
+    *   4. Run the caller's `op` (load into memory, write manifest, …) while
+    *      still holding the dir mutex.
+    *   5. On failure, clean up the orphaned staging directory.
+    */
+   private async runWithStagedPackage<T>(
+      environment: Environment,
+      packageName: string,
+      packageLocation: string | undefined,
+      op: () => Promise<T>,
+   ): Promise<T> {
+      const environmentName = environment.getEnvironmentName();
+      const stagingPath = packageLocation
+         ? await this.downloadAndStagePackage(
+              environment,
+              packageName,
+              packageLocation,
+           )
+         : undefined;
+      try {
+         return await environment.withPackageDirectoryLock(
+            packageName,
+            async () => {
+               if (stagingPath) {
+                  await this.swapStagedPackage(
+                     stagingPath,
+                     this.packageTargetPath(environmentName, packageName),
+                  );
+               }
+               return op();
+            },
+         );
+      } catch (error) {
+         if (stagingPath) await this.cleanupStagedPackage(stagingPath);
+         throw error;
+      }
    }
 
    private async downloadAndStagePackage(

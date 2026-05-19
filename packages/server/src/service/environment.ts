@@ -425,7 +425,7 @@ export class Environment {
    public async getPackage(
       packageName: string,
       reload: boolean = false,
-      opts: { dirLockHeld?: boolean } = {},
+      dirLockHeld: boolean = false,
    ): Promise<Package> {
       // Check if package is already loaded first
       const _package = this.packages.get(packageName);
@@ -435,7 +435,7 @@ export class Environment {
 
       const load = (): Promise<Package> =>
          this.loadPackageLocked(packageName, reload);
-      return opts.dirLockHeld
+      return dirLockHeld
          ? load()
          : this.withPackageDirectoryLock(packageName, load);
    }
