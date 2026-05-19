@@ -37,9 +37,6 @@ export class PackageController {
          environmentName,
          false,
       );
-      // `environment.getPackage` consults the memory governor at the
-      // choke point — both the lazy-load-on-cache-miss and the
-      // explicit-reload branches throw HTTP 503 when back-pressured.
       const _package = await environment.getPackage(packageName, reload);
       const packageLocation = _package.getPackageMetadata().location;
       if (reload && packageLocation) {
