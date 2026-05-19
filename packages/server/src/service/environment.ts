@@ -10,6 +10,7 @@ import {
    ConnectionNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
+   ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
 import {
@@ -28,6 +29,7 @@ import {
 } from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
+import type { PackageMemoryGovernor } from "./package_memory_governor";
 
 /**
  * Sibling dirs under `environmentPath` used by the install/delete pipeline so
@@ -84,6 +86,12 @@ export class Environment {
    private environmentPath: string;
    private environmentName: string;
    public metadata: ApiEnvironment;
+   // The shared memory governor that consults process RSS. Optional —
+   // when null the gate is a no-op and the environment behaves exactly
+   // like it did before the governor was introduced. Set by
+   // EnvironmentStore.setMemoryGovernor at server start so we keep the
+   // governor as the single owner of the back-pressure boolean.
+   private memoryGovernor: PackageMemoryGovernor | null = null;
 
    constructor(
       environmentName: string,
@@ -541,9 +549,44 @@ export class Environment {
       }
    }
 
+   /**
+    * Attach (or detach with `null`) the memory governor that gates new
+    * package allocations. The single instance is owned by the
+    * EnvironmentStore and propagated to every Environment so the
+    * back-pressure decision is process-wide.
+    */
+   public setMemoryGovernor(governor: PackageMemoryGovernor | null): void {
+      this.memoryGovernor = governor;
+   }
+
+   /**
+    * Choke-point check called from every code path that would allocate
+    * a *new* package into the in-memory map (lazy load on cache miss,
+    * explicit reload, `addPackage`). Throws HTTP 503 when the governor
+    * is back-pressured; cheap no-op when the governor is unset or
+    * happy.
+    *
+    * `allowAdmission` is the documented opt-out for read paths that
+    * genuinely cannot tolerate 503s. None of the current callers set
+    * it; the parameter exists so a future caller (e.g. a
+    * health/warmup probe) can self-document its bypass intent.
+    */
+   private assertCanAdmitNewPackage(
+      packageName: string,
+      reason: string,
+      allowAdmission: boolean,
+   ): void {
+      if (allowAdmission) return;
+      if (!this.memoryGovernor?.isBackpressured()) return;
+      throw new ServiceUnavailableError(
+         `Publisher is under memory pressure and cannot ${reason} (package "${packageName}", environment "${this.environmentName}"). Retry after the server's memory usage drops below the configured low-water mark.`,
+      );
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,
+      options: { allowAdmission?: boolean } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
       // Fast-path: serve from cache without acquiring the lock. Safe because
@@ -561,6 +604,16 @@ export class Environment {
       if (_package !== undefined && !reload) {
          return _package;
       }
+
+      // We are either reloading or about to lazy-load on a cache miss
+      // — both allocate a new package. This is the single choke point
+      // for admission control; controllers no longer need their own
+      // back-pressure check.
+      this.assertCanAdmitNewPackage(
+         packageName,
+         reload ? "reload a package" : "load a package",
+         options.allowAdmission === true,
+      );
 
       return this.withPackageLock(packageName, () =>
          this._loadOrGetPackageLocked(packageName, reload),
@@ -615,7 +668,10 @@ export class Environment {
       }
    }
 
-   public async addPackage(packageName: string) {
+   public async addPackage(
+      packageName: string,
+      options: { allowAdmission?: boolean } = {},
+   ) {
       assertSafePackageName(packageName);
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       if (
@@ -627,6 +683,14 @@ export class Environment {
       ) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
+      // 404 takes precedence over 503 so a permanent "you forgot to
+      // upload the package" failure isn't masked as a transient
+      // "retry later" — the gate runs after the existence check.
+      this.assertCanAdmitNewPackage(
+         packageName,
+         "add a new package",
+         options.allowAdmission === true,
+      );
       logger.info(
          `Adding package ${packageName} to environment ${this.environmentName}`,
          {

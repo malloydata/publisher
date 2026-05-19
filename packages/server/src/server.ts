@@ -33,6 +33,7 @@ import {
 } from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 
+import { getMemoryGovernorConfig } from "./config";
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
@@ -40,6 +41,7 @@ import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
+import { PackageMemoryGovernor } from "./service/package_memory_governor";
 
 /** Normalize an Express query param into a string[] or undefined. */
 export function normalizeQueryArray(value: unknown): string[] | undefined {
@@ -158,6 +160,17 @@ const manifestService = new ManifestService(environmentStore);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
+// PackageMemoryGovernor is opt-in via PUBLISHER_MAX_MEMORY_BYTES.
+// When set, it polls process RSS and flips an `isBackpressured` flag
+// that Environment.getPackage / addPackage consult before allocating
+// any new package — the server responds with HTTP 503 instead of
+// OOM-killing the pod.
+const memoryGovernorConfig = getMemoryGovernorConfig();
+const memoryGovernor = memoryGovernorConfig
+   ? new PackageMemoryGovernor(memoryGovernorConfig)
+   : null;
+memoryGovernor?.start();
+environmentStore.setMemoryGovernor(memoryGovernor);
 const packageController = new PackageController(
    environmentStore,
    manifestService,
