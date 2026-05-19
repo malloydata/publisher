@@ -3,6 +3,7 @@ import {
    API,
    Connection,
    FixedConnectionMap,
+   GivenValue,
    isSourceDef,
    MalloyConfig,
    MalloyError,
@@ -342,6 +343,7 @@ export class Model {
       query?: string,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
@@ -442,7 +444,7 @@ export class Model {
 
       let queryResults;
       try {
-         queryResults = await runnable.run({ rowLimit });
+         queryResults = await runnable.run({ rowLimit, givens });
       } catch (error) {
          // Record error metrics
          const errorEndTime = performance.now();
