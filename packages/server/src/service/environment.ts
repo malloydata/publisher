@@ -12,6 +12,11 @@ import {
    PackageNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import {
+   assertSafePackageName,
+   assertSafeRelativeModelPath,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
@@ -217,6 +222,8 @@ export class Environment {
       source: string,
       includeSql: boolean = false,
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
+      assertSafePackageName(packageName);
+      assertSafeRelativeModelPath(modelName);
       // Hold the per-package mutex for the duration of every disk read —
       // both the explicit `fs.readFile(modelPath)` below and the implicit
       // import resolution that `runtime.loadModel` does through the URL
@@ -226,20 +233,21 @@ export class Environment {
       // download happens outside this lock, so a multi-second clone does
       // not block compiles.
       return this.withPackageLock(packageName, async () => {
-         // Place the virtual file in the model's directory so relative imports resolve correctly.
-         const modelDir = path.dirname(
-            path.join(this.environmentPath, packageName, modelName),
+         // Sanitized join: input segments are allowlisted above; the
+         // resolve-and-contain check here is the secondary guard CodeQL's
+         // path-injection sanitizer recognises.
+         const modelPath = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+            modelName,
          );
+         // Place the virtual file in the model's directory so relative imports resolve correctly.
+         const modelDir = path.dirname(modelPath);
          const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
          const virtualUrl = new URL(virtualUri);
 
          // Read the full model file so the submitted source inherits the model's
          // complete namespace — imports, source definitions, queries, etc.
-         const modelPath = path.join(
-            this.environmentPath,
-            packageName,
-            modelName,
-         );
          let modelContent = "";
          try {
             modelContent = await fs.promises.readFile(modelPath, "utf8");
@@ -454,11 +462,12 @@ export class Environment {
       packageName: string,
       fn: () => Promise<T>,
    ): Promise<T> {
+      assertSafePackageName(packageName);
       return this.getOrCreatePackageMutex(packageName).runExclusive(fn);
    }
 
    private allocateStagingPath(packageName: string): string {
-      return path.join(
+      return safeJoinUnderRoot(
          this.environmentPath,
          STAGING_DIR_NAME,
          `${packageName}-${crypto.randomUUID()}`,
@@ -466,7 +475,7 @@ export class Environment {
    }
 
    private allocateRetiredPath(packageName: string): string {
-      return path.join(
+      return safeJoinUnderRoot(
          this.environmentPath,
          RETIRED_DIR_NAME,
          `${packageName}-${crypto.randomUUID()}`,
@@ -481,7 +490,9 @@ export class Environment {
     */
    public async sweepStaleInstallDirs(): Promise<void> {
       for (const dirName of [STAGING_DIR_NAME, RETIRED_DIR_NAME]) {
-         const dir = path.join(this.environmentPath, dirName);
+         // `dirName` is a compile-time constant, but route through the
+         // sanitized join so the sink is uniformly the contained path.
+         const dir = safeJoinUnderRoot(this.environmentPath, dirName);
          try {
             await fs.promises.rm(dir, { recursive: true, force: true });
          } catch (err) {
@@ -496,6 +507,7 @@ export class Environment {
       packageName: string,
       reload: boolean = false,
    ): Promise<Package> {
+      assertSafePackageName(packageName);
       // Fast-path: serve from cache without acquiring the lock. Safe because
       // `Package` references are immutable; the disk-reading methods that
       // actually need protection (compileSource, getModelFileText,
@@ -530,7 +542,10 @@ export class Environment {
 
       try {
          logger.debug(`Loading package ${packageName}...`);
-         const packagePath = path.join(this.environmentPath, packageName);
+         const packagePath = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+         );
          const _package = await Package.create(
             this.environmentName,
             packageName,
@@ -556,7 +571,8 @@ export class Environment {
    }
 
    public async addPackage(packageName: string) {
-      const packagePath = path.join(this.environmentPath, packageName);
+      assertSafePackageName(packageName);
+      const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       if (
          !(await fs.promises
             .access(packagePath)
@@ -582,7 +598,7 @@ export class Environment {
    private async _addPackageLocked(
       packageName: string,
    ): Promise<Package | undefined> {
-      const packagePath = path.join(this.environmentPath, packageName);
+      const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const existingPackage = this.packages.get(packageName);
       if (existingPackage !== undefined) {
          return existingPackage;
@@ -632,6 +648,7 @@ export class Environment {
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
    ): Promise<Package> {
+      assertSafePackageName(packageName);
       const stagingPath = this.allocateStagingPath(packageName);
       await fs.promises.mkdir(path.dirname(stagingPath), { recursive: true });
 
@@ -645,7 +662,10 @@ export class Environment {
       }
 
       return this.withPackageLock(packageName, async () => {
-         const canonicalPath = path.join(this.environmentPath, packageName);
+         const canonicalPath = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+         );
          let retiredPath: string | undefined;
 
          const oldPackage = this.packages.get(packageName);
@@ -739,6 +759,7 @@ export class Environment {
       packageName: string,
       manifest: BuildManifest["entries"],
    ): Promise<void> {
+      assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
          const pkg = this.packages.get(packageName);
          if (!pkg) {
@@ -759,6 +780,8 @@ export class Environment {
       packageName: string,
       modelPath: string,
    ): Promise<string> {
+      assertSafePackageName(packageName);
+      assertSafeRelativeModelPath(modelPath);
       return this.withPackageLock(packageName, async () => {
          const pkg = this.packages.get(packageName);
          if (!pkg) {
@@ -774,8 +797,8 @@ export class Environment {
       packageName: string,
       metadata: { name: string; description?: string },
    ): Promise<void> {
-      const packagePath = path.join(this.environmentPath, packageName);
-      const manifestPath = path.join(packagePath, "publisher.json");
+      const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
+      const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
 
       try {
          // Read existing manifest
@@ -809,6 +832,7 @@ export class Environment {
    }
 
    public async updatePackage(packageName: string, body: ApiPackage) {
+      assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
          const _package = this.packages.get(packageName);
          if (!_package) {
@@ -851,6 +875,7 @@ export class Environment {
    }
 
    public async deletePackage(packageName: string): Promise<void> {
+      assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
          const _package = this.packages.get(packageName);
          if (!_package) {
@@ -888,7 +913,10 @@ export class Environment {
          // can stat into it after the lock is released. The actual fs.rm is
          // deferred to setImmediate to keep the lock-hold time at one
          // rename rather than a (potentially slow) recursive remove.
-         const canonicalPath = path.join(this.environmentPath, packageName);
+         const canonicalPath = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+         );
          const retiredPath = this.allocateRetiredPath(packageName);
          let renamed = false;
          try {
