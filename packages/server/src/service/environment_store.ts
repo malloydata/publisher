@@ -30,6 +30,7 @@ import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
+import type { PackageMemoryGovernor } from "./package_memory_governor";
 type ApiEnvironment = components["schemas"]["Environment"];
 
 const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
@@ -101,6 +102,10 @@ export class EnvironmentStore {
       followRegionRedirects: true,
    });
    private gcsClient: Storage;
+   // Shared by every Environment so the back-pressure decision is
+   // process-wide. Set once at server start via setMemoryGovernor;
+   // new Environments pick it up at construction.
+   private memoryGovernor: PackageMemoryGovernor | null = null;
 
    constructor(serverRootPath: string) {
       this.serverRootPath = serverRootPath;
@@ -115,6 +120,19 @@ export class EnvironmentStore {
       this.storageManager = new StorageManager(storageConfig);
 
       this.finishedInitialization = this.initialize();
+   }
+
+   /**
+    * Attach (or detach with `null`) the shared {@link PackageMemoryGovernor}.
+    * Propagated to every Environment so the back-pressure decision is
+    * process-wide, and remembered so any Environment created *after*
+    * this call also picks it up at construction.
+    */
+   public setMemoryGovernor(governor: PackageMemoryGovernor | null): void {
+      this.memoryGovernor = governor;
+      for (const env of this.environments.values()) {
+         env.setMemoryGovernor(governor);
+      }
    }
 
    private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
@@ -237,6 +255,9 @@ export class EnvironmentStore {
                               resource: `${API_PREFIX}/connections/${conn.name}`,
                               ...conn.config,
                            })),
+                        );
+                        environmentInstance.setMemoryGovernor(
+                           this.memoryGovernor,
                         );
 
                         // Get packages from database
@@ -837,6 +858,7 @@ export class EnvironmentStore {
          absoluteEnvironmentPath,
          environment.connections || [],
       );
+      newEnvironment.setMemoryGovernor(this.memoryGovernor);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
