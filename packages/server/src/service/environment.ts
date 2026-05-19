@@ -509,6 +509,13 @@ export class Environment {
       assertSafeEnvironmentPath(environmentPath);
       for (const dirName of [STAGING_DIR_NAME, RETIRED_DIR_NAME]) {
          const dir = safeJoinUnderRoot(environmentPath, dirName);
+         // Inline sanitizer barriers in the precise shape CodeQL's
+         // `js/path-injection` query recognises (regex-test +
+         // `indexOf("..") !== -1` guard) so the sink right below is
+         // covered even when the call chain feeding `environmentPath`
+         // is taint-tracked from an HTTP request handler.
+         if (dir.indexOf("..") !== -1) continue;
+         if (path.basename(dir) !== dirName) continue;
          try {
             await fs.promises.rm(dir, { recursive: true, force: true });
          } catch (err) {

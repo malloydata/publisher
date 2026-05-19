@@ -91,16 +91,28 @@ export function assertSafeRelativeModelPath(modelPath: unknown): void {
  * recognises.
  */
 export function assertSafeEnvironmentPath(environmentPath: unknown): void {
+   if (typeof environmentPath !== "string") {
+      throw new BadRequestError(`Invalid environment path: must be a string`);
+   }
    if (
-      typeof environmentPath !== "string" ||
       environmentPath.length === 0 ||
-      environmentPath.length > MAX_ENVIRONMENT_PATH_LEN ||
-      environmentPath.includes("\0") ||
-      environmentPath.includes("..") ||
-      !SAFE_ENVIRONMENT_PATH_RE.test(environmentPath)
+      environmentPath.length > MAX_ENVIRONMENT_PATH_LEN
    ) {
+      throw new BadRequestError(`Invalid environment path: bad length`);
+   }
+   if (environmentPath.indexOf("\0") !== -1) {
+      throw new BadRequestError(`Invalid environment path: contains NUL byte`);
+   }
+   // Sanitizer barrier in the shape `x.indexOf("..") !== -1` that the
+   // CodeQL `js/path-injection` query recognises as a traversal guard.
+   if (environmentPath.indexOf("..") !== -1) {
       throw new BadRequestError(
-         `Invalid environment path: must be an absolute path with no ".." segments and no NUL bytes`,
+         `Invalid environment path: contains ".." traversal segment`,
+      );
+   }
+   if (!SAFE_ENVIRONMENT_PATH_RE.test(environmentPath)) {
+      throw new BadRequestError(
+         `Invalid environment path: must be an absolute path of printable ASCII characters`,
       );
    }
 }
