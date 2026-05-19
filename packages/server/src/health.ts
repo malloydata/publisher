@@ -42,32 +42,6 @@ export function markReady(): void {
 }
 
 /**
- * Marks the service as degraded: one or more environments failed to
- * initialize. The surviving environments are still queryable, and
- * callers polling /api/v0/status see operationalState="degraded" plus
- * a failedEnvironments list.
- *
- * Readiness probe (/health/readiness) returns 503 — degraded pods are
- * pulled out of K8s load-balancer rotation so traffic does not get
- * routed to a replica that can only serve a fraction of the configured
- * environments. Operators should fix the failing config and restart
- * the pod; if you want degraded traffic to be served anyway (e.g. for
- * a single-replica local dev instance), poll /api/v0/status directly
- * instead of /health/readiness.
- */
-export function markDegraded(): void {
-   if (operationalState !== "draining") {
-      operationalState = "degraded";
-      ready = false;
-      logger.warn(
-         "Service marked as degraded; one or more environments failed to initialize. Readiness probe will fail until the config is fixed and the process restarts.",
-      );
-   } else {
-      logger.error("Service is already draining - cannot mark as degraded");
-   }
-}
-
-/**
  * Marks the service as not ready (readiness probe will return 503).
  */
 export function markNotReady(): void {
