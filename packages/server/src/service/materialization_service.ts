@@ -376,8 +376,14 @@ export class MaterializationService {
                environmentName,
                false,
             );
-            const pkg = await environment.getPackage(packageName, false);
-            await pkg.reloadAllModels(updatedManifest.entries);
+            // Ensure the package is loaded, then reload models under the
+            // per-package mutex so the disk reads are serialized against
+            // installPackage / deletePackage.
+            await environment.getPackage(packageName, false);
+            await environment.reloadAllModelsForPackage(
+               packageName,
+               updatedManifest.entries,
+            );
          }
 
          await this.transitionExecution(executionId, "SUCCESS", {
@@ -604,8 +610,13 @@ export class MaterializationService {
       // ── STEP 2: COMPILE & PLAN ─────────────────────────────────────
       // `connections` is built lazily from the connection names the plan
       // actually targets — no upfront ATTACH on every environment connection.
+      // Hold the per-package mutex for the duration of the compile so the
+      // `fs.stat` + `runtime.loadModel` calls inside `compilePackageBuildPlan`
+      // are serialized against `installPackage` / `deletePackage`.
       const { graphs, sources, connectionDigests, connections } =
-         await this.compilePackageBuildPlan(pkg, signal);
+         await environment.withPackageLock(packageName, () =>
+            this.compilePackageBuildPlan(pkg, signal),
+         );
 
       if (graphs.length === 0) {
          logger.info("No persist sources to build");

@@ -1,6 +1,4 @@
-import * as path from "path";
 import { components } from "../api";
-import { PUBLISHER_DATA_DIR } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
@@ -37,15 +35,38 @@ export class PackageController {
          environmentName,
          false,
       );
-      const _package = await environment.getPackage(packageName, reload);
-      const packageLocation = _package.getPackageMetadata().location;
-      if (reload && packageLocation) {
-         await this.downloadPackage(
-            environmentName,
-            packageName,
-            packageLocation,
-         );
+
+      if (reload) {
+         // Resolve the package's source location from the currently-cached
+         // metadata WITHOUT triggering a stale-state reload. If a `location`
+         // is set, route the reload through `installPackage` so that
+         // download-then-load happens atomically; otherwise fall back to an
+         // in-place reload of the existing on-disk content.
+         let location: string | undefined;
+         try {
+            const cached = await environment.getPackage(packageName, false);
+            location = cached.getPackageMetadata().location;
+         } catch {
+            // Not previously loaded — nothing to reinstall from.
+         }
+         if (location) {
+            const reinstalled = await environment.installPackage(
+               packageName,
+               (stagingPath) =>
+                  this.downloadInto(
+                     environmentName,
+                     packageName,
+                     location,
+                     stagingPath,
+                  ),
+            );
+            return reinstalled.getPackageMetadata();
+         }
+         const _package = await environment.getPackage(packageName, true);
+         return _package.getPackageMetadata();
       }
+
+      const _package = await environment.getPackage(packageName, false);
       return _package.getPackageMetadata();
    }
 
@@ -60,21 +81,32 @@ export class PackageController {
       if (!body.name) {
          throw new BadRequestError("Package name is required");
       }
+      const packageName = body.name;
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
+      let result;
       if (body.location) {
-         await this.downloadPackage(environmentName, body.name, body.location);
+         const bodyLocation = body.location;
+         result = await environment.installPackage(packageName, (stagingPath) =>
+            this.downloadInto(
+               environmentName,
+               packageName,
+               bodyLocation,
+               stagingPath,
+            ),
+         );
+      } else {
+         result = await environment.addPackage(packageName);
       }
-      const result = await environment.addPackage(body.name);
       await this.environmentStore.addPackageToDatabase(
          environmentName,
-         body.name,
+         packageName,
       );
 
       if (options?.autoLoadManifest === true) {
-         await this.tryLoadExistingManifest(environmentName, body.name);
+         await this.tryLoadExistingManifest(environmentName, packageName);
       }
 
       return result;
@@ -151,12 +183,20 @@ export class PackageController {
          false,
       );
       if (body.location) {
-         await this.downloadPackage(
-            environmentName,
-            packageName,
-            body.location,
+         // Re-install: stream the new content into a staging dir (no lock)
+         // and atomically swap it in (under the lock).
+         const bodyLocation = body.location;
+         await environment.installPackage(packageName, (stagingPath) =>
+            this.downloadInto(
+               environmentName,
+               packageName,
+               bodyLocation,
+               stagingPath,
+            ),
          );
       }
+      // Apply metadata changes (publisher.json) under the same per-package
+      // mutex via `Environment.updatePackage`.
       const result = await environment.updatePackage(packageName, body);
       await this.environmentStore.addPackageToDatabase(
          environmentName,
@@ -166,17 +206,18 @@ export class PackageController {
       return result;
    }
 
-   private async downloadPackage(
+   /**
+    * Run the right downloader for the given location into `targetPath`.
+    * This used to point at the canonical package directory, but the
+    * install pipeline now passes a sibling staging dir so the long-running
+    * download doesn't hold the per-package mutex.
+    */
+   private async downloadInto(
       environmentName: string,
       packageName: string,
       packageLocation: string,
+      targetPath: string,
    ) {
-      const absoluteTargetPath = path.join(
-         this.environmentStore.serverRootPath,
-         PUBLISHER_DATA_DIR,
-         environmentName,
-         packageName,
-      );
       const isCompressedFile = packageLocation.endsWith(".zip");
       if (
          packageLocation.startsWith("https://") ||
@@ -184,20 +225,20 @@ export class PackageController {
       ) {
          await this.environmentStore.downloadGitHubDirectory(
             packageLocation,
-            absoluteTargetPath,
+            targetPath,
          );
       } else if (packageLocation.startsWith("gs://")) {
          await this.environmentStore.downloadGcsDirectory(
             packageLocation,
             environmentName,
-            absoluteTargetPath,
+            targetPath,
             isCompressedFile,
          );
       } else if (packageLocation.startsWith("s3://")) {
          await this.environmentStore.downloadS3Directory(
             packageLocation,
             environmentName,
-            absoluteTargetPath,
+            targetPath,
             isCompressedFile,
          );
       }
@@ -207,7 +248,7 @@ export class PackageController {
          // so we need to mount them on the right place.
          await this.environmentStore.mountLocalDirectory(
             packageLocation,
-            absoluteTargetPath,
+            targetPath,
             environmentName,
             packageName,
          );

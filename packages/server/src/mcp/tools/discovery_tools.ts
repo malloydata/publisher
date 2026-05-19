@@ -222,8 +222,12 @@ export function registerTools(
                throw new Error(`Model not found: ${modelPath}`);
             }
 
-            // Use the new getModelFileText method
-            const fileText = await pkg.getModelFileText(modelPath);
+            // Route through the Environment so the disk read is serialized
+            // against installPackage / deletePackage.
+            const fileText = await environment.getModelFileText(
+               packageName,
+               modelPath,
+            );
 
             console.log(
                `[MCP LOG] Successfully retrieved model text for ${modelPath}`,
