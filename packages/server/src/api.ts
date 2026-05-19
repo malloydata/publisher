@@ -474,10 +474,21 @@ export interface components {
          /** @description Whether the server is fully initialized and ready to serve requests */
          initialized?: boolean;
          /**
-          * @description Status of the server; initializing when the server is loading environments, packages and connections, serving when the server is initialized and ready to serve requests, and draining when the server is going to shut down
+          * @description Status of the server; initializing when the server is loading environments, packages and connections, serving when the server is initialized and ready to serve requests, degraded when initialization completed but one or more environments failed to load (the surviving environments are served; see failedEnvironments), and draining when the server is going to shut down
           * @enum {string}
           */
-         operationalState?: "initializing" | "serving" | "draining";
+         operationalState?:
+            | "initializing"
+            | "serving"
+            | "degraded"
+            | "draining";
+         /** @description Environments that failed to initialize. Present only when operationalState is "degraded". Healthy environments are listed under "environments". */
+         failedEnvironments?: {
+            /** @description Environment name as declared in publisher.config.json */
+            name: string;
+            /** @description Error message from the initialization failure */
+            error: string;
+         }[];
          /** @description Whether the server configuration is frozen (read-only mode). When true, all mutation operations are disabled. */
          frozenConfig?: boolean;
       };
@@ -641,6 +652,10 @@ export interface components {
           * @default false
           */
          bypassFilters?: boolean;
+         /** @description Per-query given values that override model defaults. Keys are given names declared in the model's `given:` block. Values must match the declared type (string, number, boolean, date, etc.). See Malloy givens documentation for accepted value shapes. */
+         givens?: {
+            [key: string]: unknown;
+         };
       };
       /** @description Individual cell within a Malloy notebook */
       NotebookCell: {
@@ -855,168 +870,661 @@ export interface components {
             /** @description PostgreSQL connection for DuckLake metadata catalog */
             postgresConnection: components["schemas"]["PostgresConnection"];
          };
+         /** @description Raw Malloy notebook with unexecuted cell contents */
+         RawNotebook: {
+            /** @description Resource path to the notebook */
+            resource?: string;
+            /** @description Name of the package containing this notebook */
+            packageName?: string;
+            /** @description Relative path to the notebook file within its package directory */
+            path?: string;
+            /** @description Version of the Malloy compiler used to generate the notebook data */
+            malloyVersion?: string;
+            /** @description Array of notebook cells containing raw markdown and code content */
+            notebookCells?: components["schemas"]["NotebookCell"][];
+            /** @description Array of file-level (##) annotations attached to the notebook */
+            annotations?: string[];
+            /** @description Sources defined in the notebook's model */
+            sources?: components["schemas"]["Source"][];
+         };
+         /** @description Compiled Malloy model with sources, queries, and metadata */
+         CompiledModel: {
+            /** @description Resource path to the model */
+            resource?: string;
+            /** @description Name of the package containing this model */
+            packageName?: string;
+            /** @description Relative path to the model file within its package directory */
+            path?: string;
+            /** @description Version of the Malloy compiler used to generate the model data */
+            malloyVersion?: string;
+            /** @description JSON string containing model metadata and structure information */
+            modelInfo?: string;
+            /** @description Array of JSON strings containing source information for each data source */
+            sourceInfos?: string[];
+            /** @description Array of named queries defined in the model */
+            queries?: components["schemas"]["Query"][];
+            /** @description Sources defined in this model */
+            sources?: components["schemas"]["Source"][];
+         };
+         /** @description Named model view definition */
+         View: {
+            /** @description Name of the view */
+            name?: string;
+            /** @description Annotations attached to the view */
+            annotations?: string[];
+         };
+         /** @description Named model query definition */
+         Query: {
+            /** @description Name of the query */
+            name?: string;
+            /** @description Name of the source this query operates on */
+            sourceName?: string;
+            /** @description Annotations attached to the query */
+            annotations?: string[];
+         };
+         /** @description A filter declared via */
+         Filter: {
+            /** @description Display name of the filter */
+            name?: string;
+            /** @description Dimension this filter targets */
+            dimension?: string;
+            /**
+             * @description Comparator type
+             * @enum {string}
+             */
+            type?: "equal" | "in" | "like" | "greater_than" | "less_than";
+            /** @description Whether this filter is hidden from users */
+            implicit?: boolean;
+            /** @description Whether a value must be provided */
+            required?: boolean;
+            /** @description Malloy data type of the dimension (e.g. string, number, boolean, date, timestamp) */
+            dimensionType?: string;
+         };
+         /** @description A Malloy source defined in a model */
+         Source: {
+            /** @description Name of the source */
+            name?: string;
+            /** @description Annotations attached to the source */
+            annotations?: string[];
+            /** @description Views defined in this source */
+            views?: components["schemas"]["View"][];
+            /** @description Filters declared on this source via */
+            filters?: components["schemas"]["Filter"][];
+         };
+         /** @description Request body for executing a Malloy query */
+         QueryRequest: {
+            /** @description Query string to execute on the model. If the query parameter is set, the queryName parameter must be empty. */
+            query?: string;
+            /** @description Name of the source in the model to use for queryName, search, and topValue requests. */
+            sourceName?: string;
+            /** @description Name of a query to execute on a source in the model. Requires the sourceName parameter is set. If the queryName parameter is set, the query parameter must be empty. */
+            queryName?: string;
+            /**
+             * @description If true, returns a simple JSON array of row objects in the form {"columnName": value}. If false (default), returns the full Malloy result with type metadata for rendering.
+             * @default false
+             */
+            compactJson?: boolean;
+            /** @description Version ID */
+            versionId?: string;
+            /** @description Filter parameter values keyed by filter name. Used with sources that declare \#(filter) annotations. Each value is either a string or an array of strings. */
+            filterParams?: {
+               [key: string]: unknown;
+            };
+            /**
+             * @description When true, skip server-side \#(filter) injection entirely.
+             * @default false
+             */
+            bypassFilters?: boolean;
+            /** @description Per-query given values that override model defaults. Keys are given names declared in the model's `given:` block. Values must match the declared type (string, number, boolean, date, etc.). See Malloy givens documentation for accepted value shapes. */
+            givens?: {
+               [key: string]: unknown;
+            };
+         };
+         /** @description Individual cell within a Malloy notebook */
+         NotebookCell: {
+            /**
+             * @description Type of notebook cell
+             * @enum {string}
+             */
+            type?: "markdown" | "code";
+            /** @description Text contents of the notebook cell (either markdown or Malloy code) */
+            text?: string;
+            /** @description Array of JSON strings containing SourceInfo objects made available in this cell */
+            newSources?: string[];
+            /** @description JSON string containing QueryInfo object for the query in this cell (if the cell contains a query) */
+            queryInfo?: string;
+         };
+         /** @description Result of executing a notebook cell */
+         NotebookCellResult: {
+            /**
+             * @description Type of notebook cell
+             * @enum {string}
+             */
+            type?: "markdown" | "code";
+            /** @description Text contents of the notebook cell */
+            text?: string;
+            /** @description JSON string containing the execution result for this cell */
+            result?: string;
+            /** @description Array of JSON strings containing SourceInfo objects made available in this cell */
+            newSources?: string[];
+         };
+         /** @description Results from executing a Malloy query */
+         QueryResult: {
+            /** @description JSON string containing the query results, metadata, and execution information */
+            result?: string;
+            /** @description Resource path to the query result */
+            resource?: string;
+            /** @description Render tag validation messages (errors, warnings) detected during query preparation */
+            renderLogs?: components["schemas"]["LogMessage"][];
+         };
+         /** @description A log message from render tag validation */
+         LogMessage: {
+            /** @description URL of the source file related to this message */
+            url?: string;
+            /** @description Source location range for this message */
+            range?: {
+               start?: {
+                  line?: number;
+                  character?: number;
+               };
+               end?: {
+                  line?: number;
+                  character?: number;
+               };
+            };
+            /**
+             * @description Severity level of the log message
+             * @enum {string}
+             */
+            severity?: "debug" | "info" | "warn" | "error";
+            /** @description Human-readable log message */
+            message?: string;
+         };
+         /** @description Embedded database within a Malloy package */
+         Database: {
+            /** @description Resource path to the database */
+            resource?: string;
+            /** @description Relative path to the database file within its package directory */
+            path?: string;
+            info?: components["schemas"]["TableDescription"];
+            /**
+             * @description Type of embedded database
+             * @enum {string}
+             */
+            type?: "embedded" | "materialized";
+         };
+         /** @description A schema name in a Connection. */
+         Schema: {
+            /** @description Name of the schema */
+            name?: string;
+            /** @description Description of the schema */
+            description?: string;
+            /** @description Whether this schema is the default schema */
+            isDefault?: boolean;
+            /** @description Whether this schema is hidden */
+            isHidden?: boolean;
+         };
+         /** @description Database connection configuration and metadata */
+         Connection: {
+            /** @description Resource path to the connection */
+            resource?: string;
+            /** @description Name of the connection */
+            name?: string;
+            /**
+             * @description Type of database connection
+             * @enum {string}
+             */
+            type?:
+               | "postgres"
+               | "bigquery"
+               | "snowflake"
+               | "trino"
+               | "databricks"
+               | "mysql"
+               | "duckdb"
+               | "motherduck"
+               | "ducklake";
+            attributes?: components["schemas"]["ConnectionAttributes"];
+            postgresConnection?: components["schemas"]["PostgresConnection"];
+            bigqueryConnection?: components["schemas"]["BigqueryConnection"];
+            snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+            trinoConnection?: components["schemas"]["TrinoConnection"];
+            databricksConnection?: components["schemas"]["DatabricksConnection"];
+            mysqlConnection?: components["schemas"]["MysqlConnection"];
+            duckdbConnection?: components["schemas"]["DuckdbConnection"];
+            motherduckConnection?: components["schemas"]["MotherDuckConnection"];
+            ducklakeConnection?: components["schemas"]["DucklakeConnection"];
+         };
+         /** @description Connection capabilities and configuration attributes */
+         ConnectionAttributes: {
+            /** @description SQL dialect name for the connection */
+            dialectName?: string;
+            /** @description Whether the connection uses connection pooling */
+            isPool?: boolean;
+            /** @description Whether the connection supports persistent storage operations */
+            canPersist?: boolean;
+            /** @description Whether the connection supports streaming query results */
+            canStream?: boolean;
+         };
+         /** @description PostgreSQL database connection configuration */
+         PostgresConnection: {
+            /** @description PostgreSQL server hostname or IP address */
+            host?: string;
+            /** @description PostgreSQL server port number */
+            port?: number;
+            /** @description Name of the PostgreSQL database */
+            databaseName?: string;
+            /** @description PostgreSQL username for authentication */
+            userName?: string;
+            /** @description PostgreSQL password for authentication */
+            password?: string;
+            /** @description Complete PostgreSQL connection string (alternative to individual parameters) */
+            connectionString?: string;
+         };
+         /** @description MySQL database connection configuration */
+         MysqlConnection: {
+            /** @description MySQL server hostname or IP address */
+            host?: string;
+            /** @description MySQL server port number */
+            port?: number;
+            /** @description Name of the MySQL database */
+            database?: string;
+            /** @description MySQL username for authentication */
+            user?: string;
+            /** @description MySQL password for authentication */
+            password?: string;
+         };
+         /** @description Google Cloud Storage connection configuration for DuckDB */
+         GCSConnection: {
+            /** @description GCS HMAC access key ID */
+            keyId: string;
+            /** @description GCS HMAC secret key */
+            secret: string;
+         };
+         /** @description AWS S3 connection configuration for DuckDB */
+         S3Connection: {
+            /** @description AWS access key ID */
+            accessKeyId: string;
+            /** @description AWS secret access key */
+            secretAccessKey: string;
+            /**
+             * @description AWS region (e.g., us-east-1)
+             * @default us-east-1
+             */
+            region?: string;
+            /** @description Custom S3-compatible endpoint URL (optional, for MinIO, etc.) */
+            endpoint?: string;
+            /** @description AWS session token for temporary credentials (optional) */
+            sessionToken?: string;
+         };
+         /** @description Azure Data Lake Storage (ADLS Gen2) / Blob Storage connection configuration Supports https://, http://, abfss://, and az:// URL schemes. */
+         AzureConnection: {
+            /**
+             * @description Authentication method for Azure Storage
+             * @enum {string}
+             */
+            authType: "service_principal" | "sas_token";
+            /** @description Full SAS URL including token; required for sas_token auth. Supports single file, directory glob (*.ext), or recursive (**) patterns. Example: https://account.blob.core.windows.net/container/path/*.parquet?sp=rl&st=... */
+            sasUrl?: string;
+            /** @description Azure AD tenant ID (required for service_principal) */
+            tenantId?: string;
+            /** @description Azure AD application (client) ID (required for service_principal) */
+            clientId?: string;
+            /** @description Azure AD client secret (required for service_principal) */
+            clientSecret?: string;
+            /** @description Azure Storage account name (required for service_principal) */
+            accountName?: string;
+            /** @description Azure file URL to query; required for service_principal auth. Supports single file, directory glob (*.ext), or recursive (**) patterns. Example: https://account.blob.core.windows.net/container/path/** */
+            fileUrl?: string;
+         };
+         /** @description DuckLake lakehouse connection configuration */
+         DucklakeConnection: {
+            /** @description Data storage connection configuration (S3 or GCS) */
+            storage: {
+               /** @description URL of the storage bucket (e.g. s3://my-bucket/path or gs://my-bucket/path) */
+               bucketUrl: string;
+               /** @description AWS S3 connection configuration for data storage */
+               s3Connection?: components["schemas"]["S3Connection"];
+               /** @description Google Cloud Storage connection configuration for data storage */
+               gcsConnection?: components["schemas"]["GCSConnection"];
+            };
+            /** @description Catalog metadata connection configuration */
+            catalog: {
+               /** @description PostgreSQL connection for DuckLake metadata catalog */
+               postgresConnection: components["schemas"]["PostgresConnection"];
+            };
+         };
+         /** @description Google BigQuery database connection configuration */
+         BigqueryConnection: {
+            /** @description Default BigQuery project ID for queries */
+            defaultProjectId?: string;
+            /** @description BigQuery project ID for billing purposes */
+            billingProjectId?: string;
+            /** @description BigQuery dataset location/region */
+            location?: string;
+            /** @description JSON string containing Google Cloud service account credentials */
+            serviceAccountKeyJson?: string;
+            /** @description Maximum bytes to bill for query execution (prevents runaway costs) */
+            maximumBytesBilled?: string;
+            /** @description Query timeout in milliseconds */
+            queryTimeoutMilliseconds?: string;
+         };
+         /** @description Snowflake database connection configuration */
+         SnowflakeConnection: {
+            /** @description Snowflake account identifier */
+            account?: string;
+            /** @description Snowflake username for authentication */
+            username?: string;
+            /** @description Snowflake password for authentication */
+            password?: string;
+            /** @description Snowflake private key for authentication */
+            privateKey?: string;
+            /** @description Passphrase for the Snowflake private key */
+            privateKeyPass?: string;
+            /** @description Snowflake warehouse name */
+            warehouse?: string;
+            /** @description Snowflake database name */
+            database?: string;
+            /** @description Snowflake schema name */
+            schema?: string;
+            /** @description Snowflake role name */
+            role?: string;
+            /** @description Query response timeout in milliseconds */
+            responseTimeoutMilliseconds?: number;
+         };
+         /** @description Trino database connection configuration */
+         TrinoConnection: {
+            /** @description Trino server hostname or IP address */
+            server?: string;
+            /** @description Trino server port number */
+            port?: number;
+            /** @description Trino catalog name */
+            catalog?: string;
+            /** @description Trino schema name */
+            schema?: string;
+            /** @description Trino username for authentication */
+            user?: string;
+            /** @description Trino password for authentication */
+            password?: string;
+            /** @description Peaka API key for authentication with Peaka-hosted Trino clusters */
+            peakaKey?: string;
+         };
+         /** @description Databricks SQL warehouse connection configuration */
+         DatabricksConnection: {
+            /** @description Databricks workspace host (e.g. dbc-xxxxxxxx-xxxx.cloud.databricks.com) */
+            host?: string;
+            /** @description SQL warehouse HTTP path (e.g. /sql/1.0/warehouses/<warehouse-id>) */
+            path?: string;
+            /** @description Personal access token for authentication */
+            token?: string;
+            /** @description OAuth M2M client ID (service principal) */
+            oauthClientId?: string;
+            /** @description OAuth M2M client secret (service principal) */
+            oauthClientSecret?: string;
+            /** @description Default Unity Catalog to use for queries */
+            defaultCatalog?: string;
+            /** @description Default schema to use for queries */
+            defaultSchema?: string;
+            /** @description SQL statements to run when the connection is established */
+            setupSQL?: string;
+         };
+         /** @description MotherDuck database connection configuration */
+         MotherDuckConnection: {
+            /** @description MotherDuck access token */
+            accessToken?: string;
+            /** @description MotherDuck database name */
+            database?: string;
+         };
+         /** @description DuckDB database connection configuration. Publisher intentionally exposes only data-source intent here. Database files, working directories, filesystem/network policy, extension loading, setup SQL, temp directories, and resource knobs are owned by Publisher so environment configs cannot widen deployment policy through low-level DuckDB settings. */
+         DuckdbConnection: {
+            attachedDatabases?: components["schemas"]["AttachedDatabase"][];
+         };
+         /** @description Attached DuckDB database */
+         AttachedDatabase: {
+            /** @example test_connection, _connection, test_connection_1 */
+            name?: string;
+            /**
+             * @description Type of database connection
+             * @enum {string}
+             */
+            type?:
+               | "bigquery"
+               | "snowflake"
+               | "postgres"
+               | "gcs"
+               | "s3"
+               | "azure";
+            attributes?: components["schemas"]["ConnectionAttributes"];
+            bigqueryConnection?: components["schemas"]["BigqueryConnection"];
+            snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+            postgresConnection?: components["schemas"]["PostgresConnection"];
+            gcsConnection?: components["schemas"]["GCSConnection"];
+            s3Connection?: components["schemas"]["S3Connection"];
+            azureConnection?: components["schemas"]["AzureConnection"];
+         };
+         SqlSource: {
+            /** @description Resource path to the sql source. */
+            resource?: string;
+            source?: string;
+         };
+         Table: {
+            /** @description Resource path to the table. */
+            resource?: string;
+            /** @description Table source as a JSON string. */
+            source?: string;
+            /** @description Table fields */
+            columns?: components["schemas"]["Column"][];
+         };
+         /** @deprecated */
+         TableSource: {
+            /** @description Resource path to the table source. */
+            resource?: string;
+            source?: string;
+            /** @description Table fields */
+            columns?: components["schemas"]["Column"][];
+         };
+         TemporaryTable: {
+            /** @description Resource path to the temporary table. */
+            resource?: string;
+            table?: string;
+         };
+         QueryData: {
+            /** @description Resource path to the query data. */
+            resource?: string;
+            data?: string;
+         };
+         /** @description Standard error response format */
+         Error: {
+            /** @description Human-readable error message describing what went wrong */
+            message: string;
+            /** @description Additional error details or context */
+            details?: string;
+         };
+         /** @description Database column definition */
+         Column: {
+            /** @description Name of the column */
+            name?: string;
+            /** @description Data type of the column */
+            type?: string;
+         };
+         /** @description Database table structure and metadata */
+         TableDescription: {
+            /** @description Name of the table */
+            name?: string;
+            /** @description Number of rows in the table */
+            rowCount?: number;
+            /** @description List of columns in the table */
+            columns?: components["schemas"]["Column"][];
+         };
+         /** @description Current file watching status and configuration */
+         WatchStatus: {
+            /** @description Whether file watching is currently active */
+            enabled: boolean;
+            /** @description Name of the environment being watched for file changes */
+            environmentName: string;
+            /** @description The file system path being monitored for changes, null if not watching */
+            watchingPath: string;
+         };
+         /** @description Request to start file watching for an environment */
+         StartWatchRequest: {
+            /** @description Name of the environment to start watching for file changes */
+            environmentName: string;
+         };
+         /** @description Result of testing a database connection */
+         ConnectionStatus: {
+            /**
+             * @description Connection test result status
+             * @enum {string}
+             */
+            status?: "ok" | "failed";
+            /** @description Error message if the connection test failed, null if successful */
+            errorMessage?: string;
+         };
+         /** @description Request body for compiling Malloy source code */
+         CompileRequest: {
+            /** @description Malloy source code to compile */
+            source: string;
+            /**
+             * @description If true, returns the generated SQL alongside compilation results (only available when compilation succeeds and the source contains a runnable query).
+             * @default false
+             */
+            includeSql?: boolean;
+            /** @description Per-query given values that override model defaults. Keys are given names declared in the model's `given:` block. Values must match the declared type (string, number, boolean, date, etc.). See Malloy givens documentation for accepted value shapes. */
+            givens?: {
+               [key: string]: unknown;
+            };
+         };
+         /** @description Result of a Malloy source compilation check */
+         CompileResult: {
+            /**
+             * @description Overall compilation status — "error" if any problems have error severity
+             * @enum {string}
+             */
+            status?: "success" | "error";
+            /** @description List of compilation problems (errors and warnings) */
+            problems?: components["schemas"]["CompileProblem"][];
+            /** @description Generated SQL for the compiled query. Only present when includeSql is true and compilation succeeds with a runnable query. */
+            sql?: string;
+         };
+         /** @description A compilation problem reported by the Malloy compiler */
+         CompileProblem: {
+            /** @description Human-readable problem description */
+            message?: string;
+            /**
+             * @description Severity level of the problem
+             * @enum {string}
+             */
+            severity?: "error" | "warn" | "debug";
+            /** @description Machine-readable error code */
+            code?: string;
+            /** @description Source location of the problem */
+            at?: {
+               /** @description URL of the source file */
+               url?: string;
+               /** @description Character range within the source file */
+               range?: Record<string, never>;
+            };
+         };
+         /** @description Options for creating a materialization */
+         CreateMaterializationRequest: {
+            /**
+             * @description If true, forces rebuild of all sources even if their BuildID is unchanged
+             * @default false
+             */
+            forceRefresh?: boolean;
+            /**
+             * @description If true, automatically reloads the manifest into the Malloy Runtime after a successful materialization
+             * @default false
+             */
+            autoLoadManifest?: boolean;
+         };
+         /** @description A record of a package materialization */
+         Materialization: {
+            id?: string;
+            environmentId?: string;
+            packageName?: string;
+            /** @enum {string} */
+            status?: "PENDING" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED";
+            /** Format: date-time */
+            startedAt?: string | null;
+            /** Format: date-time */
+            completedAt?: string | null;
+            /** @description Error message if the materialization failed */
+            error?: string | null;
+            /** @description Materialization metadata including build options, source counts, and durations */
+            metadata?: Record<string, never> | null;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+         };
+         /** @description Manifest mapping BuildIDs to materialized table names */
+         BuildManifest: {
+            /** @description Map of BuildID to manifest entry */
+            entries?: {
+               [key: string]: components["schemas"]["ManifestEntry"];
+            };
+            /** @description Whether the manifest is in strict mode */
+            strict?: boolean;
+         };
+         /** @description A single entry in the build manifest */
+         ManifestEntry: {
+            /** @description Name of the materialized table */
+            tableName?: string;
+         };
       };
-      /** @description Google BigQuery database connection configuration */
-      BigqueryConnection: {
-         /** @description Default BigQuery project ID for queries */
-         defaultProjectId?: string;
-         /** @description BigQuery project ID for billing purposes */
-         billingProjectId?: string;
-         /** @description BigQuery dataset location/region */
-         location?: string;
-         /** @description JSON string containing Google Cloud service account credentials */
-         serviceAccountKeyJson?: string;
-         /** @description Maximum bytes to bill for query execution (prevents runaway costs) */
-         maximumBytesBilled?: string;
-         /** @description Query timeout in milliseconds */
-         queryTimeoutMilliseconds?: string;
+      responses: {
+         /** @description The request was malformed or cannot be performed given the current state of the system */
+         BadRequest: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+         /** @description Unauthorized - authentication required */
+         Unauthorized: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+         /** @description Forbidden - insufficient permissions to perform the operation */
+         Forbidden: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+         /** @description The specified resource was not found */
+         NotFound: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+         /** @description The server encountered an internal error */
+         InternalServerError: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+         /** @description The requested operation is not implemented */
+         NotImplemented: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+         /** @description Model compilation failed due to syntax or semantic errors */
+         ModelCompilationError: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
+         /** @description The service is temporarily unavailable, typically due to initialization, or draining state (Rolling updates, etc.) */
+         ServiceUnavailable: {
+            content: {
+               "application/json": components["schemas"]["Error"];
+            };
+         };
       };
-      /** @description Snowflake database connection configuration */
-      SnowflakeConnection: {
-         /** @description Snowflake account identifier */
-         account?: string;
-         /** @description Snowflake username for authentication */
-         username?: string;
-         /** @description Snowflake password for authentication */
-         password?: string;
-         /** @description Snowflake private key for authentication */
-         privateKey?: string;
-         /** @description Passphrase for the Snowflake private key */
-         privateKeyPass?: string;
-         /** @description Snowflake warehouse name */
-         warehouse?: string;
-         /** @description Snowflake database name */
-         database?: string;
-         /** @description Snowflake schema name */
-         schema?: string;
-         /** @description Snowflake role name */
-         role?: string;
-         /** @description Query response timeout in milliseconds */
-         responseTimeoutMilliseconds?: number;
-      };
-      /** @description Trino database connection configuration */
-      TrinoConnection: {
-         /** @description Trino server hostname or IP address */
-         server?: string;
-         /** @description Trino server port number */
-         port?: number;
-         /** @description Trino catalog name */
-         catalog?: string;
-         /** @description Trino schema name */
-         schema?: string;
-         /** @description Trino username for authentication */
-         user?: string;
-         /** @description Trino password for authentication */
-         password?: string;
-         /** @description Peaka API key for authentication with Peaka-hosted Trino clusters */
-         peakaKey?: string;
-      };
-      /** @description Databricks SQL warehouse connection configuration */
-      DatabricksConnection: {
-         /** @description Databricks workspace host (e.g. dbc-xxxxxxxx-xxxx.cloud.databricks.com) */
-         host?: string;
-         /** @description SQL warehouse HTTP path (e.g. /sql/1.0/warehouses/<warehouse-id>) */
-         path?: string;
-         /** @description Personal access token for authentication */
-         token?: string;
-         /** @description OAuth M2M client ID (service principal) */
-         oauthClientId?: string;
-         /** @description OAuth M2M client secret (service principal) */
-         oauthClientSecret?: string;
-         /** @description Default Unity Catalog to use for queries */
-         defaultCatalog?: string;
-         /** @description Default schema to use for queries */
-         defaultSchema?: string;
-         /** @description SQL statements to run when the connection is established */
-         setupSQL?: string;
-      };
-      /** @description MotherDuck database connection configuration */
-      MotherDuckConnection: {
-         /** @description MotherDuck access token */
-         accessToken?: string;
-         /** @description MotherDuck database name */
-         database?: string;
-      };
-      /** @description DuckDB database connection configuration. Publisher intentionally exposes only data-source intent here. Database files, working directories, filesystem/network policy, extension loading, setup SQL, temp directories, and resource knobs are owned by Publisher so environment configs cannot widen deployment policy through low-level DuckDB settings. */
-      DuckdbConnection: {
-         attachedDatabases?: components["schemas"]["AttachedDatabase"][];
-      };
-      /** @description Attached DuckDB database */
-      AttachedDatabase: {
-         /** @example test_connection, _connection, test_connection_1 */
-         name?: string;
-         /**
-          * @description Type of database connection
-          * @enum {string}
-          */
-         type?: "bigquery" | "snowflake" | "postgres" | "gcs" | "s3" | "azure";
-         attributes?: components["schemas"]["ConnectionAttributes"];
-         bigqueryConnection?: components["schemas"]["BigqueryConnection"];
-         snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
-         postgresConnection?: components["schemas"]["PostgresConnection"];
-         gcsConnection?: components["schemas"]["GCSConnection"];
-         s3Connection?: components["schemas"]["S3Connection"];
-         azureConnection?: components["schemas"]["AzureConnection"];
-      };
-      SqlSource: {
-         /** @description Resource path to the sql source. */
-         resource?: string;
-         source?: string;
-      };
-      Table: {
-         /** @description Resource path to the table. */
-         resource?: string;
-         /** @description Table source as a JSON string. */
-         source?: string;
-         /** @description Table fields */
-         columns?: components["schemas"]["Column"][];
-      };
-      /** @deprecated */
-      TableSource: {
-         /** @description Resource path to the table source. */
-         resource?: string;
-         source?: string;
-         /** @description Table fields */
-         columns?: components["schemas"]["Column"][];
-      };
-      TemporaryTable: {
-         /** @description Resource path to the temporary table. */
-         resource?: string;
-         table?: string;
-      };
-      QueryData: {
-         /** @description Resource path to the query data. */
-         resource?: string;
-         data?: string;
-      };
-      /** @description Standard error response format */
-      Error: {
-         /** @description Human-readable error message describing what went wrong */
-         message: string;
-         /** @description Additional error details or context */
-         details?: string;
-      };
-      /** @description Database column definition */
-      Column: {
-         /** @description Name of the column */
-         name?: string;
-         /** @description Data type of the column */
-         type?: string;
-      };
-      /** @description Database table structure and metadata */
-      TableDescription: {
-         /** @description Name of the table */
-         name?: string;
-         /** @description Number of rows in the table */
-         rowCount?: number;
-         /** @description List of columns in the table */
-         columns?: components["schemas"]["Column"][];
-      };
-      /** @description Current file watching status and configuration */
-      WatchStatus: {
-         /** @description Whether file watching is currently active */
-         enabled: boolean;
-         /** @description Name of the environment being watched for file changes */
+      parameters: {
+         /** @description Name of the environment */
          environmentName: string;
          /** @description The file system path being monitored for changes, null if not watching */
          watchingPath: string;
