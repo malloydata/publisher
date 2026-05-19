@@ -445,7 +445,22 @@ export class Environment {
       }
    }
 
-   /** One mutex per package name; never replace after create (avoids parallel loads). */
+   /**
+    * One mutex per package name; never replace after create — replacing
+    * would allow two loads of the same package to run in parallel and
+    * race on the canonical directory.
+    *
+    * `deletePackage` intentionally leaves the entry behind: a
+    * subsequent re-install must serialize against any straggling
+    * readers from the deleted generation that are still inside
+    * `withPackageLock`. The map therefore grows by the count of
+    * *distinct* package names the environment has ever served, not by
+    * install churn, so for the publisher's expected workload
+    * (config-declared packages, occasional ad-hoc additions) this is
+    * bounded in practice. Long-lived deployments that create and
+    * delete unique package names indefinitely would need an explicit
+    * sweep; we'll add one if/when that pattern appears.
+    */
    private getOrCreatePackageMutex(packageName: string): Mutex {
       let packageMutex = this.packageMutexes.get(packageName);
       if (packageMutex === undefined) {
@@ -535,6 +550,13 @@ export class Environment {
       // `Package` references are immutable; the disk-reading methods that
       // actually need protection (compileSource, getModelFileText,
       // reloadAllModelsForPackage, ...) acquire the lock themselves.
+      //
+      // INVARIANT: callers that consume the returned Package on the fast
+      // path (notably MCP resource handlers and Model.getModel()) must
+      // remain in-memory only. If any code reachable from a `Package`
+      // method ever grows new disk I/O against the canonical tree, that
+      // path needs to be bracketed by `withPackageLock`; otherwise a
+      // concurrent install/delete will race against an unlocked reader.
       const _package = this.packages.get(packageName);
       if (_package !== undefined && !reload) {
          return _package;
@@ -718,9 +740,12 @@ export class Environment {
             );
          } catch (err) {
             // Rollback: clobber whatever (partial) content sits at canonical
-            // — Package.create's own failure-cleanup may have rm'd it; we rm
-            // again unconditionally so the rename-back below has a clear
-            // destination. Then put the old tree back if we moved one aside.
+            // — Package.create's own failure-cleanup may have already rm'd
+            // the directory, so the most common outcome here is ENOENT.
+            // `force: true` plus the `.catch(() => {})` make this a
+            // best-effort wipe whose only job is to leave the rename-back
+            // below a clean destination. Then put the old tree back if we
+            // moved one aside.
             await fs.promises
                .rm(canonicalPath, { recursive: true, force: true })
                .catch(() => {});
