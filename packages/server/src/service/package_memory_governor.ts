@@ -120,7 +120,9 @@ export class PackageMemoryGovernor {
             description: "RSS threshold at which back-pressure activates",
             unit: "By",
          })
-         .addCallback((observation) => observation.observe(this.highWaterBytes));
+         .addCallback((observation) =>
+            observation.observe(this.highWaterBytes),
+         );
       meter
          .createObservableGauge("publisher_memory_low_water_bytes", {
             description: "RSS threshold at which back-pressure clears",

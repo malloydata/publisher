@@ -268,8 +268,8 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
             error: { code: -32603, message: "Internal server error" },
             id:
                typeof req.body === "object" &&
-                  req.body !== null &&
-                  "id" in req.body
+               req.body !== null &&
+               "id" in req.body
                   ? req.body.id
                   : null,
          });
@@ -1174,8 +1174,8 @@ app.post(
                req.body.query as string,
                req.body.compactJson === true,
                (req.body.filterParams ?? req.body.sourceFilters) as
-               | Record<string, string | string[]>
-               | undefined,
+                  | Record<string, string | string[]>
+                  | undefined,
                req.body.bypassFilters === true ? true : undefined,
             ),
          );
