@@ -74,6 +74,51 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `SHUTDOWN_DRAIN_DURATION_SECONDS` | — | `0` | On SIGTERM, how long to keep accepting requests while draining before closing server sockets. Set this to your typical request duration to avoid 502s from K8s rolling deploys. |
 | `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | — | `0` | Additional grace period after server close before `process.exit`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | — | unset | Path inside the container to a GCP service-account JSON. Required for BigQuery-backed environments. Personal user credentials don't work inside the container — use a service account. |
+| `PUBLISHER_MAX_MEMORY_BYTES` | — | unset (disabled) | Resident-set-size (RSS) cap in bytes. When set, the in-process **memory governor** polls RSS on `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` and rejects new package loads with **HTTP 503** once RSS crosses the high-water mark. Designed to keep the pod under its k8s `resources.limits.memory` instead of getting OOM-killed. Set this to roughly `0.7 × resources.limits.memory` so the back-pressure band has headroom for traffic spikes and per-request DuckDB scratch. |
+| `PUBLISHER_MEMORY_HIGH_WATER_FRACTION` | — | `0.8` | Fraction of `PUBLISHER_MAX_MEMORY_BYTES` at which back-pressure activates. Must be in `(0, 1)` and strictly greater than the low-water fraction. |
+| `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Fraction at which back-pressure clears. The gap between low and high gives hysteresis so the governor doesn't flap on every GC cycle. |
+| `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | How often the governor samples RSS. Minimum `100`. Smaller values catch spikes faster but burn a few extra microseconds per tick. |
+| `PUBLISHER_MEMORY_BACKPRESSURE` | — | `true` | When `false`, the governor still samples RSS and emits metrics but never flips the back-pressure flag. Useful for a monitoring-only rollout before enabling the 503 behaviour. |
+
+### Memory governor
+
+When `PUBLISHER_MAX_MEMORY_BYTES` is unset, the governor is **disabled** and the server's behaviour is identical to prior versions. When it's set, the governor:
+
+- Periodically samples `process.memoryUsage().rss`.
+- Once RSS crosses the high-water mark, **new package loads** (`POST /api/v0/environments/:env/packages`, `GET …/packages/:pkg?reload=true`, `PATCH …/packages/:pkg` with a `location` field) return **HTTP 503**. Already-loaded packages remain fully serviceable so dashboards keep rendering under pressure.
+- Once RSS drops back to the low-water mark, back-pressure clears automatically.
+- Recovery happens naturally as in-flight traffic completes and the kernel reclaims pages — the governor does **not** evict, unload, or interrupt loaded packages.
+
+Metrics exposed on the existing `/metrics` Prometheus endpoint:
+
+| Metric | Type | Notes |
+|---|---|---|
+| `publisher_process_rss_bytes` | gauge | Sampled RSS. |
+| `publisher_memory_backpressure_active` | gauge | `1` when rejecting new loads, `0` otherwise. |
+| `publisher_memory_backpressure_activations_total` | counter | Increments on every `false → true` transition; alert on a non-trivial rate to catch flapping pods. |
+| `publisher_memory_max_bytes`, `publisher_memory_high_water_bytes`, `publisher_memory_low_water_bytes` | gauges | Static configured thresholds — useful for plotting the band alongside the RSS series. |
+
+#### Recommended k8s sizing
+
+A reasonable starting point (tune for your workload):
+
+```yaml
+resources:
+  requests:
+    memory: 2Gi
+  limits:
+    memory: 4Gi
+env:
+  - name: PUBLISHER_MAX_MEMORY_BYTES
+    # 2.8Gi — back-pressure activates at ~2.24Gi, clears at ~1.96Gi,
+    # leaving ~1.2Gi of headroom under the 4Gi k8s hard limit for
+    # in-flight DuckDB scratch and JS heap spikes.
+    value: "3006477107"
+  - name: PUBLISHER_MEMORY_BACKPRESSURE
+    value: "true"
+```
+
+If you want a soft-launch where the governor reports but doesn't act, deploy first with `PUBLISHER_MEMORY_BACKPRESSURE=false`, watch the `publisher_process_rss_bytes` series for a week, then enable.
 
 ## BigQuery credentials
 

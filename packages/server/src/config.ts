@@ -99,6 +99,126 @@ export type ProcessedPublisherConfig = {
    environments: ProcessedEnvironment[];
 };
 
+/**
+ * Tunables for {@link PackageMemoryGovernor}. All values are sourced
+ * from environment variables at startup; see {@link getMemoryGovernorConfig}
+ * for parsing and defaults.
+ */
+export interface MemoryGovernorConfig {
+   /** Hard ceiling for process RSS in bytes (the OOM-relevant figure). */
+   maxMemoryBytes: number;
+   /** Begin evicting LRU packages once RSS exceeds this fraction of `maxMemoryBytes`. */
+   highWaterFraction: number;
+   /** Stop evicting once RSS drops back below this fraction of `maxMemoryBytes`. */
+   lowWaterFraction: number;
+   /** Polling cadence for the eviction loop, in milliseconds. */
+   checkIntervalMs: number;
+   /** When true, return HTTP 503 on new package loads while we are above high-water with nothing idle to evict. */
+   backpressureEnabled: boolean;
+}
+
+const DEFAULT_HIGH_WATER_FRACTION = 0.8;
+const DEFAULT_LOW_WATER_FRACTION = 0.7;
+const DEFAULT_CHECK_INTERVAL_MS = 5_000;
+const MIN_CHECK_INTERVAL_MS = 100;
+
+function parseIntEnv(name: string): number | undefined {
+   const raw = process.env[name];
+   if (raw === undefined || raw.trim() === "") return undefined;
+   const value = Number.parseInt(raw, 10);
+   if (!Number.isFinite(value) || String(value) !== raw.trim()) {
+      throw new Error(
+         `Invalid value for ${name}: expected a base-10 integer, got "${raw}"`,
+      );
+   }
+   return value;
+}
+
+function parseFloatEnv(name: string): number | undefined {
+   const raw = process.env[name];
+   if (raw === undefined || raw.trim() === "") return undefined;
+   const value = Number.parseFloat(raw);
+   if (!Number.isFinite(value)) {
+      throw new Error(
+         `Invalid value for ${name}: expected a finite number, got "${raw}"`,
+      );
+   }
+   return value;
+}
+
+function parseBoolEnv(name: string): boolean | undefined {
+   const raw = process.env[name];
+   if (raw === undefined || raw.trim() === "") return undefined;
+   const normalised = raw.trim().toLowerCase();
+   if (["1", "true", "yes", "on"].includes(normalised)) return true;
+   if (["0", "false", "no", "off"].includes(normalised)) return false;
+   throw new Error(
+      `Invalid value for ${name}: expected a boolean (true/false), got "${raw}"`,
+   );
+}
+
+/**
+ * Parse memory-governor settings from environment variables and return
+ * either a fully-validated config or `null` when the feature is
+ * disabled. The feature is disabled iff `PUBLISHER_MAX_MEMORY_BYTES`
+ * is unset or set to `0`.
+ *
+ * Throws at startup on malformed input so a typo in a k8s manifest
+ * surfaces as a loud failure rather than silently disabling the cap.
+ */
+export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
+   const maxMemoryBytes = parseIntEnv("PUBLISHER_MAX_MEMORY_BYTES");
+   if (maxMemoryBytes === undefined || maxMemoryBytes === 0) {
+      return null;
+   }
+   if (maxMemoryBytes < 0) {
+      throw new Error(
+         `PUBLISHER_MAX_MEMORY_BYTES must be a positive integer (got ${maxMemoryBytes})`,
+      );
+   }
+
+   const highWaterFraction =
+      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION") ??
+      DEFAULT_HIGH_WATER_FRACTION;
+   const lowWaterFraction =
+      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION") ??
+      DEFAULT_LOW_WATER_FRACTION;
+   const checkIntervalMs =
+      parseIntEnv("PUBLISHER_MEMORY_CHECK_INTERVAL_MS") ??
+      DEFAULT_CHECK_INTERVAL_MS;
+   const backpressureEnabled =
+      parseBoolEnv("PUBLISHER_MEMORY_BACKPRESSURE") ?? true;
+
+   if (highWaterFraction <= 0 || highWaterFraction >= 1) {
+      throw new Error(
+         `PUBLISHER_MEMORY_HIGH_WATER_FRACTION must be in (0, 1) (got ${highWaterFraction})`,
+      );
+   }
+   if (lowWaterFraction <= 0 || lowWaterFraction >= 1) {
+      throw new Error(
+         `PUBLISHER_MEMORY_LOW_WATER_FRACTION must be in (0, 1) (got ${lowWaterFraction})`,
+      );
+   }
+   if (lowWaterFraction >= highWaterFraction) {
+      throw new Error(
+         `PUBLISHER_MEMORY_LOW_WATER_FRACTION (${lowWaterFraction}) must be strictly less than PUBLISHER_MEMORY_HIGH_WATER_FRACTION (${highWaterFraction})`,
+      );
+   }
+   if (checkIntervalMs < MIN_CHECK_INTERVAL_MS) {
+      throw new Error(
+         `PUBLISHER_MEMORY_CHECK_INTERVAL_MS must be >= ${MIN_CHECK_INTERVAL_MS} (got ${checkIntervalMs})`,
+      );
+   }
+
+   return {
+      maxMemoryBytes,
+      highWaterFraction,
+      lowWaterFraction,
+      checkIntervalMs,
+      backpressureEnabled,
+   };
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

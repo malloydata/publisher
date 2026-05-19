@@ -28,6 +28,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
       return httpError(409, error.message);
+   } else if (error instanceof ServiceUnavailableError) {
+      return httpError(503, error.message);
    } else {
       return httpError(500, error.message);
    }
@@ -118,6 +120,17 @@ export class MaterializationConflictError extends Error {
 }
 
 export class InvalidStateTransitionError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * Thrown when the publisher is temporarily refusing a request to keep
+ * RSS under the configured `PUBLISHER_MAX_MEMORY_BYTES` cap. Mapped to
+ * HTTP 503 so an upstream proxy / client can retry with back-off.
+ */
+export class ServiceUnavailableError extends Error {
    constructor(message: string) {
       super(message);
    }
