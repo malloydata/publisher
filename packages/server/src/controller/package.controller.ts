@@ -1,46 +1,23 @@
 import * as path from "path";
 import { components } from "../api";
 import { PUBLISHER_DATA_DIR } from "../constants";
-import {
-   BadRequestError,
-   FrozenConfigError,
-   ServiceUnavailableError,
-} from "../errors";
+import { BadRequestError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
 import { ManifestService } from "../service/manifest_service";
-import { PackageMemoryGovernor } from "../service/package_memory_governor";
 
 type ApiPackage = components["schemas"]["Package"];
 
 export class PackageController {
    private environmentStore: EnvironmentStore;
    private manifestService: ManifestService;
-   private memoryGovernor: PackageMemoryGovernor | null;
 
    constructor(
       environmentStore: EnvironmentStore,
       manifestService: ManifestService,
-      memoryGovernor: PackageMemoryGovernor | null = null,
    ) {
       this.environmentStore = environmentStore;
       this.manifestService = manifestService;
-      this.memoryGovernor = memoryGovernor;
-   }
-
-   /**
-    * Throw HTTP 503 when the {@link PackageMemoryGovernor} reports
-    * that RSS has crossed the configured high-water mark. Only
-    * consulted on paths that would load (or reload) a package into
-    * memory; reads against already-loaded packages remain fully
-    * serviceable so existing dashboards keep working under pressure.
-    */
-   private assertNotBackpressured(action: string): void {
-      if (this.memoryGovernor?.isBackpressured()) {
-         throw new ServiceUnavailableError(
-            `Publisher is under memory pressure and cannot ${action} right now. Retry after the server's memory usage drops below the configured low-water mark.`,
-         );
-      }
    }
 
    public async listPackages(environmentName: string): Promise<ApiPackage[]> {
@@ -56,16 +33,13 @@ export class PackageController {
       packageName: string,
       reload: boolean,
    ): Promise<ApiPackage> {
-      // Read-only fetches against the in-memory cache are safe under
-      // pressure; only reloads (which redownload + re-create the
-      // package) are gated.
-      if (reload) {
-         this.assertNotBackpressured("reload a package");
-      }
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
+      // `environment.getPackage` consults the memory governor at the
+      // choke point — both the lazy-load-on-cache-miss and the
+      // explicit-reload branches throw HTTP 503 when back-pressured.
       const _package = await environment.getPackage(packageName, reload);
       const packageLocation = _package.getPackageMetadata().location;
       if (reload && packageLocation) {
@@ -89,7 +63,6 @@ export class PackageController {
       if (!body.name) {
          throw new BadRequestError("Package name is required");
       }
-      this.assertNotBackpressured("add a new package");
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -175,12 +148,6 @@ export class PackageController {
    ) {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
-      }
-      // A location-bearing update re-downloads and reloads the
-      // package, which is a fresh memory allocation. Metadata-only
-      // updates remain permitted under pressure.
-      if (body.location) {
-         this.assertNotBackpressured("update a package");
       }
       const environment = await this.environmentStore.getEnvironment(
          environmentName,

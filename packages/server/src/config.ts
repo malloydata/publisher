@@ -103,17 +103,23 @@ export type ProcessedPublisherConfig = {
  * Tunables for {@link PackageMemoryGovernor}. All values are sourced
  * from environment variables at startup; see {@link getMemoryGovernorConfig}
  * for parsing and defaults.
+ *
+ * The governor is admission control only: it polls process RSS on
+ * `checkIntervalMs` and toggles a single `isBackpressured` flag using
+ * a low/high-water hysteresis band. It does NOT evict, unload, or
+ * interrupt already-loaded packages — recovery is left to the kernel
+ * reclaiming pages as in-flight traffic completes.
  */
 export interface MemoryGovernorConfig {
    /** Hard ceiling for process RSS in bytes (the OOM-relevant figure). */
    maxMemoryBytes: number;
-   /** Begin evicting LRU packages once RSS exceeds this fraction of `maxMemoryBytes`. */
+   /** Fraction of `maxMemoryBytes` at which the governor activates back-pressure (new package loads start returning HTTP 503). Must be in (0, 1) and strictly greater than `lowWaterFraction`. */
    highWaterFraction: number;
-   /** Stop evicting once RSS drops back below this fraction of `maxMemoryBytes`. */
+   /** Fraction of `maxMemoryBytes` at which the governor clears back-pressure (new package loads admitted again). Must be in (0, 1) and strictly less than `highWaterFraction`; the gap is the hysteresis band that prevents flap. */
    lowWaterFraction: number;
-   /** Polling cadence for the eviction loop, in milliseconds. */
+   /** Polling cadence for the RSS sampler, in milliseconds. */
    checkIntervalMs: number;
-   /** When true, return HTTP 503 on new package loads while we are above high-water with nothing idle to evict. */
+   /** When true, RSS crossings flip the back-pressure flag. When false, the governor still samples and emits metrics but never rejects requests — useful for a monitoring-only rollout before enabling the 503 behaviour. */
    backpressureEnabled: boolean;
 }
 

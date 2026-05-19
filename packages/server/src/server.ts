@@ -162,17 +162,18 @@ const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
 // PackageMemoryGovernor is opt-in via PUBLISHER_MAX_MEMORY_BYTES.
 // When set, it polls process RSS and flips an `isBackpressured` flag
-// that PackageController consults on new package loads — the server
-// responds with HTTP 503 instead of OOM-killing the pod.
+// that Environment.getPackage / addPackage consult before allocating
+// any new package — the server responds with HTTP 503 instead of
+// OOM-killing the pod.
 const memoryGovernorConfig = getMemoryGovernorConfig();
 const memoryGovernor = memoryGovernorConfig
    ? new PackageMemoryGovernor(memoryGovernorConfig)
    : null;
 memoryGovernor?.start();
+environmentStore.setMemoryGovernor(memoryGovernor);
 const packageController = new PackageController(
    environmentStore,
    manifestService,
-   memoryGovernor,
 );
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);

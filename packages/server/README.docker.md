@@ -85,9 +85,11 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 When `PUBLISHER_MAX_MEMORY_BYTES` is unset, the governor is **disabled** and the server's behaviour is identical to prior versions. When it's set, the governor:
 
 - Periodically samples `process.memoryUsage().rss`.
-- Once RSS crosses the high-water mark, **new package loads** (`POST /api/v0/environments/:env/packages`, `GET …/packages/:pkg?reload=true`, `PATCH …/packages/:pkg` with a `location` field) return **HTTP 503**. Already-loaded packages remain fully serviceable so dashboards keep rendering under pressure.
+- Once RSS crosses the high-water mark, **any code path that would allocate a new package into memory returns HTTP 503**. The gate sits at the single choke point inside `Environment.getPackage` / `Environment.addPackage`, so it covers every controller that touches a not-yet-loaded package — including lazy loads on cache miss from `ModelController`, `ConnectionController`, `QueryController`, `DatabaseController`, etc. — not just the explicit `POST /packages` and `?reload=true` paths.
+- Already-loaded packages remain fully serviceable so dashboards keep rendering under pressure.
 - Once RSS drops back to the low-water mark, back-pressure clears automatically.
 - Recovery happens naturally as in-flight traffic completes and the kernel reclaims pages — the governor does **not** evict, unload, or interrupt loaded packages.
+- A documented `{ allowAdmission: true }` opt-out exists on `Environment.getPackage` / `addPackage` for future internal callers (e.g. warmup / health probes) that genuinely cannot tolerate 503s. No public REST endpoint sets it today.
 
 Metrics exposed on the existing `/metrics` Prometheus endpoint:
 
