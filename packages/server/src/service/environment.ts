@@ -1,6 +1,7 @@
 import type { LogMessage } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { Mutex } from "async-mutex";
+import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { components } from "../api";
@@ -11,6 +12,7 @@ import {
    PackageNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -20,6 +22,22 @@ import {
 } from "./connection";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
+
+/**
+ * Sibling dirs under `environmentPath` used by the install/delete pipeline so
+ * that long downloads do not hold the per-package mutex.
+ *
+ *  - `.staging/<pkg>-<uuid>/` — a download in progress. Renamed to the
+ *    canonical path under the lock once complete.
+ *  - `.retired/<pkg>-<uuid>/` — the previous canonical tree, atomically
+ *    renamed out of the way during a swap or delete. `fs.rm`'d asynchronously
+ *    after the lock is released.
+ *
+ * Both names start with a `.` so the package walkers (which use
+ * {@link ignoreDotfiles}) skip them.
+ */
+const STAGING_DIR_NAME = ".staging";
+const RETIRED_DIR_NAME = ".retired";
 
 export enum PackageStatus {
    LOADING = "loading",
@@ -166,6 +184,10 @@ export class Environment {
          malloyConfig.apiConnections,
       );
 
+      // Best-effort: a previous run may have crashed mid-install or
+      // mid-delete and left orphan dirs under .staging/ or .retired/.
+      await environment.sweepStaleInstallDirs();
+
       return environment;
    }
 
@@ -195,73 +217,90 @@ export class Environment {
       source: string,
       includeSql: boolean = false,
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
-      // Place the virtual file in the model's directory so relative imports resolve correctly.
-      const modelDir = path.dirname(
-         path.join(this.environmentPath, packageName, modelName),
-      );
-      const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
-      const virtualUrl = new URL(virtualUri);
+      // Hold the per-package mutex for the duration of every disk read —
+      // both the explicit `fs.readFile(modelPath)` below and the implicit
+      // import resolution that `runtime.loadModel` does through the URL
+      // reader. This is mutually exclusive with `installPackage`'s Phase 2
+      // rename swap and with `deletePackage`'s rename-to-retired, so a
+      // compile can never observe a half-rewritten tree. The slow Phase 1
+      // download happens outside this lock, so a multi-second clone does
+      // not block compiles.
+      return this.withPackageLock(packageName, async () => {
+         // Place the virtual file in the model's directory so relative imports resolve correctly.
+         const modelDir = path.dirname(
+            path.join(this.environmentPath, packageName, modelName),
+         );
+         const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
+         const virtualUrl = new URL(virtualUri);
 
-      // Read the full model file so the submitted source inherits the model's
-      // complete namespace — imports, source definitions, queries, etc.
-      const modelPath = path.join(this.environmentPath, packageName, modelName);
-      let modelContent = "";
-      try {
-         modelContent = await fs.promises.readFile(modelPath, "utf8");
-      } catch {
-         // If the model file can't be read, proceed with empty content
-         // and let compilation surface any errors naturally.
-      }
-      const fullSource = modelContent ? `${modelContent}\n${source}` : source;
+         // Read the full model file so the submitted source inherits the model's
+         // complete namespace — imports, source definitions, queries, etc.
+         const modelPath = path.join(
+            this.environmentPath,
+            packageName,
+            modelName,
+         );
+         let modelContent = "";
+         try {
+            modelContent = await fs.promises.readFile(modelPath, "utf8");
+         } catch {
+            // If the model file can't be read, proceed with empty content
+            // and let compilation surface any errors naturally.
+         }
+         const fullSource = modelContent
+            ? `${modelContent}\n${source}`
+            : source;
 
-      // Create a URL Reader that serves the source string for the virtual file,
-      // but falls back to the disk for everything else (imports).
-      const interceptingReader = {
-         readURL: async (url: URL) => {
-            if (url.toString() === virtualUri) {
-               return fullSource;
+         // Create a URL Reader that serves the source string for the virtual file,
+         // but falls back to the disk for everything else (imports).
+         const interceptingReader = {
+            readURL: async (url: URL) => {
+               if (url.toString() === virtualUri) {
+                  return fullSource;
+               }
+               return URL_READER.readURL(url);
+            },
+         };
+
+         // Use the locked variant — we already hold the per-package mutex.
+         const pkg = await this._loadOrGetPackageLocked(packageName);
+
+         // Initialize Runtime with the package's active MalloyConfig so compile
+         // checks see the same package-scoped duckdb as execution. This runtime
+         // borrows the package config; the package/environment lifecycle owns release.
+         const runtime = new Runtime({
+            urlReader: interceptingReader,
+            config: pkg.getMalloyConfig(),
+         });
+
+         // Attempt to compile
+         try {
+            const modelMaterializer = runtime.loadModel(virtualUrl);
+            const model = await modelMaterializer.getModel();
+
+            // If includeSql is requested and compilation succeeded, attempt to extract SQL
+            let sql: string | undefined;
+            if (includeSql) {
+               try {
+                  const queryMaterializer = modelMaterializer.loadFinalQuery();
+                  sql = await queryMaterializer.getSQL();
+               } catch {
+                  // Source may not contain a runnable query (e.g. only source definitions),
+                  // in which case we simply omit the sql field.
+               }
             }
-            return URL_READER.readURL(url);
-         },
-      };
 
-      const pkg = await this.getPackage(packageName);
-
-      // Initialize Runtime with the package's active MalloyConfig so compile
-      // checks see the same package-scoped duckdb as execution. This runtime
-      // borrows the package config; the package/environment lifecycle owns release.
-      const runtime = new Runtime({
-         urlReader: interceptingReader,
-         config: pkg.getMalloyConfig(),
+            // If successful, return any non-fatal warnings
+            return { problems: model.problems, sql };
+         } catch (error) {
+            // If parsing/compilation fails, return the errors
+            if (error instanceof MalloyError) {
+               return { problems: error.problems };
+            }
+            // If it's a system error (e.g. file not found), throw it up
+            throw error;
+         }
       });
-
-      // Attempt to compile
-      try {
-         const modelMaterializer = runtime.loadModel(virtualUrl);
-         const model = await modelMaterializer.getModel();
-
-         // If includeSql is requested and compilation succeeded, attempt to extract SQL
-         let sql: string | undefined;
-         if (includeSql) {
-            try {
-               const queryMaterializer = modelMaterializer.loadFinalQuery();
-               sql = await queryMaterializer.getSQL();
-            } catch {
-               // Source may not contain a runnable query (e.g. only source definitions),
-               // in which case we simply omit the sql field.
-            }
-         }
-
-         // If successful, return any non-fatal warnings
-         return { problems: model.problems, sql };
-      } catch (error) {
-         // If parsing/compilation fails, return the errors
-         if (error instanceof MalloyError) {
-            return { problems: error.problems };
-         }
-         // If it's a system error (e.g. file not found), throw it up
-         throw error;
-      }
    }
 
    public listApiConnections(): ApiConnection[] {
@@ -399,74 +438,121 @@ export class Environment {
       return packageMutex;
    }
 
+   /**
+    * Run `fn` while holding the per-package mutex. This is the single
+    * synchronization primitive that protects a package directory: every
+    * code path that mutates `{environmentPath}/{packageName}/` or reads
+    * from disk under it must serialize through this lock. See the lock
+    * ordering note above the `packageMutexes` field for the wider
+    * invariant.
+    *
+    * `async-mutex` is **not reentrant** — `fn` must not call any other
+    * method that calls `withPackageLock` on the same package, or it will
+    * deadlock. Use the `_xxxLocked` variants below in that case.
+    */
+   public async withPackageLock<T>(
+      packageName: string,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      return this.getOrCreatePackageMutex(packageName).runExclusive(fn);
+   }
+
+   private allocateStagingPath(packageName: string): string {
+      return path.join(
+         this.environmentPath,
+         STAGING_DIR_NAME,
+         `${packageName}-${crypto.randomUUID()}`,
+      );
+   }
+
+   private allocateRetiredPath(packageName: string): string {
+      return path.join(
+         this.environmentPath,
+         RETIRED_DIR_NAME,
+         `${packageName}-${crypto.randomUUID()}`,
+      );
+   }
+
+   /**
+    * Best-effort sweep of `.staging/` and `.retired/` left over from a
+    * previous run (crash, OOM, etc). Safe because both dirs are managed
+    * exclusively by `installPackage` / `deletePackage`; no in-flight
+    * operation in this process can be using them yet.
+    */
+   public async sweepStaleInstallDirs(): Promise<void> {
+      for (const dirName of [STAGING_DIR_NAME, RETIRED_DIR_NAME]) {
+         const dir = path.join(this.environmentPath, dirName);
+         try {
+            await fs.promises.rm(dir, { recursive: true, force: true });
+         } catch (err) {
+            logger.warn(`Failed to sweep stale ${dirName} dir at ${dir}`, {
+               error: err,
+            });
+         }
+      }
+   }
+
    public async getPackage(
       packageName: string,
       reload: boolean = false,
    ): Promise<Package> {
-      // Check if package is already loaded first
+      // Fast-path: serve from cache without acquiring the lock. Safe because
+      // `Package` references are immutable; the disk-reading methods that
+      // actually need protection (compileSource, getModelFileText,
+      // reloadAllModelsForPackage, ...) acquire the lock themselves.
       const _package = this.packages.get(packageName);
       if (_package !== undefined && !reload) {
          return _package;
       }
 
-      // Serialize load per package name so concurrent callers share one Mutex and
-      // failed loads cannot rm the tree while another load is still scanning it.
-      const packageMutex = this.getOrCreatePackageMutex(packageName);
+      return this.withPackageLock(packageName, () =>
+         this._loadOrGetPackageLocked(packageName, reload),
+      );
+   }
 
-      if (packageMutex.isLocked()) {
-         logger.debug(
-            `Package ${packageName} is being loaded, waiting for unlock...`,
-         );
-         await packageMutex.waitForUnlock();
-         logger.debug(`Package ${packageName} unlocked`);
-         const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined && !reload) {
-            logger.debug(`Package ${packageName} loaded by another request`);
-            return existingPackage;
-         }
-         // Reload, or prior load failed — continue under the same mutex.
+   /**
+    * Load (or reload) a package from its canonical disk location. Assumes
+    * the caller holds the per-package mutex (via {@link withPackageLock}).
+    *
+    * Used by {@link getPackage} and by {@link compileSource} so the
+    * cache-miss path doesn't re-enter the mutex.
+    */
+   private async _loadOrGetPackageLocked(
+      packageName: string,
+      reload: boolean = false,
+   ): Promise<Package> {
+      const existingPackage = this.packages.get(packageName);
+      if (existingPackage !== undefined && !reload) {
+         return existingPackage;
       }
 
-      return packageMutex.runExclusive(async () => {
-         // Double-check after acquiring mutex
-         const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined && !reload) {
-            return existingPackage;
-         }
+      this.setPackageStatus(packageName, PackageStatus.LOADING);
 
-         // Set package status to loading
-         this.setPackageStatus(packageName, PackageStatus.LOADING);
-
-         try {
-            logger.debug(`Loading package ${packageName}...`);
-            const packagePath = path.join(this.environmentPath, packageName);
-            const _package = await Package.create(
-               this.environmentName,
-               packageName,
-               packagePath,
-               () => this.malloyConfig.malloyConfig,
+      try {
+         logger.debug(`Loading package ${packageName}...`);
+         const packagePath = path.join(this.environmentPath, packageName);
+         const _package = await Package.create(
+            this.environmentName,
+            packageName,
+            packagePath,
+            () => this.malloyConfig.malloyConfig,
+         );
+         if (existingPackage !== undefined && reload) {
+            this.retireConnectionGeneration(`package ${packageName}`, () =>
+               existingPackage.getMalloyConfig().releaseConnections(),
             );
-            if (existingPackage !== undefined && reload) {
-               this.retireConnectionGeneration(`package ${packageName}`, () =>
-                  existingPackage.getMalloyConfig().releaseConnections(),
-               );
-            }
-            this.packages.set(packageName, _package);
-
-            // Set package status to serving
-            this.setPackageStatus(packageName, PackageStatus.SERVING);
-            logger.debug(`Successfully loaded package ${packageName}`);
-
-            return _package;
-         } catch (error) {
-            logger.error(`Failed to load package ${packageName}`, { error });
-            // Clean up on error - mutex will be automatically released by runExclusive
-            this.packages.delete(packageName);
-            this.packageStatuses.delete(packageName);
-            throw error;
          }
-         // Mutex is automatically released here by runExclusive
-      });
+         this.packages.set(packageName, _package);
+         this.setPackageStatus(packageName, PackageStatus.SERVING);
+         logger.debug(`Successfully loaded package ${packageName}`);
+
+         return _package;
+      } catch (error) {
+         logger.error(`Failed to load package ${packageName}`, { error });
+         this.packages.delete(packageName);
+         this.packageStatuses.delete(packageName);
+         throw error;
+      }
    }
 
    public async addPackage(packageName: string) {
@@ -488,42 +574,199 @@ export class Environment {
          },
       );
 
-      const packageMutex = this.getOrCreatePackageMutex(packageName);
-      if (packageMutex.isLocked()) {
-         logger.debug(
-            `Package ${packageName} is being loaded, waiting before addPackage...`,
-         );
-         await packageMutex.waitForUnlock();
-         const alreadyLoaded = this.packages.get(packageName);
-         if (alreadyLoaded !== undefined) {
-            return alreadyLoaded;
-         }
+      return this.withPackageLock(packageName, () =>
+         this._addPackageLocked(packageName),
+      );
+   }
+
+   private async _addPackageLocked(
+      packageName: string,
+   ): Promise<Package | undefined> {
+      const packagePath = path.join(this.environmentPath, packageName);
+      const existingPackage = this.packages.get(packageName);
+      if (existingPackage !== undefined) {
+         return existingPackage;
       }
 
-      return packageMutex.runExclusive(async () => {
-         const existingPackage = this.packages.get(packageName);
-         if (existingPackage !== undefined) {
-            return existingPackage;
+      this.setPackageStatus(packageName, PackageStatus.LOADING);
+      try {
+         this.packages.set(
+            packageName,
+            await Package.create(
+               this.environmentName,
+               packageName,
+               packagePath,
+               () => this.malloyConfig.malloyConfig,
+            ),
+         );
+      } catch (error) {
+         logger.error("Error adding package", { error });
+         this.deletePackageStatus(packageName);
+         throw error;
+      }
+      this.setPackageStatus(packageName, PackageStatus.SERVING);
+      return this.packages.get(packageName);
+   }
+
+   /**
+    * Replace a package on disk via stage-and-swap, then load it.
+    *
+    *  - Phase 1 (no lock): run `downloader(stagingPath)`, writing the new
+    *    content into a fresh sibling dir at `.staging/<pkg>-<uuid>/`. This
+    *    is where multi-second downloads (git clone, GCS pull, ...) happen.
+    *  - Phase 2 (lock held): atomically rename any existing canonical tree
+    *    out to `.retired/<pkg>-<uuid>/`, rename staging into the canonical
+    *    path, and run `Package.create` against the canonical path.
+    *  - Phase 3 (after lock release): retire the old package's connections
+    *    via the existing 30s drain and `fs.rm` the retired tree.
+    *
+    * Concurrent compiles / `getModelFileText` / `reloadAllModels` calls
+    * take the same mutex and so are mutually exclusive with the Phase 2
+    * swap, but they never queue behind a long Phase 1 download.
+    *
+    * On failure (Phase 1 download or Phase 2 `Package.create`), the staging
+    * dir is removed and — if we already renamed the old tree aside — the
+    * old tree is renamed back so the canonical path is restored.
+    */
+   public async installPackage(
+      packageName: string,
+      downloader: (stagingPath: string) => Promise<void>,
+   ): Promise<Package> {
+      const stagingPath = this.allocateStagingPath(packageName);
+      await fs.promises.mkdir(path.dirname(stagingPath), { recursive: true });
+
+      try {
+         await downloader(stagingPath);
+      } catch (err) {
+         await fs.promises
+            .rm(stagingPath, { recursive: true, force: true })
+            .catch(() => {});
+         throw err;
+      }
+
+      return this.withPackageLock(packageName, async () => {
+         const canonicalPath = path.join(this.environmentPath, packageName);
+         let retiredPath: string | undefined;
+
+         const oldPackage = this.packages.get(packageName);
+         const oldExistsOnDisk = await fs.promises
+            .access(canonicalPath)
+            .then(() => true)
+            .catch(() => false);
+
+         if (oldExistsOnDisk) {
+            retiredPath = this.allocateRetiredPath(packageName);
+            await fs.promises.mkdir(path.dirname(retiredPath), {
+               recursive: true,
+            });
+            await fs.promises.rename(canonicalPath, retiredPath);
          }
 
-         this.setPackageStatus(packageName, PackageStatus.LOADING);
+         let newPackage: Package;
          try {
-            this.packages.set(
+            await fs.promises.rename(stagingPath, canonicalPath);
+
+            this.setPackageStatus(packageName, PackageStatus.LOADING);
+            newPackage = await Package.create(
+               this.environmentName,
                packageName,
-               await Package.create(
-                  this.environmentName,
-                  packageName,
-                  packagePath,
-                  () => this.malloyConfig.malloyConfig,
-               ),
+               canonicalPath,
+               () => this.malloyConfig.malloyConfig,
             );
-         } catch (error) {
-            logger.error("Error adding package", { error });
+         } catch (err) {
+            // Rollback: clobber whatever (partial) content sits at canonical
+            // — Package.create's own failure-cleanup may have rm'd it; we rm
+            // again unconditionally so the rename-back below has a clear
+            // destination. Then put the old tree back if we moved one aside.
+            await fs.promises
+               .rm(canonicalPath, { recursive: true, force: true })
+               .catch(() => {});
+            if (retiredPath) {
+               try {
+                  await fs.promises.rename(retiredPath, canonicalPath);
+               } catch (restoreErr) {
+                  logger.error(
+                     "Failed to restore retired package after install rollback",
+                     {
+                        error: restoreErr,
+                        retiredPath,
+                        canonicalPath,
+                     },
+                  );
+               }
+            }
+            await fs.promises
+               .rm(stagingPath, { recursive: true, force: true })
+               .catch(() => {});
             this.deletePackageStatus(packageName);
-            throw error;
+            throw err;
          }
+
+         this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
-         return this.packages.get(packageName);
+
+         if (oldPackage) {
+            this.retireConnectionGeneration(`package ${packageName}`, () =>
+               oldPackage.getMalloyConfig().releaseConnections(),
+            );
+         }
+
+         if (retiredPath) {
+            const pathToClean = retiredPath;
+            setImmediate(() => {
+               void fs.promises
+                  .rm(pathToClean, { recursive: true, force: true })
+                  .catch((err) => {
+                     logger.warn(
+                        `Failed to clean up retired package directory ${pathToClean}`,
+                        { error: err },
+                     );
+                  });
+            });
+         }
+
+         return newPackage;
+      });
+   }
+
+   /**
+    * Reload every model in a package against the supplied build manifest,
+    * holding the per-package mutex for the duration of the disk reads.
+    * Replaces direct `Package.reloadAllModels` calls from outside
+    * `Environment`.
+    */
+   public async reloadAllModelsForPackage(
+      packageName: string,
+      manifest: BuildManifest["entries"],
+   ): Promise<void> {
+      return this.withPackageLock(packageName, async () => {
+         const pkg = this.packages.get(packageName);
+         if (!pkg) {
+            throw new PackageNotFoundError(
+               `Package ${packageName} is not loaded`,
+            );
+         }
+         await pkg.reloadAllModels(manifest);
+      });
+   }
+
+   /**
+    * Read a model's source text from disk, holding the per-package mutex
+    * so the read is serialized against {@link installPackage} /
+    * {@link deletePackage} / {@link updatePackage}.
+    */
+   public async getModelFileText(
+      packageName: string,
+      modelPath: string,
+   ): Promise<string> {
+      return this.withPackageLock(packageName, async () => {
+         const pkg = this.packages.get(packageName);
+         if (!pkg) {
+            throw new PackageNotFoundError(
+               `Package ${packageName} is not loaded`,
+            );
+         }
+         return pkg.getModelFileText(modelPath);
       });
    }
 
@@ -566,26 +809,28 @@ export class Environment {
    }
 
    public async updatePackage(packageName: string, body: ApiPackage) {
-      const _package = this.packages.get(packageName);
-      if (!_package) {
-         throw new PackageNotFoundError(`Package ${packageName} not found`);
-      }
-      if (body.name) {
-         _package.setName(body.name);
-      }
-      _package.setPackageMetadata({
-         name: body.name,
-         description: body.description,
-         resource: body.resource,
-         location: body.location,
-      });
+      return this.withPackageLock(packageName, async () => {
+         const _package = this.packages.get(packageName);
+         if (!_package) {
+            throw new PackageNotFoundError(`Package ${packageName} not found`);
+         }
+         if (body.name) {
+            _package.setName(body.name);
+         }
+         _package.setPackageMetadata({
+            name: body.name,
+            description: body.description,
+            resource: body.resource,
+            location: body.location,
+         });
 
-      await this.writePackageManifest(packageName, {
-         name: packageName,
-         description: body.description,
-      });
+         await this.writePackageManifest(packageName, {
+            name: packageName,
+            description: body.description,
+         });
 
-      return _package.getPackageMetadata();
+         return _package.getPackageMetadata();
+      });
    }
 
    public getPackageStatus(packageName: string): PackageInfo | undefined {
@@ -606,48 +851,79 @@ export class Environment {
    }
 
    public async deletePackage(packageName: string): Promise<void> {
-      const _package = this.packages.get(packageName);
-      if (!_package) {
-         return;
-      }
-      const packageStatus = this.packageStatuses.get(packageName);
+      return this.withPackageLock(packageName, async () => {
+         const _package = this.packages.get(packageName);
+         if (!_package) {
+            return;
+         }
+         const packageStatus = this.packageStatuses.get(packageName);
 
-      if (packageStatus?.status === PackageStatus.LOADING) {
-         logger.error("Package loading. Can't unload.", {
-            environmentName: this.environmentName,
-            packageName,
-         });
-         throw new Error(
-            "Package loading. Can't unload. " +
-               this.environmentName +
-               " " +
-               packageName,
-         );
-      } else if (packageStatus?.status === PackageStatus.SERVING) {
-         this.setPackageStatus(packageName, PackageStatus.UNLOADING);
-      }
-
-      await _package.getMalloyConfig().releaseConnections();
-
-      try {
-         await fs.promises.rm(path.join(this.environmentPath, packageName), {
-            recursive: true,
-            force: true,
-         });
-      } catch (err) {
-         logger.error(
-            "Error removing package directory while unloading package",
-            {
-               error: err,
+         // The mutex now serializes load/install/compile against delete, so
+         // the LOADING-state guard is mostly vestigial — left in place for
+         // backwards-compatible error messaging in case anything bypasses
+         // the lock.
+         if (packageStatus?.status === PackageStatus.LOADING) {
+            logger.error("Package loading. Can't unload.", {
                environmentName: this.environmentName,
                packageName,
-            },
-         );
-      }
+            });
+            throw new Error(
+               "Package loading. Can't unload. " +
+                  this.environmentName +
+                  " " +
+                  packageName,
+            );
+         } else if (packageStatus?.status === PackageStatus.SERVING) {
+            this.setPackageStatus(packageName, PackageStatus.UNLOADING);
+         }
 
-      // Remove from internal tracking
-      this.packages.delete(packageName);
-      this.packageStatuses.delete(packageName);
+         // Retire the package's connections via the existing 30s drain so
+         // any in-flight queries that already acquired a connection finish
+         // before the underlying duckdb handle is released.
+         this.retireConnectionGeneration(`package ${packageName}`, () =>
+            _package.getMalloyConfig().releaseConnections(),
+         );
+
+         // Atomically rename the canonical tree out of the way so no reader
+         // can stat into it after the lock is released. The actual fs.rm is
+         // deferred to setImmediate to keep the lock-hold time at one
+         // rename rather than a (potentially slow) recursive remove.
+         const canonicalPath = path.join(this.environmentPath, packageName);
+         const retiredPath = this.allocateRetiredPath(packageName);
+         let renamed = false;
+         try {
+            await fs.promises.mkdir(path.dirname(retiredPath), {
+               recursive: true,
+            });
+            await fs.promises.rename(canonicalPath, retiredPath);
+            renamed = true;
+         } catch (err) {
+            logger.error(
+               "Error renaming package directory to retired during unload",
+               {
+                  error: err,
+                  environmentName: this.environmentName,
+                  packageName,
+               },
+            );
+         }
+
+         this.packages.delete(packageName);
+         this.packageStatuses.delete(packageName);
+
+         if (renamed) {
+            setImmediate(() => {
+               void fs.promises
+                  .rm(retiredPath, { recursive: true, force: true })
+                  .catch((err) => {
+                     logger.warn(
+                        `Failed to clean up retired package directory ${retiredPath}`,
+                        { error: err },
+                     );
+                  });
+            });
+         }
+      });
    }
 
    public updateConnections(

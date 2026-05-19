@@ -39,6 +39,7 @@ function createMocks() {
    } as unknown as sinon.SinonStubbedInstance<ResourceRepository>;
 
    const reloadAllModels = sandbox.stub().resolves();
+   const reloadAllModelsForPackage = sandbox.stub().resolves();
 
    const pkg = {
       reloadAllModels,
@@ -46,6 +47,7 @@ function createMocks() {
 
    const environment = {
       getPackage: sandbox.stub().resolves(pkg),
+      reloadAllModelsForPackage,
    };
 
    const environmentStore = {
@@ -66,6 +68,7 @@ function createMocks() {
       environment,
       pkg,
       reloadAllModels,
+      reloadAllModelsForPackage,
       service,
    };
 }
@@ -153,7 +156,9 @@ describe("ManifestService", () => {
             ),
          ).toBe(true);
          expect(ctx.environment.getPackage.calledWith("pkg", false)).toBe(true);
-         expect(ctx.reloadAllModels.calledWith(manifest.entries)).toBe(true);
+         expect(
+            ctx.reloadAllModelsForPackage.calledWith("pkg", manifest.entries),
+         ).toBe(true);
       });
 
       it("should return an empty manifest when no entries exist", async () => {
@@ -170,7 +175,7 @@ describe("ManifestService", () => {
          );
 
          expect(result.entries).toEqual({});
-         expect(ctx.reloadAllModels.calledWith({})).toBe(true);
+         expect(ctx.reloadAllModelsForPackage.calledWith("pkg", {})).toBe(true);
       });
    });
 
