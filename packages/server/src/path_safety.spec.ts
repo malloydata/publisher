@@ -3,6 +3,7 @@ import * as path from "path";
 
 import { BadRequestError } from "./errors";
 import {
+   assertSafeEnvironmentPath,
    assertSafePackageName,
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
@@ -81,6 +82,40 @@ describe("assertSafeRelativeModelPath", () => {
          BadRequestError,
       );
       expect(() => assertSafeRelativeModelPath(123)).toThrow(BadRequestError);
+   });
+});
+
+describe("assertSafeEnvironmentPath", () => {
+   it.each([
+      "/etc/publisher",
+      "/var/lib/publisher/env1",
+      "/Users/me/data",
+      "/a",
+      "C:\\Users\\me\\publisher",
+      "C:/Users/me/publisher",
+   ])("accepts %p", (p) => {
+      expect(() => assertSafeEnvironmentPath(p)).not.toThrow();
+   });
+
+   it.each([
+      ["empty", ""],
+      ["relative", "publisher/data"],
+      ["traversal in middle", "/var/lib/../../etc/passwd"],
+      ["traversal at end", "/var/lib/publisher/.."],
+      ["null byte", "/var/lib/publisher\0"],
+      ["bare dot-dot", ".."],
+      ["bare dot", "."],
+      ["too long", "/" + "a".repeat(5000)],
+   ])("rejects %s (%p)", (_label, p) => {
+      expect(() => assertSafeEnvironmentPath(p)).toThrow(BadRequestError);
+   });
+
+   it("rejects non-string inputs", () => {
+      expect(() => assertSafeEnvironmentPath(undefined)).toThrow(
+         BadRequestError,
+      );
+      expect(() => assertSafeEnvironmentPath(null)).toThrow(BadRequestError);
+      expect(() => assertSafeEnvironmentPath(42)).toThrow(BadRequestError);
    });
 });
 

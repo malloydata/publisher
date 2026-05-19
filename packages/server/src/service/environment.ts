@@ -13,6 +13,7 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import {
+   assertSafeEnvironmentPath,
    assertSafePackageName,
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
@@ -90,6 +91,10 @@ export class Environment {
       malloyConfig: EnvironmentMalloyConfig,
       apiConnections: InternalConnection[],
    ) {
+      // Sanitizer barrier: every downstream `path.join(this.environmentPath,
+      // …)` site (including the static `sweepStaleInstallDirs` sweep) gets a
+      // value that has cleared an allowlist check at the gate.
+      assertSafeEnvironmentPath(environmentPath);
       this.environmentName = environmentName;
       this.environmentPath = environmentPath;
       this.malloyConfig = malloyConfig;
@@ -191,7 +196,11 @@ export class Environment {
 
       // Best-effort: a previous run may have crashed mid-install or
       // mid-delete and left orphan dirs under .staging/ or .retired/.
-      await environment.sweepStaleInstallDirs();
+      // Run against the validated constructor argument so the sink path
+      // here does NOT route through `this` (which CodeQL conservatively
+      // treats as tainted because other methods on this class touch
+      // request-derived `packageName` values).
+      await Environment.sweepStaleInstallDirs(environmentPath);
 
       return environment;
    }
@@ -487,12 +496,19 @@ export class Environment {
     * previous run (crash, OOM, etc). Safe because both dirs are managed
     * exclusively by `installPackage` / `deletePackage`; no in-flight
     * operation in this process can be using them yet.
+    *
+    * Static + path-as-parameter on purpose: the sink path here must
+    * derive from the validated factory argument, not from `this`,
+    * because CodeQL's path-injection query conservatively treats every
+    * field on this class as tainted (other methods on the same class
+    * receive request-derived `packageName` values).
     */
-   public async sweepStaleInstallDirs(): Promise<void> {
+   public static async sweepStaleInstallDirs(
+      environmentPath: string,
+   ): Promise<void> {
+      assertSafeEnvironmentPath(environmentPath);
       for (const dirName of [STAGING_DIR_NAME, RETIRED_DIR_NAME]) {
-         // `dirName` is a compile-time constant, but route through the
-         // sanitized join so the sink is uniformly the contained path.
-         const dir = safeJoinUnderRoot(this.environmentPath, dirName);
+         const dir = safeJoinUnderRoot(environmentPath, dirName);
          try {
             await fs.promises.rm(dir, { recursive: true, force: true });
          } catch (err) {

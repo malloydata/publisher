@@ -29,6 +29,15 @@ const SAFE_NAME_RE = /^(?!\.\.?$)(?!\.)[A-Za-z0-9._-]{1,255}$/;
 
 const MAX_MODEL_PATH_LEN = 1024;
 
+// An environment path is server-controlled (config / disk-derived), but
+// CodeQL conservatively treats it as tainted because Express handlers on
+// the same class touch user input. The combined regex test +
+// `..` / NUL / length check at the constructor gate is the sanitizer
+// barrier the `js/path-injection` query recognises. Printable ASCII
+// only; absolute POSIX-or-Windows path; no `..`, no NUL.
+const SAFE_ENVIRONMENT_PATH_RE = /^(?:\/|[A-Za-z]:[\\/])[\x20-\x7E]*$/;
+const MAX_ENVIRONMENT_PATH_LEN = 4096;
+
 /**
  * Reject anything that isn't a plausible single-segment package name.
  * The allowlist is deliberately conservative — every existing test and
@@ -70,6 +79,29 @@ export function assertSafeRelativeModelPath(modelPath: unknown): void {
       if (segment.startsWith(".")) {
          throw new BadRequestError(`Invalid model path`);
       }
+   }
+}
+
+/**
+ * Reject anything that doesn't look like a server-controlled absolute
+ * filesystem path. Applied to `environmentPath` at the constructor
+ * gate so all downstream `path.join(this.environmentPath, …)` sites
+ * see a value that has cleared an allowlist check — the canonical
+ * sanitizer-barrier pattern CodeQL's `js/path-injection` query
+ * recognises.
+ */
+export function assertSafeEnvironmentPath(environmentPath: unknown): void {
+   if (
+      typeof environmentPath !== "string" ||
+      environmentPath.length === 0 ||
+      environmentPath.length > MAX_ENVIRONMENT_PATH_LEN ||
+      environmentPath.includes("\0") ||
+      environmentPath.includes("..") ||
+      !SAFE_ENVIRONMENT_PATH_RE.test(environmentPath)
+   ) {
+      throw new BadRequestError(
+         `Invalid environment path: must be an absolute path with no ".." segments and no NUL bytes`,
+      );
    }
 }
 
