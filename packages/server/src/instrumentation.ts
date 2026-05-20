@@ -127,21 +127,24 @@ eventLoopHistogram.enable();
 const eventLoopLagP50 = meter.createObservableGauge(
    "publisher_event_loop_lag_p50_ms",
    {
-      description: "Event loop delay p50 since the last scrape, in milliseconds",
+      description:
+         "Event loop delay p50 since the last scrape, in milliseconds",
       unit: "ms",
    },
 );
 const eventLoopLagP99 = meter.createObservableGauge(
    "publisher_event_loop_lag_p99_ms",
    {
-      description: "Event loop delay p99 since the last scrape, in milliseconds",
+      description:
+         "Event loop delay p99 since the last scrape, in milliseconds",
       unit: "ms",
    },
 );
 const eventLoopLagMax = meter.createObservableGauge(
    "publisher_event_loop_lag_max_ms",
    {
-      description: "Event loop delay max since the last scrape, in milliseconds",
+      description:
+         "Event loop delay max since the last scrape, in milliseconds",
       unit: "ms",
    },
 );
