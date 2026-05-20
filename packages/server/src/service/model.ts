@@ -643,6 +643,7 @@ export class Model {
       cellIndex: number,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -706,7 +707,7 @@ export class Model {
             const rowLimit =
                (await runnableToExecute.getPreparedResult()).resultExplore
                   .limit || ROW_LIMIT;
-            const result = await runnableToExecute.run({ rowLimit });
+            const result = await runnableToExecute.run({ rowLimit, givens });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
             queryResult =

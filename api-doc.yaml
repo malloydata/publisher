@@ -2024,6 +2024,12 @@ paths:
             enum:
               - "true"
               - "false"
+        - name: givens
+          in: query
+          description: JSON-encoded given values keyed by given name
+          required: false
+          schema:
+            type: string
       responses:
         "200":
           description: Cell execution result
