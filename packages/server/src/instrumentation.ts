@@ -1,3 +1,4 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { metrics } from "@opentelemetry/api";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
@@ -115,6 +116,52 @@ const httpRequestDuration = meter.createHistogram(
 const httpRequestCount = meter.createCounter("http_server_requests_total", {
    description: "Total number of HTTP requests",
 });
+
+// Event-loop-delay metrics. A blocked event loop is the only way the
+// /health/liveness probe (a pure synchronous 200 handler) can fail under K8s,
+// so we surface p50/p99/max so an operator can correlate liveness restarts
+// with sustained event-loop pressure (large Malloy compiles, GC, etc.).
+const eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
+eventLoopHistogram.enable();
+
+const eventLoopLagP50 = meter.createObservableGauge(
+   "publisher_event_loop_lag_p50_ms",
+   {
+      description: "Event loop delay p50 since the last scrape, in milliseconds",
+      unit: "ms",
+   },
+);
+const eventLoopLagP99 = meter.createObservableGauge(
+   "publisher_event_loop_lag_p99_ms",
+   {
+      description: "Event loop delay p99 since the last scrape, in milliseconds",
+      unit: "ms",
+   },
+);
+const eventLoopLagMax = meter.createObservableGauge(
+   "publisher_event_loop_lag_max_ms",
+   {
+      description: "Event loop delay max since the last scrape, in milliseconds",
+      unit: "ms",
+   },
+);
+
+// Sample all three in one batch so the histogram reset can't race the reads.
+meter.addBatchObservableCallback(
+   (observableResult) => {
+      observableResult.observe(
+         eventLoopLagP50,
+         eventLoopHistogram.percentile(50) / 1e6,
+      );
+      observableResult.observe(
+         eventLoopLagP99,
+         eventLoopHistogram.percentile(99) / 1e6,
+      );
+      observableResult.observe(eventLoopLagMax, eventLoopHistogram.max / 1e6);
+      eventLoopHistogram.reset();
+   },
+   [eventLoopLagP50, eventLoopLagP99, eventLoopLagMax],
+);
 
 const IGNORED_PATHS = new Set([
    "/health",
