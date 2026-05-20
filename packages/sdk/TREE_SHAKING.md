@@ -29,7 +29,7 @@ function YourComponent() {
   const { apiClients } = useServer();
   
   // Use API clients for data fetching
-  const projects = await apiClients.projects.getProjects();
+  const environments = await apiClients.environments.listEnvironments();
   
   return <div>{/* Your custom UI */}</div>;
 }
@@ -52,7 +52,7 @@ The client entry point (`@malloy-publisher/sdk/client`) is ideal when you:
 The client entry exports:
 - `ServerProvider` and `useServer` React components
 - `globalQueryClient` for direct React Query access
-- All OpenAPI-generated client APIs (`ConnectionsApi`, `ProjectsApi`, etc.)
+- All OpenAPI-generated client APIs (`ConnectionsApi`, `EnvironmentsApi`, etc.)
 - `Configuration` class for API client setup
 
 ## Full SDK Usage
@@ -65,7 +65,7 @@ import {
   ServerProvider, 
   useServer,
   Home,
-  Project,
+  Environment,
   Package,
   Model,
   Notebook
@@ -89,7 +89,7 @@ import {
   ServerProvider, 
   useServer,
   Configuration,
-  ProjectsApi,
+  EnvironmentsApi,
   ConnectionsApi 
 } from '@malloy-publisher/sdk/client';
 
@@ -98,15 +98,15 @@ const config = new Configuration({
   basePath: 'https://your-publisher-instance.com'
 });
 
-const projectsApi = new ProjectsApi(config);
+const environmentsApi = new EnvironmentsApi(config);
 
 function MyComponent() {
   const { apiClients } = useServer();
   
   // Use either the context clients or direct instances
-  const projects = await apiClients.projects.getProjects();
+  const environments = await apiClients.environments.listEnvironments();
   // OR
-  const projects2 = await projectsApi.getProjects();
+  const environments2 = await environmentsApi.listEnvironments();
   
   return <div>{/* Your UI */}</div>;
 }
@@ -117,17 +117,17 @@ function MyComponent() {
 ```tsx
 // ✅ Types-only import - zero bundle impact
 import type { 
-  ProjectsApi, 
+  EnvironmentsApi, 
   ModelsApi, 
   QueryResult 
 } from '@malloy-publisher/sdk/client';
 
 // Your API wrapper
 class MyApiWrapper {
-  constructor(private projectsApi: ProjectsApi) {}
+  constructor(private environmentsApi: EnvironmentsApi) {}
   
-  async getProject(id: string): Promise<QueryResult> {
-    return this.projectsApi.getProject(id);
+  async getEnvironment(name: string): Promise<QueryResult> {
+    return this.environmentsApi.getEnvironment(name);
   }
 }
 ```

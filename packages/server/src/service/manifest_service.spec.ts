@@ -7,12 +7,12 @@ import {
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { ManifestService } from "./manifest_service";
-import { ProjectStore } from "./project_store";
+import { EnvironmentStore } from "./environment_store";
 
 function makeEntry(overrides: Partial<ManifestEntry> = {}): ManifestEntry {
    return {
       id: "entry-1",
-      projectId: "proj-1",
+      environmentId: "proj-1",
       packageName: "pkg",
       buildId: "build-abc",
       tableName: "my_table",
@@ -39,33 +39,36 @@ function createMocks() {
    } as unknown as sinon.SinonStubbedInstance<ResourceRepository>;
 
    const reloadAllModels = sandbox.stub().resolves();
+   const reloadAllModelsForPackage = sandbox.stub().resolves();
 
    const pkg = {
       reloadAllModels,
    };
 
-   const project = {
+   const environment = {
       getPackage: sandbox.stub().resolves(pkg),
+      reloadAllModelsForPackage,
    };
 
-   const projectStore = {
+   const environmentStore = {
       storageManager: {
-         getManifestStore: (_projectId?: string) => manifestStore,
+         getManifestStore: (_environmentId?: string) => manifestStore,
          getRepository: () => repository,
       },
-      getProject: sandbox.stub().resolves(project),
-   } as unknown as ProjectStore;
+      getEnvironment: sandbox.stub().resolves(environment),
+   } as unknown as EnvironmentStore;
 
-   const service = new ManifestService(projectStore);
+   const service = new ManifestService(environmentStore);
 
    return {
       sandbox,
       manifestStore,
       repository,
-      projectStore,
-      project,
+      environmentStore,
+      environment,
       pkg,
       reloadAllModels,
+      reloadAllModelsForPackage,
       service,
    };
 }
@@ -142,18 +145,20 @@ describe("ManifestService", () => {
          const result = await ctx.service.reloadManifest(
             "proj-1",
             "pkg",
-            "my-project",
+            "my-environment",
          );
 
          expect(result).toEqual(manifest);
          expect(
-            (ctx.projectStore.getProject as sinon.SinonStub).calledWith(
-               "my-project",
+            (ctx.environmentStore.getEnvironment as sinon.SinonStub).calledWith(
+               "my-environment",
                false,
             ),
          ).toBe(true);
-         expect(ctx.project.getPackage.calledWith("pkg", false)).toBe(true);
-         expect(ctx.reloadAllModels.calledWith(manifest.entries)).toBe(true);
+         expect(ctx.environment.getPackage.calledWith("pkg", false)).toBe(true);
+         expect(
+            ctx.reloadAllModelsForPackage.calledWith("pkg", manifest.entries),
+         ).toBe(true);
       });
 
       it("should return an empty manifest when no entries exist", async () => {
@@ -166,11 +171,11 @@ describe("ManifestService", () => {
          const result = await ctx.service.reloadManifest(
             "proj-1",
             "pkg",
-            "my-project",
+            "my-environment",
          );
 
          expect(result.entries).toEqual({});
-         expect(ctx.reloadAllModels.calledWith({})).toBe(true);
+         expect(ctx.reloadAllModelsForPackage.calledWith("pkg", {})).toBe(true);
       });
    });
 

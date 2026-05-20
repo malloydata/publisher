@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
 
 env:
@@ -192,14 +192,14 @@ jobs:
           echo "--- server log ---"
           cat /tmp/server.log
           exit 1
-      - name: Test list projects
+      - name: Test list environments
         run: |
-          response=$(curl -s http://localhost:${{ matrix.port }}/api/v0/projects)
+          response=$(curl -s http://localhost:${{ matrix.port }}/api/v0/environments)
           echo "API Response: $response"
           if echo "$response" | jq -e '. | length == 1' > /dev/null; then
-            echo "✓ API test passed: Found 1 project"
+            echo "✓ API test passed: Found 1 environment"
           else
-            echo "✗ API test failed: Expected 1 project, got different response"
+            echo "✗ API test failed: Expected 1 envrionment, got different response"
             echo "--- server log ---"
             cat /tmp/server.log
             exit 1
@@ -228,6 +228,31 @@ jobs:
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Inspect image metadata
+        run: |
+          # Lock in the Dockerfile claims made for audit findings #7 and #8:
+          # both runtime ports must be EXPOSEd, and the OCI image labels
+          # that surface mount-path docs must be present. A LABEL syntax
+          # typo or a dropped EXPOSE line would otherwise only surface to
+          # users at deploy time.
+          set -e
+          exposed=$(docker inspect malloy-publisher:smoke-test \
+            --format='{{json .Config.ExposedPorts}}')
+          echo "ExposedPorts: $exposed"
+          echo "$exposed" | jq -e '."4000/tcp"' >/dev/null \
+            || { echo "✗ Missing EXPOSE 4000"; exit 1; }
+          echo "$exposed" | jq -e '."4040/tcp"' >/dev/null \
+            || { echo "✗ Missing EXPOSE 4040"; exit 1; }
+          echo "✓ Both runtime ports declared"
+          labels=$(docker inspect malloy-publisher:smoke-test \
+            --format='{{json .Config.Labels}}')
+          echo "Labels: $labels"
+          for key in title description source documentation licenses; do
+            echo "$labels" | jq -e --arg k "org.opencontainers.image.$key" \
+              '.[$k] | strings | length > 0' >/dev/null \
+              || { echo "✗ Missing/empty OCI label: org.opencontainers.image.$key"; exit 1; }
+          done
+          echo "✓ All five OCI image labels present"
       - name: Start container
         run: |
           docker run -d --name malloy-publisher-smoke \
@@ -256,14 +281,14 @@ jobs:
           echo "--- container logs ---"
           docker logs malloy-publisher-smoke || true
           exit 1
-      - name: Test /api/v0/projects
+      - name: Test /api/v0/environments
         run: |
-          response=$(curl -s http://localhost:4000/api/v0/projects)
+          response=$(curl -s http://localhost:4000/api/v0/environments)
           echo "API Response: $response"
           if echo "$response" | jq -e '. | type == "array"' > /dev/null; then
-            echo "✓ /api/v0/projects returned a JSON array"
+            echo "✓ /api/v0/environments returned a JSON array"
           else
-            echo "✗ /api/v0/projects did not return a JSON array"
+            echo "✗ /api/v0/environments did not return a JSON array"
             echo "--- container logs ---"
             docker logs malloy-publisher-smoke || true
             exit 1

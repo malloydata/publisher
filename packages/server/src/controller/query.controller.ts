@@ -2,8 +2,9 @@ import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
-import { ProjectStore } from "../service/project_store";
+import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
+import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -16,14 +17,14 @@ function bigIntReplacer(_key: string, value: unknown): unknown {
 }
 
 export class QueryController {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
 
-   constructor(projectStore: ProjectStore) {
-      this.projectStore = projectStore;
+   constructor(environmentStore: EnvironmentStore) {
+      this.environmentStore = environmentStore;
    }
 
    public async getQuery(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       modelPath: string,
       sourceName: string,
@@ -32,9 +33,13 @@ export class QueryController {
       compactJson: boolean = false,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<ApiQuery> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const p = await project.getPackage(packageName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
       const model = p.getModel(modelPath);
 
       if (!model) {
@@ -46,13 +51,14 @@ export class QueryController {
             query,
             filterParams,
             bypassFilters,
+            givens,
          );
          const renderLogs = validateRenderTags(result);
          return {
             result: compactJson
                ? JSON.stringify(compactResult, bigIntReplacer)
                : JSON.stringify(result),
-            resource: `${API_PREFIX}/projects/${projectName}/packages/${packageName}/models/${modelPath}/query`,
+            resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
          } as ApiQuery;
       }

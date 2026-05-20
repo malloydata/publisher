@@ -114,7 +114,7 @@ export default function Model({
                            <LinkOutlinedIcon
                               sx={{
                                  fontSize: "24px",
-                                 color: "#666666",
+                                 color: "text.secondary",
                                  cursor: "pointer",
                               }}
                               onClick={copyToClipboard}
@@ -150,7 +150,7 @@ export default function Model({
                         <SearchIcon
                            sx={{
                               fontSize: "18px",
-                              color: "#666666",
+                              color: "text.secondary",
                               marginBottom: "5px",
                            }}
                         />

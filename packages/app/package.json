@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/app",
    "description": "Malloy Publisher App",
-   "version": "0.0.194",
+   "version": "0.0.197",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
@@ -35,12 +35,16 @@
       "lint": "bunx eslint ./src --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
       "analyze": "bunx vite-bundle-visualizer",
-      "generate-api-types": ""
+      "generate-api-types": "",
+      "test:playwright:install": "bunx playwright install chromium-headless-shell chromium",
+      "test:playwright": "bunx playwright test --config=playwright.config.ts",
+      "test:playwright:headed": "bunx playwright test --config=playwright.config.ts --headed"
    },
    "dependencies": {
       "@malloy-publisher/sdk": "workspace:*",
       "@mui/icons-material": "^7.0.2",
       "@mui/material": "^7.0.2",
+      "@tanstack/react-query": "^5.59.16",
       "@vitejs/plugin-react": "^4.3.1",
       "react-router-dom": "^7.6.2"
    },

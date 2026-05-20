@@ -2,7 +2,7 @@ import {
    McpServer,
    ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import {
    ModelNotFoundError,
    PackageNotFoundError,
@@ -23,12 +23,12 @@ import type { components } from "../../api"; // Import the components type
  */
 export function registerModelResource(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    mcpServer.resource(
       "model",
       new ResourceTemplate(
-         "malloy://project/{projectName}/package/{packageName}/models/{modelPath}",
+         "malloy://environment/{environmentName}/package/{packageName}/models/{modelPath}",
          { list: undefined }, // No list handler for individual models
       ),
       /** Handles GetResource requests for specific Malloy Models */
@@ -38,18 +38,18 @@ export function registerModelResource(
             params,
             "model",
             async ({
-               projectName,
+               environmentName,
                packageName,
                modelPath,
             }: {
-               projectName?: unknown;
+               environmentName?: unknown;
                packageName?: unknown;
                modelPath?: unknown;
             }) => {
                try {
                   // Validate all parameters
-                  if (typeof projectName !== "string") {
-                     throw new Error("Invalid project name parameter.");
+                  if (typeof environmentName !== "string") {
+                     throw new Error("Invalid environment name parameter.");
                   }
                   if (typeof packageName !== "string") {
                      throw new Error("Invalid package name parameter.");
@@ -58,14 +58,14 @@ export function registerModelResource(
                      throw new Error("Invalid model path parameter.");
                   }
 
-                  // *** UPDATED LOGIC using ProjectStore ***
-                  // getProject can throw ProjectNotFoundError (though unlikely if name is 'home')
-                  const project = await projectStore.getProject(
-                     projectName,
+                  // *** UPDATED LOGIC using EnvironmentStore ***
+                  // getEnvironment can throw EnvironmentNotFoundError (though unlikely if name is 'home')
+                  const environment = await environmentStore.getEnvironment(
+                     environmentName,
                      false,
                   );
                   // getPackage can throw PackageNotFoundError
-                  const pkg = await project.getPackage(packageName, false);
+                  const pkg = await environment.getPackage(packageName, false);
                   // getModel is SYNCHRONOUS
                   const modelInstance = pkg.getModel(modelPath);
                   // *** END UPDATED LOGIC ***
@@ -98,20 +98,22 @@ export function registerModelResource(
                   let errorDetails;
                   // Provide specific context for error messages
                   // Use validated string parameters here
-                  const safeProjectName =
-                     typeof projectName === "string" ? projectName : "unknown";
+                  const safeEnvironmentName =
+                     typeof environmentName === "string"
+                        ? environmentName
+                        : "unknown";
                   const safePackageName =
                      typeof packageName === "string" ? packageName : "unknown";
                   const safeModelPath =
                      typeof modelPath === "string" ? modelPath : "unknown";
 
-                  const notFoundContext = `Model '${safeModelPath}' in package '${safePackageName}' for project '${safeProjectName}'`;
-                  const malloyErrorContext = `${safeProjectName}/${safePackageName}/${safeModelPath}`;
+                  const notFoundContext = `Model '${safeModelPath}' in package '${safePackageName}' for environment '${safeEnvironmentName}'`;
+                  const malloyErrorContext = `${safeEnvironmentName}/${safePackageName}/${safeModelPath}`;
 
                   if (error instanceof PackageNotFoundError) {
                      // Package not found during getPackage call
                      errorDetails = getNotFoundError(
-                        `Package '${safePackageName}' in project '${safeProjectName}'`,
+                        `Package '${safePackageName}' in environment '${safeEnvironmentName}'`,
                      );
                   } else if (error instanceof ModelNotFoundError) {
                      // Model not found (either from getModel or type check)

@@ -6,7 +6,7 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(400, error.message);
    } else if (error instanceof FrozenConfigError) {
       return httpError(403, error.message);
-   } else if (error instanceof ProjectNotFoundError) {
+   } else if (error instanceof EnvironmentNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof PackageNotFoundError) {
       return httpError(404, error.message);
@@ -16,6 +16,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(400, error.message);
    } else if (error instanceof ConnectionNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof ConnectionAuthError) {
+      return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
@@ -26,6 +28,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
       return httpError(409, error.message);
+   } else if (error instanceof ServiceUnavailableError) {
+      return httpError(503, error.message);
    } else {
       return httpError(500, error.message);
    }
@@ -53,7 +57,7 @@ export class BadRequestError extends Error {
    }
 }
 
-export class ProjectNotFoundError extends Error {
+export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }
@@ -78,6 +82,12 @@ export class ConnectionNotFoundError extends Error {
 }
 
 export class ConnectionError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+export class ConnectionAuthError extends Error {
    constructor(message: string) {
       super(message);
    }
@@ -110,6 +120,17 @@ export class MaterializationConflictError extends Error {
 }
 
 export class InvalidStateTransitionError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * Thrown when the publisher is temporarily refusing a request to keep
+ * RSS under the configured `PUBLISHER_MAX_MEMORY_BYTES` cap. Mapped to
+ * HTTP 503 so an upstream proxy / client can retry with back-off.
+ */
+export class ServiceUnavailableError extends Error {
    constructor(message: string) {
       super(message);
    }

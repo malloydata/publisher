@@ -1,154 +1,35 @@
-import MenuIcon from "@mui/icons-material/Menu";
-import AppBar from "@mui/material/AppBar";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import IconButton from "@mui/material/IconButton";
-import Menu from "@mui/material/Menu";
-import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
-import { useTheme } from "@mui/material/styles";
-import Toolbar from "@mui/material/Toolbar";
-import Typography from "@mui/material/Typography";
-import useMediaQuery from "@mui/material/useMediaQuery";
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import BreadcrumbNav from "../BreadcrumbNav/BreadcrumbNav";
+import { ReactElement } from "react";
 
+/**
+ * Public API surface used by `MalloyPublisherApp({ headerProps })` consumers.
+ *
+ * As of v0.0.195, the shell is a permanent left sidebar + per-page content
+ * header (see MainPage / Sidebar). The slot positions have changed since
+ * v0.0.194; the type signature is unchanged but rendering location is not:
+ *
+ * - `logoHeader` overrides the default Malloy wordmark in the sidebar
+ *   header (slot is 56 px tall; sidebar is 260 px wide expanded, 64 px
+ *   wide collapsed, so wide horizontal wordmarks may be cropped or hidden
+ *   when collapsed). Prefer compact mark + short label, or a single icon
+ *   that still reads at 64 px.
+ *
+ * - `endCap` renders into the content header's `#header-actions-portal`
+ *   (right-aligned slot in a 56 px content header). Use it for primary
+ *   page-level actions that should follow the user across routes (e.g. a
+ *   "Build Model" or "Sign in" button). The slot is shared across all
+ *   routes, so don't put per-route actions here — those belong on the
+ *   page itself.
+ */
 export interface HeaderProps {
-   logoHeader?: React.ReactElement;
-   endCap?: React.ReactElement;
+   logoHeader?: ReactElement;
+   endCap?: ReactElement;
 }
 
-export default function Header({ logoHeader, endCap }: HeaderProps) {
-   const navigate = useNavigate();
-   const theme = useTheme();
-   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
-   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-   const open = Boolean(anchorEl);
-
-   const handleMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
-      setAnchorEl(event.currentTarget);
-   };
-   const handleMenuClose = () => setAnchorEl(null);
-
-   const menuItems = [
-      {
-         label: "Malloy Docs",
-         link: "https://docs.malloydata.dev/documentation/",
-         sx: { color: "primary.main" },
-      },
-      {
-         label: "Publisher Docs",
-         link: "https://github.com/malloydata/publisher/blob/main/README.md",
-         sx: { color: "primary.main" },
-      },
-      {
-         label: "Publisher API",
-         link: "/api-doc.html",
-         sx: { color: "primary.main" },
-      },
-   ];
-   return (
-      <AppBar
-         position="sticky"
-         elevation={0}
-         sx={{
-            backgroundColor: "background.paper",
-            borderBottom: "1px solid",
-            borderColor: "divider",
-         }}
-      >
-         <Toolbar
-            sx={{
-               justifyContent: "space-between",
-               flexWrap: "nowrap",
-               minHeight: 44,
-            }}
-         >
-            {logoHeader ? (
-               logoHeader
-            ) : (
-               <Box
-                  sx={{
-                     display: "flex",
-                     alignItems: "center",
-                     gap: 1,
-                     cursor: "pointer",
-                  }}
-                  onClick={() => navigate("/")}
-               >
-                  <Box
-                     component="img"
-                     src="/logo.svg"
-                     alt="Malloy"
-                     sx={{ width: 28, height: 28 }}
-                  />
-                  <Typography
-                     variant="h6"
-                     sx={{
-                        color: "text.primary",
-                        fontWeight: 700,
-                        letterSpacing: "-0.025em",
-                        fontSize: { xs: "1.1rem", sm: "1.25rem" },
-                     }}
-                  >
-                     Malloy Publisher
-                  </Typography>
-               </Box>
-            )}
-
-            {isMobile ? (
-               <>
-                  <IconButton color="inherit" onClick={handleMenuOpen}>
-                     <MenuIcon />
-                  </IconButton>
-                  <Menu
-                     anchorEl={anchorEl}
-                     open={open}
-                     onClose={handleMenuClose}
-                     anchorOrigin={{
-                        vertical: "bottom",
-                        horizontal: "right",
-                     }}
-                  >
-                     {menuItems.map((item) => (
-                        <MenuItem
-                           key={item.label}
-                           onClick={() => {
-                              handleMenuClose();
-                              window.location.href = item.link;
-                           }}
-                           sx={item.sx}
-                        >
-                           {item.label}
-                        </MenuItem>
-                     ))}
-                     {endCap && <MenuItem>{endCap}</MenuItem>}
-                  </Menu>
-               </>
-            ) : (
-               <Stack direction="row" spacing={2} alignItems="center">
-                  {menuItems.map((item) => (
-                     <Button key={item.label} href={item.link} sx={item.sx}>
-                        {item.label}
-                     </Button>
-                  ))}
-                  {endCap}
-               </Stack>
-            )}
-         </Toolbar>
-
-         <Box
-            sx={{
-               borderTop: "1px solid white",
-               paddingLeft: "16px",
-               paddingRight: "16px",
-               marginBottom: "1px",
-               overflowX: "auto",
-            }}
-         >
-            <BreadcrumbNav />
-         </Box>
-      </AppBar>
-   );
+/**
+ * Stub retained so that `import Header from ".../Header"` keeps working
+ * for any consumer who imported it. The real shell is rendered by
+ * MainPage + Sidebar; this component renders nothing.
+ */
+export default function Header(_props: HeaderProps) {
+   return null;
 }

@@ -1,14 +1,14 @@
-import { generateKeyPairSync } from "crypto";
 import { describe, expect, it } from "bun:test";
+import { generateKeyPairSync } from "crypto";
+import { components } from "../api";
 import {
-   assembleProjectConnections,
+   assembleEnvironmentConnections,
    normalizeSnowflakePrivateKey,
 } from "./connection_config";
-import { components } from "../api";
 
 type ApiConnection = components["schemas"]["Connection"];
 
-describe("assembleProjectConnections — databricks", () => {
+describe("assembleEnvironmentConnections — databricks", () => {
    const validBase: ApiConnection = {
       name: "dbx",
       type: "databricks",
@@ -22,7 +22,9 @@ describe("assembleProjectConnections — databricks", () => {
    };
 
    it("emits a databricks core entry with all known fields preserved", () => {
-      const { pojo, apiConnections } = assembleProjectConnections([validBase]);
+      const { pojo, apiConnections } = assembleEnvironmentConnections([
+         validBase,
+      ]);
 
       const entry = pojo.connections["dbx"];
       expect(entry.is).toBe("databricks");
@@ -48,7 +50,7 @@ describe("assembleProjectConnections — databricks", () => {
             defaultCatalog: "main",
          },
       };
-      const { pojo } = assembleProjectConnections([conn]);
+      const { pojo } = assembleEnvironmentConnections([conn]);
       const entry = pojo.connections["dbx-oauth"];
       expect(entry.is).toBe("databricks");
       expect(entry.oauthClientId).toBe("client-id");
@@ -61,7 +63,7 @@ describe("assembleProjectConnections — databricks", () => {
          name: "dbx",
          type: "databricks",
       };
-      expect(() => assembleProjectConnections([conn])).toThrow(
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "Databricks connection configuration is missing.",
       );
    });
@@ -74,7 +76,7 @@ describe("assembleProjectConnections — databricks", () => {
             host: undefined,
          },
       };
-      expect(() => assembleProjectConnections([conn])).toThrow(
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "Databricks host is required",
       );
    });
@@ -87,7 +89,7 @@ describe("assembleProjectConnections — databricks", () => {
             path: undefined,
          },
       };
-      expect(() => assembleProjectConnections([conn])).toThrow(
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "Databricks SQL warehouse HTTP path is required",
       );
    });
@@ -103,7 +105,7 @@ describe("assembleProjectConnections — databricks", () => {
             // defaultCatalog deliberately omitted
          },
       };
-      expect(() => assembleProjectConnections([conn])).toThrow(
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "Databricks default catalog is required",
       );
    });
@@ -120,7 +122,7 @@ describe("assembleProjectConnections — databricks", () => {
             defaultCatalog: "main",
          },
       };
-      expect(() => assembleProjectConnections([conn])).toThrow(
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "Databricks requires",
       );
    });

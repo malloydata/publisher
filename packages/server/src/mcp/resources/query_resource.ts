@@ -6,7 +6,7 @@ import { URL } from "url";
 import type { components } from "../../api"; // Need this for Query definition type
 import { ModelCompilationError } from "../../errors";
 import { logger } from "../../logger";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 import {
    getInternalError,
    getMalloyErrorDetails,
@@ -21,7 +21,7 @@ import { RESOURCE_METADATA } from "../resource_metadata";
 
 // Define the expected parameter types
 type QueryParams = {
-   projectName?: unknown;
+   environmentName?: unknown;
    packageName?: unknown;
    modelPath?: unknown;
    queryName?: unknown;
@@ -32,12 +32,12 @@ type QueryParams = {
  */
 export function registerQueryResource(
    mcpServer: McpServer,
-   projectStore: ProjectStore,
+   environmentStore: EnvironmentStore,
 ): void {
    mcpServer.resource(
       "query",
       new ResourceTemplate(
-         "malloy://project/{projectName}/package/{packageName}/models/{modelPath}/queries/{queryName}",
+         "malloy://environment/{environmentName}/package/{packageName}/models/{modelPath}/queries/{queryName}",
          { list: undefined }, // Listing queries is not supported via this template
       ),
       (uri, params) =>
@@ -46,11 +46,16 @@ export function registerQueryResource(
             params as QueryParams,
             "query",
             async (
-               { projectName, packageName, modelPath, queryName }: QueryParams,
+               {
+                  environmentName,
+                  packageName,
+                  modelPath,
+                  queryName,
+               }: QueryParams,
                uri: URL,
             ) => {
                if (
-                  typeof projectName !== "string" ||
+                  typeof environmentName !== "string" ||
                   typeof packageName !== "string" ||
                   typeof modelPath !== "string" ||
                   typeof queryName !== "string"
@@ -60,8 +65,8 @@ export function registerQueryResource(
 
                try {
                   const modelResult = await getModelForQuery(
-                     projectStore,
-                     projectName,
+                     environmentStore,
+                     environmentName,
                      packageName,
                      modelPath,
                   );
@@ -83,7 +88,7 @@ export function registerQueryResource(
                   if (!query) {
                      // Specific "Query not found" error
                      const errorDetails = getNotFoundError(
-                        `Query '${queryName}' in model '${modelPath}' package '${packageName}' project '${projectName}'`,
+                        `Query '${queryName}' in model '${modelPath}' package '${packageName}' environment '${environmentName}'`,
                      );
                      throw new McpGetResourceError(errorDetails);
                   }
@@ -95,7 +100,7 @@ export function registerQueryResource(
                   if (error instanceof ModelCompilationError) {
                      const errorDetails = getMalloyErrorDetails(
                         "GetResource (query - model compilation)",
-                        `${projectName}/${packageName}/${modelPath}`,
+                        `${environmentName}/${packageName}/${modelPath}`,
                         error,
                      );
                      throw new McpGetResourceError(errorDetails);

@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { PROMPTS } from "./prompt_definitions";
 import { getCompiledModel } from "./utils";
-import { ProjectStore } from "../../service/project_store";
+import { EnvironmentStore } from "../../service/environment_store";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -31,7 +31,7 @@ export function makePromptHandler(id: string) {
    const templateFn = Handlebars.compile(def.template, { noEscape: true });
 
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-   return async (params: any, ps: ProjectStore) => {
+   return async (params: any, ps: EnvironmentStore) => {
       const data: Record<string, unknown> = { ...params };
 
       // Dynamically add model content / schema context if the args include URIs
@@ -79,6 +79,6 @@ export const promptHandlerMap = Object.fromEntries(
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    (
       params: any,
-      ps: ProjectStore,
+      ps: EnvironmentStore,
    ) => Promise<z.infer<typeof GetPromptResultSchema>>
 >;

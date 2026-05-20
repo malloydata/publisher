@@ -1,13 +1,14 @@
 import { encodeResourceUri, Model, Notebook } from "@malloy-publisher/sdk";
+import Box from "@mui/material/Box";
 import { useParams } from "react-router-dom";
 
 function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
-   if (!params.projectName) {
+   if (!params.environmentName) {
       return (
          <div>
-            <h2>Missing project name</h2>
+            <h2>Missing environment name</h2>
          </div>
       );
    }
@@ -19,27 +20,35 @@ function ModelPage() {
       );
    }
    const resourceUri = encodeResourceUri({
-      projectName: params.projectName,
+      environmentName: params.environmentName,
       packageName: params.packageName,
       modelPath,
    });
 
+   const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
+
    if (modelPath?.endsWith(".malloy")) {
       return (
-         <Model
-            resourceUri={resourceUri}
-            runOnDemand={true}
-            maxResultSize={512 * 1024}
-         />
+         <Box sx={wrapperSx}>
+            <Model
+               resourceUri={resourceUri}
+               runOnDemand={true}
+               maxResultSize={512 * 1024}
+            />
+         </Box>
       );
    }
    if (modelPath?.endsWith(".malloynb")) {
-      return <Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />;
+      return (
+         <Box sx={wrapperSx}>
+            <Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />
+         </Box>
+      );
    }
    return (
-      <div>
+      <Box sx={wrapperSx}>
          <h2>Unrecognized file type: {modelPath}</h2>
-      </div>
+      </Box>
    );
 }
 

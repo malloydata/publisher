@@ -37,29 +37,29 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
    });
 
    // --- Test Constants ---
-   const homeProjectUri = "malloy://project/malloy-samples";
-   const faaPackageUri = "malloy://project/malloy-samples/package/faa";
+   const homeProjectUri = "malloy://environment/malloy-samples";
+   const faaPackageUri = "malloy://environment/malloy-samples/package/faa";
    const flightsModelUri =
-      "malloy://project/malloy-samples/package/faa/models/flights.malloy";
+      "malloy://environment/malloy-samples/package/faa/models/flights.malloy";
    const FLIGHTS_SOURCE = "flights";
    const FLIGHTS_CARRIER_QUERY = "flights_by_carrier";
    const FLIGHTS_MONTH_VIEW = "flights_by_month";
    const OVERVIEW_NOTEBOOK = "overview.malloynb";
    const nonExistentPackageUri =
-      "malloy://project/malloy-samples/package/nonexistent";
+      "malloy://environment/malloy-samples/package/nonexistent";
    const nonExistentModelUri =
-      "malloy://project/malloy-samples/package/faa/models/nonexistent.malloy";
-   const nonExistentProjectUri = "malloy://project/invalid_project";
+      "malloy://environment/malloy-samples/package/faa/models/nonexistent.malloy";
+   const nonExistentProjectUri = "malloy://environment/invalid_project";
    const invalidUri = "invalid://format";
 
-   const validSourceUri = `malloy://project/malloy-samples/package/faa/models/flights.malloy/sources/${FLIGHTS_SOURCE}`;
-   const validQueryUri = `malloy://project/malloy-samples/package/faa/models/flights.malloy/queries/${FLIGHTS_CARRIER_QUERY}`;
-   const validViewUri = `malloy://project/malloy-samples/package/faa/models/flights.malloy/sources/${FLIGHTS_SOURCE}/views/${FLIGHTS_MONTH_VIEW}`;
-   const validNotebookUri = `malloy://project/malloy-samples/package/faa/notebooks/${OVERVIEW_NOTEBOOK}`;
-   const nonExistentSourceUri = `malloy://project/malloy-samples/package/faa/models/flights.malloy/sources/non_existent_source`;
-   const nonExistentQueryUri = `malloy://project/malloy-samples/package/faa/models/flights.malloy/queries/non_existent_query`;
-   const nonExistentViewUri = `malloy://project/malloy-samples/package/faa/models/flights.malloy/sources/${FLIGHTS_SOURCE}/views/non_existent_view`;
-   const nonExistentNotebookUri = `malloy://project/malloy-samples/package/faa/notebooks/non_existent.malloynb`;
+   const validSourceUri = `malloy://environment/malloy-samples/package/faa/models/flights.malloy/sources/${FLIGHTS_SOURCE}`;
+   const validQueryUri = `malloy://environment/malloy-samples/package/faa/models/flights.malloy/queries/${FLIGHTS_CARRIER_QUERY}`;
+   const validViewUri = `malloy://environment/malloy-samples/package/faa/models/flights.malloy/sources/${FLIGHTS_SOURCE}/views/${FLIGHTS_MONTH_VIEW}`;
+   const validNotebookUri = `malloy://environment/malloy-samples/package/faa/notebooks/${OVERVIEW_NOTEBOOK}`;
+   const nonExistentSourceUri = `malloy://environment/malloy-samples/package/faa/models/flights.malloy/sources/non_existent_source`;
+   const nonExistentQueryUri = `malloy://environment/malloy-samples/package/faa/models/flights.malloy/queries/non_existent_query`;
+   const nonExistentViewUri = `malloy://environment/malloy-samples/package/faa/models/flights.malloy/sources/${FLIGHTS_SOURCE}/views/non_existent_view`;
+   const nonExistentNotebookUri = `malloy://environment/malloy-samples/package/faa/notebooks/non_existent.malloynb`;
 
    describe("client.listResources", () => {
       it(
@@ -217,7 +217,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
             );
             if (flightsEntry) {
                expect(flightsEntry.uri).toBe(
-                  "malloy://project/malloy-samples/package/faa/sources/flights.malloy",
+                  "malloy://environment/malloy-samples/package/faa/sources/flights.malloy",
                );
                expect(flightsEntry.metadata).toBeDefined();
                expect(flightsEntry.metadata!.description).toContain(
@@ -232,7 +232,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
             );
             if (notebookEntry) {
                expect(notebookEntry.uri).toBe(
-                  "malloy://project/malloy-samples/package/faa/notebooks/aircraft_analysis.malloynb",
+                  "malloy://environment/malloy-samples/package/faa/notebooks/aircraft_analysis.malloynb",
                );
                expect(notebookEntry.metadata).toBeDefined();
                expect(notebookEntry.metadata!.description).toContain(
@@ -505,7 +505,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
          // Adjust test to expect the generic "Resource not found" error, as the specific
          // "not a notebook" detail isn't easily surfaced in the standard error format.
          expect(errorPayload.error).toMatch(/Notebook 'overview.malloynb'/);
-         expect(errorPayload.error).toMatch(/project 'malloy-samples'/); // Check project name
+         expect(errorPayload.error).toMatch(/environment 'malloy-samples'/);
          expect(errorPayload.suggestions).toBeDefined();
          expect(Array.isArray(errorPayload.suggestions)).toBe(true);
          expect(errorPayload.suggestions.length).toBeGreaterThan(0);
@@ -532,8 +532,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
          expect(errorPayload.error).toMatch(/Resource not found/i);
          // Check for the specific source name in the message
          expect(errorPayload.error).toMatch(/Source 'non_existent_source'/);
-         // Adjust project name expectation
-         expect(errorPayload.error).toMatch(/project 'malloy-samples'/);
+         expect(errorPayload.error).toMatch(/environment 'malloy-samples'/);
          expect(errorPayload.suggestions).toBeDefined();
          expect(Array.isArray(errorPayload.suggestions)).toBe(true);
          expect(errorPayload.suggestions.length).toBeGreaterThan(0);
@@ -558,8 +557,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
          expect(errorPayload.error).toMatch(/Resource not found/i);
          // Check for the specific query name in the message
          expect(errorPayload.error).toMatch(/Query 'non_existent_query'/);
-         // Adjust project name expectation
-         expect(errorPayload.error).toMatch(/project 'malloy-samples'/);
+         expect(errorPayload.error).toMatch(/environment 'malloy-samples'/);
          expect(errorPayload.suggestions).toBeDefined();
          expect(Array.isArray(errorPayload.suggestions)).toBe(true);
          expect(errorPayload.suggestions.length).toBeGreaterThan(0);
@@ -584,8 +582,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
          expect(errorPayload.error).toMatch(/Resource not found/i);
          // Check for the specific view name in the message
          expect(errorPayload.error).toMatch(/View 'non_existent_view'/);
-         // Adjust project name expectation
-         expect(errorPayload.error).toMatch(/project 'malloy-samples'/);
+         expect(errorPayload.error).toMatch(/environment 'malloy-samples'/);
          expect(errorPayload.suggestions).toBeDefined();
          expect(Array.isArray(errorPayload.suggestions)).toBe(true);
          expect(errorPayload.suggestions.length).toBeGreaterThan(0);
@@ -611,8 +608,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
          // Check for the specific notebook name and context in the message
          // Adjust test to expect the generic "Resource not found" error
          expect(errorPayload.error).toMatch(/Notebook 'non_existent.malloynb'/);
-         // Adjust project name expectation
-         expect(errorPayload.error).toMatch(/project 'malloy-samples'/);
+         expect(errorPayload.error).toMatch(/environment 'malloy-samples'/);
          expect(errorPayload.suggestions).toBeDefined();
          expect(Array.isArray(errorPayload.suggestions)).toBe(true);
          expect(errorPayload.suggestions.length).toBeGreaterThan(0);
@@ -623,7 +619,7 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
 
       it("should return structured app error when requesting view from wrong source", async () => {
          if (!env) throw new Error("Test environment not initialized");
-         const wrongSourceUri = `malloy://project/malloy-samples/package/faa/models/flights.malloy/sources/aircraft/views/${FLIGHTS_MONTH_VIEW}`;
+         const wrongSourceUri = `malloy://environment/malloy-samples/package/faa/models/flights.malloy/sources/aircraft/views/${FLIGHTS_MONTH_VIEW}`;
          const result = await mcpClient.readResource({ uri: wrongSourceUri });
          expect(result.isError).toBe(true);
          expect(result.contents).toBeDefined();
@@ -633,22 +629,17 @@ describe.serial("MCP Resource Handlers (E2E Integration)", () => {
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const errorPayload = JSON.parse((result.contents![0] as any).text);
          expect(errorPayload.error).toBeDefined();
-         // Adjust expectation: The primary error should be the project not found
          expect(errorPayload.error).toMatch(/Resource not found/i);
-         expect(errorPayload.error).toMatch(/project 'malloy-samples'/);
-         // Remove checks for view/source name in the error for this specific case
+         expect(errorPayload.error).toMatch(/View 'flights_by_month'/);
+         expect(errorPayload.error).toMatch(/source 'aircraft'/);
+         expect(errorPayload.error).toMatch(/environment 'malloy-samples'/);
          expect(errorPayload.suggestions).toBeDefined();
          expect(Array.isArray(errorPayload.suggestions)).toBe(true);
-         expect(errorPayload.suggestions.length).toBeGreaterThan(0);
-
-         // The suggestions come as full sentences, so we check for expected content
          expect(errorPayload.suggestions.length).toBe(3);
          expect(errorPayload.suggestions[0]).toContain(
             "Verify the identifier or URI",
          );
-         expect(errorPayload.suggestions[0]).toContain(
-            "project 'malloy-samples'",
-         );
+         expect(errorPayload.suggestions[0]).toContain("flights_by_month");
          expect(errorPayload.suggestions[0]).toContain("is spelled correctly");
          expect(errorPayload.suggestions[0]).toContain(
             "Check capitalization and path separators",

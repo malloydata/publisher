@@ -27,7 +27,7 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import AddConnectionDialog from "../Connections/AddConnectionDialog";
 import DeleteConnectionDialog from "../Connections/DeleteConnectionDialog";
 import EditConnectionDialog from "../Connections/EditConnectionDialog";
-import ConnectionExplorer from "../Project/ConnectionExplorer";
+import ConnectionExplorer from "../Environment/ConnectionExplorer";
 import { useServer } from "../ServerProvider";
 import {
    PackageCard,
@@ -123,19 +123,19 @@ type ConnectionsProps = {
 export default function Connections({ resourceUri }: ConnectionsProps) {
    const { apiClients, mutable } = useServer();
    const queryClient = useQueryClient();
-   const { projectName: projectName } = parseResourceUri(resourceUri);
+   const { environmentName: environmentName } = parseResourceUri(resourceUri);
    const [notificationMessage, setNotificationMessage] = useState("");
    const [selectedConnection, setSelectedConnection] = useState<string | null>(
       null,
    );
    const selectedConnectionResourceUri = encodeResourceUri({
-      projectName: projectName,
+      environmentName: environmentName,
       connectionName: selectedConnection,
    });
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: ["connections", projectName],
-      queryFn: () => apiClients.connections.listConnections(projectName),
+      queryKey: ["connections", environmentName],
+      queryFn: () => apiClients.connections.listConnections(environmentName),
    });
 
    const handleConnectionClick = (connectionName: string) => {
@@ -148,15 +148,15 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
 
    const addConnection = useMutationWithApiError({
       mutationFn: (payload: ApiConnection) => {
-         return apiClients.projects.updateProject(projectName, {
-            name: projectName,
+         return apiClients.environments.updateEnvironment(environmentName, {
+            name: environmentName,
             connections: [...data.data, payload],
          });
       },
       onSuccess() {
          setNotificationMessage("Connection added successfully");
          queryClient.invalidateQueries({
-            queryKey: ["connections", projectName],
+            queryKey: ["connections", environmentName],
          });
       },
       onError(error) {
@@ -166,8 +166,8 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
 
    const updateConnection = useMutationWithApiError({
       mutationFn: (payload: ApiConnection) => {
-         return apiClients.projects.updateProject(projectName, {
-            name: projectName,
+         return apiClients.environments.updateEnvironment(environmentName, {
+            name: environmentName,
             connections: data.data.map((conn) =>
                conn.name === payload.name ? payload : conn,
             ),
@@ -178,7 +178,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
             `Connection ${variables.name} updated successfully`,
          );
          queryClient.invalidateQueries({
-            queryKey: ["connections", projectName],
+            queryKey: ["connections", environmentName],
          });
       },
       onError(error) {
@@ -188,8 +188,8 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
 
    const deleteConnection = useMutationWithApiError({
       mutationFn: (payload: ApiConnection) => {
-         return apiClients.projects.updateProject(projectName, {
-            name: projectName,
+         return apiClients.environments.updateEnvironment(environmentName, {
+            name: environmentName,
             connections: data.data.filter((conn) => conn.name !== payload.name),
          });
       },
@@ -198,7 +198,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
             `Connection ${variables.name} deleted successfully`,
          );
          queryClient.invalidateQueries({
-            queryKey: ["connections", projectName],
+            queryKey: ["connections", environmentName],
          });
       },
       onError(error) {
@@ -318,7 +318,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                   {isError && (
                      <ApiErrorDisplay
                         error={error}
-                        context={`${projectName} > Connections`}
+                        context={`${environmentName} > Connections`}
                      />
                   )}
                </Box>

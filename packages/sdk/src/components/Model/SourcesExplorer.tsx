@@ -142,7 +142,7 @@ function SourceExplorerComponentInner({
       }
    }, [onChange, query]);
    const {
-      projectName: projectName,
+      environmentName: environmentName,
       packageName: packageName,
       versionId: versionId,
    } = parseResourceUri(resourceUri);
@@ -178,7 +178,7 @@ function SourceExplorerComponentInner({
             query: malloy,
          });
          return apiClients.models.executeQueryModel(
-            projectName,
+            environmentName,
             packageName,
             sourceAndPath.modelPath,
             {
@@ -348,16 +348,16 @@ export function SourceExplorerComponent(props: SourceExplorerComponentProps) {
       return (
          <StyledExplorerPage>
             <StyledExplorerContent>
-               <div
-                  style={{
+               <Box
+                  sx={{
                      alignItems: "center",
                      justifyContent: "center",
                      height: "200px",
-                     color: "#666",
+                     color: "text.secondary",
                   }}
                >
                   Loading explorer...
-               </div>
+               </Box>
             </StyledExplorerContent>
          </StyledExplorerPage>
       );

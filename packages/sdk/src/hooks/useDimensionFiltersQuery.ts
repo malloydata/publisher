@@ -7,8 +7,8 @@ import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
  * Parameters for the useDimensionFiltersQuery hook
  */
 export interface UseDimensionFiltersQueryParams {
-   /** Project name */
-   project: string;
+   /** Environment name */
+   environment: string;
    /** Package name */
    package: string;
    /** Model path */
@@ -218,7 +218,7 @@ function buildFilteredQuery(
  * });
  *
  * const { embeddedQueryResult, executeQuery, canExecute } = useDimensionFiltersQuery({
- *   project: "my-project",
+ *   environment: "my-environment",
  *   package: "my-package",
  *   model: "model.malloy",
  *   source: "my_source",
@@ -242,7 +242,7 @@ export function useDimensionFiltersQuery(
    params: UseDimensionFiltersQueryParams,
 ): DimensionFiltersQueryResult {
    const {
-      project,
+      environment,
       package: packageName,
       model,
       source,
@@ -266,11 +266,11 @@ export function useDimensionFiltersQuery(
    const resourceUri = useMemo(
       () =>
          encodeResourceUri({
-            projectName: project,
+            environmentName: environment,
             packageName,
             modelPath: model,
          }),
-      [project, packageName, model],
+      [environment, packageName, model],
    );
 
    // Check if query can be executed

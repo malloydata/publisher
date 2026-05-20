@@ -61,6 +61,16 @@ RUN --mount=type=cache,target=/root/.bun \
 FROM base-deps AS final
 WORKDIR /publisher
 
+# OCI image metadata — surfaces in `docker inspect`, registry UIs
+# (Docker Hub / GHCR), and Docker Desktop. The description is kept short
+# (some tools truncate at 80–120 chars); the `documentation` URL points
+# at the root README's Docker section for build/run/mount-path details.
+LABEL org.opencontainers.image.title="Malloy Publisher" \
+      org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
+      org.opencontainers.image.source="https://github.com/malloydata/publisher" \
+      org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
+      org.opencontainers.image.licenses="MIT"
+
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
 COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
@@ -78,6 +88,16 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 ENV NODE_ENV=production
 ENV PATH="/root/.duckdb/cli/latest:$PATH"
 RUN mkdir -p /etc/publisher
-EXPOSE 4000
+# Declare both runtime ports so `docker run -P` and Docker Desktop's
+# port-preview surface MCP as well as REST. The server already listens
+# on both — this just makes them discoverable.
+EXPOSE 4000 4040
 
-CMD ["bun", "run", "./packages/server/dist/server.mjs"]
+# Pass --server_root explicitly so the zero-arg bundled-default trigger
+# in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire
+# inside the production container. Without this, a Docker image launched
+# with no mounted config would try to clone the bundled DuckDB samples
+# from GitHub at startup, blowing past the docker_smoke_test 90s timeout.
+# Operators that want a config provide it at /publisher/publisher.config.json
+# (mount as volume) or override CMD with --config <path>.
+CMD ["bun", "run", "./packages/server/dist/server.mjs", "--server_root", "/publisher"]

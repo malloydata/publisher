@@ -12,11 +12,11 @@ export class ConnectionRepository {
       return new Date();
    }
 
-   async listConnections(projectId: string): Promise<Connection[]> {
+   async listConnections(environmentId: string): Promise<Connection[]> {
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            "SELECT * FROM connections WHERE project_id = ? ORDER BY name",
-            [projectId],
+            "SELECT * FROM connections WHERE environment_id = ? ORDER BY name",
+            [environmentId],
          );
          return rows.map(this.mapToConnection);
       } catch (err: unknown) {
@@ -35,12 +35,12 @@ export class ConnectionRepository {
    }
 
    async getConnectionByName(
-      projectId: string,
+      environmentId: string,
       name: string,
    ): Promise<Connection | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM connections WHERE project_id = ? AND name = ?",
-         [projectId, name],
+         "SELECT * FROM connections WHERE environment_id = ? AND name = ?",
+         [environmentId, name],
       );
       return row ? this.mapToConnection(row) : null;
    }
@@ -55,11 +55,11 @@ export class ConnectionRepository {
          const configJson = JSON.stringify(connection.config);
 
          await this.db.run(
-            `INSERT INTO connections (id, project_id, name, type, config, created_at, updated_at)
+            `INSERT INTO connections (id, environment_id, name, type, config, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`,
             [
                id,
-               connection.projectId,
+               connection.environmentId,
                connection.name,
                connection.type,
                configJson,
@@ -123,14 +123,16 @@ export class ConnectionRepository {
       await this.db.run("DELETE FROM connections WHERE id = ?", [id]);
    }
 
-   async deleteConnectionsByProjectId(id: string): Promise<void> {
-      await this.db.run("DELETE FROM connections WHERE project_id = ?", [id]);
+   async deleteConnectionsByEnvironmentId(id: string): Promise<void> {
+      await this.db.run("DELETE FROM connections WHERE environment_id = ?", [
+         id,
+      ]);
    }
 
    private mapToConnection(row: Record<string, unknown>): Connection {
       return {
          id: row.id as string,
-         projectId: row.project_id as string,
+         environmentId: row.environment_id as string,
          name: row.name as string,
          type: row.type as Connection["type"],
          config: JSON.parse(row.config as string),

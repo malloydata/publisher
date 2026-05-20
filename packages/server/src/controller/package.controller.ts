@@ -1,61 +1,112 @@
-import * as path from "path";
 import { components } from "../api";
-import { PUBLISHER_DATA_DIR } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
+import { EnvironmentStore } from "../service/environment_store";
 import { ManifestService } from "../service/manifest_service";
-import { ProjectStore } from "../service/project_store";
 
 type ApiPackage = components["schemas"]["Package"];
 
 export class PackageController {
-   private projectStore: ProjectStore;
+   private environmentStore: EnvironmentStore;
    private manifestService: ManifestService;
 
-   constructor(projectStore: ProjectStore, manifestService: ManifestService) {
-      this.projectStore = projectStore;
+   constructor(
+      environmentStore: EnvironmentStore,
+      manifestService: ManifestService,
+   ) {
+      this.environmentStore = environmentStore;
       this.manifestService = manifestService;
    }
 
-   public async listPackages(projectName: string): Promise<ApiPackage[]> {
-      const project = await this.projectStore.getProject(projectName, false);
-      return project.listPackages();
+   public async listPackages(environmentName: string): Promise<ApiPackage[]> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      return environment.listPackages();
    }
 
    public async getPackage(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       reload: boolean,
    ): Promise<ApiPackage> {
-      const project = await this.projectStore.getProject(projectName, false);
-      const _package = await project.getPackage(packageName, reload);
-      const packageLocation = _package.getPackageMetadata().location;
-      if (reload && packageLocation) {
-         await this.downloadPackage(projectName, packageName, packageLocation);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+
+      if (reload) {
+         // Resolve the package's source location from the currently-cached
+         // metadata WITHOUT triggering a stale-state reload. If a `location`
+         // is set, route the reload through `installPackage` so that
+         // download-then-load happens atomically; otherwise fall back to an
+         // in-place reload of the existing on-disk content.
+         let location: string | undefined;
+         try {
+            const cached = await environment.getPackage(packageName, false);
+            location = cached.getPackageMetadata().location;
+         } catch {
+            // Not previously loaded — nothing to reinstall from.
+         }
+         if (location) {
+            const reinstalled = await environment.installPackage(
+               packageName,
+               (stagingPath) =>
+                  this.downloadInto(
+                     environmentName,
+                     packageName,
+                     location,
+                     stagingPath,
+                  ),
+            );
+            return reinstalled.getPackageMetadata();
+         }
+         const _package = await environment.getPackage(packageName, true);
+         return _package.getPackageMetadata();
       }
+
+      const _package = await environment.getPackage(packageName, false);
       return _package.getPackageMetadata();
    }
 
    async addPackage(
-      projectName: string,
+      environmentName: string,
       body: ApiPackage,
       options?: { autoLoadManifest?: boolean },
    ) {
-      if (this.projectStore.publisherConfigIsFrozen) {
+      if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
       if (!body.name) {
          throw new BadRequestError("Package name is required");
       }
-      const project = await this.projectStore.getProject(projectName, false);
+      const packageName = body.name;
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      let result;
       if (body.location) {
-         await this.downloadPackage(projectName, body.name, body.location);
+         const bodyLocation = body.location;
+         result = await environment.installPackage(packageName, (stagingPath) =>
+            this.downloadInto(
+               environmentName,
+               packageName,
+               bodyLocation,
+               stagingPath,
+            ),
+         );
+      } else {
+         result = await environment.addPackage(packageName);
       }
-      const result = await project.addPackage(body.name);
-      await this.projectStore.addPackageToDatabase(projectName, body.name);
+      await this.environmentStore.addPackageToDatabase(
+         environmentName,
+         packageName,
+      );
 
       if (options?.autoLoadManifest === true) {
-         await this.tryLoadExistingManifest(projectName, body.name);
+         await this.tryLoadExistingManifest(environmentName, packageName);
       }
 
       return result;
@@ -67,47 +118,52 @@ export class PackageController {
     * persist references resolve to the materialized tables immediately.
     */
    private async tryLoadExistingManifest(
-      projectName: string,
+      environmentName: string,
       packageName: string,
    ): Promise<void> {
       try {
-         const repository = this.projectStore.storageManager.getRepository();
-         const dbProject = await repository.getProjectByName(projectName);
-         if (!dbProject) return;
+         const repository =
+            this.environmentStore.storageManager.getRepository();
+         const dbEnvironment =
+            await repository.getEnvironmentByName(environmentName);
+         if (!dbEnvironment) return;
 
          const manifest = await this.manifestService.getManifest(
-            dbProject.id,
+            dbEnvironment.id,
             packageName,
          );
          if (Object.keys(manifest.entries).length === 0) return;
 
          await this.manifestService.reloadManifest(
-            dbProject.id,
+            dbEnvironment.id,
             packageName,
-            projectName,
+            environmentName,
          );
          logger.info("Auto-loaded existing manifest for added package", {
-            projectName,
+            environmentName,
             packageName,
             entryCount: Object.keys(manifest.entries).length,
          });
       } catch (error) {
          logger.warn("Failed to auto-load manifest for package", {
-            projectName,
+            environmentName,
             packageName,
             error,
          });
       }
    }
 
-   public async deletePackage(projectName: string, packageName: string) {
-      if (this.projectStore.publisherConfigIsFrozen) {
+   public async deletePackage(environmentName: string, packageName: string) {
+      if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
-      const project = await this.projectStore.getProject(projectName, false);
-      const result = await project.deletePackage(packageName);
-      await this.projectStore.deletePackageFromDatabase(
-         projectName,
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const result = await environment.deletePackage(packageName);
+      await this.environmentStore.deletePackageFromDatabase(
+         environmentName,
          packageName,
       );
 
@@ -115,55 +171,74 @@ export class PackageController {
    }
 
    public async updatePackage(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       body: ApiPackage,
    ) {
-      if (this.projectStore.publisherConfigIsFrozen) {
+      if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
-      const project = await this.projectStore.getProject(projectName, false);
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
       if (body.location) {
-         await this.downloadPackage(projectName, packageName, body.location);
+         // Re-install: stream the new content into a staging dir (no lock)
+         // and atomically swap it in (under the lock).
+         const bodyLocation = body.location;
+         await environment.installPackage(packageName, (stagingPath) =>
+            this.downloadInto(
+               environmentName,
+               packageName,
+               bodyLocation,
+               stagingPath,
+            ),
+         );
       }
-      const result = await project.updatePackage(packageName, body);
-      await this.projectStore.addPackageToDatabase(projectName, packageName);
+      // Apply metadata changes (publisher.json) under the same per-package
+      // mutex via `Environment.updatePackage`.
+      const result = await environment.updatePackage(packageName, body);
+      await this.environmentStore.addPackageToDatabase(
+         environmentName,
+         packageName,
+      );
 
       return result;
    }
 
-   private async downloadPackage(
-      projectName: string,
+   /**
+    * Run the right downloader for the given location into `targetPath`.
+    * This used to point at the canonical package directory, but the
+    * install pipeline now passes a sibling staging dir so the long-running
+    * download doesn't hold the per-package mutex.
+    */
+   private async downloadInto(
+      environmentName: string,
       packageName: string,
       packageLocation: string,
+      targetPath: string,
    ) {
-      const absoluteTargetPath = path.join(
-         this.projectStore.serverRootPath,
-         PUBLISHER_DATA_DIR,
-         projectName,
-         packageName,
-      );
       const isCompressedFile = packageLocation.endsWith(".zip");
       if (
          packageLocation.startsWith("https://") ||
          packageLocation.startsWith("git@")
       ) {
-         await this.projectStore.downloadGitHubDirectory(
+         await this.environmentStore.downloadGitHubDirectory(
             packageLocation,
-            absoluteTargetPath,
+            targetPath,
          );
       } else if (packageLocation.startsWith("gs://")) {
-         await this.projectStore.downloadGcsDirectory(
+         await this.environmentStore.downloadGcsDirectory(
             packageLocation,
-            projectName,
-            absoluteTargetPath,
+            environmentName,
+            targetPath,
             isCompressedFile,
          );
       } else if (packageLocation.startsWith("s3://")) {
-         await this.projectStore.downloadS3Directory(
+         await this.environmentStore.downloadS3Directory(
             packageLocation,
-            projectName,
-            absoluteTargetPath,
+            environmentName,
+            targetPath,
             isCompressedFile,
          );
       }
@@ -171,10 +246,10 @@ export class PackageController {
       if (packageLocation.startsWith("/")) {
          // Absolute paths from the publisher.config could be placed outside of /etc/publisher,
          // so we need to mount them on the right place.
-         await this.projectStore.mountLocalDirectory(
+         await this.environmentStore.mountLocalDirectory(
             packageLocation,
-            absoluteTargetPath,
-            projectName,
+            targetPath,
+            environmentName,
             packageName,
          );
       }

@@ -6,7 +6,7 @@ import { DuckDBConnection } from "./DuckDBConnection";
  *
  * A build manifest records the materialized table produced by a specific build
  * of a package, linking it back to the Malloy source and connection that
- * generated it. Manifests are keyed by (project, package, build) and enable
+ * generated it. Manifests are keyed by (environment, package, build) and enable
  * downstream consumers to discover which physical tables correspond to a given
  * package version.
  */
@@ -19,32 +19,32 @@ export class ManifestRepository {
 
    /** Returns all manifest entries for a package, most recent first. */
    async listEntries(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<ManifestEntry[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM build_manifests WHERE project_id = ? AND package_name = ? ORDER BY created_at DESC",
-         [projectId, packageName],
+         "SELECT * FROM build_manifests WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC",
+         [environmentId, packageName],
       );
       return rows.map(this.mapToEntry);
    }
 
    /** Looks up the manifest entry for a specific build, or null if none exists. */
    async getEntryByBuildId(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       buildId: string,
    ): Promise<ManifestEntry | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM build_manifests WHERE project_id = ? AND package_name = ? AND build_id = ?",
-         [projectId, packageName, buildId],
+         "SELECT * FROM build_manifests WHERE environment_id = ? AND package_name = ? AND build_id = ?",
+         [environmentId, packageName, buildId],
       );
       return row ? this.mapToEntry(row) : null;
    }
 
    /**
     * Inserts a new manifest entry, or updates the existing one if a row with
-    * the same (project, package, build) triple already exists. Uses INSERT ON
+    * the same (environment, package, build) triple already exists. Uses INSERT ON
     * CONFLICT to avoid the TOCTOU race of SELECT-then-INSERT/UPDATE.
     */
    async upsertEntry(
@@ -55,9 +55,9 @@ export class ManifestRepository {
       const iso = now.toISOString();
 
       const rows = await this.db.all<Record<string, unknown>>(
-         `INSERT INTO build_manifests (id, project_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
+         `INSERT INTO build_manifests (id, environment_id, package_name, build_id, table_name, source_name, connection_name, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (project_id, package_name, build_id)
+         ON CONFLICT (environment_id, package_name, build_id)
          DO UPDATE SET table_name = EXCLUDED.table_name,
                        source_name = EXCLUDED.source_name,
                        connection_name = EXCLUDED.connection_name,
@@ -65,7 +65,7 @@ export class ManifestRepository {
          RETURNING *`,
          [
             id,
-            entry.projectId,
+            entry.environmentId,
             entry.packageName,
             entry.buildId,
             entry.tableName,
@@ -84,21 +84,22 @@ export class ManifestRepository {
       await this.db.run("DELETE FROM build_manifests WHERE id = ?", [id]);
    }
 
-   /** Removes all manifest entries belonging to a project (used on project deletion). */
-   async deleteEntriesByProjectId(projectId: string): Promise<void> {
-      await this.db.run("DELETE FROM build_manifests WHERE project_id = ?", [
-         projectId,
-      ]);
+   /** Removes all manifest entries belonging to an environment (used on environment deletion). */
+   async deleteEntriesByEnvironmentId(environmentId: string): Promise<void> {
+      await this.db.run(
+         "DELETE FROM build_manifests WHERE environment_id = ?",
+         [environmentId],
+      );
    }
 
    /** Removes all manifest entries for a specific package. */
    async deleteEntriesByPackage(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<void> {
       await this.db.run(
-         "DELETE FROM build_manifests WHERE project_id = ? AND package_name = ?",
-         [projectId, packageName],
+         "DELETE FROM build_manifests WHERE environment_id = ? AND package_name = ?",
+         [environmentId, packageName],
       );
    }
 
@@ -106,7 +107,7 @@ export class ManifestRepository {
    private mapToEntry(row: Record<string, unknown>): ManifestEntry {
       return {
          id: row.id as string,
-         projectId: row.project_id as string,
+         environmentId: row.environment_id as string,
          packageName: row.package_name as string,
          buildId: row.build_id as string,
          tableName: row.table_name as string,

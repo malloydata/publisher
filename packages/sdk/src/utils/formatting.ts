@@ -1,5 +1,5 @@
 export type ParsedResource = {
-   projectName: string;
+   environmentName: string;
    packageName?: string | undefined;
    connectionName?: string | undefined;
    versionId?: string | undefined;
@@ -15,8 +15,9 @@ export const parseResourceUri = (resourceUri: string) => {
    const pathParts = (parsedUri.hostname + parsedUri.pathname).split("/");
    for (let i = 0; i < pathParts.length; i += 2) {
       const part = pathParts[i];
-      if (part === "projects") {
-         parsedResource.projectName = decodeURI(pathParts[i + 1]) || undefined;
+      if (part === "environments") {
+         parsedResource.environmentName =
+            decodeURI(pathParts[i + 1]) || undefined;
       } else if (part === "packages") {
          parsedResource.packageName = decodeURI(pathParts[i + 1]) || undefined;
       } else if (part === "connections") {
@@ -30,19 +31,19 @@ export const parseResourceUri = (resourceUri: string) => {
 
    parsedResource.versionId =
       parsedUri.searchParams.get("versionId") || undefined;
-   if (!parsedResource.projectName) {
+   if (!parsedResource.environmentName) {
       throw new Error(`Failed to parse resource URI: ${resourceUri}`);
    }
    return parsedResource;
 };
 
 export const encodeResourceUri = (resource: ParsedResource) => {
-   if (!resource.projectName) {
+   if (!resource.environmentName) {
       throw new Error(
-         `Failed to encode resource URI, missing project name: ${resource}`,
+         `Failed to encode resource URI, missing environment name: ${resource}`,
       );
    }
-   let uri = `publisher://projects/${resource.projectName}`;
+   let uri = `publisher://environments/${resource.environmentName}`;
    if (resource.packageName) {
       uri += `/packages/${resource.packageName}`;
    }

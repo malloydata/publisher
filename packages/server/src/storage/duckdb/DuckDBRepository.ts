@@ -1,73 +1,73 @@
 import {
    Connection,
+   Environment,
    ManifestEntry,
    Materialization,
    MaterializationStatus,
    Package,
-   Project,
    ResourceRepository,
 } from "../DatabaseInterface";
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
+import { EnvironmentRepository } from "./EnvironmentRepository";
 import { ManifestRepository } from "./ManifestRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
-import { ProjectRepository } from "./ProjectRepository";
 
 export class DuckDBRepository implements ResourceRepository {
-   private projectRepo: ProjectRepository;
+   private environmentRepo: EnvironmentRepository;
    private packageRepo: PackageRepository;
    private connectionRepo: ConnectionRepository;
    private materializationRepo: MaterializationRepository;
    private manifestRepo: ManifestRepository;
 
    constructor(public db: DuckDBConnection) {
-      this.projectRepo = new ProjectRepository(db);
+      this.environmentRepo = new EnvironmentRepository(db);
       this.packageRepo = new PackageRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
       this.materializationRepo = new MaterializationRepository(db);
       this.manifestRepo = new ManifestRepository(db);
    }
 
-   // ==================== PROJECTS ====================
+   // ==================== ENVIRONMENTS ====================
 
-   async listProjects(): Promise<Project[]> {
-      return this.projectRepo.listProjects();
+   async listEnvironments(): Promise<Environment[]> {
+      return this.environmentRepo.listEnvironments();
    }
 
-   async getProjectById(id: string): Promise<Project | null> {
-      return this.projectRepo.getProjectById(id);
+   async getEnvironmentById(id: string): Promise<Environment | null> {
+      return this.environmentRepo.getEnvironmentById(id);
    }
 
-   async getProjectByName(name: string): Promise<Project | null> {
-      return this.projectRepo.getProjectByName(name);
+   async getEnvironmentByName(name: string): Promise<Environment | null> {
+      return this.environmentRepo.getEnvironmentByName(name);
    }
 
-   async createProject(
-      project: Omit<Project, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Project> {
-      return this.projectRepo.createProject(project);
+   async createEnvironment(
+      environment: Omit<Environment, "id" | "createdAt" | "updatedAt">,
+   ): Promise<Environment> {
+      return this.environmentRepo.createEnvironment(environment);
    }
 
-   async updateProject(
+   async updateEnvironment(
       id: string,
-      updates: Partial<Project>,
-   ): Promise<Project> {
-      return this.projectRepo.updateProject(id, updates);
+      updates: Partial<Environment>,
+   ): Promise<Environment> {
+      return this.environmentRepo.updateEnvironment(id, updates);
    }
 
-   async deleteProject(id: string): Promise<void> {
-      await this.manifestRepo.deleteEntriesByProjectId(id);
-      await this.materializationRepo.deleteByProjectId(id);
-      await this.connectionRepo.deleteConnectionsByProjectId(id);
-      await this.packageRepo.deletePackagesByProjectId(id);
-      await this.projectRepo.deleteProject(id);
+   async deleteEnvironment(id: string): Promise<void> {
+      await this.manifestRepo.deleteEntriesByEnvironmentId(id);
+      await this.materializationRepo.deleteByEnvironmentId(id);
+      await this.connectionRepo.deleteConnectionsByEnvironmentId(id);
+      await this.packageRepo.deletePackagesByEnvironmentId(id);
+      await this.environmentRepo.deleteEnvironment(id);
    }
 
    // ==================== PACKAGES ====================
 
-   async listPackages(projectId: string): Promise<Package[]> {
-      return this.packageRepo.listPackages(projectId);
+   async listPackages(environmentId: string): Promise<Package[]> {
+      return this.packageRepo.listPackages(environmentId);
    }
 
    async getPackageById(id: string): Promise<Package | null> {
@@ -75,10 +75,10 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async getPackageByName(
-      projectId: string,
+      environmentId: string,
       name: string,
    ): Promise<Package | null> {
-      return this.packageRepo.getPackageByName(projectId, name);
+      return this.packageRepo.getPackageByName(environmentId, name);
    }
 
    async createPackage(
@@ -98,25 +98,25 @@ export class DuckDBRepository implements ResourceRepository {
       const pkg = await this.packageRepo.getPackageById(id);
       if (pkg) {
          await this.manifestRepo.deleteEntriesByPackage(
-            pkg.projectId,
+            pkg.environmentId,
             pkg.name,
          );
          await this.materializationRepo.deleteByPackage(
-            pkg.projectId,
+            pkg.environmentId,
             pkg.name,
          );
       }
       await this.packageRepo.deletePackage(id);
    }
 
-   async deletePackagesByProjectId(id: string): Promise<void> {
-      return this.packageRepo.deletePackagesByProjectId(id);
+   async deletePackagesByEnvironmentId(id: string): Promise<void> {
+      return this.packageRepo.deletePackagesByEnvironmentId(id);
    }
 
    // ==================== CONNECTIONS ====================
 
-   async listConnections(projectId: string): Promise<Connection[]> {
-      return this.connectionRepo.listConnections(projectId);
+   async listConnections(environmentId: string): Promise<Connection[]> {
+      return this.connectionRepo.listConnections(environmentId);
    }
 
    async getConnectionById(id: string): Promise<Connection | null> {
@@ -124,10 +124,10 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async getConnectionByName(
-      projectId: string,
+      environmentId: string,
       name: string,
    ): Promise<Connection | null> {
-      return this.connectionRepo.getConnectionByName(projectId, name);
+      return this.connectionRepo.getConnectionByName(environmentId, name);
    }
 
    async createConnection(
@@ -147,18 +147,18 @@ export class DuckDBRepository implements ResourceRepository {
       return this.connectionRepo.deleteConnection(id);
    }
 
-   async deleteConnectionsByProjectId(id: string): Promise<void> {
-      return this.connectionRepo.deleteConnectionsByProjectId(id);
+   async deleteConnectionsByEnvironmentId(id: string): Promise<void> {
+      return this.connectionRepo.deleteConnectionsByEnvironmentId(id);
    }
 
    // ==================== MATERIALIZATIONS ====================
 
    async listMaterializations(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]> {
-      return this.materializationRepo.list(projectId, packageName, options);
+      return this.materializationRepo.list(environmentId, packageName, options);
    }
 
    async getMaterializationById(id: string): Promise<Materialization | null> {
@@ -166,20 +166,20 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async getActiveMaterialization(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<Materialization | null> {
-      return this.materializationRepo.getActive(projectId, packageName);
+      return this.materializationRepo.getActive(environmentId, packageName);
    }
 
    async createMaterialization(
-      projectId: string,
+      environmentId: string,
       packageName: string,
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
    ): Promise<Materialization> {
       return this.materializationRepo.create(
-         projectId,
+         environmentId,
          packageName,
          status,
          metadata,
@@ -206,10 +206,10 @@ export class DuckDBRepository implements ResourceRepository {
    // ==================== BUILD MANIFESTS ====================
 
    async listManifestEntries(
-      projectId: string,
+      environmentId: string,
       packageName: string,
    ): Promise<ManifestEntry[]> {
-      return this.manifestRepo.listEntries(projectId, packageName);
+      return this.manifestRepo.listEntries(environmentId, packageName);
    }
 
    async upsertManifestEntry(

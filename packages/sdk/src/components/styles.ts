@@ -1,5 +1,24 @@
 import { Card, CardContent, CardMedia, styled } from "@mui/material";
 
+/**
+ * Malloy brand colors — exact hex values from
+ * `publisher/packages/app/public/logo.svg`. Use these instead of hardcoding
+ * the hex values inline so the brand can be retuned in one place.
+ */
+export const MALLOY_BRAND = {
+   teal: "#14b3cb", // light wing of the M (governed reports)
+   orange: "#e47404", // right wing of the M (semantic models)
+   darkBlue: "#1474a4", // deep shadow of the M (package data)
+} as const;
+
+/**
+ * Monospace font stack used by code-like surfaces inside the SDK
+ * (file-path labels in PackageItemRow, code blocks, etc.). Matches the
+ * `MONO_FONT_FAMILY` defined in the publisher app's theme.
+ */
+export const MONO_FONT_FAMILY =
+   '"JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", monospace';
+
 export const StyledCard = styled(Card)({
    display: "flex",
    flexDirection: "column",
@@ -54,17 +73,13 @@ export const CleanNotebookCell = styled("div")({
 });
 
 export const CleanMetricCard = styled("div")({
-   backgroundColor: "#ffffff",
+   backgroundColor: "transparent",
    paddingTop: "12px",
    paddingBottom: "2px",
    borderRadius: "8px",
-   border: "1px solid #f0f0f0",
-   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+   border: "none",
+   boxShadow: "none",
    marginBottom: "0",
-   transition: "box-shadow 0.2s ease-in-out",
-   "&:hover": {
-      boxShadow: "0 2px 6px rgba(0, 0, 0, 0.08)",
-   },
 });
 
 export const CleanCodeBlock = styled("div")({
@@ -134,16 +149,14 @@ export const PackageCardContent = styled(CardContent)({
    },
 });
 
-export const PackageSectionTitle = styled("div")({
-   fontSize: "12px",
-   fontWeight: "600",
-   color: "#666666",
-   textTransform: "uppercase",
-   letterSpacing: "0.5px",
+export const PackageSectionTitle = styled("div")(({ theme }) => ({
+   fontSize: "0.875rem",
+   fontWeight: 500,
+   color: theme.palette.text.secondary,
    marginBottom: "16px",
    paddingBottom: "8px",
-   borderBottom: "1px solid #f0f0f0",
-});
+   borderBottom: `1px solid ${theme.palette.divider}`,
+}));
 
 export const PackageContainer = styled("div")({
    padding: "32px",

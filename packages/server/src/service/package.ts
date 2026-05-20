@@ -6,9 +6,9 @@ import "@malloydata/db-duckdb/native";
 import {
    Connection,
    ConnectionRuntime,
+   contextOverlay,
    EmptyURLReader,
    FixedConnectionMap,
-   contextOverlay,
    MalloyConfig,
    SourceDef,
 } from "@malloydata/malloy";
@@ -24,6 +24,7 @@ import {
 import { PackageNotFoundError } from "../errors";
 import { formatDuration, logger } from "../logger";
 import { BuildManifest } from "../storage/DatabaseInterface";
+import { ignoreDotfiles } from "../utils";
 import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -32,8 +33,8 @@ type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
-// A thunk lets callers pass a live reference to the *current* project
-// MalloyConfig so the package wrapper resolves project connections against the
+// A thunk lets callers pass a live reference to the *current* environment
+// MalloyConfig so the package wrapper resolves environment connections against the
 // generation that's active at lookup time, not the one that was current when
 // the package was first loaded.
 type PackageConnectionInput =
@@ -42,8 +43,9 @@ type PackageConnectionInput =
    | (() => MalloyConfig);
 
 const ENABLE_LIST_MODEL_COMPILATION = true;
+
 export class Package {
-   private projectName: string;
+   private environmentName: string;
    private packageName: string;
    private packageMetadata: ApiPackage;
    private databases: ApiDatabase[];
@@ -60,7 +62,7 @@ export class Package {
    );
 
    constructor(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       packagePath: string,
       packageMetadata: ApiPackage,
@@ -68,7 +70,7 @@ export class Package {
       models: Map<string, Model>,
       malloyConfig: MalloyConfig = new MalloyConfig({ connections: {} }),
    ) {
-      this.projectName = projectName;
+      this.environmentName = environmentName;
       this.packageName = packageName;
       this.packagePath = packagePath;
       this.packageMetadata = packageMetadata;
@@ -78,10 +80,10 @@ export class Package {
    }
 
    static async create(
-      projectName: string,
+      environmentName: string,
       packageName: string,
       packagePath: string,
-      projectMalloyConfig: PackageConnectionInput,
+      environmentMalloyConfig: PackageConnectionInput,
    ): Promise<Package> {
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
@@ -100,7 +102,7 @@ export class Package {
                packageConfigTime - manifestValidationTime,
             ),
          });
-         packageConfig.resource = `${API_PREFIX}/projects/${projectName}/packages/${packageName}`;
+         packageConfig.resource = `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`;
 
          const databases = await Package.readDatabases(packagePath);
          const databasesTime = performance.now();
@@ -111,9 +113,9 @@ export class Package {
          });
          const malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
-            typeof projectMalloyConfig === "function"
-               ? projectMalloyConfig
-               : () => Package.toMalloyConfig(projectMalloyConfig),
+            typeof environmentMalloyConfig === "function"
+               ? environmentMalloyConfig
+               : () => Package.toMalloyConfig(environmentMalloyConfig),
          );
 
          const models = await Package.loadModels(
@@ -162,7 +164,7 @@ export class Package {
             duration: formatDuration(executionTime),
          });
          return new Package(
-            projectName,
+            environmentName,
             packageName,
             packagePath,
             packageConfig,
@@ -283,7 +285,7 @@ export class Package {
                   }
                }
                return {
-                  projectName: this.projectName,
+                  environmentName: this.environmentName,
                   path: modelPath,
                   packageName: this.packageName,
                   error,
@@ -305,7 +307,7 @@ export class Package {
                   error = this.models.get(modelPath)?.getNotebookError();
                }
                return {
-                  projectName: this.projectName,
+                  environmentName: this.environmentName,
                   packageName: this.packageName,
                   path: modelPath,
                   error: error?.message,
@@ -330,7 +332,7 @@ export class Package {
 
    private static buildPackageMalloyConfig(
       packagePath: string,
-      getProjectMalloyConfig: () => MalloyConfig,
+      getEnvironmentMalloyConfig: () => MalloyConfig,
    ): MalloyConfig {
       const malloyConfig = new MalloyConfig(
          {
@@ -351,10 +353,12 @@ export class Package {
             if (!name || name === "duckdb") {
                return base.lookupConnection(name);
             }
-            // Resolve against the *current* project MalloyConfig so a
-            // connection-generation swap on Project propagates without a
+            // Resolve against the *current* environment MalloyConfig so a
+            // connection-generation swap on Environment propagates without a
             // package reload.
-            return getProjectMalloyConfig().connections.lookupConnection(name);
+            return getEnvironmentMalloyConfig().connections.lookupConnection(
+               name,
+            );
          },
       }));
 
@@ -378,7 +382,7 @@ export class Package {
    private static async getModelPaths(packagePath: string): Promise<string[]> {
       let files = undefined;
       try {
-         files = await recursive(packagePath);
+         files = await recursive(packagePath, [ignoreDotfiles]);
       } catch (error) {
          logger.error(error);
          throw new PackageNotFoundError(
@@ -447,8 +451,7 @@ export class Package {
    private static async getDatabasePaths(
       packagePath: string,
    ): Promise<string[]> {
-      let files = undefined;
-      files = await recursive(packagePath);
+      const files = await recursive(packagePath, [ignoreDotfiles]);
       return files
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");
@@ -495,8 +498,8 @@ export class Package {
       this.packageName = name;
    }
 
-   public setProjectName(projectName: string) {
-      this.projectName = projectName;
+   public setEnvironmentName(environmentName: string) {
+      this.environmentName = environmentName;
    }
 
    public setPackageMetadata(packageMetadata: ApiPackage) {

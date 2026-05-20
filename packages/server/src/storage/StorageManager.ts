@@ -1,5 +1,13 @@
+import { Mutex } from "async-mutex";
 import * as crypto from "crypto";
+import { ConnectionAuthError } from "../errors";
 import { logger } from "../logger";
+import {
+   handlePgAttachError,
+   pgConnectTimeoutSeconds,
+   redactPgSecrets,
+   withPgConnectTimeout,
+} from "../pg_helpers";
 import {
    DatabaseConnection,
    ManifestStore,
@@ -57,9 +65,9 @@ function catalogNameForConfig(c: DuckLakeManifestConfig): string {
 }
 
 /**
- * Manages the storage backend (DuckDB, Postgres, etc.) and per-project
- * manifest stores. Projects without `materializationStorage` config use
- * the default DuckDB manifest store. Projects with the config get a
+ * Manages the storage backend (DuckDB, Postgres, etc.) and per-environment
+ * manifest stores. Environments without `materializationStorage` config use
+ * the default DuckDB manifest store. Environments with the config get a
  * DuckLake-backed store attached lazily on first access.
  */
 export class StorageManager {
@@ -68,8 +76,8 @@ export class StorageManager {
    private repository: ResourceRepository | null = null;
    private defaultManifestStore: ManifestStore | null = null;
 
-   /** Per-project DuckLake manifest stores, keyed by projectId. */
-   private projectManifestStores = new Map<string, ManifestStore>();
+   /** Per-environment DuckLake manifest stores, keyed by environmentId. */
+   private environmentManifestStores = new Map<string, ManifestStore>();
 
    /**
     * Tracks attached DuckLake catalogs as `configKey -> catalogName`. Each
@@ -77,6 +85,13 @@ export class StorageManager {
     * deterministic catalog name, so multiple configs can coexist on one worker.
     */
    private attachedCatalogs = new Map<string, string>();
+
+   // Serializes DuckLake catalog attaches. Concurrent POST /environments calls
+   // hitting the same DuckDB connection would otherwise race on extension
+   // autoload (httpfs/azure/etc.), where multiple connections download the
+   // extension to `.tmp-<uuid>` files in parallel; only one wins the rename
+   // and the rest crash with "Could not remove file ... No such file or directory".
+   private duckLakeAttachMutex: Mutex = new Mutex();
 
    private config: StorageConfig;
 
@@ -122,18 +137,18 @@ export class StorageManager {
    }
 
    /**
-    * Lazily initializes a DuckLake manifest store for a project.
+    * Lazily initializes a DuckLake manifest store for an environment.
     *
-    * One shared catalog per materializationStorage config: every project
+    * One shared catalog per materializationStorage config: every environment
     * pointing at the same (catalogUrl, dataPath) shares one `build_manifests`
-    * table inside it, partitioned by `project_id` (set to the project's name
+    * table inside it, partitioned by `environment_id` (set to the environment's name
     * so it's stable across worker replicas — required for cross-pod manifest
     * visibility in orchestrated mode). Different configs (e.g. different
     * orgs) attach as separate catalogs under distinct deterministic aliases.
     */
-   async initializeDuckLakeForProject(
-      projectId: string,
-      projectName: string,
+   async initializeDuckLakeForEnvironment(
+      environmentId: string,
+      environmentName: string,
       config: DuckLakeManifestConfig,
    ): Promise<void> {
       if (!this.duckDbConnection) {
@@ -141,26 +156,30 @@ export class StorageManager {
       }
 
       const key = configKey(config);
-      let catalogName = this.attachedCatalogs.get(key);
-      if (!catalogName) {
-         // Catalog name derived from the config so multiple configs can coexist as
-         // separate ATTACHments without colliding on the name.
-         catalogName = catalogNameForConfig(config);
-         await this.attachDuckLakeCatalog(config, catalogName);
-         this.attachedCatalogs.set(key, catalogName);
-      }
+      const catalogName = await this.duckLakeAttachMutex.runExclusive(
+         async () => {
+            const existing = this.attachedCatalogs.get(key);
+            if (existing) return existing;
+            // Catalog name derived from the config so multiple configs can coexist as
+            // separate ATTACHments without colliding on the name.
+            const name = catalogNameForConfig(config);
+            await this.attachDuckLakeCatalog(config, name);
+            this.attachedCatalogs.set(key, name);
+            return name;
+         },
+      );
 
       const store = new DuckLakeManifestStore(
          this.duckDbConnection,
          catalogName,
-         projectName,
+         environmentName,
       );
       await store.bootstrapSchema();
 
-      this.projectManifestStores.set(projectId, store);
-      logger.info("DuckLake manifest store initialized for project", {
-         projectId,
-         projectName,
+      this.environmentManifestStores.set(environmentId, store);
+      logger.info("DuckLake manifest store initialized for environment", {
+         environmentId,
+         environmentName,
          catalogName,
       });
    }
@@ -178,11 +197,30 @@ export class StorageManager {
          await connection.run("INSTALL postgres; LOAD postgres;");
       }
 
-      const escapedCatalogUrl = escapeSQL(config.catalogUrl);
+      // For PG-backed catalogs, inject connect_timeout so a wedged libpq
+      // handshake fails the caller in seconds rather than hanging the
+      // worker until the K8s liveness probe trips (the 2026-05 incident).
+      // Non-PG catalogs (e.g. SQLite, MySQL) pass through unchanged.
+      const catalogUrl = isPostgres
+         ? withPgConnectTimeout(config.catalogUrl, pgConnectTimeoutSeconds())
+         : config.catalogUrl;
+
+      const escapedCatalogUrl = escapeSQL(catalogUrl);
       const escapedDataPath = escapeSQL(config.dataPath);
       const isCloudStorage =
          config.dataPath.startsWith("gs://") ||
          config.dataPath.startsWith("s3://");
+
+      // Pre-install httpfs explicitly so the ATTACH below doesn't trigger
+      // DuckDB's autoloader. The autoloader downloads extensions to
+      // `<ext>.tmp-<uuid>` and races when multiple connections within the
+      // same process hit it concurrently — losers fail with
+      // "Could not remove file ... No such file or directory" on cleanup
+      // of their .tmp file. INSTALL/LOAD here is idempotent and serialized
+      // by the caller's mutex.
+      if (isCloudStorage) {
+         await connection.run("INSTALL httpfs; LOAD httpfs;");
+      }
 
       let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${catalogName}`;
       const attachOpts: string[] = [
@@ -193,13 +231,35 @@ export class StorageManager {
          // sidestepping object-storage auth issues entirely for this path.
          "DATA_INLINING_ROW_LIMIT 100000",
       ];
+
       if (isCloudStorage) {
          attachOpts.push("OVERRIDE_DATA_PATH true");
       }
       attachCmd += ` (${attachOpts.join(", ")});`;
 
-      logger.info(`Attaching DuckLake manifest catalog: ${attachCmd}`);
-      await connection.run(attachCmd);
+      logger.info(
+         `Attaching DuckLake manifest catalog: ${redactPgSecrets(attachCmd)}`,
+      );
+      try {
+         await connection.run(attachCmd);
+      } catch (error) {
+         const outcome = handlePgAttachError(
+            error,
+            `DuckLake catalog credentials rejected for ${catalogName}`,
+         );
+         if (outcome.action === "swallow") {
+            logger.info(
+               `DuckLake catalog ${catalogName} is already attached, skipping`,
+            );
+            return;
+         }
+         if (outcome.error instanceof ConnectionAuthError) {
+            logger.warn("DuckLake catalog credentials rejected", {
+               catalogName,
+            });
+         }
+         throw outcome.error;
+      }
    }
 
    getRepository(): ResourceRepository {
@@ -210,15 +270,16 @@ export class StorageManager {
    }
 
    /**
-    * Returns the manifest store for a project. If the project has a
+    * Returns the manifest store for an environment. If the environment has a
     * DuckLake store configured, returns that; otherwise returns the
     * default DuckDB-backed store.
     */
-   getManifestStore(projectId?: string): ManifestStore {
-      if (projectId) {
-         const projectStore = this.projectManifestStores.get(projectId);
-         if (projectStore) {
-            return projectStore;
+   getManifestStore(environmentId?: string): ManifestStore {
+      if (environmentId) {
+         const environmentStore =
+            this.environmentManifestStores.get(environmentId);
+         if (environmentStore) {
+            return environmentStore;
          }
       }
       if (!this.defaultManifestStore) {
@@ -234,7 +295,7 @@ export class StorageManager {
          this.duckDbConnection = null;
          this.repository = null;
          this.defaultManifestStore = null;
-         this.projectManifestStores.clear();
+         this.environmentManifestStores.clear();
          this.attachedCatalogs.clear();
       }
    }

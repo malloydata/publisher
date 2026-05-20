@@ -12,4 +12,4 @@ repos:
         entry: bash -c 'packages/python-client/scripts/build-python-sdk.sh && git diff --exit-code'
         language: system
         pass_filenames: false
-        always_run: true 
+        files: ^api-doc\.yaml$

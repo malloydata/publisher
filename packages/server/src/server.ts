@@ -1,4 +1,5 @@
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
+import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -33,12 +34,15 @@ import {
 } from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 
+import { getMemoryGovernorConfig } from "./config";
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { registerLegacyRoutes } from "./server-old";
+import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
-import { ProjectStore } from "./service/project_store";
+import { PackageMemoryGovernor } from "./service/package_memory_governor";
 
 /** Normalize an Express query param into a string[] or undefined. */
 export function normalizeQueryArray(value: unknown): string[] | undefined {
@@ -50,6 +54,8 @@ export function normalizeQueryArray(value: unknown): string[] | undefined {
 // Parse command line arguments
 function parseArgs() {
    const args = process.argv.slice(2);
+   let sawServerRoot = false;
+   let sawConfig = false;
    for (let i = 0; i < args.length; i++) {
       const arg = args[i];
       if (arg === "--port" && args[i + 1]) {
@@ -59,7 +65,12 @@ function parseArgs() {
          process.env.PUBLISHER_HOST = args[i + 1];
          i++;
       } else if (arg === "--server_root" && args[i + 1]) {
+         sawServerRoot = true;
          process.env.SERVER_ROOT = args[i + 1];
+         i++;
+      } else if (arg === "--config" && args[i + 1]) {
+         sawConfig = true;
+         process.env.PUBLISHER_CONFIG_PATH = args[i + 1];
          i++;
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
@@ -91,6 +102,9 @@ function parseArgs() {
             "  --server_root <path>   Root directory to serve files from (default: .)",
          );
          console.log(
+            "  --config <path>        Path to publisher.config.json (default: <server_root>/publisher.config.json; falls back to bundled DuckDB-only sample config if missing)",
+         );
+         console.log(
             "  --mcp_port <number>    Port for MCP server (default: 4040)",
          );
          console.log(
@@ -105,6 +119,16 @@ function parseArgs() {
          console.log("  --help, -h             Show this help message");
          process.exit(0);
       }
+   }
+   // Zero-config invocation (`npx @malloy-publisher/server`) opts in to
+   // the bundled DuckDB-only sample config so the Quick Start works
+   // without any flags. Any explicit --server_root or --config disables
+   // this — the user told us where to look. Skip in NODE_ENV=test so
+   // specs that import this module for utility helpers (e.g.
+   // db_utils.spec.ts -> normalizeQueryArray) don't get the bundled
+   // default leaked into their EnvironmentStore construction.
+   if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
+      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
 }
 
@@ -132,24 +156,38 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
-const projectStore = new ProjectStore(SERVER_ROOT);
-const manifestService = new ManifestService(projectStore);
-const watchModeController = new WatchModeController(projectStore);
-const connectionController = new ConnectionController(projectStore);
-const modelController = new ModelController(projectStore);
-const packageController = new PackageController(projectStore, manifestService);
-const databaseController = new DatabaseController(projectStore);
-const queryController = new QueryController(projectStore);
-const compileController = new CompileController(projectStore);
+const environmentStore = new EnvironmentStore(SERVER_ROOT);
+const manifestService = new ManifestService(environmentStore);
+const watchModeController = new WatchModeController(environmentStore);
+const connectionController = new ConnectionController(environmentStore);
+const modelController = new ModelController(environmentStore);
+// PackageMemoryGovernor is opt-in via PUBLISHER_MAX_MEMORY_BYTES.
+// When set, it polls process RSS and flips an `isBackpressured` flag
+// that Environment.getPackage / addPackage consult before allocating
+// any new package — the server responds with HTTP 503 instead of
+// OOM-killing the pod.
+const memoryGovernorConfig = getMemoryGovernorConfig();
+const memoryGovernor = memoryGovernorConfig
+   ? new PackageMemoryGovernor(memoryGovernorConfig)
+   : null;
+memoryGovernor?.start();
+environmentStore.setMemoryGovernor(memoryGovernor);
+const packageController = new PackageController(
+   environmentStore,
+   manifestService,
+);
+const databaseController = new DatabaseController(environmentStore);
+const queryController = new QueryController(environmentStore);
+const compileController = new CompileController(environmentStore);
 const materializationService = new MaterializationService(
-   projectStore,
+   environmentStore,
    manifestService,
 );
 const materializationController = new MaterializationController(
    materializationService,
 );
 const manifestController = new ManifestController(
-   projectStore,
+   environmentStore,
    manifestService,
 );
 
@@ -181,7 +219,7 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
             });
          };
 
-         const requestMcpServer = initializeMcpServer(projectStore);
+         const requestMcpServer = initializeMcpServer(environmentStore);
          await requestMcpServer.connect(transport);
 
          res.on("close", () => {
@@ -300,7 +338,7 @@ app.use(drainingGuard);
 
 app.get(`${API_PREFIX}/status`, async (_req, res) => {
    try {
-      const status = await projectStore.getStatus();
+      const status = await environmentStore.getStatus();
       res.status(200).json(status);
    } catch (error) {
       logger.error("Error getting status", { error });
@@ -313,9 +351,9 @@ app.get(`${API_PREFIX}/watch-mode/status`, watchModeController.getWatchStatus);
 app.post(`${API_PREFIX}/watch-mode/start`, watchModeController.startWatching);
 app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
 
-app.get(`${API_PREFIX}/projects`, async (_req, res) => {
+app.get(`${API_PREFIX}/environments`, async (_req, res) => {
    try {
-      res.status(200).json(await projectStore.listProjects());
+      res.status(200).json(await environmentStore.listEnvironments());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -323,11 +361,11 @@ app.get(`${API_PREFIX}/projects`, async (_req, res) => {
    }
 });
 
-app.post(`${API_PREFIX}/projects`, async (req, res) => {
+app.post(`${API_PREFIX}/environments`, async (req, res) => {
    try {
-      logger.info("Adding project", { body: req.body });
-      const project = await projectStore.addProject(req.body);
-      res.status(200).json(await project.serialize());
+      logger.info("Adding environment", { body: req.body });
+      const environment = await environmentStore.addEnvironment(req.body);
+      res.status(200).json(await environment.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -335,13 +373,13 @@ app.post(`${API_PREFIX}/projects`, async (req, res) => {
    }
 });
 
-app.get(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
+app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
    try {
-      const project = await projectStore.getProject(
-         req.params.projectName,
+      const environment = await environmentStore.getEnvironment(
+         req.params.environmentName,
          req.query.reload === "true",
       );
-      res.status(200).json(await project.serialize());
+      res.status(200).json(await environment.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -349,10 +387,10 @@ app.get(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
    }
 });
 
-app.patch(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
+app.patch(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
    try {
-      const project = await projectStore.updateProject(req.body);
-      res.status(200).json(await project.serialize());
+      const environment = await environmentStore.updateEnvironment(req.body);
+      res.status(200).json(await environment.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -360,22 +398,12 @@ app.patch(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
    }
 });
 
-app.delete(`${API_PREFIX}/projects/:projectName`, async (req, res) => {
+app.delete(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
    try {
-      const project = await projectStore.deleteProject(req.params.projectName);
-      res.status(200).json(await project?.serialize());
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.get(`${API_PREFIX}/projects/:projectName/connections`, async (req, res) => {
-   try {
-      res.status(200).json(
-         await connectionController.listConnections(req.params.projectName),
+      const environment = await environmentStore.deleteEnvironment(
+         req.params.environmentName,
       );
+      res.status(200).json(await environment?.serialize());
    } catch (error) {
       logger.error(error);
       const { json, status } = internalErrorToHttpError(error as Error);
@@ -384,12 +412,29 @@ app.get(`${API_PREFIX}/projects/:projectName/connections`, async (req, res) => {
 });
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
+   `${API_PREFIX}/environments/:environmentName/connections`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await connectionController.listConnections(
+               req.params.environmentName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnection(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
             ),
          );
@@ -402,11 +447,11 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
    async (req, res) => {
       try {
          const result = await connectionController.addConnection(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.connectionName,
             req.body,
          );
@@ -420,11 +465,11 @@ app.post(
 );
 
 app.patch(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
    async (req, res) => {
       try {
          const result = await connectionController.updateConnection(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.connectionName,
             req.body,
          );
@@ -438,11 +483,11 @@ app.patch(
 );
 
 app.delete(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
    async (req, res) => {
       try {
          const result = await connectionController.deleteConnection(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.connectionName,
          );
          res.status(200).json(result);
@@ -467,12 +512,12 @@ app.post(`${API_PREFIX}/connections/test`, async (req, res) => {
 });
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/schemas`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/schemas`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.listSchemas(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
             ),
          );
@@ -485,12 +530,12 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/schemas/:schemaName/tables`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/schemas/:schemaName/tables`,
    async (req, res) => {
       logger.info("req.params", { params: req.params });
       try {
          const results = await connectionController.listTables(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.connectionName,
             req.params.schemaName,
             normalizeQueryArray(req.query.tableNames),
@@ -505,12 +550,12 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
    async (req, res) => {
       logger.info("req.params", { params: req.params });
       try {
          const results = await connectionController.getTable(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.connectionName,
             req.params.schemaName,
             req.params.tablePath,
@@ -528,12 +573,12 @@ app.get(
 // `duckdb` is per-package; non-`duckdb` names fall through to the
 // project's connection registry via the package's MalloyConfig wrapper.
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.listSchemas(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.params.packageName,
             ),
@@ -547,12 +592,12 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.listTables(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.params.schemaName,
                normalizeQueryArray(req.query.tableNames),
@@ -568,12 +613,12 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getTable(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.params.schemaName,
                req.params.tablePath,
@@ -589,15 +634,15 @@ app.get(
 );
 
 /**
- * @deprecated Use /projects/:projectName/connections/:connectionName/sqlSource POST method instead
+ * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlSource POST method instead
  */
 app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionSqlSource(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.query.sqlStatement as string,
             ),
@@ -611,12 +656,12 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionSqlSource(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
             ),
@@ -631,12 +676,12 @@ app.post(
 
 // Per-package versions
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionSqlSource(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.query.sqlStatement as string,
                req.params.packageName,
@@ -651,12 +696,12 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionSqlSource(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
@@ -671,15 +716,15 @@ app.post(
 );
 
 /**
- * @deprecated Use /projects/:projectName/connections/:connectionName/sqlQuery POST method instead
+ * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlQuery POST method instead
  */
 app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/queryData`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionQueryData(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.query.sqlStatement as string,
                req.query.options as string,
@@ -694,15 +739,15 @@ app.get(
 );
 
 /**
- * @deprecated Use /projects/:projectName/packages/:packageName/connections/:connectionName/sqlQuery
+ * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery
  */
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/queryData`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/queryData`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionQueryData(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.query.sqlStatement as string,
                req.query.options as string,
@@ -718,7 +763,7 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlQuery`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlQuery`,
    async (req, res) => {
       try {
          let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
@@ -732,7 +777,7 @@ app.post(
          }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
                options as string,
@@ -747,7 +792,7 @@ app.post(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlQuery`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery`,
    async (req, res) => {
       try {
          let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
@@ -758,7 +803,7 @@ app.post(
          }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
                options as string,
@@ -774,15 +819,15 @@ app.post(
 );
 
 /**
- * @deprecated Use /projects/:projectName/connections/:connectionName/sqlTemporaryTable POST method instead
+ * @deprecated Use environments/:environmentName/connections/:connectionName/sqlTemporaryTable POST method instead
  */
 app.get(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/temporaryTable`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/temporaryTable`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionTemporaryTable(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.query.sqlStatement as string,
             ),
@@ -796,15 +841,15 @@ app.get(
 );
 
 /**
- * @deprecated Use /projects/:projectName/packages/:packageName/connections/:connectionName/sqlTemporaryTable
+ * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable
  */
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/temporaryTable`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/temporaryTable`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionTemporaryTable(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.query.sqlStatement as string,
                req.params.packageName,
@@ -819,12 +864,12 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
+   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlTemporaryTable`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionTemporaryTable(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
             ),
@@ -838,12 +883,12 @@ app.post(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
    async (req, res) => {
       try {
          res.status(200).json(
             await connectionController.getConnectionTemporaryTable(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.params.packageName,
@@ -857,41 +902,47 @@ app.post(
    },
 );
 
-app.get(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
-   if (req.query.versionId) {
-      setVersionIdError(res);
-      return;
-   }
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
 
-   try {
-      res.status(200).json(
-         await packageController.listPackages(req.params.projectName),
-      );
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+      try {
+         res.status(200).json(
+            await packageController.listPackages(req.params.environmentName),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
-app.post(`${API_PREFIX}/projects/:projectName/packages`, async (req, res) => {
-   try {
-      const autoLoadManifest = req.query.autoLoadManifest === "true";
-      const _package = await packageController.addPackage(
-         req.params.projectName,
-         req.body,
-         { autoLoadManifest },
-      );
-      res.status(200).json(_package?.getPackageMetadata());
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
+app.post(
+   `${API_PREFIX}/environments/:environmentName/packages`,
+   async (req, res) => {
+      try {
+         const autoLoadManifest = req.query.autoLoadManifest === "true";
+         const _package = await packageController.addPackage(
+            req.params.environmentName,
+            req.body,
+            { autoLoadManifest },
+         );
+         res.status(200).json(_package?.getPackageMetadata());
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -901,7 +952,7 @@ app.get(
       try {
          res.status(200).json(
             await packageController.getPackage(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                req.query.reload === "true",
             ),
@@ -915,12 +966,12 @@ app.get(
 );
 
 app.patch(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
       try {
          res.status(200).json(
             await packageController.updatePackage(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                req.body,
             ),
@@ -934,12 +985,12 @@ app.patch(
 );
 
 app.delete(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
       try {
          res.status(200).json(
             await packageController.deletePackage(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
             ),
          );
@@ -952,7 +1003,7 @@ app.delete(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/models`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -962,7 +1013,7 @@ app.get(
       try {
          res.status(200).json(
             await modelController.listModels(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
             ),
          );
@@ -975,7 +1026,7 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/*?`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -987,7 +1038,7 @@ app.get(
          const modelPath = (req.params as Record<string, string>)["0"];
          res.status(200).json(
             await modelController.getModel(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                modelPath,
             ),
@@ -1001,7 +1052,7 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/notebooks`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -1011,7 +1062,7 @@ app.get(
       try {
          res.status(200).json(
             await modelController.listNotebooks(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
             ),
          );
@@ -1026,7 +1077,7 @@ app.get(
 // Execute notebook cell route must come BEFORE the general get notebook route
 // to avoid the wildcard matching incorrectly
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -1062,7 +1113,7 @@ app.get(
 
          res.status(200).json(
             await modelController.executeNotebookCell(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                notebookPath,
                cellIndex,
@@ -1079,7 +1130,7 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*?`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -1091,7 +1142,7 @@ app.get(
          const notebookPath = (req.params as Record<string, string>)["0"];
          res.status(200).json(
             await modelController.getNotebook(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                notebookPath,
             ),
@@ -1105,7 +1156,7 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
    async (req, res) => {
       if (req.body.versionId) {
          setVersionIdError(res);
@@ -1117,7 +1168,7 @@ app.post(
          const modelPath = (req.params as Record<string, string>)["0"];
          res.status(200).json(
             await queryController.getQuery(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                modelPath,
                req.body.sourceName as string,
@@ -1128,6 +1179,7 @@ app.post(
                   | Record<string, string | string[]>
                   | undefined,
                req.body.bypassFilters === true ? true : undefined,
+               req.body.givens as Record<string, GivenValue> | undefined,
             ),
          );
       } catch (error) {
@@ -1139,7 +1191,7 @@ app.post(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/databases`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/databases`,
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -1149,7 +1201,7 @@ app.get(
       try {
          res.status(200).json(
             await databaseController.listDatabases(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
             ),
          );
@@ -1162,15 +1214,16 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/:modelName/compile`,
    async (req, res) => {
       try {
          const result = await compileController.compile(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.params.modelName,
             req.body.source,
             req.body.includeSql === true,
+            req.body.givens as Record<string, GivenValue> | undefined,
          );
          res.status(200).json(result);
       } catch (error) {
@@ -1184,11 +1237,11 @@ app.post(
 // ==================== MATERIALIZATION ROUTES ====================
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
       try {
          const build = await materializationController.createMaterialization(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.body || {},
          );
@@ -1201,7 +1254,7 @@ app.post(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
       try {
          const limit = req.query.limit
@@ -1211,7 +1264,7 @@ app.get(
             ? parseInt(req.query.offset as string, 10)
             : undefined;
          const builds = await materializationController.listMaterializations(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             { limit, offset },
          );
@@ -1224,11 +1277,11 @@ app.get(
 );
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          const build = await materializationController.getMaterialization(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
          );
@@ -1241,11 +1294,11 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/teardown`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/teardown`,
    async (req, res) => {
       try {
          const result = await materializationController.teardownPackage(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.body || {},
          );
@@ -1258,20 +1311,20 @@ app.post(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          const action = req.query.action;
          if (action === "start") {
             const build = await materializationController.startMaterialization(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                req.params.materializationId,
             );
             res.status(202).json(build);
          } else if (action === "stop") {
             const build = await materializationController.stopMaterialization(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
                req.params.materializationId,
             );
@@ -1289,11 +1342,11 @@ app.post(
 );
 
 app.delete(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          await materializationController.deleteMaterialization(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
          );
@@ -1308,11 +1361,11 @@ app.delete(
 // ==================== MANIFEST ROUTES ====================
 
 app.get(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
    async (req, res) => {
       try {
          const manifest = await manifestController.getManifest(
-            req.params.projectName,
+            req.params.environmentName,
             req.params.packageName,
          );
          res.status(200).json(manifest);
@@ -1325,13 +1378,13 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
    async (req, res) => {
       try {
          const action = req.query.action;
          if (action === "reload") {
             const manifest = await manifestController.reloadManifest(
-               req.params.projectName,
+               req.params.environmentName,
                req.params.packageName,
             );
             res.status(200).json(manifest);
@@ -1347,6 +1400,21 @@ app.post(
       }
    },
 );
+
+// Register legacy `/projects/...` routes for backwards compatibility with
+// clients that haven't migrated to `/environments/...` yet. Must be added
+// before the SPA catch-all below.
+registerLegacyRoutes(app, {
+   environmentStore,
+   connectionController,
+   modelController,
+   packageController,
+   databaseController,
+   queryController,
+   compileController,
+   materializationController,
+   manifestController,
+});
 
 // Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
