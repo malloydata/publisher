@@ -1081,3 +1081,84 @@ describe("Config path resolution (--config and bundled default)", () => {
       expect(result.environments).toEqual([]);
    });
 });
+
+describe("getMemoryGovernorConfig", () => {
+   const GOVERNOR_ENV_VARS = [
+      "PUBLISHER_MAX_MEMORY_BYTES",
+      "PUBLISHER_MEMORY_HIGH_WATER_FRACTION",
+      "PUBLISHER_MEMORY_LOW_WATER_FRACTION",
+      "PUBLISHER_MEMORY_CHECK_INTERVAL_MS",
+      "PUBLISHER_MEMORY_BACKPRESSURE",
+   ];
+
+   beforeEach(() => {
+      for (const v of GOVERNOR_ENV_VARS) delete process.env[v];
+   });
+   afterEach(() => {
+      for (const v of GOVERNOR_ENV_VARS) delete process.env[v];
+   });
+
+   it("returns null when PUBLISHER_MAX_MEMORY_BYTES is unset", async () => {
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(getMemoryGovernorConfig()).toBeNull();
+   });
+
+   it("parses defaults when only PUBLISHER_MAX_MEMORY_BYTES is set", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = String(2 * 1024 * 1024 * 1024);
+      const { getMemoryGovernorConfig } = await import("./config");
+      const cfg = getMemoryGovernorConfig();
+      expect(cfg).not.toBeNull();
+      expect(cfg!.maxMemoryBytes).toBe(2 * 1024 * 1024 * 1024);
+      expect(cfg!.backpressureEnabled).toBe(true);
+      expect(cfg!.highWaterFraction).toBeGreaterThan(cfg!.lowWaterFraction);
+   });
+
+   it("honours fraction and interval overrides", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "0.85";
+      process.env.PUBLISHER_MEMORY_LOW_WATER_FRACTION = "0.7";
+      process.env.PUBLISHER_MEMORY_CHECK_INTERVAL_MS = "10000";
+      process.env.PUBLISHER_MEMORY_BACKPRESSURE = "false";
+      const { getMemoryGovernorConfig } = await import("./config");
+      const cfg = getMemoryGovernorConfig();
+      expect(cfg).not.toBeNull();
+      expect(cfg!.highWaterFraction).toBe(0.85);
+      expect(cfg!.lowWaterFraction).toBe(0.7);
+      expect(cfg!.checkIntervalMs).toBe(10000);
+      expect(cfg!.backpressureEnabled).toBe(false);
+   });
+
+   it("treats PUBLISHER_MAX_MEMORY_BYTES=0 as disabled (returns null)", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "0";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(getMemoryGovernorConfig()).toBeNull();
+   });
+
+   it("rejects a negative PUBLISHER_MAX_MEMORY_BYTES", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "-1";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+
+   it("rejects low >= high", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "0.7";
+      process.env.PUBLISHER_MEMORY_LOW_WATER_FRACTION = "0.8";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+
+   it("rejects an out-of-range fraction", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "1.5";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+
+   it("rejects a check interval below the safety floor", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_CHECK_INTERVAL_MS = "10";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+});

@@ -82,8 +82,14 @@ export class ManifestService {
          environmentName,
          false,
       );
-      const pkg = await environment.getPackage(packageName, false);
-      await pkg.reloadAllModels(manifest.entries);
+      // Ensure the package is loaded, then reload its models under the
+      // per-package mutex so the disk reads are serialized against
+      // installPackage / deletePackage.
+      await environment.getPackage(packageName, false);
+      await environment.reloadAllModelsForPackage(
+         packageName,
+         manifest.entries,
+      );
 
       logger.info("Reloaded manifest and recompiled models", {
          environmentId,
