@@ -2498,28 +2498,11 @@ components:
           description: Whether the server is fully initialized and ready to serve requests
         operationalState:
           type: string
-          enum: [ "initializing", "serving", "degraded", "draining" ]
+          enum: [ "initializing", "serving", "draining" ]
           description: Status of the server; initializing when the server is loading
             environments, packages and connections, serving when the server is
-            initialized and ready to serve requests, degraded when initialization
-            completed but one or more environments failed to load (the surviving
-            environments are served; see failedEnvironments), and draining when
-            the server is going to shut down
-        failedEnvironments:
-          type: array
-          description: Environments that failed to initialize. Present only when
-            operationalState is "degraded". Healthy environments are listed under
-            "environments".
-          items:
-            type: object
-            required: [name, error]
-            properties:
-              name:
-                type: string
-                description: Environment name as declared in publisher.config.json
-              error:
-                type: string
-                description: Error message from the initialization failure
+            initialized and ready to serve requests, and draining when the
+            server is going to shut down
         frozenConfig:
           type: boolean
           description: Whether the server configuration is frozen (read-only mode). When
@@ -2806,6 +2789,13 @@ components:
           type: boolean
           default: false
           description: When true, skip server-side \#(filter) injection entirely.
+        givens:
+          type: object
+          description: Per-query given values that override model defaults. Keys are
+            given names declared in the model's `given:` block. Values must match
+            the declared type (string, number, boolean, date, etc.). See Malloy
+            givens documentation for accepted value shapes.
+          additionalProperties: true
 
     NotebookCell:
       type: object
@@ -3476,6 +3466,13 @@ components:
           description: If true, returns the generated SQL alongside compilation results
             (only available when compilation succeeds and the source contains a
             runnable query).
+        givens:
+          type: object
+          description: Per-query given values that override model defaults. Keys are
+            given names declared in the model's `given:` block. Values must match
+            the declared type (string, number, boolean, date, etc.). See Malloy
+            givens documentation for accepted value shapes.
+          additionalProperties: true
       required:
         - source
 

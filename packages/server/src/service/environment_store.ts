@@ -25,16 +25,12 @@ import {
    FrozenConfigError,
    PackageNotFoundError,
 } from "../errors";
-import {
-   getOperationalState,
-   markDegraded,
-   markNotReady,
-   markReady,
-} from "../health";
+import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
+import type { PackageMemoryGovernor } from "./package_memory_governor";
 type ApiEnvironment = components["schemas"]["Environment"];
 
 const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
@@ -101,12 +97,15 @@ export class EnvironmentStore {
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
-   private failedEnvironments: Array<{ name: string; error: string }> = [];
    public storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
    });
    private gcsClient: Storage;
+   // Shared by every Environment so the back-pressure decision is
+   // process-wide. Set once at server start via setMemoryGovernor;
+   // new Environments pick it up at construction.
+   private memoryGovernor: PackageMemoryGovernor | null = null;
 
    constructor(serverRootPath: string) {
       this.serverRootPath = serverRootPath;
@@ -121,6 +120,19 @@ export class EnvironmentStore {
       this.storageManager = new StorageManager(storageConfig);
 
       this.finishedInitialization = this.initialize();
+   }
+
+   /**
+    * Attach (or detach with `null`) the shared {@link PackageMemoryGovernor}.
+    * Propagated to every Environment so the back-pressure decision is
+    * process-wide, and remembered so any Environment created *after*
+    * this call also picks it up at construction.
+    */
+   public setMemoryGovernor(governor: PackageMemoryGovernor | null): void {
+      this.memoryGovernor = governor;
+      for (const env of this.environments.values()) {
+         env.setMemoryGovernor(governor);
+      }
    }
 
    private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
@@ -148,10 +160,6 @@ export class EnvironmentStore {
          `Error initializing environment${label}; skipping environment`,
          this.extractErrorDataFromError(error),
       );
-      this.failedEnvironments.push({
-         name: environmentName ?? "<unknown>",
-         error: error instanceof Error ? error.message : String(error),
-      });
    }
 
    private async initialize() {
@@ -248,6 +256,9 @@ export class EnvironmentStore {
                               ...conn.config,
                            })),
                         );
+                        environmentInstance.setMemoryGovernor(
+                           this.memoryGovernor,
+                        );
 
                         // Get packages from database
                         const packages = await repository.listPackages(
@@ -285,11 +296,7 @@ export class EnvironmentStore {
          }
 
          this.isInitialized = true;
-         if (this.failedEnvironments.length > 0) {
-            markDegraded();
-         } else {
-            markReady();
-         }
+         markReady();
          const initializationDuration = performance.now() - initialTime;
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
@@ -703,11 +710,6 @@ export class EnvironmentStore {
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState:
             getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
-         ...(this.failedEnvironments.length > 0 && {
-            failedEnvironments: [
-               ...this.failedEnvironments,
-            ] as components["schemas"]["ServerStatus"]["failedEnvironments"],
-         }),
       };
 
       const environments = await this.listEnvironments(true);
@@ -856,6 +858,7 @@ export class EnvironmentStore {
          absoluteEnvironmentPath,
          environment.connections || [],
       );
+      newEnvironment.setMemoryGovernor(this.memoryGovernor);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;

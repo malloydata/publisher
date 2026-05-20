@@ -4,6 +4,7 @@ import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
+import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -32,6 +33,7 @@ export class QueryController {
       compactJson: boolean = false,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<ApiQuery> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
@@ -49,6 +51,7 @@ export class QueryController {
             query,
             filterParams,
             bypassFilters,
+            givens,
          );
          const renderLogs = validateRenderTags(result);
          return {
