@@ -510,7 +510,8 @@ export class Model {
       }
 
       const rowLimit =
-         (await runnable.getPreparedResult()).resultExplore.limit || ROW_LIMIT;
+         (await runnable.getPreparedResult({ givens })).resultExplore.limit ||
+         ROW_LIMIT;
       const endTime = performance.now();
       const executionTime = endTime - startTime;
 
@@ -705,8 +706,8 @@ export class Model {
             }
 
             const rowLimit =
-               (await runnableToExecute.getPreparedResult()).resultExplore
-                  .limit || ROW_LIMIT;
+               (await runnableToExecute.getPreparedResult({ givens }))
+                  .resultExplore.limit || ROW_LIMIT;
             const result = await runnableToExecute.run({ rowLimit, givens });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
