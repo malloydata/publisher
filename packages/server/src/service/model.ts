@@ -57,6 +57,7 @@ type ApiNotebookCell = components["schemas"]["NotebookCell"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 type ApiSource = components["schemas"]["Source"];
 type ApiFilter = components["schemas"]["Filter"];
+type ApiGiven = components["schemas"]["Given"];
 type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
 export type ApiConnection = components["schemas"]["Connection"];
@@ -73,6 +74,61 @@ const MALLOY_VERSION = (
 
 export type ModelType = "model" | "notebook";
 type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
+
+/**
+ * Structural type for a Malloy SDK `Given` instance (the value type of
+ * `Model.givens`). The `Given` class is declared in
+ * `@malloydata/malloy/dist/api/foundation/core.d.ts` but is not re-exported
+ * from the package root, so we duck-type against the surface we use rather
+ * than importing it.
+ */
+interface MalloyGiven {
+   readonly name: string;
+   readonly type: { type: string; filterType?: string };
+   getTaglines(prefix?: RegExp): string[];
+}
+
+/**
+ * Convert a Malloy SDK `Given` (returned from `Model.givens`) to the wire
+ * shape declared in `api-doc.yaml`. Two fields are deliberately not surfaced:
+ *
+ * - `location` — Malloy's `DocumentLocation.url` is an absolute `file://`
+ *   path on the publisher's filesystem. Surfacing it would leak the OS user,
+ *   install directory, and internal layout. Existing `Filter` introspection
+ *   does not expose location either; matching that floor. A future PR can
+ *   add a sanitized package-relative path if a client needs it.
+ *
+ * - `default` / `defaultText` — Malloy's API only exposes the parsed
+ *   `ConstantExpr` AST, not a rendered source string. Rendering it here
+ *   would duplicate the Malloy printer. Add when Malloy surfaces a
+ *   stringified accessor.
+ *
+ * `annotations` is restricted to `#(...)` declaration annotations (the
+ * caller-facing kind, e.g. `#(doc)`). `getTaglines()` with no prefix would
+ * also return `##` doc-comment lines and the model-level `##!` pragma,
+ * which aren't part of the given's surface contract.
+ *
+ * Type rendering: `GivenTypeDef` is typed as `AtomicTypeDef |
+ * FilterExpressionParamTypeDef`, but Malloy's grammar only emits the
+ * scalar parameter types (`string` | `number` | `boolean` | `date` |
+ * `timestamp` | `timestamptz` | `filter expression` | `error`) for
+ * given declarations today. If the grammar expands to allow array or
+ * record givens, the bare `type.type` discriminator (`'array'`,
+ * `'record'`) will land in the wire response with no element info —
+ * revisit when that happens.
+ */
+function malloyGivenToApi(given: MalloyGiven): ApiGiven {
+   const type = given.type;
+   const renderedType =
+      type.type === "filter expression"
+         ? `filter<${type.filterType}>`
+         : type.type;
+   return {
+      name: given.name,
+      type: renderedType,
+      annotations: given.getTaglines(/^#\(/),
+   };
+}
 
 interface RunnableNotebookCell {
    type: "code" | "markdown";
@@ -99,6 +155,10 @@ export class Model {
    private compilationError: MalloyError | Error | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
+   /** Givens declared on the model, in declaration order. Malloy's
+    *  `Model.givens` already collapses inheritance; we just stash the list
+    *  for surfacing on the compiled-model response. */
+   private givens: ApiGiven[] | undefined;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -122,6 +182,7 @@ export class Model {
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
       filterMap?: Map<string, FilterDefinition[]>,
+      givens?: ApiGiven[],
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -135,6 +196,7 @@ export class Model {
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
+      this.givens = givens;
       this.modelInfo = this.modelDef
          ? modelDefToModelInfo(this.modelDef)
          : undefined;
@@ -189,10 +251,19 @@ export class Model {
          let sources = undefined;
          let queries = undefined;
          let filterMap: Map<string, FilterDefinition[]> | undefined;
+         let givens: ApiGiven[] | undefined;
          const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
-            modelDef = (await modelMaterializer.getModel())._modelDef;
-            const sourceResult = Model.getSources(modelPath, modelDef);
+            const compiledModel = await modelMaterializer.getModel();
+            modelDef = compiledModel._modelDef;
+            // Malloy's `Model.givens` already collapses inheritance from imports
+            // and applies any `finalizeGivens` runtime config. Just read it.
+            const malloyGivens = Array.from(compiledModel.givens.values());
+            givens =
+               malloyGivens.length > 0
+                  ? malloyGivens.map(malloyGivenToApi)
+                  : undefined;
+            const sourceResult = Model.getSources(modelPath, modelDef, givens);
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
             queries = Model.getQueries(modelPath, modelDef);
@@ -256,6 +327,7 @@ export class Model {
             runnableNotebookCells,
             undefined,
             filterMap,
+            givens,
          );
       } catch (error) {
          let computedError = error;
@@ -511,6 +583,7 @@ export class Model {
          ),
          sources: this.sources,
          queries: this.queries,
+         givens: this.givens,
       } as ApiCompiledModel;
    }
 
@@ -760,6 +833,7 @@ export class Model {
    private static getSources(
       modelPath: string,
       modelDef: ModelDef,
+      givens?: ApiGiven[],
    ): {
       sources: ApiSource[];
       filterMap: Map<string, FilterDefinition[]>;
@@ -848,6 +922,12 @@ export class Model {
                annotations,
                views,
                filters,
+               // Malloy exposes givens at the model level, not per-source.
+               // First pass: surface the full model-level list on every source
+               // — matches how filter introspection already collapses
+               // inheritance into the per-source list. Refine to view-scoped
+               // filtering if a customer asks.
+               givens,
             } as ApiSource;
          });
 
