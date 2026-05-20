@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Stats } from "fs";
 import fs from "fs/promises";
 import { join, resolve } from "path";
 import sinon from "sinon";
@@ -336,12 +335,17 @@ describe("service/package", () => {
          });
       });
 
-      describe("getDatabaseInfo", () => {
-         it("should return the size of the database file", async () => {
-            sinon.stub(fs, "stat").resolves({ size: 13 } as Stats);
-
-            // @ts-expect-error Accessing private static method for testing
-            const info = await Package.getDatabaseInfo(
+      describe("schema introspection (via worker pool)", () => {
+         it("returns columns and rowCount for a csv database", async () => {
+            // Schema introspection moved off the main thread into a
+            // worker pool to isolate DuckDB's native thread pool (see
+            // schema_worker_pool.ts). Hit the pool directly here so
+            // the test exercises the same code path prod uses.
+            const { getSchemaWorkerPool } = await import(
+               "./schema_worker_pool"
+            );
+            const pool = getSchemaWorkerPool();
+            const info = await pool.submit(
                testPackageDirectory,
                "database.csv",
             );

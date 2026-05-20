@@ -703,6 +703,15 @@ export class EnvironmentStore {
    }
 
    public async getStatus() {
+      const memoryGovernorStatus = this.memoryGovernor?.getStatus() ?? null;
+      // Log every /status hit so we have a trace of RSS / back-pressure
+      // state to correlate against pod OOMs and request-driven leaks.
+      // Logged at info so it shows up in prod without LOG_LEVEL changes;
+      // the endpoint is low-frequency (monitoring/UI), so volume is fine.
+      logger.info("Memory governor status", {
+         memoryGovernor: memoryGovernorStatus,
+      });
+
       const status = {
          timestamp: Date.now(),
          environments: [] as Array<components["schemas"]["Environment"]>,

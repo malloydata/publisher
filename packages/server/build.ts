@@ -5,7 +5,15 @@ fs.rmSync("./dist", { recursive: true, force: true });
 fs.mkdirSync("./dist");
 
 await build({
-   entrypoints: ["./src/server.ts", "./src/instrumentation.ts"],
+   entrypoints: [
+      "./src/server.ts",
+      "./src/instrumentation.ts",
+      // Schema-introspection worker. Loaded at runtime via
+      // `new Worker(new URL("./schema_worker.mjs", import.meta.url))`
+      // from `schema_worker_pool.ts`, so it has to be a separate
+      // bundle output sitting next to server.mjs in dist/.
+      "./src/service/schema_worker.ts",
+   ],
    outdir: "./dist",
    target: "node",
    format: "esm",
@@ -48,6 +56,7 @@ fs.copyFileSync(
 // Rename ESM outputs to .mjs so both Node and Bun can execute them
 fs.renameSync("./dist/server.js", "./dist/server.mjs");
 fs.renameSync("./dist/instrumentation.js", "./dist/instrumentation.mjs");
+fs.renameSync("./dist/schema_worker.js", "./dist/schema_worker.mjs");
 
 // Add shebang to server.mjs for npx/bunx compatibility
 const serverJsPath = "./dist/server.mjs";

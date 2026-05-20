@@ -1,16 +1,11 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import "@malloydata/db-duckdb/native";
 import {
    Connection,
-   ConnectionRuntime,
    contextOverlay,
-   EmptyURLReader,
    FixedConnectionMap,
    MalloyConfig,
-   SourceDef,
 } from "@malloydata/malloy";
 import { metrics } from "@opentelemetry/api";
 import recursive from "recursive-readdir";
@@ -26,13 +21,12 @@ import { formatDuration, logger } from "../logger";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { ignoreDotfiles } from "../utils";
 import { Model } from "./model";
+import { getSchemaWorkerPool } from "./schema_worker_pool";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
-type ApiColumn = components["schemas"]["Column"];
-type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
 // MalloyConfig so the package wrapper resolves environment connections against the
 // generation that's active at lookup time, not the one that was current when
@@ -92,6 +86,8 @@ export class Package {
          packageName,
          duration: formatDuration(manifestValidationTime - startTime),
       });
+
+      let packageMalloyConfig: MalloyConfig | undefined;
 
       try {
          const packageConfig = await Package.readPackageConfig(packagePath);
@@ -181,6 +177,17 @@ export class Package {
             malloy_package_name: packageName,
             status: "error",
          });
+
+         if (packageMalloyConfig) {
+            try {
+               await packageMalloyConfig.shutdown("close");
+            } catch (releaseError) {
+               logger.warn(
+                  `Failed to release package-local DuckDB for ${packageName}`,
+                  { error: releaseError },
+               );
+            }
+         }
          // Clean up package directory on failure
          try {
             await fs.rm(packagePath, {
@@ -430,22 +437,43 @@ export class Package {
    private static async readDatabases(
       packagePath: string,
    ): Promise<ApiDatabase[]> {
-      return await Promise.all(
-         (await Package.getDatabasePaths(packagePath)).map(
-            async (databasePath) => {
-               const databaseInfo = await Package.getDatabaseInfo(
-                  packagePath,
-                  databasePath,
-               );
+      const databasePaths = await Package.getDatabasePaths(packagePath);
+      if (databasePaths.length === 0) return [];
 
-               return {
-                  path: databasePath,
-                  info: databaseInfo,
-                  type: "embedded",
-               };
-            },
+      // Off-main-thread: schema introspection runs in the
+      // SchemaWorkerPool so DuckDB's native thread pool lives inside
+      // a worker we control. This is the leak class that OOM-killed
+      // prod (466 leaked Bun Pool threads on worker-76b49bdb89-8bsv4)
+      // — worker isolation puts a hard ceiling on per-package native
+      // thread usage and the worker's connection is reused across all
+      // schema queries for the life of the process.
+      const pool = getSchemaWorkerPool();
+      const settled = await Promise.allSettled(
+         databasePaths.map((databasePath) =>
+            pool.submit(packagePath, databasePath),
          ),
       );
+
+      const results: ApiDatabase[] = [];
+      for (let i = 0; i < settled.length; i++) {
+         const outcome = settled[i];
+         if (outcome.status === "fulfilled") {
+            results.push({
+               path: databasePaths[i],
+               info: outcome.value,
+               type: "embedded",
+            });
+         } else {
+            // A single bad parquet (corrupt footer, unsupported type)
+            // must not fail the whole package load. Log and skip.
+            logger.warn("Schema introspection failed for database", {
+               packagePath,
+               databasePath: databasePaths[i],
+               error: outcome.reason,
+            });
+         }
+      }
+      return results;
    }
 
    private static async getDatabasePaths(
@@ -460,38 +488,6 @@ export class Package {
             (modelPath: string) =>
                modelPath.endsWith(".parquet") || modelPath.endsWith(".csv"),
          );
-   }
-
-   private static async getDatabaseInfo(
-      packagePath: string,
-      databasePath: string,
-   ): Promise<ApiTableDescription> {
-      const fullPath = path.join(packagePath, databasePath);
-
-      // Create a DuckDB source then:
-      // 1. Load the model and get the table schema from model
-      // 2. Run a query to get the row count from the table
-      const runtime = new ConnectionRuntime({
-         urlReader: new EmptyURLReader(),
-         connections: [new DuckDBConnection("duckdb")],
-      });
-      // Normalize path to use forward slashes for cross-platform compatibility
-      // DuckDB on Windows supports forward slashes, and this avoids escaping issues
-      const normalizedPath = fullPath.replace(/\\/g, "/");
-      const model = runtime.loadModel(
-         `source: temp is duckdb.table('${normalizedPath}')`,
-      );
-      const modelDef = await model.getModel();
-      const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;
-      const schema = fields.map((field): ApiColumn => {
-         return { type: field.type, name: field.name };
-      });
-      const runner = model.loadQuery(
-         "run: temp->{aggregate: row_count is count()}",
-      );
-      const result = await runner.run();
-      const rowCount = result.data.value[0].row_count?.valueOf() as number;
-      return { name: databasePath, rowCount, columns: schema };
    }
 
    public setName(name: string) {

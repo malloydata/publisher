@@ -43,6 +43,7 @@ import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
+import { ProcessStatsReporter } from "./service/process_stats_reporter";
 
 /** Normalize an Express query param into a string[] or undefined. */
 export function normalizeQueryArray(value: unknown): string[] | undefined {
@@ -172,6 +173,10 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
+// Always-on process-stats heartbeat so we can correlate RSS / thread
+// counts / heap usage with traffic in prod. Logs every 30s at info.
+const processStatsReporter = new ProcessStatsReporter(memoryGovernor);
+processStatsReporter.start();
 const packageController = new PackageController(
    environmentStore,
    manifestService,
