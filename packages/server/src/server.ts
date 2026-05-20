@@ -1111,6 +1111,18 @@ app.get(
          const bypassFilters =
             req.query.bypass_filters === "true" ? true : undefined;
 
+         let givens: Record<string, GivenValue> | undefined;
+         if (typeof req.query.givens === "string") {
+            try {
+               givens = JSON.parse(req.query.givens);
+            } catch {
+               res.status(400).json({
+                  error: "Invalid givens: must be valid JSON",
+               });
+               return;
+            }
+         }
+
          res.status(200).json(
             await modelController.executeNotebookCell(
                req.params.environmentName,
@@ -1119,6 +1131,7 @@ app.get(
                cellIndex,
                filterParams,
                bypassFilters,
+               givens,
             ),
          );
       } catch (error) {
