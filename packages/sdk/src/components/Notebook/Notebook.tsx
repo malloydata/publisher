@@ -1,8 +1,22 @@
 import "@malloydata/malloy-explorer/styles.css";
 import * as Malloy from "@malloydata/malloy-interfaces";
-import { Box, Paper, Stack, Typography } from "@mui/material";
+import {
+   Autocomplete,
+   Box,
+   Checkbox,
+   FormControlLabel,
+   Paper,
+   Stack,
+   TextField,
+   Typography,
+} from "@mui/material";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RawNotebook, Source } from "../../client";
+import { Given, RawNotebook, Source } from "../../client";
 import {
    getDimensionKey,
    useDimensionalFilterRangeData,
@@ -11,7 +25,10 @@ import {
    FilterSelection,
    useDimensionFilters,
 } from "../../hooks/useDimensionFilters";
+import { GivenValue, useGivensForm } from "../../hooks/useGivensForm";
+import { useModelGivens } from "../../hooks/useModelGivens";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DimensionFilter, RetrievalFunction } from "../filter/DimensionFilter";
 import {
@@ -19,13 +36,13 @@ import {
    parseAllSourceInfos,
    parseNotebookFilterAnnotation,
 } from "../filter/utils";
-
-import { parseResourceUri } from "../../utils/formatting";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 import { NotebookCell } from "./NotebookCell";
 import { EnhancedNotebookCell } from "./types";
+
+dayjs.extend(utc);
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
@@ -216,6 +233,10 @@ export default function Notebook({
       [filterStates, getActiveFilters],
    );
 
+   // Extract model-level givens declared via `given:` and manage user overrides
+   const declaredGivens = useModelGivens(notebook);
+   const { givenValues, updateGiven } = useGivensForm(declaredGivens);
+
    // Create a map of dimension key -> source name for quick lookup (used by filter UI)
    const _dimensionToSourceMap = useMemo(() => {
       const map = new Map<string, string>();
@@ -273,11 +294,40 @@ export default function Notebook({
       [],
    );
 
+   /**
+    * Serialize given-value overrides into the JSON-encoded string the server
+    * expects on the notebook-cell GET endpoint's `givens` query param.
+    * Date values are rendered as YYYY-MM-DD; everything else passes through
+    * the standard JSON encoder.
+    */
+   const buildGivens = useCallback(
+      (values: Map<string, GivenValue>): string | undefined => {
+         if (values.size === 0) return undefined;
+         const encode = (v: GivenValue): unknown => {
+            if (v instanceof Date) return v.toISOString().slice(0, 10);
+            if (Array.isArray(v)) return v.map((item) => encode(item));
+            return v;
+         };
+         const params: Record<string, unknown> = {};
+         values.forEach((value, name) => {
+            if (value === null || value === undefined) return;
+            params[name] = encode(value);
+         });
+         return Object.keys(params).length > 0
+            ? JSON.stringify(params)
+            : undefined;
+      },
+      [],
+   );
+
    // Unified cell execution function
-   // Executes all notebook cells, passing server-side filter params when available
+   // Executes all notebook cells, passing server-side filter params and givens
    // Runs up to 4 requests in parallel for better performance
    const executeCells = useCallback(
-      async (filtersToApply: FilterSelection[] = []) => {
+      async (
+         filtersToApply: FilterSelection[] = [],
+         givensToApply: Map<string, GivenValue> = new Map(),
+      ) => {
          if (!isSuccess || !notebook?.notebookCells) return;
 
          // Initialize or reset cells
@@ -297,6 +347,7 @@ export default function Notebook({
          const filterParams = useServerFilters
             ? buildFilterParams(filtersToApply)
             : undefined;
+         const givensParam = buildGivens(givensToApply);
 
          try {
             // Build execution tasks for code cells
@@ -313,7 +364,7 @@ export default function Notebook({
 
                const executeCell = async () => {
                   try {
-                     // Use notebook cell execution API with optional filter_params
+                     // Use notebook cell execution API with optional filter_params and givens
                      const response =
                         await apiClients.notebooks.executeNotebookCell(
                            environmentName,
@@ -322,6 +373,8 @@ export default function Notebook({
                            cellIndex,
                            versionId,
                            filterParams,
+                           undefined,
+                           givensParam,
                         );
 
                      const executedCell = response.data;
@@ -381,6 +434,7 @@ export default function Notebook({
          notebook,
          useServerFilters,
          buildFilterParams,
+         buildGivens,
          environmentName,
          packageName,
          notebookPath,
@@ -389,45 +443,52 @@ export default function Notebook({
       ],
    );
 
-   // Execute cells when notebook is loaded (no filters initially)
+   // Execute cells when notebook is loaded (no filters or givens initially)
    useEffect(() => {
       if (!isSuccess || !notebook?.notebookCells) return;
-      executeCells([]);
+      executeCells([], new Map());
    }, [isSuccess, notebook, executeCells]);
 
-   // Re-execute when filters change
-   // Track previous activeFilters to detect actual changes (not just reference changes)
-   const prevActiveFiltersRef = useRef<string>("");
+   // Re-execute when filters or givens change
+   // Track previous input shape to detect actual value changes (not just reference changes)
+   const prevInputsRef = useRef<string>("");
 
    useEffect(() => {
-      // Serialize activeFilters to detect actual value changes
-      const serialized = JSON.stringify(
-         activeFilters.map((f) => ({
+      // Serialize activeFilters + givenValues to detect actual value changes
+      const serialized = JSON.stringify({
+         filters: activeFilters.map((f) => ({
             dim: f.dimensionName,
             type: f.matchType,
             val: f.value,
             val2: f.value2,
          })),
-      );
+         givens: Array.from(givenValues.entries()).sort(([a], [b]) =>
+            a.localeCompare(b),
+         ),
+      });
 
-      // Skip if no actual change or if this is the initial empty state
-      if (serialized === prevActiveFiltersRef.current) {
+      // Skip if no actual change
+      if (serialized === prevInputsRef.current) {
          return;
       }
 
-      // Skip the initial render (when prevActiveFiltersRef is empty and filters are also empty)
-      if (prevActiveFiltersRef.current === "" && activeFilters.length === 0) {
-         prevActiveFiltersRef.current = serialized;
+      // Skip the initial render when both inputs are empty
+      if (
+         prevInputsRef.current === "" &&
+         activeFilters.length === 0 &&
+         givenValues.size === 0
+      ) {
+         prevInputsRef.current = serialized;
          return;
       }
 
-      prevActiveFiltersRef.current = serialized;
+      prevInputsRef.current = serialized;
 
-      // Re-execute with current filters (or no filters if cleared)
+      // Re-execute with current filters and givens (or empty if cleared)
       if (!isExecuting) {
-         executeCells(activeFilters);
+         executeCells(activeFilters, givenValues);
       }
-   }, [activeFilters, isExecuting, executeCells]);
+   }, [activeFilters, givenValues, isExecuting, executeCells]);
 
    // Handle filter change using composite key
    const handleFilterChange = useCallback(
@@ -447,6 +508,50 @@ export default function Notebook({
       <CleanNotebookContainer>
          <CleanNotebookSection>
             <Stack spacing={3} component="section">
+               {/* Givens Panel — runtime parameters declared via `given:` */}
+               {declaredGivens.length > 0 && (
+                  <Paper
+                     elevation={0}
+                     sx={{
+                        p: 3,
+                        backgroundColor: "transparent",
+                        border: "none",
+                        boxShadow: "none",
+                     }}
+                  >
+                     <Typography
+                        variant="subtitle2"
+                        sx={{ fontWeight: 600, mb: 2, color: "#333" }}
+                     >
+                        Parameters
+                     </Typography>
+                     <Box
+                        sx={{
+                           display: "grid",
+                           gridTemplateColumns:
+                              "repeat(auto-fill, minmax(250px, 1fr))",
+                           gap: 3,
+                        }}
+                     >
+                        {declaredGivens.map((given) => (
+                           <Box key={given.name}>
+                              <GivenInput
+                                 given={given}
+                                 value={
+                                    given.name
+                                       ? givenValues.get(given.name)
+                                       : undefined
+                                 }
+                                 onChange={(next) =>
+                                    given.name && updateGiven(given.name, next)
+                                 }
+                              />
+                           </Box>
+                        ))}
+                     </Box>
+                  </Paper>
+               )}
+
                {/* Filter Panel */}
                {dimensionSpecs.length > 0 && filterValuesData && (
                   <Paper
@@ -553,5 +658,101 @@ export default function Notebook({
             </Stack>
          </CleanNotebookSection>
       </CleanNotebookContainer>
+   );
+}
+
+interface GivenInputProps {
+   given: Given;
+   value: GivenValue | undefined;
+   onChange: (next: GivenValue) => void;
+}
+
+/**
+ * Renders an input widget appropriate for the declared given type.
+ * Unknown / unrecognized types fall back to a plain text input.
+ */
+function GivenInput({ given, value, onChange }: GivenInputProps) {
+   const label = given.name ?? "";
+   const type = given.type ?? "string";
+
+   if (type === "boolean") {
+      const checked = value === true;
+      return (
+         <FormControlLabel
+            control={
+               <Checkbox
+                  checked={checked}
+                  onChange={(e) => onChange(e.target.checked)}
+               />
+            }
+            label={label}
+         />
+      );
+   }
+
+   if (type === "number") {
+      const num = typeof value === "number" ? value : "";
+      return (
+         <TextField
+            label={label}
+            type="number"
+            value={num}
+            onChange={(e) => {
+               const v = e.target.value;
+               onChange(v === "" ? null : Number(v));
+            }}
+            fullWidth
+            size="small"
+         />
+      );
+   }
+
+   if (type === "date" || type === "timestamp" || type === "timestamptz") {
+      const dateValue = value instanceof Date ? dayjs.utc(value) : null;
+      return (
+         <LocalizationProvider dateAdapter={AdapterDayjs}>
+            <DatePicker
+               label={label}
+               value={dateValue}
+               onChange={(next) => onChange(next ? next.toDate() : null)}
+               slotProps={{ textField: { fullWidth: true, size: "small" } }}
+            />
+         </LocalizationProvider>
+      );
+   }
+
+   if (type.startsWith("array<")) {
+      const list = Array.isArray(value) ? value.map(String) : [];
+      return (
+         <Autocomplete
+            multiple
+            freeSolo
+            options={[]}
+            value={list}
+            onChange={(_event, next) =>
+               onChange(next.length === 0 ? null : (next as string[]))
+            }
+            renderInput={(params) => (
+               <TextField {...params} label={label} size="small" />
+            )}
+            fullWidth
+         />
+      );
+   }
+
+   // Default: string, filter<...>, or unknown types — plain text input
+   const str = typeof value === "string" ? value : "";
+   return (
+      <TextField
+         label={label}
+         value={str}
+         onChange={(e) => {
+            const v = e.target.value;
+            onChange(v === "" ? null : v);
+         }}
+         placeholder={type.startsWith("filter<") ? type : undefined}
+         fullWidth
+         size="small"
+      />
    );
 }
