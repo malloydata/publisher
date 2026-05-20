@@ -42,32 +42,6 @@ export function markReady(): void {
 }
 
 /**
- * Marks the service as degraded: one or more environments failed to
- * initialize. The surviving environments are still queryable, and
- * callers polling /api/v0/status see operationalState="degraded" plus
- * a failedEnvironments list.
- *
- * Readiness probe (/health/readiness) returns 503 — degraded pods are
- * pulled out of K8s load-balancer rotation so traffic does not get
- * routed to a replica that can only serve a fraction of the configured
- * environments. Operators should fix the failing config and restart
- * the pod; if you want degraded traffic to be served anyway (e.g. for
- * a single-replica local dev instance), poll /api/v0/status directly
- * instead of /health/readiness.
- */
-export function markDegraded(): void {
-   if (operationalState !== "draining") {
-      operationalState = "degraded";
-      ready = false;
-      logger.warn(
-         "Service marked as degraded; one or more environments failed to initialize. Readiness probe will fail until the config is fixed and the process restarts.",
-      );
-   } else {
-      logger.error("Service is already draining - cannot mark as degraded");
-   }
-}
-
-/**
  * Marks the service as not ready (readiness probe will return 503).
  */
 export function markNotReady(): void {
@@ -83,8 +57,8 @@ export function markNotReady(): void {
  * 2. Waits shutdownDrainDurationSeconds to allow in-flight requests to complete
  * 3. Sets preGracefulShutdownCompleted flag (enables drainingGuard middleware to reject new requests)
  * 4. Closes main server and MCP server (stops accepting new connections)
- * 5. Closes logger
- * 6. Waits shutdownGracefulCloseTimeoutSeconds (if > 0) for final cleanup
+ * 5. Waits shutdownGracefulCloseTimeoutSeconds (if > 0) for final cleanup
+ * 6. Closes logger (last, so any logs emitted during cleanup are flushed)
  * 7. Exits process
  *
  * Note: drainingGuard only rejects requests after step 3 completes. During step 2,
@@ -118,50 +92,78 @@ export function registerSignalHandlers(
          }, shutdownDrainDurationSeconds * 1000),
       );
 
-      const closeServer = (server: Server, name: string) =>
-         new Promise<void>((resolve) => {
-            if (server && server.listening) {
-               server.close((err) => {
-                  if (err) {
-                     logger.error(`${name} close error:`, err);
-                  } else {
-                     logger.info(`${name} closed`);
-                  }
-                  resolve();
-               });
-            } else {
-               resolve();
-            }
-         });
-
-      await Promise.all([
-         closeServer(server, "Main server"),
-         closeServer(mcpServer, "MCP server"),
-      ]);
-
-      try {
-         await shutdownSDK();
-         logger.info("OpenTelemetry SDK shut down");
-      } catch (_error) {
-         /* do nothing */
-      }
-
-      try {
-         logger.close();
-      } catch (_error) {
-         /* do nothing */
-      }
-
-      if (shutdownGracefulCloseTimeoutSeconds > 0) {
-         logger.info(
-            `Waiting ${shutdownGracefulCloseTimeoutSeconds} seconds after server close before exit...`,
-         );
-         await new Promise((resolve) =>
-            setTimeout(resolve, shutdownGracefulCloseTimeoutSeconds * 1000),
-         );
-      }
-      process.exit(0);
+      await performGracefulShutdownAfterDrain(
+         server,
+         mcpServer,
+         shutdownGracefulCloseTimeoutSeconds,
+      );
    });
+}
+
+/**
+ * Performs the post-drain shutdown work: closes both HTTP servers,
+ * shuts down the OpenTelemetry SDK, waits the optional graceful-close
+ * window so any in-flight cleanup can finish logging, closes the
+ * winston logger, and exits the process.
+ *
+ * Exported so unit tests can exercise the close + log + exit ordering
+ * without emitting SIGTERM (which would leave module-level
+ * operationalState stuck in "draining" and leak into sibling specs).
+ */
+export async function performGracefulShutdownAfterDrain(
+   server: Server,
+   mcpServer: Server,
+   shutdownGracefulCloseTimeoutSeconds: number,
+): Promise<void> {
+   const closeServer = (server: Server, name: string) =>
+      new Promise<void>((resolve) => {
+         if (server && server.listening) {
+            server.close((err) => {
+               if (err) {
+                  logger.error(`${name} close error:`, err);
+               } else {
+                  logger.info(`${name} closed`);
+               }
+               resolve();
+            });
+         } else {
+            resolve();
+         }
+      });
+
+   await Promise.all([
+      closeServer(server, "Main server"),
+      closeServer(mcpServer, "MCP server"),
+   ]);
+
+   try {
+      await shutdownSDK();
+      logger.info("OpenTelemetry SDK shut down");
+   } catch (_error) {
+      /* do nothing */
+   }
+
+   if (shutdownGracefulCloseTimeoutSeconds > 0) {
+      logger.info(
+         `Waiting ${shutdownGracefulCloseTimeoutSeconds} seconds after server close before exit...`,
+      );
+      await new Promise((resolve) =>
+         setTimeout(resolve, shutdownGracefulCloseTimeoutSeconds * 1000),
+      );
+   }
+
+   // Close the logger last so anything emitted during the wait window
+   // above (or by other shutdown paths still running) reaches its
+   // transports. Closing earlier triggers winston's
+   // "Attempt to write logs with no transports" warning on any
+   // subsequent logger call.
+   try {
+      logger.close();
+   } catch (_error) {
+      /* do nothing */
+   }
+
+   process.exit(0);
 }
 /**
  * Middleware that returns 503 for non-health and metrics requests when service is draining.

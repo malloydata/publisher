@@ -26,7 +26,6 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
             const body = (await res.json()) as {
                operationalState?: string;
                initialized?: boolean;
-               failedEnvironments?: Array<{ name: string; error: string }>;
             };
             last = body;
             if (body.operationalState === "serving") {
@@ -34,22 +33,8 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
                console.log("[global-setup] server is serving — ready");
                return;
             }
-            if (body.operationalState === "degraded") {
-               // Fail fast: degraded means at least one configured
-               // environment failed to init. Surface the failures so the
-               // CI log explains *why* the suite didn't run instead of
-               // making the developer poll the status endpoint.
-               throw new Error(
-                  `Publisher reached operationalState="degraded" — environment init failed. failedEnvironments: ${JSON.stringify(
-                     body.failedEnvironments,
-                  )}`,
-               );
-            }
          }
-      } catch (err) {
-         if (err instanceof Error && err.message.startsWith("Publisher")) {
-            throw err;
-         }
+      } catch {
          // server not up yet
       }
       await new Promise((r) => setTimeout(r, 1000));
