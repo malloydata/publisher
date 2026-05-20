@@ -29,6 +29,7 @@ import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
 import { components } from "../api";
+import { getCompilePool } from "../compile/compile_pool";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -140,12 +141,31 @@ interface RunnableNotebookCell {
    queryInfo?: Malloy.QueryInfo;
 }
 
+/**
+ * Lazily produces a `ModelMaterializer` on demand. Used by the worker-
+ * compile path: the worker returns a fully-built `modelDef` but cannot
+ * ship the materializer (it binds to a Runtime that holds live native
+ * connection handles and would not survive a structured-clone). The
+ * first query that actually needs to execute calls this builder,
+ * which constructs the materializer in-process. After construction
+ * Malloy caches the compiled model internally on the materializer,
+ * so subsequent queries pay no recompile cost.
+ */
+type MaterializerBuilder = () => Promise<ModelMaterializer>;
+
 export class Model {
    private packageName: string;
    private modelPath: string;
    private dataStyles: DataStyles;
    private modelType: ModelType;
    private modelMaterializer: ModelMaterializer | undefined;
+   /**
+    * Lazy builder used when the model was compiled in a worker_threads
+    * worker. The first `getQueryResults`/`executeNotebookCell` call
+    * invokes this and caches the result in `modelMaterializer`.
+    */
+   private materializerBuilder: MaterializerBuilder | undefined;
+   private materializerBuildPromise: Promise<ModelMaterializer> | undefined;
    private modelDef: ModelDef | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
    private sources: ApiSource[] | undefined;
@@ -159,6 +179,8 @@ export class Model {
     *  `Model.givens` already collapses inheritance; we just stash the list
     *  for surfacing on the compiled-model response. */
    private givens: ApiGiven[] | undefined;
+   /** Cached responses from `getStandardModel()` so we don't re-stringify a multi-MB modelDef on every GET. */
+   private cachedStandardModel: ApiCompiledModel | undefined;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -183,6 +205,7 @@ export class Model {
       compilationError: MalloyError | Error | undefined,
       filterMap?: Map<string, FilterDefinition[]>,
       givens?: ApiGiven[],
+      materializerBuilder?: MaterializerBuilder,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -190,6 +213,7 @@ export class Model {
       this.modelType = modelType;
       this.modelDef = modelDef;
       this.modelMaterializer = modelMaterializer;
+      this.materializerBuilder = materializerBuilder;
       this.sources = sources;
       this.queries = queries;
       this.sourceInfos = sourceInfos;
@@ -200,6 +224,28 @@ export class Model {
       this.modelInfo = this.modelDef
          ? modelDefToModelInfo(this.modelDef)
          : undefined;
+   }
+
+   /**
+    * Resolve the in-process `ModelMaterializer`, building it lazily if
+    * the model was compiled in a worker_threads worker. Memoizes both
+    * the materializer and the in-flight build promise so concurrent
+    * queries on the same model share a single construction.
+    */
+   private async ensureMaterializer(): Promise<ModelMaterializer> {
+      if (this.modelMaterializer) return this.modelMaterializer;
+      if (!this.materializerBuilder) {
+         throw new BadRequestError("Model has no queryable entities.");
+      }
+      if (!this.materializerBuildPromise) {
+         this.materializerBuildPromise = this.materializerBuilder().then(
+            (mm) => {
+               this.modelMaterializer = mm;
+               return mm;
+            },
+         );
+      }
+      return this.materializerBuildPromise;
    }
 
    /**
@@ -222,6 +268,158 @@ export class Model {
    }
 
    public static async create(
+      packageName: string,
+      packagePath: string,
+      modelPath: string,
+      malloyConfig: ModelConnectionInput,
+      options?: { buildManifest?: BuildManifest["entries"] },
+   ): Promise<Model> {
+      // Worker-pool fast path for plain `.malloy` files. Notebooks
+      // stay in-process for v1 — their per-cell ModelMaterializer
+      // chain is too entangled to ship across a worker boundary.
+      // The MALLOY_COMPILE_WORKERS=0 kill switch / pool.enabled check
+      // funnels everything through the legacy in-process path when
+      // the pool is disabled, so this is safe to land dark.
+      const pool = getCompilePool();
+      if (pool.enabled && modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+         try {
+            return await Model.createViaWorker(
+               packageName,
+               packagePath,
+               modelPath,
+               malloyConfig,
+               pool,
+               options,
+            );
+         } catch (poolError) {
+            // Real compile errors propagate to the caller as a Model
+            // with `compilationError` populated, matching the
+            // in-process path's contract.
+            if (
+               poolError instanceof ModelCompilationError ||
+               poolError instanceof MalloyError
+            ) {
+               return Model.makeErrorModel(
+                  packageName,
+                  modelPath,
+                  poolError instanceof MalloyError
+                     ? new ModelCompilationError(poolError)
+                     : poolError,
+               );
+            }
+            // Anything else (worker exited, RPC timeout) — fall back
+            // to in-process compile so a transient pool failure
+            // doesn't take a package down.
+            logger.warn(
+               "Compile worker failed; falling back to in-process compile",
+               { packageName, modelPath, error: poolError },
+            );
+         }
+      }
+      return Model.createInProcess(
+         packageName,
+         packagePath,
+         modelPath,
+         malloyConfig,
+         options,
+      );
+   }
+
+   /**
+    * Compile via the {@link CompileWorkerPool}. Builds a `Model` whose
+    * `modelDef` / `sources` / `queries` / `sourceInfos` / `givens` are
+    * populated up-front, but whose `ModelMaterializer` is constructed
+    * lazily on the first query through {@link ensureMaterializer}.
+    * This keeps the heavy CPU work (parse, type-check, IR build) off
+    * the main event loop so the K8s liveness probe stays responsive.
+    */
+   private static async createViaWorker(
+      packageName: string,
+      packagePath: string,
+      modelPath: string,
+      malloyConfig: ModelConnectionInput,
+      pool: ReturnType<typeof getCompilePool>,
+      options?: { buildManifest?: BuildManifest["entries"] },
+   ): Promise<Model> {
+      const resolvedConfig = Model.toMalloyConfig(malloyConfig);
+      const outcome = await pool.compile({
+         packagePath,
+         modelPath,
+         malloyConfig: resolvedConfig,
+         // Package-level configs wrap a "duckdb" default; matches
+         // Package.buildPackageMalloyConfig.
+         defaultConnectionName: "duckdb",
+         urlReader: URL_READER,
+         buildManifest: options?.buildManifest,
+      });
+
+      // Materializer construction is deferred until a query actually
+      // runs. Build it the same way the in-process path does so
+      // execution semantics stay identical.
+      const materializerBuilder: MaterializerBuilder = async () => {
+         const { runtime, modelURL, importBaseURL } =
+            await Model.getModelRuntime(
+               packagePath,
+               modelPath,
+               malloyConfig,
+               options,
+            );
+         return Model.getStandardModelMaterializer(
+            runtime,
+            importBaseURL,
+            modelURL,
+            modelPath,
+         );
+      };
+
+      return new Model(
+         packageName,
+         modelPath,
+         {} as DataStyles,
+         "model",
+         undefined, // modelMaterializer — built lazily
+         outcome.modelDef,
+         outcome.sources as ApiSource[],
+         outcome.queries as ApiQuery[],
+         outcome.sourceInfos.length > 0 ? outcome.sourceInfos : undefined,
+         undefined, // runnableNotebookCells — .malloy is not a notebook
+         undefined, // compilationError
+         outcome.filterMap,
+         outcome.givens as ApiGiven[] | undefined,
+         materializerBuilder,
+      );
+   }
+
+   private static makeErrorModel(
+      packageName: string,
+      modelPath: string,
+      error: Error,
+   ): Model {
+      const isNotebook = modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
+      return new Model(
+         packageName,
+         modelPath,
+         {} as DataStyles,
+         isNotebook ? "notebook" : "model",
+         undefined,
+         undefined,
+         undefined,
+         undefined,
+         undefined,
+         undefined,
+         error,
+      );
+   }
+
+   /**
+    * Legacy in-process compile path. Retained for:
+    *   - notebooks (`.malloynb`), whose per-cell materializer chain
+    *     is too coupled to the Runtime to ship to a worker for v1.
+    *   - environments where MALLOY_COMPILE_WORKERS=0.
+    *   - fallback when the worker pool encounters a non-compile
+    *     failure (worker exit, RPC timeout).
+    */
+   private static async createInProcess(
       packageName: string,
       packagePath: string,
       modelPath: string,
@@ -437,8 +635,24 @@ export class Model {
          );
       }
       let runnable: QueryMaterializer;
-      if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
+      if (!this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
+
+      // Resolve the materializer — either already-built (in-process
+      // create path, or a previous query on this Model) or lazily
+      // constructed now (worker-compile path on first query).
+      let materializer: ModelMaterializer;
+      try {
+         materializer = await this.ensureMaterializer();
+      } catch (error) {
+         if (error instanceof BadRequestError) throw error;
+         if (error instanceof MalloyError) throw error;
+         throw new BadRequestError(
+            error instanceof Error
+               ? `Failed to prepare model: ${error.message}`
+               : "Failed to prepare model.",
+         );
+      }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
@@ -480,7 +694,7 @@ export class Model {
             }
          }
 
-         runnable = this.modelMaterializer.loadQuery(queryString);
+         runnable = materializer.loadQuery(queryString);
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
@@ -569,7 +783,14 @@ export class Model {
    }
 
    private getStandardModel(): ApiCompiledModel {
-      return {
+      // modelDef is immutable for the lifetime of this Model, so the
+      // (potentially multi-MB) JSON.stringify result can be memoised.
+      // Without this cache every `GET /environments/:e/packages/:p/
+      // models/:m` re-stringifies the whole tree on the main thread —
+      // a known source of multi-hundred-ms event-loop pauses that
+      // chips away at the K8s liveness budget.
+      if (this.cachedStandardModel) return this.cachedStandardModel;
+      const compiled: ApiCompiledModel = {
          type: "source",
          packageName: this.packageName,
          modelPath: this.modelPath,
@@ -586,6 +807,8 @@ export class Model {
          queries: this.queries,
          givens: this.givens,
       } as ApiCompiledModel;
+      this.cachedStandardModel = compiled;
+      return compiled;
    }
 
    private async getNotebookModel(): Promise<ApiRawNotebook> {
