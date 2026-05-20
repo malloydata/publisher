@@ -56,7 +56,13 @@ fs.copyFileSync(
 // Rename ESM outputs to .mjs so both Node and Bun can execute them
 fs.renameSync("./dist/server.js", "./dist/server.mjs");
 fs.renameSync("./dist/instrumentation.js", "./dist/instrumentation.mjs");
-fs.renameSync("./dist/schema_worker.js", "./dist/schema_worker.mjs");
+// Bun nests outputs by their path relative to the common entrypoint
+// root (./src). schema_worker.ts is under src/service/, so its output
+// lands at dist/service/schema_worker.js — not dist/.
+fs.renameSync(
+   "./dist/service/schema_worker.js",
+   "./dist/service/schema_worker.mjs",
+);
 
 // Add shebang to server.mjs for npx/bunx compatibility
 const serverJsPath = "./dist/server.mjs";

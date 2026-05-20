@@ -261,14 +261,18 @@ export function getSchemaWorkerPool(): SchemaWorkerPool {
 function resolveWorkerUrl(): URL {
    // In dev (`bun --watch src/server.ts`), import.meta.url points at
    // `.../src/service/schema_worker_pool.ts` and the worker is the
-   // sibling `.ts` file. In prod, the pool gets inlined into
-   // `dist/server.mjs`, so `import.meta.url` resolves to
-   // `dist/server.mjs` — and sibling lookup lands at the build's
-   // `dist/schema_worker.mjs`. Both work with worker_threads.
+   // sibling `.ts` file.
+   //
+   // In prod, this module gets inlined into `dist/server.mjs`, so
+   // `import.meta.url` resolves to `dist/server.mjs`. Bun's bundler
+   // nests outputs by their path relative to the common entrypoint
+   // root (./src), so schema_worker lands at
+   // `dist/service/schema_worker.mjs` — one directory below
+   // server.mjs.
    const base = new URL(import.meta.url);
    const isBundled = base.pathname.endsWith(".mjs");
    return new URL(
-      isBundled ? "./schema_worker.mjs" : "./schema_worker.ts",
+      isBundled ? "./service/schema_worker.mjs" : "./schema_worker.ts",
       base,
    );
 }
