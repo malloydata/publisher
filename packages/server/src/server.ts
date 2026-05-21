@@ -316,6 +316,30 @@ const setVersionIdError = (res: express.Response) => {
    res.status(status).json(json);
 };
 
+/**
+ * Attach RFC 8594 deprecation headers when the request carries any of the
+ * legacy `#(filter)` API surface (`filterParams` / `bypassFilters` on POST,
+ * `filter_params` / `bypass_filters` on the notebook-cell GET). The
+ * complementary operator-facing notice for legacy *models* (independent of
+ * whether the caller used the deprecated request fields) ships as a
+ * one-time warn log in `Model`'s constructor — see model.ts.
+ */
+const setFilterDeprecationHeaders = (
+   res: express.Response,
+   options: { filterParams?: unknown; bypassFilters?: unknown },
+): void => {
+   if (
+      options.filterParams !== undefined ||
+      options.bypassFilters !== undefined
+   ) {
+      res.setHeader("Deprecation", "true");
+      res.setHeader(
+         "Link",
+         '<https://github.com/malloydata/publisher/blob/main/docs/givens.md>; rel="deprecation"; type="text/markdown"',
+      );
+   }
+};
+
 app.use(
    cors({
       origin: "http://localhost:5173",
@@ -1098,17 +1122,20 @@ app.get(
             }
          }
 
-         res.status(200).json(
-            await modelController.executeNotebookCell(
-               req.params.environmentName,
-               req.params.packageName,
-               notebookPath,
-               cellIndex,
-               filterParams,
-               bypassFilters,
-               givens,
-            ),
+         const result = await modelController.executeNotebookCell(
+            req.params.environmentName,
+            req.params.packageName,
+            notebookPath,
+            cellIndex,
+            filterParams,
+            bypassFilters,
+            givens,
          );
+         setFilterDeprecationHeaders(res, {
+            filterParams: req.query.filter_params,
+            bypassFilters: bypassFilters,
+         });
+         res.status(200).json(result);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -1155,22 +1182,25 @@ app.post(
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
-         res.status(200).json(
-            await queryController.getQuery(
-               req.params.environmentName,
-               req.params.packageName,
-               modelPath,
-               req.body.sourceName as string,
-               req.body.queryName as string,
-               req.body.query as string,
-               req.body.compactJson === true,
-               (req.body.filterParams ?? req.body.sourceFilters) as
-                  | Record<string, string | string[]>
-                  | undefined,
-               req.body.bypassFilters === true ? true : undefined,
-               req.body.givens as Record<string, GivenValue> | undefined,
-            ),
+         const result = await queryController.getQuery(
+            req.params.environmentName,
+            req.params.packageName,
+            modelPath,
+            req.body.sourceName as string,
+            req.body.queryName as string,
+            req.body.query as string,
+            req.body.compactJson === true,
+            (req.body.filterParams ?? req.body.sourceFilters) as
+               | Record<string, string | string[]>
+               | undefined,
+            req.body.bypassFilters === true ? true : undefined,
+            req.body.givens as Record<string, GivenValue> | undefined,
          );
+         setFilterDeprecationHeaders(res, {
+            filterParams: req.body.filterParams ?? req.body.sourceFilters,
+            bypassFilters: req.body.bypassFilters === true ? true : undefined,
+         });
+         res.status(200).json(result);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
