@@ -224,4 +224,69 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          }),
       ).rejects.toThrow("shutting down");
    });
+
+   it("compileInline() compiles an in-memory Malloy snippet", async () => {
+      // Mirrors the synthesized snippet `Package.getDatabaseInfo` ships
+      // when probing a `.parquet` / `.csv`. No file is written —
+      // `inlineSource` reaches the worker as a string.
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      if (!tempDir) throw new Error("tempDir not initialized");
+
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+
+      pool = new CompileWorkerPool(1);
+      const outcome = await pool.compileInline({
+         packagePath: tempDir,
+         source: `source: nums is duckdb.sql("select 1 as a, 2 as b")`,
+         malloyConfig,
+         defaultConnectionName: "duckdb",
+      });
+
+      expect(outcome.modelDef).toBeDefined();
+      const modelDef = outcome.modelDef as unknown as {
+         contents: Record<string, { fields: { name: string }[] }>;
+      };
+      const fieldNames = modelDef.contents["nums"].fields.map((f) => f.name);
+      expect(fieldNames).toEqual(["a", "b"]);
+      expect(outcome.compileDurationMs).toBeGreaterThan(0);
+
+      await duckdb.close();
+   });
+
+   it("compileInline() propagates Malloy compile errors", async () => {
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      if (!tempDir) throw new Error("tempDir not initialized");
+
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+
+      pool = new CompileWorkerPool(1);
+      await expect(
+         pool.compileInline({
+            packagePath: tempDir,
+            source: "source: oops is duckdb.table(no_quotes_here",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         }),
+      ).rejects.toBeInstanceOf(Error);
+
+      await duckdb.close();
+   });
 });

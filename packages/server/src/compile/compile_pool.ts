@@ -148,6 +148,31 @@ export interface CompileRequest {
    buildManifest?: unknown;
 }
 
+/**
+ * Inline-source variant of {@link CompileRequest}. The worker compiles
+ * a Malloy string directly instead of reading a file. Mainly used by
+ * call sites that synthesize Malloy on the fly — `Package.getDatabaseInfo`
+ * probes each `.parquet`/`.csv` with a one-line
+ * `source: temp is duckdb.table('<path>')` snippet, and previously paid
+ * a main-thread Malloy compile per data file. Routing the snippet
+ * through the worker pool keeps that cost off the event loop.
+ *
+ * The pool still owns the live MalloyConfig and services schema-fetch
+ * RPCs back from the worker against it, identical to the file-backed
+ * compile path.
+ */
+export interface CompileInlineRequest {
+   packagePath: string;
+   /** The Malloy source string to compile. */
+   source: string;
+   /** Base URL for `import "…"` resolution; defaults to the package root. */
+   importBaseURL?: string;
+   malloyConfig: MalloyConfig;
+   defaultConnectionName: string | null;
+   urlReader?: CompileUrlReader;
+   buildManifest?: unknown;
+}
+
 export interface CompileOutcome {
    modelDef: ModelDef;
    sourceInfos: Malloy.SourceInfo[];
@@ -213,9 +238,60 @@ export class CompileWorkerPool {
    }
 
    async compile(request: CompileRequest): Promise<CompileOutcome> {
+      return this.dispatchJob({
+         label: `model=${request.modelPath}`,
+         malloyConfig: request.malloyConfig,
+         urlReader: request.urlReader,
+         buildMessage: (jobId) => ({
+            type: "compile",
+            requestId: jobId,
+            packagePath: request.packagePath,
+            modelPath: request.modelPath,
+            defaultConnectionName: request.defaultConnectionName,
+            buildManifest: request.buildManifest,
+         }),
+      });
+   }
+
+   /**
+    * Compile an inline Malloy source string off the main thread. The
+    * worker uses `runtime.loadModel(source, {…})` instead of resolving a
+    * file:// URL. Schema fetches still proxy back to the main thread via
+    * the live MalloyConfig the caller supplies. See {@link CompileInlineRequest}.
+    */
+   async compileInline(request: CompileInlineRequest): Promise<CompileOutcome> {
+      return this.dispatchJob({
+         label: "inline-source",
+         malloyConfig: request.malloyConfig,
+         urlReader: request.urlReader,
+         buildMessage: (jobId) => ({
+            type: "compile",
+            requestId: jobId,
+            packagePath: request.packagePath,
+            inlineSource: request.source,
+            importBaseURL: request.importBaseURL,
+            defaultConnectionName: request.defaultConnectionName,
+            buildManifest: request.buildManifest,
+         }),
+      });
+   }
+
+   /**
+    * Shared dispatch helper for both file- and inline-source compiles.
+    * Allocates a jobId, registers the JobContext (so the pool can route
+    * schema RPCs from the worker back to the right MalloyConfig),
+    * posts the message, and returns a Promise that resolves with the
+    * compile outcome (or rejects on worker error / timeout).
+    */
+   private async dispatchJob(opts: {
+      label: string;
+      malloyConfig: MalloyConfig;
+      urlReader: CompileUrlReader | undefined;
+      buildMessage: (jobId: string) => CompileJobRequest;
+   }): Promise<CompileOutcome> {
       if (!this.enabled) {
          throw new Error(
-            "CompileWorkerPool.compile called while disabled (MALLOY_COMPILE_WORKERS=0)",
+            "CompileWorkerPool called while disabled (MALLOY_COMPILE_WORKERS=0)",
          );
       }
       if (this.shuttingDown) {
@@ -231,15 +307,15 @@ export class CompileWorkerPool {
             this.failJob(
                jobId,
                new Error(
-                  `Compile job timed out after ${COMPILE_JOB_TIMEOUT_MS}ms (model=${request.modelPath})`,
+                  `Compile job timed out after ${COMPILE_JOB_TIMEOUT_MS}ms (${opts.label})`,
                ),
             );
          }, COMPILE_JOB_TIMEOUT_MS);
 
          this.jobs.set(jobId, {
             jobId,
-            connections: request.malloyConfig.connections,
-            urlReader: request.urlReader ?? defaultUrlReader,
+            connections: opts.malloyConfig.connections,
+            urlReader: opts.urlReader ?? defaultUrlReader,
             resolve: (result) => {
                clearTimeout(timeout);
                resolve(adaptResult(result));
@@ -252,16 +328,7 @@ export class CompileWorkerPool {
          });
 
          worker.inFlight.add(jobId);
-
-         const message: CompileJobRequest = {
-            type: "compile",
-            requestId: jobId,
-            packagePath: request.packagePath,
-            modelPath: request.modelPath,
-            defaultConnectionName: request.defaultConnectionName,
-            buildManifest: request.buildManifest,
-         };
-         worker.worker.postMessage(message);
+         worker.worker.postMessage(opts.buildMessage(jobId));
       });
    }
 

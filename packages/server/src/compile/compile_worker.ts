@@ -369,12 +369,32 @@ async function compile(job: CompileJobRequest): Promise<CompileJobResult> {
             : undefined,
    });
 
-   const modelURL = new URL(`file://${job.packagePath}/${job.modelPath}`);
-   const importBaseURL = new URL(".", modelURL);
+   // Two compile shapes:
+   //   1. File-backed: `modelPath` resolves to a file:// URL the runtime
+   //      reads via urlReader. The importBaseURL is the model's
+   //      directory.
+   //   2. Inline-source: `inlineSource` is a Malloy string the runtime
+   //      compiles directly. Mostly used by synthesized snippets like
+   //      `source: temp is duckdb.table('<path>')` from the package
+   //      database-info probe. We use the caller-provided importBaseURL
+   //      (or fall back to the package root) so any `import "…"`
+   //      statements in the snippet resolve correctly.
+   const isInline = typeof job.inlineSource === "string";
+   if (!isInline && typeof job.modelPath !== "string") {
+      throw new Error(
+         "CompileJobRequest must supply either inlineSource or modelPath",
+      );
+   }
+   const importBaseURL = isInline
+      ? new URL(job.importBaseURL ?? `file://${job.packagePath}/`)
+      : new URL(".", new URL(`file://${job.packagePath}/${job.modelPath}`));
 
-   const mm: ModelMaterializer = runtime.loadModel(modelURL, {
-      importBaseURL,
-   });
+   const mm: ModelMaterializer = isInline
+      ? runtime.loadModel(job.inlineSource as string, { importBaseURL })
+      : runtime.loadModel(
+           new URL(`file://${job.packagePath}/${job.modelPath}`),
+           { importBaseURL },
+        );
 
    const compiledModel = await mm.getModel();
    const modelDef = compiledModel._modelDef as ModelDef;
@@ -427,8 +447,16 @@ async function compile(job: CompileJobRequest): Promise<CompileJobResult> {
       }
    }
 
-   const { sources, filterMap } = extractSources(job.modelPath, modelDef);
-   const queries = extractQueries(job.modelPath, modelDef);
+   // Inline-source compiles have no on-disk modelPath. extractSources /
+   // extractQueries use modelPath only to filter annotations by the URL
+   // they came from; the inline path has no such annotations to filter,
+   // so `""` (matches everything via `includes`) is the correct neutral.
+   const modelPathForAnnotations = job.modelPath ?? "";
+   const { sources, filterMap } = extractSources(
+      modelPathForAnnotations,
+      modelDef,
+   );
+   const queries = extractQueries(modelPathForAnnotations, modelDef);
    const filterMapEntries: Array<[string, FilterDefinition[]]> = Array.from(
       filterMap.entries(),
    );

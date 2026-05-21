@@ -52,8 +52,27 @@ export interface CompileJobRequest {
    requestId: string;
    /** Absolute path to the package directory on disk. */
    packagePath: string;
-   /** Path of the model file relative to `packagePath`. */
-   modelPath: string;
+   /**
+    * Path of the model file relative to `packagePath`. Required for
+    * file-backed compiles. Omit when supplying {@link inlineSource}.
+    */
+   modelPath?: string;
+   /**
+    * Inline Malloy source string to compile in place of reading a file.
+    * Used by call sites that synthesize Malloy on the fly (e.g. the
+    * per-database schema probe in {@link Package.getDatabaseInfo}). When
+    * set, the worker calls `runtime.loadModel(inlineSource, {…})` instead
+    * of resolving a file:// URL. `modelPath` should be omitted; the
+    * worker will use a synthetic in-memory model id derived from
+    * `requestId` for source-info display purposes.
+    */
+   inlineSource?: string;
+   /**
+    * Base URL used to resolve `import "…"` statements inside the model.
+    * Only meaningful with {@link inlineSource}. For file-backed compiles
+    * the worker derives the importBaseURL from the modelPath.
+    */
+   importBaseURL?: string;
    /** Name of the default connection (e.g. "duckdb"), or null. */
    defaultConnectionName: string | null;
    /** Optional row-build manifest passed through to the Runtime. */

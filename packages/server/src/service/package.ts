@@ -15,6 +15,7 @@ import {
 import { metrics } from "@opentelemetry/api";
 import recursive from "recursive-readdir";
 import { components } from "../api";
+import { getCompilePool } from "../compile/compile_pool";
 import {
    API_PREFIX,
    MODEL_FILE_SUFFIX,
@@ -467,31 +468,133 @@ export class Package {
       databasePath: string,
    ): Promise<ApiTableDescription> {
       const fullPath = path.join(packagePath, databasePath);
+      // Normalize path to use forward slashes for cross-platform compatibility.
+      // DuckDB on Windows supports forward slashes, which avoids escaping issues.
+      const normalizedPath = fullPath.replace(/\\/g, "/");
 
-      // Create a DuckDB source then:
-      // 1. Load the model and get the table schema from model
-      // 2. Run a query to get the row count from the table
+      // One DuckDB connection per file (matches the historical
+      // ConnectionRuntime shape). Reused for both the schema probe and
+      // the row-count SQL so we only pay native init once per call.
+      const conn = new DuckDBConnection("duckdb");
+
+      // Schema probe. We need Malloy's view of the column types
+      // (consumers of the API rely on Malloy type strings, not DuckDB
+      // native types), so this stays a Malloy compile. The compile is
+      // CPU-heavy on the main thread relative to the work it produces,
+      // so when the worker pool is enabled we ship the synthetic
+      // `source: temp is duckdb.table(…)` snippet to a worker and read
+      // the resulting modelDef back here. Schema-fetch RPCs from the
+      // worker proxy through the pool against `conn` below.
+      const pool = getCompilePool();
+      let schema: ApiColumn[];
+      if (pool.enabled) {
+         schema = await Package.getSchemaViaPool(
+            pool,
+            packagePath,
+            normalizedPath,
+            conn,
+         );
+      } else {
+         schema = await Package.getSchemaInProcess(normalizedPath, conn);
+      }
+
+      // Row count. We previously compiled
+      // `run: temp->{aggregate: row_count is count()}` via Malloy, which
+      // is another full parse + type-check + SQL gen on the main thread
+      // just to produce a literal `SELECT count(*)`. Skip Malloy entirely
+      // and call DuckDB directly — same wire result, no main-thread CPU.
+      // Single quotes in the path are doubled to be safe against
+      // SQL-injection from filenames (DuckDB uses ANSI quoting rules).
+      const escapedPath = normalizedPath.replace(/'/g, "''");
+      const sqlResult = await conn.runSQL(
+         `SELECT count(*)::BIGINT AS row_count FROM '${escapedPath}'`,
+      );
+      const firstRow = sqlResult.rows[0] as { row_count?: bigint | number };
+      const rowCount = Number(firstRow.row_count ?? 0);
+
+      return { name: databasePath, rowCount, columns: schema };
+   }
+
+   /**
+    * In-process schema probe (legacy / kill-switch path). Builds a
+    * minimal ConnectionRuntime + compiles the synthetic snippet on the
+    * main thread. Same behaviour as the pre-worker-pool implementation.
+    */
+   private static async getSchemaInProcess(
+      normalizedPath: string,
+      conn: DuckDBConnection,
+   ): Promise<ApiColumn[]> {
       const runtime = new ConnectionRuntime({
          urlReader: new EmptyURLReader(),
-         connections: [new DuckDBConnection("duckdb")],
+         connections: [conn],
       });
-      // Normalize path to use forward slashes for cross-platform compatibility
-      // DuckDB on Windows supports forward slashes, and this avoids escaping issues
-      const normalizedPath = fullPath.replace(/\\/g, "/");
       const model = runtime.loadModel(
          `source: temp is duckdb.table('${normalizedPath}')`,
       );
       const modelDef = await model.getModel();
       const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;
-      const schema = fields.map((field): ApiColumn => {
+      return fields.map((field): ApiColumn => {
          return { type: field.type, name: field.name };
       });
-      const runner = model.loadQuery(
-         "run: temp->{aggregate: row_count is count()}",
+   }
+
+   /**
+    * Worker-pool schema probe. The synthetic Malloy snippet is compiled
+    * in a worker_threads worker; the worker's schema-fetch RPC bounces
+    * back to the main thread, which services it against the
+    * `MalloyConfig` we hold on `conn` below. The returned modelDef has
+    * the resolved field list ready to read.
+    */
+   private static async getSchemaViaPool(
+      pool: ReturnType<typeof getCompilePool>,
+      packagePath: string,
+      normalizedPath: string,
+      conn: DuckDBConnection,
+   ): Promise<ApiColumn[]> {
+      // Keep schema-fetch RPCs from the worker routed to *this* conn
+      // (same instance used by the row-count SQL) by wrapping it in a
+      // MalloyConfig. We don't ship this config across the worker
+      // boundary; the pool holds it on the main side.
+      const malloyConfig = new MalloyConfig(
+         { connections: {} },
+         { config: contextOverlay({ rootDirectory: packagePath }) },
       );
-      const result = await runner.run();
-      const rowCount = result.data.value[0].row_count?.valueOf() as number;
-      return { name: databasePath, rowCount, columns: schema };
+      malloyConfig.wrapConnections(() => ({
+         lookupConnection: async (_name?: string) =>
+            conn as unknown as Connection,
+      }));
+
+      try {
+         const outcome = await pool.compileInline({
+            packagePath,
+            source: `source: temp is duckdb.table('${normalizedPath}')`,
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         const modelDef = outcome.modelDef as unknown as {
+            contents: Record<string, SourceDef>;
+         };
+         const fields = modelDef.contents["temp"].fields;
+         return fields.map((field): ApiColumn => {
+            return { type: field.type, name: field.name };
+         });
+      } catch (error) {
+         // Transient pool issues (worker exit, RPC timeout) shouldn't
+         // break package loading. Compile errors here would mean the
+         // file isn't a readable parquet/csv, which in-process would
+         // also throw — so let those propagate.
+         if (
+            error instanceof Error &&
+            !/timed out|exited unexpectedly|shutting down/i.test(error.message)
+         ) {
+            throw error;
+         }
+         logger.warn(
+            "Compile worker failed for database probe; falling back to in-process",
+            { normalizedPath, error: (error as Error).message },
+         );
+         return Package.getSchemaInProcess(normalizedPath, conn);
+      }
    }
 
    public setName(name: string) {
