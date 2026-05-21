@@ -1,3 +1,5 @@
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import "@malloydata/db-duckdb/native";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Stats } from "fs";
 import fs from "fs/promises";
@@ -340,10 +342,18 @@ describe("service/package", () => {
          it("should return the size of the database file", async () => {
             sinon.stub(fs, "stat").resolves({ size: 13 } as Stats);
 
+            // `getDatabaseInfo` now requires the caller to pass in the
+            // shared DuckDB connection (resolved once by `readDatabases`
+            // off the package's MalloyConfig). For this isolated unit
+            // test we mint a fresh ephemeral one — production paths
+            // reuse a single connection per package via `Package.create`.
+            const conn = new DuckDBConnection("duckdb");
+
             // @ts-expect-error Accessing private static method for testing
             const info = await Package.getDatabaseInfo(
                testPackageDirectory,
                "database.csv",
+               conn,
             );
 
             expect(info).toEqual({

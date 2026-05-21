@@ -29,6 +29,11 @@ import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
 import { components } from "../api";
+import { deserializeError } from "../package_load/package_load_pool";
+import type {
+   SerializedModel,
+   SerializedNotebookCell,
+} from "../package_load/protocol";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -51,12 +56,14 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
+import { malloyGivenToApi, type MalloyGiven } from "./given";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 type ApiSource = components["schemas"]["Source"];
 type ApiFilter = components["schemas"]["Filter"];
+type ApiGiven = components["schemas"]["Given"];
 type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
 export type ApiConnection = components["schemas"]["Connection"];
@@ -99,6 +106,10 @@ export class Model {
    private compilationError: MalloyError | Error | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
+   /** Givens declared on the model, in declaration order. Malloy's
+    *  `Model.givens` already collapses inheritance; we just stash the list
+    *  for surfacing on the compiled-model response. */
+   private givens: ApiGiven[] | undefined;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -122,6 +133,16 @@ export class Model {
       runnableNotebookCells: RunnableNotebookCell[] | undefined,
       compilationError: MalloyError | Error | undefined,
       filterMap?: Map<string, FilterDefinition[]>,
+      givens?: ApiGiven[],
+      /**
+       * Precomputed `modelDefToModelInfo(modelDef)`. The package-load
+       * worker emits it as part of `SerializedModel` so we don't
+       * re-derive it on every package load. Callers that build a
+       * `Model` from a raw `modelDef` (e.g. test fixtures via
+       * `Model.create`) can omit this and let the constructor
+       * derive it lazily.
+       */
+      modelInfo?: Malloy.ModelInfo,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -135,9 +156,10 @@ export class Model {
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
-      this.modelInfo = this.modelDef
-         ? modelDefToModelInfo(this.modelDef)
-         : undefined;
+      this.givens = givens;
+      this.modelInfo =
+         modelInfo ??
+         (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
    }
 
    /**
@@ -159,6 +181,15 @@ export class Model {
       return runMatch?.[1] ?? arrowMatch?.[1];
    }
 
+   /**
+    * Compile a single model in-process. Kept as a library entry point
+    * for test fixtures and any future caller that needs an ad-hoc
+    * `Model` from a `.malloy` / `.malloynb` file. Production package
+    * loads (`Package.create`) and reloads (`Package.reloadAllModels`)
+    * route through the package-load worker pool and dispatch through
+    * {@link Model.fromSerialized} instead — neither calls this on the
+    * main thread.
+    */
    public static async create(
       packageName: string,
       packagePath: string,
@@ -189,10 +220,21 @@ export class Model {
          let sources = undefined;
          let queries = undefined;
          let filterMap: Map<string, FilterDefinition[]> | undefined;
+         let givens: ApiGiven[] | undefined;
          const sourceInfos: Malloy.SourceInfo[] = [];
          if (modelMaterializer) {
-            modelDef = (await modelMaterializer.getModel())._modelDef;
-            const sourceResult = Model.getSources(modelPath, modelDef);
+            const compiledModel = await modelMaterializer.getModel();
+            modelDef = compiledModel._modelDef;
+            // Malloy's `Model.givens` already collapses inheritance from imports
+            // and applies any `finalizeGivens` runtime config. Just read it.
+            const malloyGivens = Array.from(
+               compiledModel.givens.values(),
+            ) as MalloyGiven[];
+            givens =
+               malloyGivens.length > 0
+                  ? (malloyGivens.map(malloyGivenToApi) as ApiGiven[])
+                  : undefined;
+            const sourceResult = Model.getSources(modelPath, modelDef, givens);
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
             queries = Model.getQueries(modelPath, modelDef);
@@ -256,6 +298,7 @@ export class Model {
             runnableNotebookCells,
             undefined,
             filterMap,
+            givens,
          );
       } catch (error) {
          let computedError = error;
@@ -285,6 +328,123 @@ export class Model {
          );
       }
    }
+
+   /**
+    * Construct a `Model` from a worker-compiled `SerializedModel`. All
+    * the heavy compile work (parse, type check, IR build, sourceInfo
+    * extraction, per-cell notebook compile) already ran inside a
+    * `worker_threads` worker; this factory just rewraps the wire data
+    * into a live `Model`.
+    *
+    * Hydrates the `ModelMaterializer` (and, for notebooks, the
+    * per-cell materializers + runnables) **eagerly** via
+    * `Runtime._loadModelFromModelDef` /
+    * `ModelMaterializer._loadQueryFromQueryDef`. These are constant-time
+    * wraps around the worker's pre-compiled `modelDef` / `queryDef` —
+    * no parse, no type-check, no schema fetch — so doing it here at
+    * package-load time costs microseconds per model and keeps the
+    * resulting `Model` interchangeable with one produced by
+    * `Model.create` (no lazy-init branches in the hot path).
+    */
+   public static fromSerialized(
+      packageName: string,
+      _packagePath: string,
+      malloyConfig: ModelConnectionInput,
+      data: SerializedModel,
+   ): Model {
+      const modelDef = data.modelDef as ModelDef | undefined;
+      const modelInfo = data.modelInfo as Malloy.ModelInfo | undefined;
+      const dataStyles = (data.dataStyles ?? {}) as DataStyles;
+      const sources = data.sources as ApiSource[] | undefined;
+      const queries = data.queries as ApiQuery[] | undefined;
+      const sourceInfos = data.sourceInfos as Malloy.SourceInfo[] | undefined;
+      const givens = data.givens as ApiGiven[] | undefined;
+      const filterMap = data.filterMap
+         ? new Map(data.filterMap as Array<[string, FilterDefinition[]]>)
+         : undefined;
+
+      // No modelDef → either an empty notebook (no MALLOY statements)
+      // or a corrupt worker payload. Build a Model with no materializer;
+      // downstream getQueryResults / executeNotebookCell will throw a
+      // clean BadRequestError if a caller tries to run a query. We
+      // still preserve markdown cells for an all-markdown notebook so
+      // `getNotebook()` can serve raw text.
+      if (!modelDef) {
+         return new Model(
+            packageName,
+            data.modelPath,
+            dataStyles,
+            data.modelType,
+            undefined,
+            undefined,
+            sources,
+            queries,
+            sourceInfos,
+            data.modelType === "notebook"
+               ? hydrateMarkdownOnlyCells(data.notebookCells)
+               : undefined,
+            undefined,
+            filterMap,
+            givens,
+            modelInfo,
+         );
+      }
+
+      const runtime = makeHydrationRuntime(malloyConfig);
+      const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
+      const runnableNotebookCells =
+         data.modelType === "notebook"
+            ? hydrateNotebookCells(runtime, data.notebookCells)
+            : undefined;
+
+      return new Model(
+         packageName,
+         data.modelPath,
+         dataStyles,
+         data.modelType,
+         modelMaterializer,
+         modelDef,
+         sources,
+         queries,
+         sourceInfos,
+         runnableNotebookCells,
+         undefined, // compilationError
+         filterMap,
+         givens,
+         modelInfo,
+      );
+   }
+
+   /**
+    * Build a Model representing a compilation failure (no modelDef,
+    * no materializer). Matches the shape `Model.create` returns when
+    * it catches a `MalloyError`, so the rest of the system handles
+    * both paths uniformly (the iteration loop in `Package.create`
+    * reads `compilationError` via a structural cast).
+    */
+   public static fromCompilationError(
+      packageName: string,
+      modelPath: string,
+      modelType: ModelType,
+      error: Error,
+   ): Model {
+      return new Model(
+         packageName,
+         modelPath,
+         {} as DataStyles,
+         modelType,
+         undefined,
+         undefined,
+         undefined,
+         undefined,
+         undefined,
+         undefined,
+         error,
+      );
+   }
+
+   /** Look up the deserialized error helper for callers (e.g. Package.create). */
+   public static deserializeCompilationError = deserializeError;
 
    public getPath(): string {
       return this.modelPath;
@@ -438,7 +598,8 @@ export class Model {
       }
 
       const rowLimit =
-         (await runnable.getPreparedResult()).resultExplore.limit || ROW_LIMIT;
+         (await runnable.getPreparedResult({ givens })).resultExplore.limit ||
+         ROW_LIMIT;
       const endTime = performance.now();
       const executionTime = endTime - startTime;
 
@@ -503,14 +664,16 @@ export class Model {
          malloyVersion: MALLOY_VERSION,
          dataStyles: JSON.stringify(this.dataStyles),
          modelDef: JSON.stringify(this.modelDef),
-         modelInfo: JSON.stringify(
-            this.modelDef ? modelDefToModelInfo(this.modelDef) : {},
-         ),
+         // `this.modelInfo` is precomputed once at construction (either
+         // by the worker or in the Model.create constructor); don't
+         // re-run `modelDefToModelInfo` on every API hit.
+         modelInfo: JSON.stringify(this.modelInfo ?? {}),
          sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
          sources: this.sources,
          queries: this.queries,
+         givens: this.givens,
       } as ApiCompiledModel;
    }
 
@@ -556,9 +719,7 @@ export class Model {
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
-         modelInfo: JSON.stringify(
-            this.modelDef ? modelDefToModelInfo(this.modelDef) : {},
-         ),
+         modelInfo: JSON.stringify(this.modelInfo ?? {}),
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,
@@ -570,6 +731,7 @@ export class Model {
       cellIndex: number,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -631,9 +793,9 @@ export class Model {
             }
 
             const rowLimit =
-               (await runnableToExecute.getPreparedResult()).resultExplore
-                  .limit || ROW_LIMIT;
-            const result = await runnableToExecute.run({ rowLimit });
+               (await runnableToExecute.getPreparedResult({ givens }))
+                  .resultExplore.limit || ROW_LIMIT;
+            const result = await runnableToExecute.run({ rowLimit, givens });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
             queryResult =
@@ -760,6 +922,7 @@ export class Model {
    private static getSources(
       modelPath: string,
       modelDef: ModelDef,
+      givens?: ApiGiven[],
    ): {
       sources: ApiSource[];
       filterMap: Map<string, FilterDefinition[]>;
@@ -848,6 +1011,12 @@ export class Model {
                annotations,
                views,
                filters,
+               // Malloy exposes givens at the model level, not per-source.
+               // First pass: surface the full model-level list on every source
+               // — matches how filter introspection already collapses
+               // inheritance into the per-source list. Refine to view-scoped
+               // filtering if a customer asks.
+               givens,
             } as ApiSource;
          });
 
@@ -1069,4 +1238,104 @@ export class Model {
          );
       }
    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Helpers for hydrating worker-compiled models on the main thread
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal subset of `Runtime` we use here. The `_` methods are
+ * marked `@internal` in Malloy but are the only API for constructing
+ * a materializer / query materializer from an existing `modelDef` /
+ * queryDef — the public `loadModel(url)` path always recompiles.
+ */
+type HydrationRuntime = Runtime & {
+   _loadModelFromModelDef(modelDef: ModelDef): ModelMaterializer;
+};
+type HydrationMaterializer = ModelMaterializer & {
+   _loadQueryFromQueryDef(query: unknown): QueryMaterializer;
+};
+
+function makeHydrationRuntime(
+   malloyConfig: ModelConnectionInput,
+): HydrationRuntime {
+   const urlReader = new HackyDataStylesAccumulator(URL_READER);
+   const config =
+      malloyConfig instanceof MalloyConfig
+         ? malloyConfig
+         : (() => {
+              const c = new MalloyConfig({ connections: {} });
+              c.wrapConnections(
+                 () => new FixedConnectionMap(malloyConfig, "duckdb"),
+              );
+              return c;
+           })();
+   return new Runtime({ urlReader, config }) as HydrationRuntime;
+}
+
+/**
+ * Build the live `RunnableNotebookCell[]` from worker-emitted
+ * per-cell data. Each MALLOY cell is hydrated via
+ * `Runtime._loadModelFromModelDef` (for the cell's scope) and
+ * `ModelMaterializer._loadQueryFromQueryDef` (for the cell's
+ * runnable) — no recompile.
+ */
+function hydrateNotebookCells(
+   runtime: HydrationRuntime,
+   notebookCells: SerializedNotebookCell[] | undefined,
+): RunnableNotebookCell[] {
+   if (!notebookCells) return [];
+   return notebookCells.map((sc): RunnableNotebookCell => {
+      if (sc.type === "markdown") {
+         return { type: "markdown", text: sc.text };
+      }
+      const cellModelDef = sc.cellModelDef as ModelDef | undefined;
+      let modelMaterializer: ModelMaterializer | undefined;
+      let runnable: QueryMaterializer | undefined;
+      if (cellModelDef) {
+         modelMaterializer = runtime._loadModelFromModelDef(cellModelDef);
+         if (sc.cellQueryDef !== undefined) {
+            try {
+               runnable = (
+                  modelMaterializer as HydrationMaterializer
+               )._loadQueryFromQueryDef(sc.cellQueryDef);
+            } catch (error) {
+               // Hydration shouldn't fail for a queryDef the worker
+               // already prepared, but if Malloy's internal shape
+               // drifts we'd rather drop the runnable than crash the
+               // whole notebook. The cell remains markdown-runnable.
+               logger.warn("Failed to hydrate notebook cell queryDef", {
+                  error,
+               });
+            }
+         }
+      }
+      return {
+         type: "code",
+         text: sc.text,
+         runnable,
+         modelMaterializer,
+         newSources: sc.newSources as Malloy.SourceInfo[] | undefined,
+         queryInfo: sc.queryInfo as Malloy.QueryInfo | undefined,
+      };
+   });
+}
+
+/**
+ * For an all-markdown notebook (no MALLOY statements → no
+ * `modelDef`), we still want to preserve the cell list so
+ * `getNotebook()` can serve raw text. This skips materializer
+ * hydration (there's nothing to hydrate) and returns markdown-only
+ * cells.
+ */
+function hydrateMarkdownOnlyCells(
+   notebookCells: SerializedNotebookCell[] | undefined,
+): RunnableNotebookCell[] | undefined {
+   if (!notebookCells) return undefined;
+   return notebookCells.map((sc): RunnableNotebookCell => {
+      if (sc.type === "markdown") return { type: "markdown", text: sc.text };
+      // A code cell without a hydratable scope — surface text only.
+      return { type: "code", text: sc.text };
+   });
 }

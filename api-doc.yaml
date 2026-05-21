@@ -2024,6 +2024,12 @@ paths:
             enum:
               - "true"
               - "false"
+        - name: givens
+          in: query
+          description: JSON-encoded given values keyed by given name
+          required: false
+          schema:
+            type: string
       responses:
         "200":
           description: Cell execution result
@@ -2670,6 +2676,12 @@ components:
           description: Sources defined in this model
           items:
             $ref: "#/components/schemas/Source"
+        givens:
+          type: array
+          description: Givens (runtime parameters) declared on this model via the
+            `given:` keyword
+          items:
+            $ref: "#/components/schemas/Given"
 
     View:
       type: object
@@ -2730,6 +2742,33 @@ components:
           description: Malloy data type of the dimension (e.g. string, number, boolean,
             date, timestamp)
 
+    Given:
+      type: object
+      description: A given (runtime parameter) declared on a Malloy model via the
+        `given:` keyword. Surfaced on `CompiledModel.givens` and `Source.givens`
+        so callers can introspect what runtime values a model accepts.
+      properties:
+        name:
+          type: string
+          description: Name as declared in the model
+        type:
+          type: string
+          description: Rendered Malloy type for the given (e.g. string, number,
+            boolean, date, timestamp, filter<string>)
+        annotations:
+          type: array
+          description: Annotations attached to the given declaration
+          items:
+            type: string
+
+    Givens:
+      type: object
+      description: Per-query given values that override model defaults. Keys are
+        given names declared in the model's `given:` block. Values must match
+        the declared type (string, number, boolean, date, etc.). See Malloy
+        givens documentation for accepted value shapes.
+      additionalProperties: true
+
     Source:
       type: object
       description: A Malloy source defined in a model
@@ -2752,6 +2791,14 @@ components:
           description: Filters declared on this source via #(filter) annotations
           items:
             $ref: "#/components/schemas/Filter"
+        givens:
+          type: array
+          description: Model-level givens (runtime parameters) available to queries
+            on this source. Identical to `CompiledModel.givens`; repeated here
+            for SDK ergonomics so consumers iterating sources can render inputs
+            without a second lookup.
+          items:
+            $ref: "#/components/schemas/Given"
 
     QueryRequest:
       type: object
@@ -2790,12 +2837,7 @@ components:
           default: false
           description: When true, skip server-side \#(filter) injection entirely.
         givens:
-          type: object
-          description: Per-query given values that override model defaults. Keys are
-            given names declared in the model's `given:` block. Values must match
-            the declared type (string, number, boolean, date, etc.). See Malloy
-            givens documentation for accepted value shapes.
-          additionalProperties: true
+          $ref: "#/components/schemas/Givens"
 
     NotebookCell:
       type: object
@@ -3467,12 +3509,7 @@ components:
             (only available when compilation succeeds and the source contains a
             runnable query).
         givens:
-          type: object
-          description: Per-query given values that override model defaults. Keys are
-            given names declared in the model's `given:` block. Values must match
-            the declared type (string, number, boolean, date, etc.). See Malloy
-            givens documentation for accepted value shapes.
-          additionalProperties: true
+          $ref: "#/components/schemas/Givens"
       required:
         - source
 

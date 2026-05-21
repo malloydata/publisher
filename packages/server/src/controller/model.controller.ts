@@ -2,6 +2,7 @@ import { components } from "../api";
 import { ModelNotFoundError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
+import type { GivenValue } from "@malloydata/malloy";
 
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
@@ -97,6 +98,7 @@ export class ModelController {
       cellIndex: number,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -117,6 +119,11 @@ export class ModelController {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
-      return model.executeNotebookCell(cellIndex, filterParams, bypassFilters);
+      return model.executeNotebookCell(
+         cellIndex,
+         filterParams,
+         bypassFilters,
+         givens,
+      );
    }
 }

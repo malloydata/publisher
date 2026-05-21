@@ -41,7 +41,7 @@ import {
    NotImplementedError,
 } from "./errors";
 import { logger } from "./logger";
-import { normalizeQueryArray } from "./server";
+import { normalizeQueryArray } from "./query_param_utils";
 import { EnvironmentStore } from "./service/environment_store";
 
 const LEGACY_API_PREFIX = "/api/v0";

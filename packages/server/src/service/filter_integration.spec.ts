@@ -133,6 +133,55 @@ import "child_orders.malloy"
 run: child_orders -> summary
 `;
 
+// Model with a given: declaration — view filters rows by the given value
+const MODEL_WITH_GIVENS = `##! experimental.givens
+
+given: target_region :: string is 'US'
+
+source: orders is duckdb.table('orders') extend {
+   primary_key: order_id
+
+   measure:
+      order_count is count()
+      total_amount is sum(amount)
+
+   view: by_given_region is {
+      where: region = $target_region
+      aggregate: order_count, total_amount
+   }
+}
+`;
+
+// Model with both a #(filter) annotation and a given: declaration to verify composition
+const MODEL_WITH_GIVENS_AND_FILTER = `##! experimental.givens
+
+given: target_region :: string is 'US'
+
+#(filter) dimension=status type=equal
+source: orders is duckdb.table('orders') extend {
+   primary_key: order_id
+
+   measure:
+      order_count is count()
+      total_amount is sum(amount)
+
+   view: by_given_region is {
+      where: region = $target_region
+      aggregate: order_count, total_amount
+   }
+}
+`;
+
+const NOTEBOOK_GIVENS = `>>>markdown
+# Givens Test
+
+>>>malloy
+import "orders_givens.malloy"
+
+>>>malloy
+run: orders -> by_given_region
+`;
+
 beforeAll(async () => {
    await fs.mkdir(TEST_DB_DIR, { recursive: true });
    await fs.mkdir(TEST_PKG_DIR, { recursive: true });
@@ -656,6 +705,67 @@ describe("filter integration", () => {
          const markdownCell = await model.executeNotebookCell(0);
          expect(markdownCell.type).toBe("markdown");
          expect(markdownCell.text).toContain("Test Notebook");
+      });
+
+      it("applies givens to notebook cell execution", async () => {
+         await writeFile("orders_givens.malloy", MODEL_WITH_GIVENS);
+         await writeFile("givens_notebook.malloynb", NOTEBOOK_GIVENS);
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "givens_notebook.malloynb",
+            getConnections(),
+         );
+
+         // Cell 2: run: orders -> by_given_region with target_region overridden to 'EU'
+         // EU rows: (3,'EU','active',150) and (4,'EU','cancelled',75) → order_count=2, total_amount=225
+         const codeCell = await model.executeNotebookCell(
+            2,
+            undefined,
+            undefined,
+            { target_region: "EU" },
+         );
+         expect(codeCell.result).toBeDefined();
+
+         const notebookRows = parseNotebookResult(codeCell.result!);
+         expect(notebookRows.length).toBe(1);
+         expect(Number(notebookRows[0].order_count)).toBe(2);
+         expect(Number(notebookRows[0].total_amount)).toBe(225);
+      });
+
+      it("composes givens and filterParams in notebook cell execution", async () => {
+         await writeFile(
+            "orders_givens_filter.malloy",
+            MODEL_WITH_GIVENS_AND_FILTER,
+         );
+         await writeFile(
+            "givens_filter_notebook.malloynb",
+            NOTEBOOK_GIVENS.replace(
+               "orders_givens.malloy",
+               "orders_givens_filter.malloy",
+            ),
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "givens_filter_notebook.malloynb",
+            getConnections(),
+         );
+
+         // given restricts to APAC; filterParam restricts to active
+         // APAC + active: only (5,'APAC','active',300) → order_count=1, total_amount=300
+         const codeCell = await model.executeNotebookCell(
+            2,
+            { status: "active" },
+            undefined,
+            { target_region: "APAC" },
+         );
+         expect(codeCell.result).toBeDefined();
+
+         const notebookRows = parseNotebookResult(codeCell.result!);
+         expect(notebookRows.length).toBe(1);
+         expect(Number(notebookRows[0].order_count)).toBe(1);
+         expect(Number(notebookRows[0].total_amount)).toBe(300);
       });
    });
 
