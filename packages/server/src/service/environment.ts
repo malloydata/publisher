@@ -407,51 +407,30 @@ export class Environment {
       );
    }
 
+   // Enumeration is read-only: never call getPackage here. A cache miss
+   // there would trip admission control and the per-package mutex, which
+   // is the wrong work to do behind a listing — lazy-load belongs in the
+   // explicit GET /packages/:name path. Anything LOADING or UNLOADING is
+   // skipped so callers see a stable snapshot.
    public async listPackages(): Promise<ApiPackage[]> {
       logger.debug("Listing packages", {
          environmentPath: this.environmentPath,
       });
-      try {
-         const packageMetadata = await Promise.all(
-            Array.from(this.packageStatuses.keys()).map(async (packageName) => {
-               try {
-                  const packageMetadata = (
-                     this.packageStatuses.get(packageName)?.status ===
-                     PackageStatus.LOADING
-                        ? undefined
-                        : await this.getPackage(packageName, false)
-                  )?.getPackageMetadata();
-                  if (packageMetadata) {
-                     packageMetadata.name = packageName;
-                  }
-                  return packageMetadata;
-               } catch (error) {
-                  logger.error(
-                     `Failed to load package: ${packageName} due to : ${error}`,
-                  );
-                  // Directory did not contain a valid package.json file -- therefore, it's not a package.
-                  // Or it timed out
-                  return undefined;
-               }
-            }),
-         );
-         // Get rid of undefined entries (i.e, directories without publisher.json files).
-         const filteredMetadata = packageMetadata.filter(
-            (metadata) => metadata,
-         ) as ApiPackage[];
-
-         // Filter out packages that are being unloaded
-         const finalMetadata = filteredMetadata.filter((metadata) => {
-            const packageStatus = this.packageStatuses.get(metadata.name || "");
-            return packageStatus?.status !== PackageStatus.UNLOADING;
-         });
-
-         return finalMetadata;
-      } catch (error) {
-         logger.error("Error listing packages", { error });
-         console.error(error);
-         throw error;
+      const result: ApiPackage[] = [];
+      for (const [name, pkg] of this.packages) {
+         const status = this.packageStatuses.get(name)?.status;
+         if (
+            status === PackageStatus.LOADING ||
+            status === PackageStatus.UNLOADING
+         ) {
+            continue;
+         }
+         const metadata = pkg.getPackageMetadata();
+         if (!metadata) continue;
+         metadata.name = name;
+         result.push(metadata);
       }
+      return result;
    }
 
    /**
