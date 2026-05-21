@@ -1447,6 +1447,18 @@ app.use(
    },
 );
 
+// Eagerly construct the package-load worker pool so we fail fast at
+// boot if PACKAGE_LOAD_WORKERS is misconfigured (e.g. set to 0, the
+// removed in-process fallback). Surfacing the bad config here is much
+// friendlier than surfacing it on the first package load, which could
+// be hours after start.
+{
+   const { getPackageLoadPool } = await import(
+      "./package_load/package_load_pool"
+   );
+   getPackageLoadPool();
+}
+
 const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 
 mainServer.timeout = 600000;

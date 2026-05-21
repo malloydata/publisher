@@ -143,6 +143,21 @@ export async function performGracefulShutdownAfterDrain(
       /* do nothing */
    }
 
+   try {
+      // Drain in-flight compiles and terminate worker_threads before
+      // we exit so a slow compile doesn't leave orphan worker
+      // processes. Lazy-imported to avoid pulling the pool module
+      // into the health.ts dep graph for tests that don't exercise
+      // the compile path.
+      const { getPackageLoadPool } = await import(
+         "./package_load/package_load_pool"
+      );
+      await getPackageLoadPool().shutdown();
+      logger.info("Package-load worker pool shut down");
+   } catch (_error) {
+      /* do nothing */
+   }
+
    if (shutdownGracefulCloseTimeoutSeconds > 0) {
       logger.info(
          `Waiting ${shutdownGracefulCloseTimeoutSeconds} seconds after server close before exit...`,
