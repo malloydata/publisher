@@ -184,11 +184,14 @@ export class SchemaWorkerPool {
          },
       );
 
+      // Lifecycle: `error` fires first (if it fires) and reports the
+      // crash; `exit` always fires next and is the single point where
+      // we replace the slot. Splitting it this way avoids a class of
+      // bugs where `error` respawns the slot and then `exit` respawns
+      // it again, leaking the worker created in between (alive Worker
+      // instance with a DuckDB connection — exactly what this pool
+      // exists to prevent).
       worker.on("error", (err) => {
-         // A native crash inside the worker — fail the in-flight request
-         // attributed to this slot, then respawn the worker so the pool
-         // self-heals. Without respawn, one crash silently shrinks
-         // capacity and concurrent loads would queue forever.
          const inFlightId = this.workerCurrentId.get(index);
          if (inFlightId !== undefined) {
             const req = this.inFlight.get(inFlightId);
@@ -198,39 +201,45 @@ export class SchemaWorkerPool {
             }
             this.workerCurrentId.delete(index);
          }
-         logger.error("SchemaWorkerPool: worker errored, respawning", {
+         logger.error("SchemaWorkerPool: worker errored", {
             workerIndex: index,
             error: err,
          });
-         if (!this.stopped) {
-            this.workers[index] = this.spawn(index);
-            this.drain();
-         }
+         // Don't respawn here — `exit` will, after the worker has
+         // fully torn down its native resources.
       });
 
       worker.on("exit", (code) => {
          if (this.stopped) return;
+         // If `error` already fired, workerCurrentId is empty and this
+         // is a no-op. If the worker exited without firing `error`
+         // (e.g. process.exit inside the worker, or a clean exit while
+         // mid-request), reject any in-flight request so the caller
+         // doesn't hang forever.
+         const inFlightId = this.workerCurrentId.get(index);
+         if (inFlightId !== undefined) {
+            const req = this.inFlight.get(inFlightId);
+            if (req) {
+               this.inFlight.delete(inFlightId);
+               req.reject(new Error(`SchemaWorker exited with code ${code}`));
+            }
+            this.workerCurrentId.delete(index);
+         }
          if (code !== 0) {
             logger.warn("SchemaWorkerPool: worker exited unexpectedly", {
                workerIndex: index,
                code,
             });
-            // Treat unexpected exit like an error: respawn so the pool
-            // doesn't silently lose capacity.
-            const inFlightId = this.workerCurrentId.get(index);
-            if (inFlightId !== undefined) {
-               const req = this.inFlight.get(inFlightId);
-               if (req) {
-                  this.inFlight.delete(inFlightId);
-                  req.reject(
-                     new Error(`SchemaWorker exited with code ${code}`),
-                  );
-               }
-               this.workerCurrentId.delete(index);
-            }
-            this.workers[index] = this.spawn(index);
-            this.drain();
+         } else {
+            // A clean exit while the pool is still running is also
+            // unexpected — workers are supposed to live as long as
+            // the pool does. Respawn so capacity isn't silently lost.
+            logger.info("SchemaWorkerPool: worker exited cleanly, respawning", {
+               workerIndex: index,
+            });
          }
+         this.workers[index] = this.spawn(index);
+         this.drain();
       });
 
       return slot;
