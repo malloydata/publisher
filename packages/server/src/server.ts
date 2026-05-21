@@ -1,4 +1,5 @@
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
+import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -41,14 +42,10 @@ import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
+import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 
-/** Normalize an Express query param into a string[] or undefined. */
-export function normalizeQueryArray(value: unknown): string[] | undefined {
-   if (value === undefined || value === null) return undefined;
-   if (Array.isArray(value)) return value.map(String);
-   return [String(value)];
-}
+export { normalizeQueryArray } from "./query_param_utils";
 
 // Parse command line arguments
 function parseArgs() {
@@ -122,10 +119,12 @@ function parseArgs() {
    // Zero-config invocation (`npx @malloy-publisher/server`) opts in to
    // the bundled DuckDB-only sample config so the Quick Start works
    // without any flags. Any explicit --server_root or --config disables
-   // this — the user told us where to look. Skip in NODE_ENV=test so
-   // specs that import this module for utility helpers (e.g.
-   // db_utils.spec.ts -> normalizeQueryArray) don't get the bundled
-   // default leaked into their EnvironmentStore construction.
+   // this — the user told us where to look. Skip in NODE_ENV=test as a
+   // belt-and-suspenders so any spec that ends up evaluating this
+   // module doesn't accidentally pin the EnvironmentStore to the
+   // bundled malloy-samples config; query-param helpers have been
+   // moved to `./query_param_utils` precisely so unit specs no longer
+   // need to import this module at all.
    if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
@@ -1110,6 +1109,18 @@ app.get(
          const bypassFilters =
             req.query.bypass_filters === "true" ? true : undefined;
 
+         let givens: Record<string, GivenValue> | undefined;
+         if (typeof req.query.givens === "string") {
+            try {
+               givens = JSON.parse(req.query.givens);
+            } catch {
+               res.status(400).json({
+                  error: "Invalid givens: must be valid JSON",
+               });
+               return;
+            }
+         }
+
          res.status(200).json(
             await modelController.executeNotebookCell(
                req.params.environmentName,
@@ -1118,6 +1129,7 @@ app.get(
                cellIndex,
                filterParams,
                bypassFilters,
+               givens,
             ),
          );
       } catch (error) {
@@ -1178,6 +1190,7 @@ app.post(
                   | Record<string, string | string[]>
                   | undefined,
                req.body.bypassFilters === true ? true : undefined,
+               req.body.givens as Record<string, GivenValue> | undefined,
             ),
          );
       } catch (error) {
@@ -1221,6 +1234,7 @@ app.post(
             req.params.modelName,
             req.body.source,
             req.body.includeSql === true,
+            req.body.givens as Record<string, GivenValue> | undefined,
          );
          res.status(200).json(result);
       } catch (error) {
@@ -1430,6 +1444,18 @@ app.use(
       res.status(status).json(json);
    },
 );
+
+// Eagerly construct the package-load worker pool so we fail fast at
+// boot if PACKAGE_LOAD_WORKERS is misconfigured (e.g. set to 0, the
+// removed in-process fallback). Surfacing the bad config here is much
+// friendlier than surfacing it on the first package load, which could
+// be hours after start.
+{
+   const { getPackageLoadPool } = await import(
+      "./package_load/package_load_pool"
+   );
+   getPackageLoadPool();
+}
 
 const mainServer = http.createServer({ maxHeaderSize: 262144 }, app);
 

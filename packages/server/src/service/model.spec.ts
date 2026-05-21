@@ -234,6 +234,111 @@ describe("service/model", () => {
 
             sinon.restore();
          });
+
+         it("forwards givens to runnable.getPreparedResult and .run", async () => {
+            const givensArg = { region: "EU" };
+            const preparedResultStub = sinon
+               .stub()
+               .resolves({ resultExplore: { limit: 10 } });
+            const runStub = sinon
+               .stub()
+               .rejects(new MalloyError("stub-stop", []));
+            const modelMaterializer = {
+               loadQuery: sinon.stub().returns({
+                  getPreparedResult: preparedResultStub,
+                  run: runStub,
+               }),
+            };
+
+            const model = new Model(
+               packageName,
+               mockModelPath,
+               {},
+               "model",
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               modelMaterializer as any,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               { contents: {}, exports: [], queryList: [] } as any,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+            );
+
+            await expect(
+               model.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: orders -> summary",
+                  undefined,
+                  undefined,
+                  givensArg,
+               ),
+            ).rejects.toThrow(MalloyError);
+
+            expect(preparedResultStub.calledOnce).toBe(true);
+            expect(preparedResultStub.firstCall.args[0]).toEqual({
+               givens: givensArg,
+            });
+            expect(runStub.firstCall.args[0]).toMatchObject({
+               givens: givensArg,
+            });
+
+            sinon.restore();
+         });
+      });
+
+      describe("executeNotebookCell", () => {
+         it("forwards givens to runnable.getPreparedResult and .run", async () => {
+            const givensArg = { target_code: "AA" };
+            const preparedResultStub = sinon
+               .stub()
+               .resolves({ resultExplore: { limit: 10 } });
+            const runStub = sinon
+               .stub()
+               .rejects(new MalloyError("stub-stop", []));
+            const cellRunnable = {
+               getPreparedResult: preparedResultStub,
+               run: runStub,
+            };
+            const runnableCells = [
+               {
+                  type: "code" as const,
+                  text: "run: orders -> by_code",
+                  runnable: cellRunnable,
+               },
+            ];
+
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               runnableCells as any,
+               undefined,
+            );
+
+            await expect(
+               model.executeNotebookCell(0, undefined, undefined, givensArg),
+            ).rejects.toThrow(MalloyError);
+
+            expect(preparedResultStub.calledOnce).toBe(true);
+            expect(preparedResultStub.firstCall.args[0]).toEqual({
+               givens: givensArg,
+            });
+            expect(runStub.firstCall.args[0]).toMatchObject({
+               givens: givensArg,
+            });
+
+            sinon.restore();
+         });
       });
    });
 

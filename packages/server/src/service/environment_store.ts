@@ -1,8 +1,8 @@
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
-import AdmZip from "adm-zip";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
+import extract from "extract-zip";
 import * as fs from "fs";
 import * as path from "path";
 import simpleGit from "simple-git";
@@ -884,6 +884,7 @@ export class EnvironmentStore {
    }
 
    public async unzipEnvironment(absoluteEnvironmentPath: string) {
+      const startedAt = Date.now();
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
       );
@@ -897,8 +898,28 @@ export class EnvironmentStore {
       });
       await fs.promises.mkdir(unzippedEnvironmentPath, { recursive: true });
 
-      const zip = new AdmZip(absoluteEnvironmentPath);
-      zip.extractAllTo(unzippedEnvironmentPath, true);
+      // Stream-extract via yauzl (wrapped by extract-zip). Each entry's
+      // inflate and write are dispatched to the libuv thread pool, so the
+      // main event loop stays responsive even for very large archives.
+      // The previous adm-zip path used fs.readFileSync + zlib.inflateRawSync
+      // on the main thread, which parked the loop long enough on multi-
+      // hundred-MB packages to fail Kubernetes liveness probes mid-extract.
+      let entryCount = 0;
+      let totalUncompressedBytes = 0;
+      await extract(absoluteEnvironmentPath, {
+         dir: path.resolve(unzippedEnvironmentPath),
+         onEntry: (entry) => {
+            entryCount += 1;
+            totalUncompressedBytes += entry.uncompressedSize ?? 0;
+         },
+      });
+
+      const mib = (totalUncompressedBytes / (1024 * 1024)).toFixed(1);
+      logger.info(
+         `Unzipped "${absoluteEnvironmentPath}" -> "${unzippedEnvironmentPath}" ` +
+            `(${entryCount} entries, ${mib} MiB uncompressed) in ` +
+            `${formatDuration(Date.now() - startedAt)}`,
+      );
 
       return unzippedEnvironmentPath;
    }

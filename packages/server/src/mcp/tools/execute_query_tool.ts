@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
@@ -30,6 +31,12 @@ const executeQueryShape = {
       .describe(
          "Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.",
       ),
+   givens: z
+      .record(z.unknown())
+      .optional()
+      .describe(
+         "Per-query given values that override model defaults. Keys are given names declared in the model's given: block.",
+      ),
 };
 
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
@@ -56,6 +63,7 @@ export function registerExecuteQueryTool(
             sourceName,
             queryName,
             filterParams,
+            givens,
          } = params;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
@@ -128,6 +136,8 @@ export function registerExecuteQueryTool(
                   undefined,
                   query,
                   filterParams,
+                  undefined,
+                  givens as Record<string, GivenValue> | undefined,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"
@@ -174,6 +184,8 @@ export function registerExecuteQueryTool(
                   queryName,
                   undefined,
                   filterParams,
+                  undefined,
+                  givens as Record<string, GivenValue> | undefined,
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"
