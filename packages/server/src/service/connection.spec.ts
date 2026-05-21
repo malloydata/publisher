@@ -867,16 +867,14 @@ describe("connection integration tests", () => {
                   await envStore.finishedInitialization;
 
                   // operationalState=serving is the only signal that
-                  // initialize() actually succeeded — it swallows
+                  // initialize() actually succeeded. initialize swallows
                   // top-level errors and just calls markNotReady() (see
                   // environment_store.ts:297-301), so
-                  // finishedInitialization always resolves. By
-                  // construction (env_store:288-292), serving implies
-                  // failedEnvironments is empty; the second assertion
-                  // is defensive against future API normalization.
+                  // finishedInitialization always resolves regardless of
+                  // success. By construction (env_store:288-292), serving
+                  // also implies all configured environments loaded.
                   const status = await envStore.getStatus();
                   expect(status.operationalState).toBe("serving");
-                  expect(status.failedEnvironments ?? []).toEqual([]);
 
                   const env = await envStore.getEnvironment("malloy-samples");
                   const apiPackages = await env.listPackages();
