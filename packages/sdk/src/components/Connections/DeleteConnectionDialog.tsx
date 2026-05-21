@@ -7,6 +7,9 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
+import ListItemIcon from "@mui/material/ListItemIcon";
+import ListItemText from "@mui/material/ListItemText";
+import MenuItem from "@mui/material/MenuItem";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
 import { Connection } from "../../client";
@@ -34,15 +37,19 @@ export default function DeleteConnectionDialog({
 
    return (
       <React.Fragment>
-         <IconButton
+         <MenuItem
             aria-label={`Delete connection ${connection?.name ?? ""}`.trim()}
             onClick={(event) => {
                event.stopPropagation();
                handleClickOpen();
             }}
+            sx={{ color: "error.main" }}
          >
-            <Delete />
-         </IconButton>
+            <ListItemIcon sx={{ color: "inherit" }}>
+               <Delete fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>Delete</ListItemText>
+         </MenuItem>
 
          <Dialog
             onClose={handleClose}
