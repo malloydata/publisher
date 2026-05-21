@@ -1,7 +1,6 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
 import {
    Connection,
@@ -104,19 +103,40 @@ export class Package {
          });
          packageConfig.resource = `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`;
 
-         const databases = await Package.readDatabases(packagePath);
-         const databasesTime = performance.now();
-         logger.info("Databases read completed", {
-            packageName,
-            databaseCount: databases.length,
-            duration: formatDuration(databasesTime - packageConfigTime),
-         });
+         // Build the MalloyConfig before reading databases so we can
+         // reuse the package's single in-memory duckdb connection for
+         // both the per-database schema probes and the model compiles
+         // that follow. The previous order allocated a fresh
+         // `new DuckDBConnection("duckdb")` per `.parquet`/`.csv` file
+         // inside `readDatabases`, then a separate one inside the
+         // package's MalloyConfig for the models — N+1 native handles
+         // (and N+1 native init / extension-load / memory-pool setups)
+         // for what is really one ephemeral :memory: database the
+         // package never escapes. Consolidating to one connection keeps
+         // package-load time and main-thread CPU proportional to the
+         // package's contents rather than to its database-file count.
          const malloyConfig = Package.buildPackageMalloyConfig(
             packagePath,
             typeof environmentMalloyConfig === "function"
                ? environmentMalloyConfig
                : () => Package.toMalloyConfig(environmentMalloyConfig),
          );
+         const malloyConfigTime = performance.now();
+         logger.info("Package MalloyConfig built", {
+            packageName,
+            duration: formatDuration(malloyConfigTime - packageConfigTime),
+         });
+
+         const databases = await Package.readDatabases(
+            packagePath,
+            malloyConfig,
+         );
+         const databasesTime = performance.now();
+         logger.info("Databases read completed", {
+            packageName,
+            databaseCount: databases.length,
+            duration: formatDuration(databasesTime - malloyConfigTime),
+         });
 
          const models = await Package.loadModels(
             packageName,
@@ -429,22 +449,30 @@ export class Package {
 
    private static async readDatabases(
       packagePath: string,
+      malloyConfig: MalloyConfig,
    ): Promise<ApiDatabase[]> {
+      const databasePaths = await Package.getDatabasePaths(packagePath);
+      if (databasePaths.length === 0) {
+         return [];
+      }
+      // Resolve the package's duckdb connection ONCE and reuse it for
+      // every schema/row-count probe in this package. Malloy caches the
+      // materialized connection on the MalloyConfig so the same instance
+      // will be returned to model compiles later in `Package.create`.
+      // This is the substantive optimization over the previous code:
+      // we go from `databasePaths.length` separate DuckDBConnections
+      // (each doing its own native init + extension load) to one.
+      const conn = await malloyConfig.connections.lookupConnection("duckdb");
       return await Promise.all(
-         (await Package.getDatabasePaths(packagePath)).map(
-            async (databasePath) => {
-               const databaseInfo = await Package.getDatabaseInfo(
-                  packagePath,
-                  databasePath,
-               );
-
-               return {
-                  path: databasePath,
-                  info: databaseInfo,
-                  type: "embedded",
-               };
-            },
-         ),
+         databasePaths.map(async (databasePath) => ({
+            path: databasePath,
+            info: await Package.getDatabaseInfo(
+               packagePath,
+               databasePath,
+               conn,
+            ),
+            type: "embedded" as const,
+         })),
       );
    }
 
@@ -465,15 +493,20 @@ export class Package {
    private static async getDatabaseInfo(
       packagePath: string,
       databasePath: string,
+      conn: Connection,
    ): Promise<ApiTableDescription> {
       const fullPath = path.join(packagePath, databasePath);
 
       // Create a DuckDB source then:
       // 1. Load the model and get the table schema from model
       // 2. Run a query to get the row count from the table
+      // ConnectionRuntime is cheap (just a wrapper), and creating one
+      // per call keeps each probe's compile state isolated. The
+      // expensive piece — the underlying DuckDBConnection — is shared
+      // across all probes via `conn` (resolved once in readDatabases).
       const runtime = new ConnectionRuntime({
          urlReader: new EmptyURLReader(),
-         connections: [new DuckDBConnection("duckdb")],
+         connections: [conn],
       });
       // Normalize path to use forward slashes for cross-platform compatibility
       // DuckDB on Windows supports forward slashes, and this avoids escaping issues
