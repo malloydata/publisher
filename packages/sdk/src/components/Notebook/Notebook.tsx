@@ -11,7 +11,10 @@ import {
    FilterSelection,
    useDimensionFilters,
 } from "../../hooks/useDimensionFilters";
+import { GivenValue, useGivensForm } from "../../hooks/useGivensForm";
+import { useModelGivens } from "../../hooks/useModelGivens";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DimensionFilter, RetrievalFunction } from "../filter/DimensionFilter";
 import {
@@ -19,8 +22,7 @@ import {
    parseAllSourceInfos,
    parseNotebookFilterAnnotation,
 } from "../filter/utils";
-
-import { parseResourceUri } from "../../utils/formatting";
+import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
@@ -216,6 +218,14 @@ export default function Notebook({
       [filterStates, getActiveFilters],
    );
 
+   // Extract model-level givens declared via `given:` and manage user overrides
+   const declaredGivens = useModelGivens(notebook);
+   const {
+      givenValues,
+      updateGiven,
+      clearAll: clearAllGivens,
+   } = useGivensForm(declaredGivens);
+
    // Create a map of dimension key -> source name for quick lookup (used by filter UI)
    const _dimensionToSourceMap = useMemo(() => {
       const map = new Map<string, string>();
@@ -273,11 +283,40 @@ export default function Notebook({
       [],
    );
 
+   /**
+    * Serialize given-value overrides into the JSON-encoded string the server
+    * expects on the notebook-cell GET endpoint's `givens` query param.
+    * Date values are rendered as YYYY-MM-DD; everything else passes through
+    * the standard JSON encoder.
+    */
+   const buildGivens = useCallback(
+      (values: Map<string, GivenValue>): string | undefined => {
+         if (values.size === 0) return undefined;
+         const encode = (v: GivenValue): unknown => {
+            if (v instanceof Date) return v.toISOString().slice(0, 10);
+            if (Array.isArray(v)) return v.map((item) => encode(item));
+            return v;
+         };
+         const params: Record<string, unknown> = {};
+         values.forEach((value, name) => {
+            if (value === null || value === undefined) return;
+            params[name] = encode(value);
+         });
+         return Object.keys(params).length > 0
+            ? JSON.stringify(params)
+            : undefined;
+      },
+      [],
+   );
+
    // Unified cell execution function
-   // Executes all notebook cells, passing server-side filter params when available
+   // Executes all notebook cells, passing server-side filter params and givens
    // Runs up to 4 requests in parallel for better performance
    const executeCells = useCallback(
-      async (filtersToApply: FilterSelection[] = []) => {
+      async (
+         filtersToApply: FilterSelection[] = [],
+         givensToApply: Map<string, GivenValue> = new Map(),
+      ) => {
          if (!isSuccess || !notebook?.notebookCells) return;
 
          // Initialize or reset cells
@@ -297,6 +336,7 @@ export default function Notebook({
          const filterParams = useServerFilters
             ? buildFilterParams(filtersToApply)
             : undefined;
+         const givensParam = buildGivens(givensToApply);
 
          try {
             // Build execution tasks for code cells
@@ -313,7 +353,7 @@ export default function Notebook({
 
                const executeCell = async () => {
                   try {
-                     // Use notebook cell execution API with optional filter_params
+                     // Use notebook cell execution API with optional filter_params and givens
                      const response =
                         await apiClients.notebooks.executeNotebookCell(
                            environmentName,
@@ -322,6 +362,8 @@ export default function Notebook({
                            cellIndex,
                            versionId,
                            filterParams,
+                           undefined,
+                           givensParam,
                         );
 
                      const executedCell = response.data;
@@ -381,6 +423,7 @@ export default function Notebook({
          notebook,
          useServerFilters,
          buildFilterParams,
+         buildGivens,
          environmentName,
          packageName,
          notebookPath,
@@ -389,45 +432,52 @@ export default function Notebook({
       ],
    );
 
-   // Execute cells when notebook is loaded (no filters initially)
+   // Execute cells when notebook is loaded (no filters or givens initially)
    useEffect(() => {
       if (!isSuccess || !notebook?.notebookCells) return;
-      executeCells([]);
+      executeCells([], new Map());
    }, [isSuccess, notebook, executeCells]);
 
-   // Re-execute when filters change
-   // Track previous activeFilters to detect actual changes (not just reference changes)
-   const prevActiveFiltersRef = useRef<string>("");
+   // Re-execute when filters or givens change
+   // Track previous input shape to detect actual value changes (not just reference changes)
+   const prevInputsRef = useRef<string>("");
 
    useEffect(() => {
-      // Serialize activeFilters to detect actual value changes
-      const serialized = JSON.stringify(
-         activeFilters.map((f) => ({
+      // Serialize activeFilters + givenValues to detect actual value changes
+      const serialized = JSON.stringify({
+         filters: activeFilters.map((f) => ({
             dim: f.dimensionName,
             type: f.matchType,
             val: f.value,
             val2: f.value2,
          })),
-      );
+         givens: Array.from(givenValues.entries()).sort(([a], [b]) =>
+            a.localeCompare(b),
+         ),
+      });
 
-      // Skip if no actual change or if this is the initial empty state
-      if (serialized === prevActiveFiltersRef.current) {
+      // Skip if no actual change
+      if (serialized === prevInputsRef.current) {
          return;
       }
 
-      // Skip the initial render (when prevActiveFiltersRef is empty and filters are also empty)
-      if (prevActiveFiltersRef.current === "" && activeFilters.length === 0) {
-         prevActiveFiltersRef.current = serialized;
+      // Skip the initial render when both inputs are empty
+      if (
+         prevInputsRef.current === "" &&
+         activeFilters.length === 0 &&
+         givenValues.size === 0
+      ) {
+         prevInputsRef.current = serialized;
          return;
       }
 
-      prevActiveFiltersRef.current = serialized;
+      prevInputsRef.current = serialized;
 
-      // Re-execute with current filters (or no filters if cleared)
+      // Re-execute with current filters and givens (or empty if cleared)
       if (!isExecuting) {
-         executeCells(activeFilters);
+         executeCells(activeFilters, givenValues);
       }
-   }, [activeFilters, isExecuting, executeCells]);
+   }, [activeFilters, givenValues, isExecuting, executeCells]);
 
    // Handle filter change using composite key
    const handleFilterChange = useCallback(
@@ -447,6 +497,14 @@ export default function Notebook({
       <CleanNotebookContainer>
          <CleanNotebookSection>
             <Stack spacing={3} component="section">
+               {/* Givens Panel — runtime parameters declared via `given:` */}
+               <GivensPanel
+                  givens={declaredGivens}
+                  values={givenValues}
+                  onChange={updateGiven}
+                  onClearAll={clearAllGivens}
+               />
+
                {/* Filter Panel */}
                {dimensionSpecs.length > 0 && filterValuesData && (
                   <Paper
