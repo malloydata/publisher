@@ -1126,7 +1126,15 @@ export async function createEnvironmentConnections(
 
    for (const connection of environmentConfig.apiConnections) {
       if (!connection.name) continue;
-      logger.info(`Adding connection ${connection.name}`, { connection });
+      // Do NOT spread `{ connection }` here: BigQuery and Snowflake
+      // connection objects carry serviceAccountKeyJson / privateKey, and
+      // winston will serialize the whole object straight into log sinks
+      // (incl. CI logs). Log just enough to debug "which connection got
+      // wired up" without exposing the secret payload.
+      logger.info(`Adding connection ${connection.name}`, {
+         name: connection.name,
+         type: connection.type,
+      });
       const malloyConnection =
          await environmentConfig.malloyConfig.connections.lookupConnection(
             connection.name,
