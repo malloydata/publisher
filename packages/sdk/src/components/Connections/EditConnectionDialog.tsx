@@ -8,6 +8,8 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
+import ListItemIcon from "@mui/material/ListItemIcon";
+import ListItemText from "@mui/material/ListItemText";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
@@ -34,6 +36,7 @@ type EditConnectionDialogProps = {
    connection: Connection;
    onSubmit: (connection: Connection) => Promise<unknown>;
    isSubmitting: boolean;
+   onCloseDialog?: () => void;
 };
 
 function initAttachedDatabases(connection: Connection) {
@@ -56,6 +59,7 @@ export default function EditConnectionDialog({
    connection,
    onSubmit,
    isSubmitting,
+   onCloseDialog,
 }: EditConnectionDialogProps) {
    const [open, setOpen] = useState(false);
    const [type, setType] = useState<Connection["type"]>(connection.type);
@@ -83,6 +87,7 @@ export default function EditConnectionDialog({
 
    const handleClose = () => {
       setOpen(false);
+      onCloseDialog?.();
    };
 
    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -446,7 +451,7 @@ export default function EditConnectionDialog({
 
    return (
       <React.Fragment>
-         <IconButton
+         <MenuItem
             aria-label={`Edit connection ${connection?.name ?? ""}`.trim()}
             onClick={(event) => {
                event.preventDefault();
@@ -454,8 +459,11 @@ export default function EditConnectionDialog({
                handleClickOpen();
             }}
          >
-            <Edit />
-         </IconButton>
+            <ListItemIcon>
+               <Edit fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>Edit</ListItemText>
+         </MenuItem>
          <Dialog open={open} onClose={handleClose}>
             <DialogTitle
                onClick={(event) => {
