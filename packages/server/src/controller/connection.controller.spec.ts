@@ -4,7 +4,6 @@ import sinon from "sinon";
 
 import { BadRequestError, PayloadTooLargeError } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
-import { PUBLISHER_CAP_ALIAS } from "../sql_helpers";
 import { ConnectionController } from "./connection.controller";
 
 /**
@@ -54,7 +53,7 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       return { controller, runSQL };
    }
 
-   it("wraps a SELECT and pushes LIMIT cap+1 to the connection", async () => {
+   it("passes the SQL through verbatim and asks the connector for cap+1 rows", async () => {
       process.env.PUBLISHER_MAX_QUERY_ROWS = "5";
       const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
       const { controller } = buildController(runSQL);
@@ -67,10 +66,9 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       );
 
       expect(runSQL.calledOnce).toBe(true);
-      const wrappedSql = runSQL.firstCall.args[0] as string;
-      expect(wrappedSql).toContain(`(SELECT a FROM t)`);
-      expect(wrappedSql).toContain(PUBLISHER_CAP_ALIAS);
-      expect(wrappedSql.endsWith("LIMIT 6")).toBe(true);
+      expect(runSQL.firstCall.args[0]).toBe("SELECT a FROM t");
+      const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
+      expect(opts.rowLimit).toBe(6);
       const parsed = JSON.parse(result.data ?? "") as {
          rows: Array<{ a: number }>;
          totalRows: number;
@@ -119,45 +117,21 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       ).rejects.toThrow("more than 3 rows");
    });
 
-   it("passes non-SELECT statements through unchanged (no wrap, no cap check)", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "1";
-      // Return more rows than the cap to prove we do NOT apply the
-      // overflow check on the non-SELECT path.
+   it("forwards non-SELECT statements verbatim with rowLimit applied", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
       const rows = [{ table_name: "a" }, { table_name: "b" }];
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
 
-      const result = await controller.getConnectionQueryData(
-         "env",
-         "conn",
-         "SHOW TABLES",
-         "",
-      );
+      await controller.getConnectionQueryData("env", "conn", "SHOW TABLES", "");
 
       expect(runSQL.firstCall.args[0]).toBe("SHOW TABLES");
-      const parsed = JSON.parse(result.data ?? "") as { rows: unknown[] };
-      expect(parsed.rows.length).toBe(2);
+      const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
+      expect(opts.rowLimit).toBe(11);
    });
 
-   it("passes multi-statement SQL through unchanged", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
-      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
-      const { controller } = buildController(runSQL);
-
-      await controller.getConnectionQueryData(
-         "env",
-         "conn",
-         "SELECT 1; SELECT 2",
-         "",
-      );
-
-      expect(runSQL.firstCall.args[0]).toBe("SELECT 1; SELECT 2");
-   });
-
-   it("disables wrapping when PUBLISHER_MAX_QUERY_ROWS=0", async () => {
+   it("disables rowLimit when PUBLISHER_MAX_QUERY_ROWS=0", async () => {
       process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
-      // Even with cap=0, returning many rows must NOT trigger an
-      // overflow — the cap is explicitly disabled.
       const rows = Array.from({ length: 100 }, (_, i) => ({ a: i }));
       const runSQL = sinon.stub().resolves({ rows, totalRows: rows.length });
       const { controller } = buildController(runSQL);
@@ -170,6 +144,8 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       );
 
       expect(runSQL.firstCall.args[0]).toBe("SELECT a FROM t");
+      const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
+      expect(opts.rowLimit).toBeUndefined();
       const parsed = JSON.parse(result.data ?? "") as { rows: unknown[] };
       expect(parsed.rows.length).toBe(100);
    });
@@ -181,19 +157,52 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
 
       await controller.getConnectionQueryData("env", "conn", "SELECT 1", "");
 
-      const wrappedSql = runSQL.firstCall.args[0] as string;
-      // Default cap is 100_000, so the wrapper should ask for cap+1 = 100_001.
-      expect(wrappedSql.endsWith("LIMIT 100001")).toBe(true);
+      const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
+      // Default cap is 100_000, so we request cap+1 = 100_001.
+      expect(opts.rowLimit).toBe(100_001);
+   });
+
+   it("preserves a caller-supplied rowLimit when it is below the cap", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+      const { controller } = buildController(runSQL);
+
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         JSON.stringify({ rowLimit: 5 }),
+      );
+
+      const opts = runSQL.firstCall.args[1] as { rowLimit?: number };
+      expect(opts.rowLimit).toBe(5);
+   });
+
+   it("clamps a caller-supplied rowLimit that exceeds the cap+1 sentinel", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+      const { controller } = buildController(runSQL);
+
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         JSON.stringify({ rowLimit: 50, abortSignal: {} }),
+      );
+
+      const opts = runSQL.firstCall.args[1] as {
+         rowLimit?: number;
+         abortSignal?: unknown;
+      };
+      expect(opts.rowLimit).toBe(11);
+      expect(opts.abortSignal).toBeUndefined();
    });
 
    /**
     * Express parses repeated query parameters and array-shaped JSON bodies
     * as `string[]`, not `string`. The route handlers up-cast for TypeScript,
-    * so we re-validate at the controller boundary. Without this guard, a
-    * non-string `sqlStatement` would slip past `indexOfUnquotedSemicolon`
-    * inside `wrapWithRowLimit` (array `.indexOf(";")` is always -1), and
-    * a multi-statement payload could be wrapped into the LIMIT subquery —
-    * the exact dataflow CodeQL flags as
+    * so we re-validate at the controller boundary. CodeQL flagged the
+    * unvalidated dataflow as
     * `js/type-confusion-through-parameter-tampering`.
     */
    it.each([
@@ -260,25 +269,5 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       );
 
       expect(runSQL.callCount).toBe(2);
-   });
-
-   it("forwards parsed RunSQLOptions, scrubbing abortSignal", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
-      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
-      const { controller } = buildController(runSQL);
-
-      await controller.getConnectionQueryData(
-         "env",
-         "conn",
-         "SELECT 1",
-         JSON.stringify({ rowLimit: 50, abortSignal: {} }),
-      );
-
-      const opts = runSQL.firstCall.args[1] as {
-         rowLimit?: number;
-         abortSignal?: unknown;
-      };
-      expect(opts.rowLimit).toBe(50);
-      expect(opts.abortSignal).toBeUndefined();
    });
 });

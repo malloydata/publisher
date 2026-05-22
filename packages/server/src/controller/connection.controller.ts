@@ -17,7 +17,6 @@ import {
 } from "../service/db_utils";
 import type { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
-import { isCappableSelect, wrapWithRowLimit } from "../sql_helpers";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -450,12 +449,8 @@ export class ConnectionController {
    ): Promise<ApiQueryData> {
       // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
       // and array-shaped JSON bodies as `string[]`, not `string`. The route
-      // handlers up-cast to `string` for TypeScript's benefit, so we re-validate
-      // here at the controller boundary before the value reaches the SQL helpers.
-      // Without this guard, an attacker could send a non-string `sqlStatement`
-      // and bypass `indexOfUnquotedSemicolon`'s separator detection inside
-      // `wrapWithRowLimit` (array `.indexOf(";")` is always -1), letting a
-      // multi-statement payload slip past the row-cap rewriter.
+      // handlers up-cast for TypeScript's benefit, so re-validate here at the
+      // controller boundary before forwarding to the connector.
       if (typeof sqlStatement !== "string") {
          throw new BadRequestError("sqlStatement must be a string");
       }
@@ -483,29 +478,29 @@ export class ConnectionController {
          runSQLOptions.abortSignal = undefined;
       }
 
-      // Bound the response by rewriting SELECT/WITH statements to
-      // SELECT * FROM (<sql>) LIMIT (cap + 1). The +1 is a sentinel
-      // so we can tell "ran right up to the cap" from "would have
-      // overflowed". A cap of 0 disables the wrap entirely (used by
-      // operators who intend to rely solely on the Step 2 byte
-      // budget). Non-SELECT statements (DDL, SHOW, DESCRIBE, EXPLAIN,
-      // multi-statement) are passed through untouched, as wrapping
-      // them in a subquery is not valid SQL — those paths get their
-      // bound from Step 2 instead.
+      // Bound the response by clamping rowLimit to (cap + 1). The +1 is a
+      // sentinel: a response of cap+1 rows means the original would have
+      // overflowed, and we fail the request with HTTP 413 rather than
+      // serializing it. A caller-supplied rowLimit lower than cap+1 is kept,
+      // so users can still ask for fewer rows; we only enforce the ceiling.
+      // Cap of 0 disables the bound. We trust the connector to honor
+      // RunSQLOptions.rowLimit; connectors that don't are upstream bugs.
       const maxRows = getMaxQueryRows();
-      const wrap = maxRows > 0 && isCappableSelect(sqlStatement);
-      const effectiveSql = wrap
-         ? wrapWithRowLimit(sqlStatement, maxRows + 1)
-         : sqlStatement;
+      if (maxRows > 0) {
+         runSQLOptions.rowLimit = Math.min(
+            runSQLOptions.rowLimit ?? maxRows + 1,
+            maxRows + 1,
+         );
+      }
 
       let result;
       try {
-         result = await malloyConnection.runSQL(effectiveSql, runSQLOptions);
+         result = await malloyConnection.runSQL(sqlStatement, runSQLOptions);
       } catch (error) {
          throw new ConnectionError((error as Error).message);
       }
 
-      if (wrap && result.rows.length > maxRows) {
+      if (maxRows > 0 && result.rows.length > maxRows) {
          throw new PayloadTooLargeError(
             `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
          );
