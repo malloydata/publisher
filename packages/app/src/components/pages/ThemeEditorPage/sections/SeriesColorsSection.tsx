@@ -24,19 +24,21 @@ interface SeriesColorsSectionProps {
    theme: Theme;
    onChange: (next: Theme) => void;
    disabled: boolean;
-   /** Active editor mode. Only used to render the preview accurately. */
+   /**
+    * Active editor mode. Drives the per-mode background picker below
+    * and the bar chart preview. The series palette itself is shared
+    * across modes so brand identity stays consistent on toggle.
+    */
    mode: ThemeMode;
 }
 
 const DEFAULT_NEW_COLOR = "#1877f2";
 
 /**
- * Edits `palette.series` — the cycling colour palette used for
- * multi-series charts (Vega's `range.category`). The series palette is
- * shared between light and dark modes; brand identity should not flip
- * when a viewer toggles modes. The Light/Dark toggle at the editor
- * level still affects the preview background so the operator can see
- * how the same colours read on each mode.
+ * Edits the chart-side theme tokens: `palette.background` (per mode,
+ * paints the chart canvas via Vega's background config) and
+ * `palette.series` (shared, Vega's `range.category`). Tables get their
+ * own section because they touch a different surface.
  */
 export function SeriesColorsSection({
    theme,
@@ -45,6 +47,19 @@ export function SeriesColorsSection({
    mode,
 }: SeriesColorsSectionProps) {
    const resolved = resolveTheme([theme], mode);
+
+   // Background picker is per-mode (chart canvas in light vs dark).
+   const background = theme.palette?.background?.[mode] ?? resolved.background;
+   const setBackground = (hex: string) => {
+      onChange({
+         ...theme,
+         palette: {
+            ...theme.palette,
+            background: { ...theme.palette?.background, [mode]: hex },
+         },
+      });
+   };
+
    // Defensive: if a stale schema shape sneaked past the server-side
    // sanitiser (e.g. an old per-mode `series` object from a previous
    // version of Publisher), fall back to the resolved default rather
@@ -53,10 +68,10 @@ export function SeriesColorsSection({
       ? theme.palette.series
       : resolved.series;
 
-   // Stable per-row ids so React keys survive insertions and deletions in
-   // the middle of the list. Without them the popover state and any
-   // in-flight text edits would re-attach to the wrong color when a row
-   // is removed (the next row shifts up into the deleted row's key slot).
+   // Stable per-row ids so React keys survive insertions and deletions
+   // in the middle of the list. Without them the popover state and any
+   // in-flight text edits would re-attach to the wrong color when a
+   // row is removed.
    const idsRef = useRef<string[]>([]);
    while (idsRef.current.length < series.length) {
       idsRef.current.push(nextRowId());
@@ -95,6 +110,27 @@ export function SeriesColorsSection({
          <Box sx={{ mb: 2 }}>
             <BarChartPreview theme={resolved} />
          </Box>
+
+         <Stack spacing={2} sx={{ mb: 3 }}>
+            <ColorPickerField
+               label="Chart background"
+               value={background}
+               onChange={setBackground}
+               disabled={disabled}
+            />
+         </Stack>
+
+         <Typography variant="subtitle2" sx={{ mb: 1, mt: 1, fontWeight: 600 }}>
+            Series colors
+         </Typography>
+         <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ mb: 2, display: "block" }}
+         >
+            Cycling palette for multi-series charts. Shared between light and
+            dark so brand stays consistent.
+         </Typography>
          <Stack spacing={1.5}>
             {series.map((color, i) => (
                <Stack

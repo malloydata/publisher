@@ -107,7 +107,19 @@ export class ThemeStore {
          // old per-mode `series` object) get dropped before the editor
          // ever sees them. Operators can keep editing without hitting
          // Reset; fields that match the current shape survive.
-         this.cached = sanitizeTheme(parsed, "ThemeStore.load");
+         const sanitized = sanitizeTheme(parsed, "ThemeStore.load");
+         const dropped = listSanitizerDrops(parsed, sanitized);
+         if (dropped.length > 0) {
+            // Surface what disappeared so operators reading the server
+            // log can see why the editor doesn't show their old custom
+            // values after an upgrade. Re-saving from the editor will
+            // overwrite the on-disk payload with the current shape.
+            logger.info(
+               "ThemeStore: dropped stale fields from stored theme during load",
+               { dropped },
+            );
+         }
+         this.cached = sanitized;
       } else {
          const seed = getInstanceTheme(this.serverRoot);
          if (seed) {
@@ -130,4 +142,58 @@ export class ThemeStore {
          [THEME_ROW_ID, payload, now, now],
       );
    }
+}
+
+/**
+ * Return the list of top-level Theme keys present on `raw` but absent
+ * from `sanitized` (i.e. dropped by `sanitizeTheme`). Reports dotted
+ * paths down one level so the log says e.g. `palette.series` rather
+ * than just `palette`. Returns an empty array when nothing was lost.
+ */
+function listSanitizerDrops(
+   raw: unknown,
+   sanitized: Theme | undefined,
+): string[] {
+   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+   const r = raw as Record<string, unknown>;
+   const drops: string[] = [];
+
+   const topKeys = ["defaultMode", "allowUserToggle"] as const;
+   for (const k of topKeys) {
+      if (r[k] !== undefined && sanitized?.[k] === undefined) drops.push(k);
+   }
+
+   if (
+      r.palette &&
+      typeof r.palette === "object" &&
+      !Array.isArray(r.palette)
+   ) {
+      const rp = r.palette as Record<string, unknown>;
+      const sp = (sanitized?.palette ?? {}) as Record<string, unknown>;
+      for (const k of Object.keys(rp)) {
+         if (rp[k] !== undefined && sp[k] === undefined)
+            drops.push(`palette.${k}`);
+      }
+   } else if (
+      r.palette !== undefined &&
+      (!sanitized || sanitized.palette === undefined)
+   ) {
+      drops.push("palette");
+   }
+
+   if (r.font && typeof r.font === "object" && !Array.isArray(r.font)) {
+      const rf = r.font as Record<string, unknown>;
+      const sf = (sanitized?.font ?? {}) as Record<string, unknown>;
+      for (const k of Object.keys(rf)) {
+         if (rf[k] !== undefined && sf[k] === undefined)
+            drops.push(`font.${k}`);
+      }
+   } else if (
+      r.font !== undefined &&
+      (!sanitized || sanitized.font === undefined)
+   ) {
+      drops.push("font");
+   }
+
+   return drops;
 }

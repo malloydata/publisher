@@ -247,7 +247,7 @@ export default function ThemeEditorPage() {
 
          <Stack spacing={3}>
             <Card>
-               <CardHeader title="Chart series colors" />
+               <CardHeader title="Charts" />
                <CardContent>
                   <SeriesColorsSection {...sectionProps} />
                </CardContent>

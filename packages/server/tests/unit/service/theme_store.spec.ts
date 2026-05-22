@@ -102,4 +102,38 @@ describe("ThemeStore", () => {
       const reseeded = await store.reset();
       expect(reseeded).toBeUndefined();
    });
+
+   it("sanitises stale schema shapes on read", async () => {
+      // Simulates an upgraded install where the persisted payload
+      // still uses the old per-mode `series` object plus a per-mode
+      // font block. Both are dropped by the sanitiser; the per-mode
+      // colour keys (background) survive.
+      const sm = await makeStorage();
+      writeConfig({ frozenConfig: false, environments: [] });
+      const now = new Date().toISOString();
+      const stalePayload = JSON.stringify({
+         palette: {
+            // Old shape — must be dropped on read.
+            series: { light: ["#stale"], dark: ["#stale-dark"] },
+            // Current shape — must survive.
+            background: { light: "#aabbcc" },
+         },
+         font: {
+            // Old shape — must be dropped.
+            family: { light: "Inter", dark: "Inter" },
+         },
+      });
+      await sm.getDuckDbConnection().run(
+         `INSERT INTO themes (id, payload, created_at, updated_at)
+          VALUES (?, ?, ?, ?)`,
+         ["default", stalePayload, now, now],
+      );
+      const store = new ThemeStore(sm, TEST_ROOT);
+      const loaded = await store.get();
+      // Stale keys gone.
+      expect(loaded?.palette?.series).toBeUndefined();
+      expect(loaded?.font).toBeUndefined();
+      // Current-shape key carried over.
+      expect(loaded?.palette?.background?.light).toBe("#aabbcc");
+   });
 });
