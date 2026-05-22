@@ -3,6 +3,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import { Box, Button, IconButton, Typography } from "@mui/material";
 import React, { useEffect } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
 import ResultContainer from "../RenderedResult/ResultContainer";
@@ -57,16 +58,17 @@ export function ModelCell({
       enabled: runOnDemand ? hasRun : true, // Execute on demand or always
    });
 
+   const { mode } = usePublisherTheme();
    useEffect(() => {
       if (annotations && annotations.length > 0) {
          const code = annotations
             .map((annotation) => `// ${annotation}`)
             .join("\n");
-         highlight(code, "typescript").then((highlightedCode) => {
+         highlight(code, "typescript", mode).then((highlightedCode) => {
             setHighlightedAnnotations(highlightedCode);
          });
       }
-   }, [annotations]);
+   }, [annotations, mode]);
 
    return (
       <CleanNotebookCell>

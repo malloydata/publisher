@@ -18,6 +18,7 @@ import {
 import MDEditor from "@uiw/react-md-editor/nohighlight";
 import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { highlight } from "../highlighter";
 import {
    emptyQueryExplorerResult,
@@ -73,12 +74,13 @@ export function MutableCell({
          : 0,
    );
 
+   const { mode } = usePublisherTheme();
    useEffect(() => {
       if (!cell.isMarkdown)
-         highlight(cell.value, "malloy").then((code) => {
+         highlight(cell.value, "malloy", mode).then((code) => {
             setHighlightedMalloyCode(code);
          });
-   }, [cell]);
+   }, [cell, mode]);
    React.useEffect(() => {
       document.documentElement.setAttribute("data-color-mode", "light");
    });

@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
@@ -130,18 +131,19 @@ export function NotebookCell({
       resourceUri: resourceUri,
    });
 
+   const { mode } = usePublisherTheme();
    useEffect(() => {
       if (cell.type === "code")
-         highlight(filterMalloyCode(cell.text), "malloy").then((code) => {
+         highlight(filterMalloyCode(cell.text), "malloy", mode).then((code) => {
             setHighlightedMalloyCode(code);
          });
-   }, [cell]);
+   }, [cell, mode]);
 
    useEffect(() => {
-      highlight(queryResultCodeSnippet, "typescript").then((code) => {
+      highlight(queryResultCodeSnippet, "typescript", mode).then((code) => {
          setHighlightedEmbedCode(code);
       });
-   }, [queryResultCodeSnippet]);
+   }, [queryResultCodeSnippet, mode]);
 
    const copyToClipboard = () => {
       const url = window.location.href;
