@@ -5,6 +5,7 @@ import { components } from "./api";
 import {
    API_PREFIX,
    DEFAULT_MAX_QUERY_ROWS,
+   DEFAULT_MAX_RESPONSE_BYTES,
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
@@ -248,6 +249,29 @@ export const getMaxQueryRows = (): number => {
    if (raw < 0) {
       throw new Error(
          `PUBLISHER_MAX_QUERY_ROWS must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the byte cap applied to ad-hoc connection SQL responses
+ * when the underlying connection implements `StreamingConnection`.
+ * Reads `PUBLISHER_MAX_RESPONSE_BYTES`; falls back to
+ * {@link DEFAULT_MAX_RESPONSE_BYTES} when unset or empty.
+ *
+ * Mirrors {@link getMaxQueryRows}'s loud-failure semantics: throws
+ * at startup on malformed input so a typo in a k8s manifest surfaces
+ * immediately. A value of `0` is accepted and disables the byte cap
+ * entirely; use it only when you intend to rely on the row cap alone
+ * (e.g. for benchmarking).
+ */
+export const getMaxResponseBytes = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_RESPONSE_BYTES");
+   if (raw === undefined) return DEFAULT_MAX_RESPONSE_BYTES;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_MAX_RESPONSE_BYTES must be a non-negative integer (got ${raw})`,
       );
    }
    return raw;

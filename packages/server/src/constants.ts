@@ -20,5 +20,25 @@ export const ROW_LIMIT = 1000;
  * Step 2 byte budget.
  */
 export const DEFAULT_MAX_QUERY_ROWS = 100_000;
+/**
+ * Maximum aggregate JSON-serialized byte size of an ad-hoc
+ * connection SQL response before failing with HTTP 413. Override at
+ * startup via `PUBLISHER_MAX_RESPONSE_BYTES`.
+ *
+ * This is the actual memory bound: row count alone is a poor proxy
+ * for memory pressure because a single 10 MB JSON column blows past
+ * the 100k-row cap's safe envelope. Enforced only when the
+ * underlying connection implements `StreamingConnection` (Postgres,
+ * DuckDB, ...) since byte counting requires iterating row-at-a-time
+ * — on non-streaming connections the driver has already buffered
+ * the whole result by the time we see it, so client-side byte
+ * counting gains nothing.
+ *
+ * 50 MB picked as a middle ground: comfortably accommodates wide
+ * exploratory results (50k rows × 1 KB, or 5k rows × 10 KB) while
+ * keeping a single pod able to serve a handful of concurrent
+ * requests under a typical 1-2 GB memory budget.
+ */
+export const DEFAULT_MAX_RESPONSE_BYTES = 50_000_000;
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";

@@ -1,7 +1,7 @@
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
-import { getMaxQueryRows } from "../config";
+import { getMaxQueryRows, getMaxResponseBytes } from "../config";
 import {
    BadRequestError,
    ConnectionError,
@@ -17,6 +17,7 @@ import {
 } from "../service/db_utils";
 import type { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
+import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -478,19 +479,50 @@ export class ConnectionController {
          runSQLOptions.abortSignal = undefined;
       }
 
-      // Bound the response by clamping rowLimit to (cap + 1). The +1 is a
-      // sentinel: a response of cap+1 rows means the original would have
-      // overflowed, and we fail the request with HTTP 413 rather than
-      // serializing it. A caller-supplied rowLimit lower than cap+1 is kept,
-      // so users can still ask for fewer rows; we only enforce the ceiling.
-      // Cap of 0 disables the bound. We trust the connector to honor
-      // RunSQLOptions.rowLimit; connectors that don't are upstream bugs.
+      // Bound the response with two layered caps:
+      //
+      //   - Row cap (PUBLISHER_MAX_QUERY_ROWS) — pushed to the driver as
+      //     RunSQLOptions.rowLimit = min(callerLimit, cap+1). The +1 is a
+      //     sentinel: a response of cap+1 rows means the original would have
+      //     overflowed, so we fail the request with HTTP 413 rather than
+      //     serializing it. A caller-supplied rowLimit lower than cap+1 is
+      //     kept; we only enforce the ceiling. Cap of 0 disables the bound.
+      //
+      //   - Byte cap (PUBLISHER_MAX_RESPONSE_BYTES) — the actual memory
+      //     bound, since a single 10 MB JSON column can blow past the
+      //     row cap's safe envelope. Only enforceable on streaming
+      //     connections; row-buffered `runSQL` has already done the
+      //     damage by the time we'd count bytes.
+      //
+      // We trust connectors to honor RunSQLOptions.rowLimit; connectors
+      // that don't are upstream bugs.
       const maxRows = getMaxQueryRows();
+      const maxBytes = getMaxResponseBytes();
       if (maxRows > 0) {
          runSQLOptions.rowLimit = Math.min(
             runSQLOptions.rowLimit ?? maxRows + 1,
             maxRows + 1,
          );
+      }
+
+      // Streaming-capable connections (Postgres, DuckDB, ...) go through
+      // streamSqlWithBudget so the byte cap can fire mid-stream. Other
+      // connections fall back to the buffered path; client-side byte
+      // counting there would be security theatre.
+      if (isStreamingConnection(malloyConnection)) {
+         let streamed;
+         try {
+            streamed = await streamSqlWithBudget(
+               malloyConnection,
+               sqlStatement,
+               runSQLOptions,
+               { maxRows, maxBytes },
+            );
+         } catch (error) {
+            if (error instanceof PayloadTooLargeError) throw error;
+            throw new ConnectionError((error as Error).message);
+         }
+         return { data: JSON.stringify(streamed) };
       }
 
       let result;
