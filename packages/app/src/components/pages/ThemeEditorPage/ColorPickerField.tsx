@@ -1,4 +1,4 @@
-import { Box, Popover, TextField } from "@mui/material";
+import { Box, Popover, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { HexColorPicker } from "react-colorful";
 
@@ -49,48 +49,59 @@ export function ColorPickerField({
    };
 
    return (
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-         <Box
-            role="button"
-            aria-label={label ? `Pick ${label}` : "Pick color"}
-            tabIndex={disabled ? -1 : 0}
-            onClick={(e) => !disabled && setAnchorEl(e.currentTarget)}
-            onKeyDown={(e) => {
-               if (disabled) return;
-               if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setAnchorEl(e.currentTarget);
-               }
-            }}
-            sx={(theme) => ({
-               width: 32,
-               height: 32,
-               borderRadius: 1,
-               backgroundColor: value,
-               border: `1px solid ${theme.palette.divider}`,
-               cursor: disabled ? "not-allowed" : "pointer",
-               opacity: disabled ? 0.5 : 1,
-            })}
-         />
-         <TextField
-            size="small"
-            value={text}
-            disabled={disabled}
-            label={label}
-            onChange={(e) => setText(e.target.value)}
-            onBlur={commitText}
-            onKeyDown={(e) => {
-               if (e.key === "Enter") {
-                  commitText();
-                  (e.target as HTMLInputElement).blur();
-               } else if (e.key === "Escape") {
-                  setText(value);
-                  (e.target as HTMLInputElement).blur();
-               }
-            }}
-            inputProps={{ maxLength: 7, "aria-label": label }}
-            sx={{ width: 110 }}
-         />
+      <Stack spacing={0.5}>
+         {label && (
+            <Typography
+               variant="caption"
+               color="text.secondary"
+               component="label"
+               sx={{ fontSize: "0.75rem", lineHeight: 1.4 }}
+            >
+               {label}
+            </Typography>
+         )}
+         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Box
+               role="button"
+               aria-label={label ? `Pick ${label}` : "Pick color"}
+               tabIndex={disabled ? -1 : 0}
+               onClick={(e) => !disabled && setAnchorEl(e.currentTarget)}
+               onKeyDown={(e) => {
+                  if (disabled) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                     e.preventDefault();
+                     setAnchorEl(e.currentTarget);
+                  }
+               }}
+               sx={(theme) => ({
+                  width: 32,
+                  height: 32,
+                  borderRadius: 1,
+                  backgroundColor: value,
+                  border: `1px solid ${theme.palette.divider}`,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.5 : 1,
+               })}
+            />
+            <TextField
+               size="small"
+               value={text}
+               disabled={disabled}
+               onChange={(e) => setText(e.target.value)}
+               onBlur={commitText}
+               onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                     commitText();
+                     (e.target as HTMLInputElement).blur();
+                  } else if (e.key === "Escape") {
+                     setText(value);
+                     (e.target as HTMLInputElement).blur();
+                  }
+               }}
+               inputProps={{ maxLength: 7, "aria-label": label }}
+               sx={{ width: 110 }}
+            />
+         </Box>
          <Popover
             open={!!anchorEl}
             anchorEl={anchorEl}
@@ -107,6 +118,6 @@ export function ColorPickerField({
                />
             </Box>
          </Popover>
-      </Box>
+      </Stack>
    );
 }
