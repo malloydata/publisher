@@ -270,4 +270,50 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
 
       expect(runSQL.callCount).toBe(2);
    });
+
+   /**
+    * `JSON.parse("null")` / `'"foo"'` / `'42'` / `'[1,2,3]'` all parse to
+    * non-objects. Without a guard, `runSQLOptions.abortSignal` would crash
+    * on `null` (→ 500) or `runSQLOptions.rowLimit = ...` would mutate the
+    * caller's array / coerce a primitive and pass that to the connector.
+    * Reject at the controller boundary alongside the other type guards.
+    */
+   it.each([
+      ["JSON null", "null"],
+      ["JSON string", '"hello"'],
+      ["JSON number", "42"],
+      ["JSON boolean", "true"],
+      ["JSON array", "[1,2,3]"],
+   ])(
+      "rejects non-object JSON options (%s) with BadRequestError",
+      async (_label, options) => {
+         const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+         const { controller } = buildController(runSQL);
+
+         await expect(
+            controller.getConnectionQueryData(
+               "env",
+               "conn",
+               "SELECT 1",
+               options,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.called).toBe(false);
+      },
+   );
+
+   it("rejects malformed JSON options with BadRequestError", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+      const { controller } = buildController(runSQL);
+
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1",
+            "{not json",
+         ),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(runSQL.called).toBe(false);
+   });
 });

@@ -725,9 +725,11 @@ paths:
         The results include data, metadata, and execution information.
 
         Rows returned are capped at PUBLISHER_MAX_QUERY_ROWS (default 100,000).
-        SELECT/WITH statements that would exceed the cap fail with HTTP 413;
-        non-SELECT statements (DDL, SHOW, DESCRIBE, EXPLAIN, multi-statement)
-        are passed through unchanged.
+        The cap is forwarded to the connector as a rowLimit on RunSQLOptions;
+        queries that return more rows than the cap fail with HTTP 413 rather
+        than serializing the response. Set PUBLISHER_MAX_QUERY_ROWS=0 to
+        disable the cap. A caller-supplied rowLimit smaller than the cap is
+        preserved; larger values are clamped down to cap+1.
       parameters:
         - name: environmentName
           in: path

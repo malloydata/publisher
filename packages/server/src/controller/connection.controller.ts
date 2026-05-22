@@ -470,7 +470,27 @@ export class ConnectionController {
 
       let runSQLOptions: RunSQLOptions = {};
       if (options) {
-         runSQLOptions = JSON.parse(options) as RunSQLOptions;
+         // JSON.parse happily produces `null`, `42`, `"foo"`, `[1,2,3]`, etc.
+         // Anything that isn't a plain object would either crash later when
+         // we touch `.abortSignal` / `.rowLimit` (null), or mutate a caller
+         // string / array and pass it to the connector. Reject at the
+         // boundary alongside the other CodeQL type guards above.
+         let parsed: unknown;
+         try {
+            parsed = JSON.parse(options);
+         } catch {
+            throw new BadRequestError("options must be valid JSON");
+         }
+         if (
+            parsed === null ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
+         ) {
+            throw new BadRequestError(
+               'options must be a JSON object (e.g. {"rowLimit": 100})',
+            );
+         }
+         runSQLOptions = parsed as RunSQLOptions;
       }
       if (runSQLOptions.abortSignal) {
          // Add support for abortSignal in the future
