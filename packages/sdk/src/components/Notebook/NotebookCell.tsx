@@ -272,7 +272,14 @@ export function NotebookCell({
                                  <SearchIcon
                                     sx={{
                                        fontSize: "18px",
-                                       color: "text.secondary",
+                                       // grey.700 is a dark warm grey
+                                       // that stays legible on the
+                                       // white-ish IconButton in both
+                                       // light and dark mode. The
+                                       // button background is
+                                       // hardcoded white, so the icon
+                                       // must be hardcoded dark.
+                                       color: "grey.700",
                                     }}
                                  />
                               </IconButton>
@@ -478,7 +485,7 @@ export function NotebookCell({
                            }}
                         >
                            <CodeIcon
-                              sx={{ fontSize: "18px", color: "text.secondary" }}
+                              sx={{ fontSize: "18px", color: "grey.700" }}
                            />
                         </IconButton>
                      )}
@@ -494,7 +501,7 @@ export function NotebookCell({
                         onClick={() => setResultsDialogOpen(true)}
                      >
                         <SearchIcon
-                           sx={{ fontSize: "18px", color: "text.secondary" }}
+                           sx={{ fontSize: "18px", color: "grey.700" }}
                         />
                      </IconButton>
                   </Stack>

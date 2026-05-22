@@ -9,18 +9,23 @@ import type { ResolvedTheme } from "./types";
  * reach table chrome and dashboard tiles directly instead of going
  * through the outer-wrapper var cascade.
  *
- * Keys we don't surface in the editor (font weights, gutter sizes) are
- * left undefined so the renderer's own defaults apply. We also
- * deliberately omit `background` and `tableBackground`: those would
- * paint the dashboard root and the entire table interior, which makes
- * full-page tables look heavy. Chart canvases get the operator's
- * background through `buildVegaThemeOverride`; tables read on the
- * neutral page background with the accent on the header row.
+ * `background` here paints the renderer's HTML chrome (the area
+ * between dashboard tiles). It's sourced from the mode-keyed
+ * `dashboardRoot` field, NOT from the operator-customisable
+ * `palette.background` (which is for the chart canvas via Vega). That
+ * separation keeps a bold accent colour scoped to charts and tiles
+ * without bleeding into the surrounding panel.
+ *
+ * `tableBackground` is deliberately omitted because it would paint the
+ * entire table interior; a full-page table would become overwhelmingly
+ * coloured. Tables read on the page's default background with the
+ * accent on the header row only.
  */
 export function buildMalloyExplicitTheme(
    theme: ResolvedTheme,
 ): MalloyExplicitTheme {
    return {
+      background: theme.dashboardRoot,
       tableHeaderColor: theme.tableHeader,
       tableBodyColor: theme.tableBody,
       tableBorder: theme.border,

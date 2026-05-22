@@ -37,4 +37,14 @@ export interface ResolvedTheme {
    valueColor: string;
    foreground: string;
    axisFaint: string;
+   /**
+    * Background for the renderer's HTML chrome (the area between
+    * dashboard tiles). Mode-keyed and intentionally NOT
+    * operator-customizable — when an operator picks a bold accent
+    * for `palette.background` (the chart canvas), the surrounding
+    * panel should stay neutral so the accent reads cleanly. In dark
+    * mode it paints slate so the panel doesn't sit as a stark white
+    * box on the dark page chrome.
+    */
+   dashboardRoot: string;
 }

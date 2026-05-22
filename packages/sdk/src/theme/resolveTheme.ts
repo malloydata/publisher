@@ -78,6 +78,10 @@ export function resolveTheme(
       valueColor: isDark ? "#f1f5f9" : "#1f2937",
       foreground: isDark ? "#e2e8f0" : "#1f2937",
       axisFaint: isDark ? "#475569" : "#d1d5db",
+      // Dashboard panel background. Light keeps white so the page stays
+      // visually unchanged. Dark uses slate so the panel doesn't read as
+      // a bright box against the dark page chrome.
+      dashboardRoot: isDark ? "#1e293b" : "#ffffff",
    };
 }
 

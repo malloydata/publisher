@@ -88,6 +88,21 @@ describe("resolveTheme cascade", () => {
       expect(light.valueColor).toBe("#1f2937");
       expect(dark.valueColor).toBe("#f1f5f9");
    });
+
+   it("dashboardRoot is mode-keyed and immune to operator background overrides", () => {
+      // Light keeps white (no regression on existing installs).
+      expect(resolveTheme([], "light").dashboardRoot).toBe("#ffffff");
+      // Dark paints slate so the panel doesn't read as a bright box.
+      expect(resolveTheme([], "dark").dashboardRoot).toBe("#1e293b");
+      // An operator picking a bold accent for `background` (the chart
+      // canvas) must NOT bleed into the surrounding panel.
+      const t = resolveTheme(
+         [{ palette: { background: { dark: "#ff8800" } } }],
+         "dark",
+      );
+      expect(t.background).toBe("#ff8800");
+      expect(t.dashboardRoot).toBe("#1e293b");
+   });
 });
 
 describe("resolveMode", () => {
