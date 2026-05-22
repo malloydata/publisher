@@ -95,7 +95,9 @@ async function isDatabaseAttached(
          ? existingDatabases
          : existingDatabases.rows || [];
 
-      logger.debug(`Existing databases:`, rows);
+      logger.debug("connection.duckdb.databases.queried", {
+         count: rows.length,
+      });
 
       return rows.some((row: Record<string, unknown>) =>
          Object.values(row).some(
@@ -1132,7 +1134,9 @@ export async function createEnvironmentConnections(
 
    for (const connection of environmentConfig.apiConnections) {
       if (!connection.name) continue;
-      logger.info(`Adding connection ${connection.name}`, { connection });
+      logger.info(`Adding connection ${connection.name}`, {
+         type: connection.type,
+      });
       const malloyConnection =
          await environmentConfig.malloyConfig.connections.lookupConnection(
             connection.name,
