@@ -142,7 +142,18 @@ function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
 .malloy-render .malloy-dashboard {
+   /* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard,
+      which paints white in dark mode and beats the outer
+      --malloy-render--background var. Override here so the dashboard
+      panel follows our theme's dashboardRoot color. */
+   background: var(--malloy-render--background) !important;
    color: var(--malloy-render--table-body-color) !important;
+}
+.malloy-render .malloy-dashboard .dashboard-row-header {
+   /* dashboard.css also hardcodes background: #f7f9fc on the row
+      header (the sticky-top label area inside the dashboard). Same
+      treatment as the panel itself. */
+   background: var(--malloy-render--background) !important;
 }
 .malloy-render .malloy-dashboard .dashboard-item {
    background: var(--malloy-render--table-pinned-background) !important;
