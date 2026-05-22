@@ -570,6 +570,7 @@ export function registerLegacyRoutes(
    // temporaryTable (deprecated GET) + sqlTemporaryTable (supported POST)
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/temporaryTable`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(
@@ -589,6 +590,7 @@ export function registerLegacyRoutes(
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/temporaryTable`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(
@@ -609,6 +611,7 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(
@@ -628,6 +631,7 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(

@@ -610,23 +610,75 @@ export class ConnectionController {
       sqlStatement: string,
       packageName?: string,
    ): Promise<ApiTemporaryTable> {
+      // Express parses repeated query parameters / array-shaped JSON
+      // bodies as `string[]`. The route handlers up-cast for
+      // TypeScript's benefit; re-validate here at the controller
+      // boundary before forwarding to the connector — same pattern
+      // as `getConnectionQueryData`.
+      if (typeof sqlStatement !== "string") {
+         throw new BadRequestError("sqlStatement must be a string");
+      }
+
+      // Shed load before any disk / DB work; same rationale as
+      // `getConnectionQueryData`. `manifestTemporaryTable` issues a
+      // real `CREATE TEMPORARY TABLE AS (<sql>)` against the
+      // connector, so a back-pressured publisher must reject these
+      // with HTTP 503 just like ad-hoc SELECTs.
+      const environmentForAdmission =
+         await this.environmentStore.getEnvironment(environmentName, false);
+      environmentForAdmission.assertCanAdmitQuery();
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
       );
 
-      try {
-         return {
-            table: JSON.stringify(
-               await (
-                  malloyConnection as PersistSQLResults
-               ).manifestTemporaryTable(sqlStatement),
-            ),
-         };
-      } catch (error) {
-         throw new ConnectionError((error as Error).message);
-      }
+      // `manifestTemporaryTable(sqlCommand: string): Promise<string>`
+      // does not accept an `abortSignal`, so we cannot push
+      // cancellation down to the driver. Instead we race the call
+      // against the publisher's timeout signal so the HTTP response
+      // unblocks at the wall-clock deadline regardless of whether
+      // the underlying DDL responds. The DDL continues running in
+      // the database — the publisher just stops waiting and
+      // returns HTTP 504. This is strictly better than holding the
+      // socket and concurrency slot open until the load balancer
+      // kills the connection, but it does mean a runaway DDL is
+      // not actually cancelled (driver-side enhancement needed in
+      // `@malloydata/db-*` to plumb abort through).
+      //
+      // The `runWithQueryTimeout` wrapper's catch handler checks its
+      // `timedOut` flag at error time, so any rejection that
+      // propagates after the timer has fired is re-emitted as
+      // `QueryTimeoutError` regardless of its shape — that's why
+      // we re-throw the abort reason here unwrapped.
+      return await runWithQueryTimeout(async (signal) => {
+         try {
+            const tableName = await Promise.race([
+               (malloyConnection as PersistSQLResults).manifestTemporaryTable(
+                  sqlStatement,
+               ),
+               new Promise<never>((_resolve, reject) => {
+                  if (signal.aborted) {
+                     reject(signal.reason);
+                     return;
+                  }
+                  signal.addEventListener(
+                     "abort",
+                     () => reject(signal.reason),
+                     { once: true },
+                  );
+               }),
+            ]);
+            return { table: JSON.stringify(tableName) };
+         } catch (error) {
+            // If the abort fired first, the timeout wrapper above
+            // will convert this to QueryTimeoutError on its own
+            // — don't bury the reason in ConnectionError.
+            if (signal.aborted) throw error;
+            throw new ConnectionError((error as Error).message);
+         }
+      }, getQueryTimeoutMs());
    }
 
    public async testConnectionConfiguration(

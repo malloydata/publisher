@@ -668,3 +668,136 @@ describe("ConnectionController.getConnectionQueryData query timeout", () => {
       expect(observedSignal?.aborted).toBe(true);
    });
 });
+
+/**
+ * Mirrors `buildController` but injects a `manifestTemporaryTable`
+ * stub instead of `runSQL`. `getConnectionTemporaryTable` casts the
+ * Malloy connection to `PersistSQLResults`, so the fake connection
+ * needs that method on its surface for the test to exercise the real
+ * code path through admission and the timeout wrapper.
+ */
+function buildTemporaryTableController(
+   manifestTemporaryTable: sinon.SinonStub,
+   opts: { assertCanAdmitQuery?: sinon.SinonStub } = {},
+): {
+   controller: ConnectionController;
+   manifestTemporaryTable: sinon.SinonStub;
+   assertCanAdmitQuery: sinon.SinonStub;
+} {
+   const fakeConnection = { manifestTemporaryTable } as unknown as Connection;
+   const assertCanAdmitQuery =
+      opts.assertCanAdmitQuery ?? sinon.stub().returns(undefined);
+   const fakeEnv = { assertCanAdmitQuery };
+   const fakeStore = {
+      getEnvironment: sinon.stub().resolves(fakeEnv),
+   } as unknown as EnvironmentStore;
+   const controller = new ConnectionController(fakeStore);
+   sinon
+      .stub(
+         controller as unknown as {
+            getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+         },
+         "getMalloyConnection",
+      )
+      .resolves(fakeConnection);
+   return { controller, manifestTemporaryTable, assertCanAdmitQuery };
+}
+
+/**
+ * `getConnectionTemporaryTable` issues a real `CREATE TEMPORARY TABLE
+ * AS (<sql>)` against the connector via `manifestTemporaryTable`, so
+ * the same three OOM guards as `getConnectionQueryData` must apply:
+ * sqlStatement shape, admission, and wall-clock timeout. The
+ * per-pod concurrency cap is wired at the route layer in `server.ts`
+ * / `server-old.ts` and exercised by `oom_guards.integration.spec.ts`.
+ */
+describe("ConnectionController.getConnectionTemporaryTable guards", () => {
+   const originalTimeout = process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+
+   afterEach(() => {
+      sinon.restore();
+      if (originalTimeout === undefined) {
+         delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+      } else {
+         process.env.PUBLISHER_QUERY_TIMEOUT_MS = originalTimeout;
+      }
+   });
+
+   it("rejects non-string sqlStatement at the boundary (CodeQL type guard)", async () => {
+      const manifestTemporaryTable = sinon.stub().resolves("temp_table_name");
+      const { controller } = buildTemporaryTableController(
+         manifestTemporaryTable,
+      );
+
+      await expect(
+         controller.getConnectionTemporaryTable("env", "conn", [
+            "SELECT 1",
+            "SELECT 2",
+         ] as unknown as string),
+      ).rejects.toBeInstanceOf(BadRequestError);
+
+      expect(manifestTemporaryTable.called).toBe(false);
+   });
+
+   it("re-throws ServiceUnavailableError under back-pressure without touching the connector", async () => {
+      const manifestTemporaryTable = sinon.stub().resolves("temp_table_name");
+      const { ServiceUnavailableError } = await import("../errors");
+      const assertCanAdmitQuery = sinon
+         .stub()
+         .throws(
+            new ServiceUnavailableError(
+               'Publisher is under memory pressure and cannot accept new queries (environment "env").',
+            ),
+         );
+      const { controller } = buildTemporaryTableController(
+         manifestTemporaryTable,
+         { assertCanAdmitQuery },
+      );
+
+      await expect(
+         controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
+
+      // Load-shedding invariant: the gate must fire BEFORE any
+      // connector work. `CREATE TEMPORARY TABLE` is a real DDL —
+      // we must not start it under memory pressure.
+      expect(assertCanAdmitQuery.called).toBe(true);
+      expect(manifestTemporaryTable.called).toBe(false);
+   });
+
+   it("happy path: admission passes through and the connector is called", async () => {
+      const manifestTemporaryTable = sinon.stub().resolves("temp_table_name");
+      const { controller, assertCanAdmitQuery } = buildTemporaryTableController(
+         manifestTemporaryTable,
+      );
+
+      const result = await controller.getConnectionTemporaryTable(
+         "env",
+         "conn",
+         "SELECT 1",
+      );
+
+      expect(assertCanAdmitQuery.called).toBe(true);
+      expect(manifestTemporaryTable.calledOnceWith("SELECT 1")).toBe(true);
+      expect(JSON.parse(result.table as string)).toBe("temp_table_name");
+   });
+
+   it("surfaces QueryTimeoutError when manifestTemporaryTable outlasts PUBLISHER_QUERY_TIMEOUT_MS", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
+      // `manifestTemporaryTable` does not accept an abortSignal, so
+      // the timeout is a pure wall-clock guard — the DDL keeps
+      // running inside the DB but the HTTP response unblocks as
+      // QueryTimeoutError → 504, releasing the slot.
+      const manifestTemporaryTable = sinon
+         .stub()
+         .callsFake(() => new Promise(() => undefined /* never resolves */));
+      const { controller } = buildTemporaryTableController(
+         manifestTemporaryTable,
+      );
+
+      const { QueryTimeoutError } = await import("../errors");
+      await expect(
+         controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
+      ).rejects.toBeInstanceOf(QueryTimeoutError);
+   });
+});

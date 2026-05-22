@@ -793,6 +793,7 @@ app.post(
  */
 app.get(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/temporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -815,6 +816,7 @@ app.get(
  */
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/temporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -835,6 +837,7 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlTemporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -854,6 +857,7 @@ app.post(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
