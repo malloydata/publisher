@@ -457,11 +457,19 @@ export function NotebookCell({
                      />
                   </Box>
 
-                  {/* Top right corner controls */}
+                  {/* Top right corner controls.
+                      `top: -12px` lifts the buttons above the
+                      CleanMetricCard's inner ResultContainer so the
+                      dashboard panel (which now paints slate in dark
+                      mode) doesn't bisect them. The icons were already
+                      visually overlapping the panel's top edge in
+                      light mode too, but the white-on-white made it
+                      invisible; in dark mode the contrast made the
+                      clipping obvious. */}
                   <Stack
                      sx={{
                         position: "absolute",
-                        top: "8px",
+                        top: "-12px",
                         right: "8px",
                         flexDirection: "row",
                         gap: "8px",
