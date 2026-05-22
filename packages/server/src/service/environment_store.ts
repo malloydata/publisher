@@ -27,6 +27,11 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
+import {
+   assertSafeEnvironmentPath,
+   assertSafePackageName,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
@@ -756,6 +761,7 @@ export class EnvironmentStore {
       reload: boolean = false,
    ): Promise<Environment> {
       await this.finishedInitialization;
+      assertSafePackageName(environmentName);
 
       // Check if environment is already loaded first
       const environment = this.environments.get(environmentName);
@@ -816,9 +822,10 @@ export class EnvironmentStore {
       if (!skipInitialization && this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      assertSafePackageName(environment.name);
       const environmentName = environment.name;
-      if (!environmentName) {
-         throw new Error("Environment name is required");
+      for (const _package of environment.packages || []) {
+         assertSafePackageName(_package.name);
       }
       // Check if environment already exists and update it instead of creating a new one
       const existingEnvironment = this.environments.get(environmentName);
@@ -884,6 +891,7 @@ export class EnvironmentStore {
    }
 
    public async unzipEnvironment(absoluteEnvironmentPath: string) {
+      assertSafeEnvironmentPath(absoluteEnvironmentPath);
       const startedAt = Date.now();
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
@@ -930,9 +938,10 @@ export class EnvironmentStore {
          throw new FrozenConfigError();
       }
       validateEnvironmentAzureUrls(environment);
+      assertSafePackageName(environment.name);
       const environmentName = environment.name;
-      if (!environmentName) {
-         throw new Error("Environment name is required");
+      for (const _package of environment.packages || []) {
+         assertSafePackageName(_package.name);
       }
       const existingEnvironment = this.environments.get(environmentName);
       if (!existingEnvironment) {
@@ -953,6 +962,7 @@ export class EnvironmentStore {
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      assertSafePackageName(environmentName);
       const environment = this.environments.get(environmentName);
       if (!environment) {
          return;
@@ -1027,15 +1037,17 @@ export class EnvironmentStore {
    }
 
    private async scaffoldEnvironment(environment: ApiEnvironment) {
+      assertSafePackageName(environment.name);
       const environmentName = environment.name;
-      if (!environmentName) {
-         throw new Error("Environment name is required");
-      }
-      const absoluteEnvironmentPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
+      const absoluteEnvironmentPath = safeJoinUnderRoot(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         environmentName,
+      );
       await fs.promises.mkdir(absoluteEnvironmentPath, { recursive: true });
       if (environment.readme) {
          await fs.promises.writeFile(
-            path.join(absoluteEnvironmentPath, "README.md"),
+            safeJoinUnderRoot(absoluteEnvironmentPath, "README.md"),
             environment.readme,
          );
       }
@@ -1071,7 +1083,12 @@ export class EnvironmentStore {
       environmentName: string,
       packages: ApiEnvironment["packages"],
    ) {
-      const absoluteTargetPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
+      assertSafePackageName(environmentName);
+      const absoluteTargetPath = safeJoinUnderRoot(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         environmentName,
+      );
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
@@ -1126,7 +1143,10 @@ export class EnvironmentStore {
             .update(groupedLocation)
             .digest("hex")
             .substring(0, 16); // Use first 16 chars for shorter paths
-         const tempDownloadPath = `${absoluteTargetPath}/.temp_${locationHash}`;
+         const tempDownloadPath = safeJoinUnderRoot(
+            absoluteTargetPath,
+            `.temp_${locationHash}`,
+         );
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
          try {
@@ -1140,7 +1160,11 @@ export class EnvironmentStore {
             // Extract each package from the downloaded content
             for (const _package of packagesForLocation) {
                const packageDir = _package.name;
-               const absolutePackagePath = `${absoluteTargetPath}/${packageDir}`;
+               assertSafePackageName(packageDir);
+               const absolutePackagePath = safeJoinUnderRoot(
+                  absoluteTargetPath,
+                  packageDir,
+               );
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
@@ -1151,7 +1175,7 @@ export class EnvironmentStore {
                      const subPathMatch =
                         _package.location.match(/\/tree\/[^/]+\/(.+)$/);
                      if (subPathMatch) {
-                        sourcePath = path.join(
+                        sourcePath = safeJoinUnderRoot(
                            tempDownloadPath,
                            subPathMatch[1],
                         );
@@ -1168,7 +1192,10 @@ export class EnvironmentStore {
                   if (this.isLocalPath(_package.location)) {
                      sourcePath = _package.location;
                   } else {
-                     sourcePath = path.join(tempDownloadPath, groupedLocation);
+                     sourcePath = safeJoinUnderRoot(
+                        tempDownloadPath,
+                        groupedLocation,
+                     );
                   }
                }
 
@@ -1347,6 +1374,10 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ) {
+      // `environmentPath` is the operator-supplied mount source and may
+      // legitimately be a relative path that resolves outside the
+      // server root; only the target is asserted.
+      assertSafeEnvironmentPath(absoluteTargetPath);
       if (environmentPath.endsWith(".zip")) {
          environmentPath = await this.unzipEnvironment(environmentPath);
       }
@@ -1374,6 +1405,7 @@ export class EnvironmentStore {
       absoluteDirPath: string,
       isCompressedFile: boolean,
    ) {
+      assertSafeEnvironmentPath(absoluteDirPath);
       const trimmedPath = gcsPath.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
@@ -1396,10 +1428,15 @@ export class EnvironmentStore {
       }
       await Promise.all(
          files.map(async (file) => {
-            const relativeFilePath = file.name.replace(prefix, "");
+            // Strip leading `/` left over from prefix removal when the
+            // GCS prefix lacked a trailing slash — otherwise
+            // `safeJoinUnderRoot` treats it as absolute and rejects.
+            const relativeFilePath = file.name
+               .replace(prefix, "")
+               .replace(/^\/+/, "");
             const absoluteFilePath = isCompressedFile
                ? absoluteDirPath
-               : path.join(absoluteDirPath, relativeFilePath);
+               : safeJoinUnderRoot(absoluteDirPath, relativeFilePath);
             if (file.name.endsWith("/")) {
                return;
             }
@@ -1424,6 +1461,7 @@ export class EnvironmentStore {
       absoluteDirPath: string,
       isCompressedFile: boolean = false,
    ) {
+      assertSafeEnvironmentPath(absoluteDirPath);
       const trimmedPath = s3Path.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
@@ -1477,11 +1515,16 @@ export class EnvironmentStore {
             if (!key) {
                return;
             }
-            const relativeFilePath = key.replace(prefix, "");
+            // Strip leading `/` left over from prefix removal when the
+            // S3 prefix lacked a trailing slash — otherwise
+            // `safeJoinUnderRoot` treats it as absolute and rejects.
+            const relativeFilePath = key
+               .replace(prefix, "")
+               .replace(/^\/+/, "");
             if (!relativeFilePath || relativeFilePath.endsWith("/")) {
                return;
             }
-            const absoluteFilePath = path.join(
+            const absoluteFilePath = safeJoinUnderRoot(
                absoluteDirPath,
                relativeFilePath,
             );
@@ -1532,6 +1575,7 @@ export class EnvironmentStore {
    }
 
    async downloadGitHubDirectory(githubUrl: string, absoluteDirPath: string) {
+      assertSafeEnvironmentPath(absoluteDirPath);
       // First we'll clone the repo without the additional path
       // E.g. we're removing `/tree/main/imdb` from https://github.com/credibledata/malloy-samples/tree/main/imdb
       const githubInfo = this.parseGitHubUrl(githubUrl);
@@ -1539,7 +1583,11 @@ export class EnvironmentStore {
          throw new Error(`Invalid GitHub URL: ${githubUrl}`);
       }
       const { owner, repoName, packagePath } = githubInfo;
-      const cleanPackagePath = packagePath?.replace("/tree/main", "") || "";
+      // `packagePath` is captured with a leading `/`; strip it so the
+      // value is a relative segment usable with `safeJoinUnderRoot`.
+      const cleanPackagePath = (
+         packagePath?.replace("/tree/main", "") || ""
+      ).replace(/^\/+/, "");
 
       // We'll make sure whatever was in absoluteDirPath is removed,
       // so we have a nice a clean directory where we can clone the repo
@@ -1579,7 +1627,10 @@ export class EnvironmentStore {
 
       // Remove all contents of absoluteDirPath (/var/publisher/asd123)
       // except for the cleanPackagePath directory (/var/publisher/asd123/imdb)
-      const packageFullPath = path.join(absoluteDirPath, cleanPackagePath);
+      const packageFullPath = safeJoinUnderRoot(
+         absoluteDirPath,
+         cleanPackagePath,
+      );
 
       // Check if the cleanPackagePath (/var/publisher/asd123/imdb) exists
       const packageExists = await fs.promises
@@ -1598,7 +1649,7 @@ export class EnvironmentStore {
       for (const entry of dirContents) {
          // Don't remove the cleanPackagePath directory itself (/var/publisher/asd123/imdb)
          if (entry !== cleanPackagePath.replace(/^\/+/, "").split("/")[0]) {
-            await fs.promises.rm(path.join(absoluteDirPath, entry), {
+            await fs.promises.rm(safeJoinUnderRoot(absoluteDirPath, entry), {
                recursive: true,
                force: true,
             });
@@ -1609,8 +1660,8 @@ export class EnvironmentStore {
       const packageContents = await fs.promises.readdir(packageFullPath);
       for (const entry of packageContents) {
          await fs.promises.rename(
-            path.join(packageFullPath, entry),
-            path.join(absoluteDirPath, entry),
+            safeJoinUnderRoot(packageFullPath, entry),
+            safeJoinUnderRoot(absoluteDirPath, entry),
          );
       }
 

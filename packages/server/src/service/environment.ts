@@ -176,6 +176,7 @@ export class Environment {
       environmentPath: string,
       connections: ApiConnection[],
    ): Promise<Environment> {
+      assertSafeEnvironmentPath(environmentPath);
       if (!(await fs.promises.stat(environmentPath))?.isDirectory()) {
          throw new EnvironmentNotFoundError(
             `Environment path ${environmentPath} not found`,
@@ -218,7 +219,7 @@ export class Environment {
       try {
          readme = (
             await fs.promises.readFile(
-               path.join(this.environmentPath, README_NAME),
+               safeJoinUnderRoot(this.environmentPath, README_NAME),
             )
          ).toString();
       } catch {

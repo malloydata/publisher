@@ -1,8 +1,9 @@
 import chokidar, { FSWatcher } from "chokidar";
 import { RequestHandler } from "express";
-import path from "path";
 import { components } from "../api";
+import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
+import { assertSafePackageName, safeJoinUnderRoot } from "../path_safety";
 import { EnvironmentStore } from "../service/environment_store";
 
 type StartWatchReq = components["schemas"]["StartWatchRequest"];
@@ -32,6 +33,14 @@ export class WatchModeController {
       res,
    ) => {
       const watchName = req.body.environmentName ?? "";
+      try {
+         assertSafePackageName(watchName);
+      } catch (error) {
+         logger.error(error);
+         const { status } = internalErrorToHttpError(error as Error);
+         res.status(status).json({ error: (error as Error).message });
+         return;
+      }
       const environmentManifest =
          await EnvironmentStore.reloadEnvironmentManifest(
             this.environmentStore.serverRootPath,
@@ -53,7 +62,7 @@ export class WatchModeController {
          return;
       }
 
-      this.watchingPath = path.join(
+      this.watchingPath = safeJoinUnderRoot(
          this.environmentStore.serverRootPath,
          watchName,
       );

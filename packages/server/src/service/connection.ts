@@ -22,10 +22,14 @@ import {
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
-import path from "path";
 import { components } from "../api";
 import { logAxiosError, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
+import {
+   assertSafeEnvironmentPath,
+   assertSafePackageName,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import {
    assembleEnvironmentConnections,
    CoreConnectionEntry,
@@ -814,7 +818,9 @@ export async function deleteDuckLakeConnectionFile(
    connectionName: string,
    environmentPath: string,
 ): Promise<void> {
-   const ducklakePath = path.join(
+   assertSafePackageName(connectionName);
+   assertSafeEnvironmentPath(environmentPath);
+   const ducklakePath = safeJoinUnderRoot(
       environmentPath,
       `${connectionName}_ducklake.duckdb`,
    );
