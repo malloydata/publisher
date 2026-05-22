@@ -723,6 +723,11 @@ paths:
       description: |
         Executes a SQL statement against the specified database connection and returns the results.
         The results include data, metadata, and execution information.
+
+        Rows returned are capped at PUBLISHER_MAX_QUERY_ROWS (default 100,000).
+        SELECT/WITH statements that would exceed the cap fail with HTTP 413;
+        non-SELECT statements (DDL, SHOW, DESCRIBE, EXPLAIN, multi-statement)
+        are passed through unchanged.
       parameters:
         - name: environmentName
           in: path
@@ -767,6 +772,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -883,6 +890,9 @@ paths:
 
         Executes a SQL statement against the specified database connection and returns the results.
         The query results include data, metadata, and execution information.
+
+        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the POST
+        sqlQuery endpoint.
       parameters:
         - name: environmentName
           in: path
@@ -919,6 +929,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1216,6 +1228,9 @@ paths:
       description: |
         Executes a SQL statement against the specified database connection,
         resolved in the context of the named package, and returns the results.
+
+        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the
+        environment-level sqlQuery endpoint.
       parameters:
         - name: environmentName
           in: path
@@ -1266,6 +1281,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -1392,6 +1409,9 @@ paths:
 
         Executes a SQL statement against the specified database connection,
         resolved in the context of the named package, and returns the results.
+
+        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the
+        environment-level sqlQuery endpoint.
       parameters:
         - name: environmentName
           in: path
@@ -1434,6 +1454,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -2466,6 +2488,16 @@ components:
     ServiceUnavailable:
       description: The service is temporarily unavailable, typically due to
         initialization, or draining state (Rolling updates, etc.)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: |
+        The request was well-formed but the response exceeds a server-side
+        size cap (e.g. an ad-hoc SQL query returned more rows than
+        PUBLISHER_MAX_QUERY_ROWS). Refine the query or raise the cap;
+        retrying without changes will not succeed.
       content:
         application/json:
           schema:

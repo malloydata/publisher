@@ -1,7 +1,12 @@
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
-import { BadRequestError, ConnectionError } from "../errors";
+import { getMaxQueryRows } from "../config";
+import {
+   BadRequestError,
+   ConnectionError,
+   PayloadTooLargeError,
+} from "../errors";
 import { logger } from "../logger";
 import { testConnectionConfig } from "../service/connection";
 import { validateDuckdbApiSurface } from "../service/connection_config";
@@ -12,6 +17,7 @@ import {
 } from "../service/db_utils";
 import type { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
+import { isCappableSelect, wrapWithRowLimit } from "../sql_helpers";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -458,15 +464,35 @@ export class ConnectionController {
          runSQLOptions.abortSignal = undefined;
       }
 
+      // Bound the response by rewriting SELECT/WITH statements to
+      // SELECT * FROM (<sql>) LIMIT (cap + 1). The +1 is a sentinel
+      // so we can tell "ran right up to the cap" from "would have
+      // overflowed". A cap of 0 disables the wrap entirely (used by
+      // operators who intend to rely solely on the Step 2 byte
+      // budget). Non-SELECT statements (DDL, SHOW, DESCRIBE, EXPLAIN,
+      // multi-statement) are passed through untouched, as wrapping
+      // them in a subquery is not valid SQL — those paths get their
+      // bound from Step 2 instead.
+      const maxRows = getMaxQueryRows();
+      const wrap = maxRows > 0 && isCappableSelect(sqlStatement);
+      const effectiveSql = wrap
+         ? wrapWithRowLimit(sqlStatement, maxRows + 1)
+         : sqlStatement;
+
+      let result;
       try {
-         return {
-            data: JSON.stringify(
-               await malloyConnection.runSQL(sqlStatement, runSQLOptions),
-            ),
-         };
+         result = await malloyConnection.runSQL(effectiveSql, runSQLOptions);
       } catch (error) {
          throw new ConnectionError((error as Error).message);
       }
+
+      if (wrap && result.rows.length > maxRows) {
+         throw new PayloadTooLargeError(
+            `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
+         );
+      }
+
+      return { data: JSON.stringify(result) };
    }
 
    public async getConnectionTemporaryTable(

@@ -1162,3 +1162,55 @@ describe("getMemoryGovernorConfig", () => {
       expect(() => getMemoryGovernorConfig()).toThrow();
    });
 });
+
+describe("getMaxQueryRows", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+   });
+
+   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is unset", async () => {
+      const { getMaxQueryRows } = await import("./config");
+      const { DEFAULT_MAX_QUERY_ROWS } = await import("./constants");
+      expect(getMaxQueryRows()).toBe(DEFAULT_MAX_QUERY_ROWS);
+   });
+
+   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is empty", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "";
+      const { getMaxQueryRows } = await import("./config");
+      const { DEFAULT_MAX_QUERY_ROWS } = await import("./constants");
+      expect(getMaxQueryRows()).toBe(DEFAULT_MAX_QUERY_ROWS);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "5000";
+      const { getMaxQueryRows } = await import("./config");
+      expect(getMaxQueryRows()).toBe(5000);
+   });
+
+   it("accepts 0 (used to opt out of row cap)", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      const { getMaxQueryRows } = await import("./config");
+      expect(getMaxQueryRows()).toBe(0);
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "-1";
+      const { getMaxQueryRows } = await import("./config");
+      expect(() => getMaxQueryRows()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "1.5";
+      const { getMaxQueryRows } = await import("./config");
+      expect(() => getMaxQueryRows()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "lots";
+      const { getMaxQueryRows } = await import("./config");
+      expect(() => getMaxQueryRows()).toThrow();
+   });
+});
