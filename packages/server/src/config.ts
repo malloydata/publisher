@@ -74,6 +74,7 @@ function resolvePublisherConfigPath(serverRoot: string): {
 type FilesystemPath = `./${string}` | `../${string}` | `/${string}`;
 type GcsPath = `gs://${string}`;
 type ApiConnection = components["schemas"]["Connection"];
+export type Theme = components["schemas"]["Theme"];
 
 export type Package = {
    name: string;
@@ -87,23 +88,27 @@ export type Connection = {
 
 export type Environment = {
    name: string;
+   theme?: Theme;
    packages: Package[];
    connections?: Connection[];
 };
 
 export type PublisherConfig = {
    frozenConfig: boolean;
+   theme?: Theme;
    environments: Environment[];
 };
 
 export type ProcessedEnvironment = {
    name: string;
+   theme?: Theme;
    packages: Package[];
    connections: ApiConnection[];
 };
 
 export type ProcessedPublisherConfig = {
    frozenConfig: boolean;
+   theme?: Theme;
    environments: ProcessedEnvironment[];
 };
 
@@ -488,11 +493,140 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       );
    }
 
+   const instanceTheme = sanitizeTheme(
+      processedConfig &&
+         typeof processedConfig === "object" &&
+         "theme" in processedConfig
+         ? (processedConfig as { theme: unknown }).theme
+         : undefined,
+      "publisher.config.json",
+   );
+
    return {
       frozenConfig,
+      ...(instanceTheme ? { theme: instanceTheme } : {}),
       environments,
    } as PublisherConfig;
 };
+
+/**
+ * Sanitize a raw theme value pulled from JSON. Returns a Theme on success
+ * or `undefined` if the input is missing/invalid. Bad shapes log a warning
+ * and are dropped rather than failing the whole config; an unthemed config
+ * still boots fine.
+ */
+export function sanitizeTheme(
+   raw: unknown,
+   context: string,
+): Theme | undefined {
+   if (raw === undefined || raw === null) return undefined;
+   if (typeof raw !== "object" || Array.isArray(raw)) {
+      logger.warn(
+         `Invalid "theme" in ${context}: expected an object. Ignoring.`,
+      );
+      return undefined;
+   }
+   const obj = raw as Record<string, unknown>;
+   const theme: Theme = {};
+
+   if ("defaultMode" in obj) {
+      const mode = obj.defaultMode;
+      if (mode === "light" || mode === "dark" || mode === "auto") {
+         theme.defaultMode = mode;
+      } else {
+         logger.warn(
+            `Invalid "theme.defaultMode" in ${context}: expected "light" | "dark" | "auto" (got ${JSON.stringify(mode)}). Ignoring field.`,
+         );
+      }
+   }
+   if ("allowUserToggle" in obj) {
+      theme.allowUserToggle = Boolean(obj.allowUserToggle);
+   }
+   if ("palette" in obj && obj.palette && typeof obj.palette === "object") {
+      const palette = obj.palette as Record<string, unknown>;
+      const sanitized: NonNullable<Theme["palette"]> = {};
+      if (Array.isArray(palette.series)) {
+         // Preserve an explicit empty array as a clear-the-palette signal;
+         // resolveTheme treats [] as a real override rather than "no value".
+         sanitized.series = palette.series.filter(
+            (c): c is string => typeof c === "string",
+         );
+      }
+      if (
+         palette.background &&
+         typeof palette.background === "object" &&
+         !Array.isArray(palette.background)
+      ) {
+         const bg = palette.background as Record<string, unknown>;
+         const out: NonNullable<NonNullable<Theme["palette"]>["background"]> =
+            {};
+         if (typeof bg.light === "string") out.light = bg.light;
+         if (typeof bg.dark === "string") out.dark = bg.dark;
+         if (Object.keys(out).length > 0) sanitized.background = out;
+      }
+      if (
+         palette.tableHeader &&
+         typeof palette.tableHeader === "object" &&
+         !Array.isArray(palette.tableHeader)
+      ) {
+         const th = palette.tableHeader as Record<string, unknown>;
+         const out: NonNullable<NonNullable<Theme["palette"]>["tableHeader"]> =
+            {};
+         if (typeof th.light === "string") out.light = th.light;
+         if (typeof th.dark === "string") out.dark = th.dark;
+         if (Object.keys(out).length > 0) sanitized.tableHeader = out;
+      }
+      if (Object.keys(sanitized).length > 0) theme.palette = sanitized;
+   }
+   if ("font" in obj && obj.font && typeof obj.font === "object") {
+      const font = obj.font as Record<string, unknown>;
+      const sanitized: NonNullable<Theme["font"]> = {};
+      if (typeof font.family === "string") sanitized.family = font.family;
+      if (typeof font.size === "number" && Number.isFinite(font.size)) {
+         sanitized.size = font.size;
+      }
+      if (Object.keys(sanitized).length > 0) theme.font = sanitized;
+   }
+
+   return Object.keys(theme).length > 0 ? theme : undefined;
+}
+
+/**
+ * Merge an environment-level theme on top of the instance default. Both
+ * inputs are already sanitized. The override wins per key at every level;
+ * absent keys fall through to the base. Returns `undefined` only when both
+ * sides are absent.
+ */
+export function mergeThemes(
+   base: Theme | undefined,
+   override: Theme | undefined,
+): Theme | undefined {
+   if (!base) return override;
+   if (!override) return base;
+   const merged: Theme = { ...base, ...override };
+   if (base.palette || override.palette) {
+      merged.palette = {
+         ...(base.palette ?? {}),
+         ...(override.palette ?? {}),
+      };
+      if (base.palette?.background || override.palette?.background) {
+         merged.palette.background = {
+            ...(base.palette?.background ?? {}),
+            ...(override.palette?.background ?? {}),
+         };
+      }
+      if (base.palette?.tableHeader || override.palette?.tableHeader) {
+         merged.palette.tableHeader = {
+            ...(base.palette?.tableHeader ?? {}),
+            ...(override.palette?.tableHeader ?? {}),
+         };
+      }
+   }
+   if (base.font || override.font) {
+      merged.font = { ...(base.font ?? {}), ...(override.font ?? {}) };
+   }
+   return merged;
+}
 
 export const isPublisherConfigFrozen = (serverRoot: string) => {
    try {
@@ -637,17 +771,42 @@ export const getProcessedPublisherConfig = (
          continue;
       }
 
+      const envTheme = sanitizeTheme(
+         (environment as { theme?: unknown }).theme,
+         `environment "${environment.name}"`,
+      );
+      const resolvedTheme = mergeThemes(rawConfig.theme, envTheme);
+
       validEnvironments.push({
          name: environment.name,
          packages: validPackages,
          connections: convertConnectionsToApiConnections(
             environment.connections || [],
          ),
+         ...(resolvedTheme ? { theme: resolvedTheme } : {}),
       });
    }
 
    return {
       frozenConfig: rawConfig.frozenConfig ?? false,
+      ...(rawConfig.theme ? { theme: rawConfig.theme } : {}),
       environments: validEnvironments,
    };
+};
+
+/**
+ * Convenience accessor for the instance-wide default theme. Used by
+ * ServerStatus so the app shell can apply the operator's chosen theme
+ * before the viewer has navigated into any specific environment.
+ */
+export const getInstanceTheme = (serverRoot: string): Theme | undefined => {
+   try {
+      return getPublisherConfig(serverRoot).theme;
+   } catch (error) {
+      logger.error(
+         `Error reading instance theme from ${PUBLISHER_CONFIG_NAME}`,
+         { error },
+      );
+      return undefined;
+   }
 };

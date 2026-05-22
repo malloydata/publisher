@@ -10,7 +10,11 @@ import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider } from "@mui/material/styles";
 import * as React from "react";
 import { Suspense, useMemo } from "react";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import {
+   createBrowserRouter,
+   Navigate,
+   RouterProvider,
+} from "react-router-dom";
 import { HeaderProps } from "./components/layout/Header/Header";
 import theme from "./theme";
 
@@ -40,6 +44,9 @@ const RouteError = React.lazy(
 const WorkbookPage = React.lazy(
    () => import("./components/pages/WorkbookPage/WorkbookPage"),
 );
+const ThemeEditorPage = React.lazy(
+   () => import("./components/pages/ThemeEditorPage/ThemeEditorPage"),
+);
 
 export const createMalloyRouter = (
    basePath: string = "/",
@@ -66,6 +73,20 @@ export const createMalloyRouter = (
             {
                index: true,
                element: <HomePage />,
+            },
+            {
+               // Literal-prefix route, must come before the catch-all
+               // :environmentName segment so "settings" isn't read as an
+               // environment name.
+               path: "settings/theme",
+               element: <ThemeEditorPage />,
+            },
+            {
+               // Bare /settings has no page of its own; redirect to the
+               // theme editor instead of letting the URL fall through to
+               // the :environmentName loader and 404.
+               path: "settings",
+               element: <Navigate to="/settings/theme" replace />,
             },
             {
                path: ":environmentName",

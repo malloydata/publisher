@@ -7,27 +7,28 @@ export async function initializeSchema(
 ): Promise<void> {
    const initialized = await db.isInitialized();
 
-   if (initialized && !force) {
-      return;
-   }
-
    if (force) {
       logger.info(
          "Reinitializing database schema dropping and recreating all tables",
       );
       await dropAllTables(db);
-   } else {
+   } else if (!initialized) {
       // TODO: Remove this during projects cleanup
       // If a pre-rename `projects` schema is on disk, the new
       // CREATE TABLE IF NOT EXISTS pass below would silently leave child
       // tables on the old `project_id` column and the first query against
       // `environment_id` would crash. Drop the legacy tables (with a loud
       // warning) so the fresh schema can be created cleanly. This is
-      // destructive — operators upgrading should re-create their environments
+      // destructive: operators upgrading should re-create their environments
       // and packages via the API after the upgrade.
       await dropLegacyProjectSchema(db);
       logger.info("Creating database schema for the first time...");
    }
+   // Always fall through to the CREATE TABLE IF NOT EXISTS pass below.
+   // The statements are idempotent and let an already-initialized DB pick
+   // up new tables added in later builds (e.g., the `themes` table for
+   // the in-app Theme Editor) without forcing operators to run --init
+   // and lose their existing environments / packages / materializations.
 
    // Environments table
    await db.run(`
@@ -116,6 +117,25 @@ export async function initializeSchema(
     )
   `);
 
+   // Themes table.
+   //
+   // Singleton storage for the instance-wide theme edited by the in-app
+   // Theme Editor. At most one row (id = "default"); we use INSERT ON
+   // CONFLICT to keep the table effectively a key/value cell.
+   //
+   // publisher.config.json's optional `theme` block is a BOOT SEED only —
+   // on first run, if this table is empty, ThemeStore writes the seed
+   // here. Subsequent reads come from this table so the editor's saves
+   // win over the file.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS themes (
+      id VARCHAR PRIMARY KEY,
+      payload JSON NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    )
+  `);
+
    // Create indexes for better query performance
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_packages_environment_id ON packages(environment_id)",
@@ -173,6 +193,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "packages",
       "connections",
       "environments",
+      "themes",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

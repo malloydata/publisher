@@ -4,6 +4,7 @@ import CodeOutlinedIcon from "@mui/icons-material/CodeOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import PaletteOutlinedIcon from "@mui/icons-material/PaletteOutlined";
 import SidebarToggleIcon from "./SidebarToggleIcon";
 import {
    Box,
@@ -57,6 +58,7 @@ export default function Sidebar({
          <Box sx={{ flex: 1, overflowY: "auto", overflowX: "hidden", py: 1 }}>
             <PrimaryNav isCollapsed={isCollapsed} />
             <EnvironmentsSection isCollapsed={isCollapsed} />
+            <SettingsSection isCollapsed={isCollapsed} />
          </Box>
          <DocsFooter isCollapsed={isCollapsed} />
       </Box>
@@ -220,6 +222,42 @@ function EnvironmentsSection({ isCollapsed }: { isCollapsed: boolean }) {
                   />
                );
             })}
+         </List>
+      </Box>
+   );
+}
+
+function SettingsSection({ isCollapsed }: { isCollapsed: boolean }) {
+   const location = useLocation();
+   const isThemeRoute = location.pathname.startsWith("/settings/theme");
+
+   return (
+      <Box sx={{ mt: 1 }}>
+         {!isCollapsed && (
+            <Typography
+               variant="caption"
+               sx={{
+                  display: "block",
+                  px: 3,
+                  py: 1,
+                  color: "text.secondary",
+                  fontWeight: 500,
+                  textTransform: "uppercase",
+                  fontSize: "0.6875rem",
+                  letterSpacing: "0.5px",
+               }}
+            >
+               Settings
+            </Typography>
+         )}
+         <List sx={{ py: 0 }}>
+            <SidebarItem
+               icon={<PaletteOutlinedIcon fontSize="small" />}
+               label="Theme"
+               to="/settings/theme"
+               selected={isThemeRoute}
+               isCollapsed={isCollapsed}
+            />
          </List>
       </Box>
    );

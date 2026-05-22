@@ -1,13 +1,6 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import axios from "axios";
-import React, {
-   createContext,
-   ReactNode,
-   useContext,
-   useEffect,
-   useMemo,
-   useState,
-} from "react";
+import React, { createContext, ReactNode, useContext, useMemo } from "react";
 import {
    ConnectionsApi,
    DatabasesApi,
@@ -19,6 +12,8 @@ import {
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
+import { ThemeProvider } from "../theme/ThemeContext";
+import type { Theme } from "../theme/types";
 import { globalQueryClient } from "../utils/queryClient";
 
 // There's a bug in the OpenAPI generator that causes it to ignore baseURL in
@@ -35,6 +30,12 @@ export interface ServerContextValue {
    apiClients: ApiClients;
    mutable: boolean;
    isLoadingStatus: boolean;
+   /**
+    * Instance-wide default theme, pulled from the `/api/v0/status` response.
+    * `undefined` while loading, or when the operator has not configured a
+    * theme in `publisher.config.json`.
+    */
+   instanceTheme?: Theme;
 }
 
 const ServerContext = createContext<ServerContextValue | undefined>(undefined);
@@ -94,7 +95,20 @@ const getApiClients = (
 
 export type ApiClients = ReturnType<typeof getApiClients>;
 
-export const ServerProvider: React.FC<ServerProviderProps> = ({
+/**
+ * Outer wrapper that owns the QueryClient. The inner component runs
+ * react-query hooks for /status, so it has to live below the
+ * QueryClientProvider.
+ */
+export const ServerProvider: React.FC<ServerProviderProps> = (props) => {
+   return (
+      <QueryClientProvider client={globalQueryClient}>
+         <ServerProviderInner {...props} />
+      </QueryClientProvider>
+   );
+};
+
+const ServerProviderInner: React.FC<ServerProviderProps> = ({
    children,
    getAccessToken,
    baseURL,
@@ -108,48 +122,44 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
    const server =
       baseURL || `${window.location.protocol}//${window.location.host}/api/v0`;
 
-   const [mutable, setMutable] = useState(mutableProp);
-   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
+   // Fetch /status via react-query so callers like the Theme Editor can
+   // invalidate the "status" key after a write and pick up the new
+   // instanceTheme without a full page reload.
+   const statusQuery = useQuery({
+      queryKey: ["status"],
+      queryFn: async () => {
+         const response = await apiClients.publisher.getStatus();
+         return response.data as {
+            frozenConfig?: boolean;
+            theme?: Theme;
+         };
+      },
+   });
 
-   // Fetch status on mount
-   useEffect(() => {
-      let isMounted = true;
+   if (statusQuery.error) {
+      console.error("Failed to fetch publisher status:", statusQuery.error);
+   }
 
-      const fetchStatus = async () => {
-         try {
-            const response = await apiClients.publisher.getStatus();
+   const frozenConfig = statusQuery.data?.frozenConfig;
+   const instanceTheme = statusQuery.data?.theme;
+   const isLoadingStatus = statusQuery.isLoading;
 
-            if (isMounted) {
-               const data = response.data as { frozenConfig?: boolean };
-               const frozenConfig = data?.frozenConfig;
-               let finalMutable: boolean;
-               if (frozenConfig) {
-                  finalMutable = false;
-               } else {
-                  if (mutableProp === undefined) {
-                     finalMutable = true;
-                  } else {
-                     finalMutable = mutableProp;
-                  }
-               }
-               setMutable(finalMutable);
-               setIsLoadingStatus(false);
-            }
-         } catch (error) {
-            console.error("Failed to fetch publisher status:", error);
-            if (isMounted) {
-               setMutable(mutableProp);
-               setIsLoadingStatus(false);
-            }
-         }
-      };
+   // Preserve original semantics: while loading or on error, mirror the
+   // mutableProp the caller passed in (which itself may be undefined).
+   // Once /status arrives, frozenConfig forces read-only; otherwise the
+   // explicit prop wins, with a default of true.
+   let mutable: boolean | undefined;
+   if (statusQuery.isLoading || statusQuery.error) {
+      mutable = mutableProp;
+   } else if (frozenConfig) {
+      mutable = false;
+   } else {
+      mutable = mutableProp ?? true;
+   }
 
-      fetchStatus();
-
-      return () => {
-         isMounted = false;
-      };
-   }, [apiClients, mutableProp]);
+   // Stable layers reference so ThemeProvider's useMemo doesn't reshuffle
+   // on every render when instanceTheme is unchanged.
+   const themeLayers = useMemo(() => [instanceTheme], [instanceTheme]);
 
    const value: ServerContextValue = {
       server,
@@ -157,16 +167,25 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
       apiClients,
       mutable,
       isLoadingStatus,
+      instanceTheme,
    };
 
    return (
-      <QueryClientProvider client={globalQueryClient}>
-         <ServerContext.Provider value={value}>
+      <ServerContext.Provider value={value}>
+         <ThemeProvider
+            layers={themeLayers}
+            mode="light"
+            userChoice={undefined}
+            setMode={NOOP_SET_MODE}
+            allowUserToggle={false}
+         >
             {children}
-         </ServerContext.Provider>
-      </QueryClientProvider>
+         </ThemeProvider>
+      </ServerContext.Provider>
    );
 };
+
+const NOOP_SET_MODE = () => {};
 
 export const useServer = (): ServerContextValue => {
    const context = useContext(ServerContext);

@@ -73,6 +73,7 @@
       "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
       "@malloydata/malloy-interfaces": "^0.0.394",
       "@malloydata/malloy-query-builder": "^0.0.394",
+      "@malloydata/malloy-tag": "^0.0.383",
       "@malloydata/render": "^0.0.394",
       "@mui/icons-material": ">=7.1.1",
       "@mui/x-date-pickers": ">=7.1.1",
@@ -92,6 +93,7 @@
    "devDependencies": {
       "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
       "@malloydata/malloy-query-builder": "^0.0.394",
+      "@malloydata/malloy-tag": "^0.0.383",
       "@openapitools/openapi-generator-cli": "^2.20.2",
       "@types/bun": "^1.2.21",
       "@types/k6": "^1.0.2",
