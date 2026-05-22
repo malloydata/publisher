@@ -25,8 +25,11 @@ import { TypographySection } from "./sections/TypographySection";
 const AUTO_SAVE_DELAY_MS = 600;
 
 /**
- * Settings → Theme. Operator picks colors / fonts that apply to every
- * viewer of this Publisher instance. Auto-saves on debounced edit.
+ * Settings → Visualization theme. Operator picks colors / fonts for
+ * the Malloy renderer's output (charts, tables, dashboards) that apply
+ * to every viewer of this Publisher instance. Distinct from the app
+ * shell light/dark toggle in the header, which controls the MUI
+ * palette. Auto-saves on debounced edit.
  */
 export default function ThemeEditorPage() {
    const { apiClients } = useServer();
@@ -175,10 +178,11 @@ export default function ThemeEditorPage() {
          >
             <Box>
                <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
-                  Theme
+                  Visualization theme
                </Typography>
                <Typography variant="body2" color="text.secondary">
-                  Pick colors and fonts for the Malloy renderer. Changes save
+                  Pick colors and fonts for charts, tables, and dashboards. The
+                  app shell light/dark toggle lives in the header. Changes save
                   automatically and apply to every viewer on next page load.
                </Typography>
             </Box>

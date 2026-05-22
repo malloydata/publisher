@@ -253,7 +253,7 @@ function SettingsSection({ isCollapsed }: { isCollapsed: boolean }) {
          <List sx={{ py: 0 }}>
             <SidebarItem
                icon={<PaletteOutlinedIcon fontSize="small" />}
-               label="Theme"
+               label="Visualization theme"
                to="/settings/theme"
                selected={isThemeRoute}
                isCollapsed={isCollapsed}
