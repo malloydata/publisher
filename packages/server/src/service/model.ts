@@ -717,7 +717,6 @@ export class Model {
       const notebookCells: ApiNotebookCell[] = (
          this.runnableNotebookCells as RunnableNotebookCell[]
       ).map((cell) => {
-         logger.debug("cell.queryInfo", cell.queryInfo);
          return {
             type: cell.type,
             text: cell.text,
@@ -887,7 +886,6 @@ export class Model {
             } else {
                logger.error("Error message: ", errorMessage);
             }
-            logger.debug("Cell content: ", cellIndex, cell.type, cell.text);
             throw new BadRequestError(`Cell execution failed: ${errorMessage}`);
          }
       }
