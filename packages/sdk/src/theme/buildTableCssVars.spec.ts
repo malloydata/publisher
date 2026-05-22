@@ -10,13 +10,16 @@ describe("buildTableCssVars", () => {
       }
    });
 
-   it("includes header, body, border, pinned background, label, value", () => {
+   it("includes header, body, border, tile, label, value", () => {
       const t = resolveTheme([], "light");
       const vars = buildTableCssVars(t);
       expect(vars["--malloy-render--table-header-color"]).toBe(t.tableHeader);
       expect(vars["--malloy-render--table-body-color"]).toBe(t.tableBody);
       expect(vars["--malloy-render--table-border"]).toBe(t.border);
-      expect(vars["--malloy-render--table-pinned-background"]).toBe(t.tile);
+      // `tile-background` is our custom var for the dashboard tile
+      // container. It's NOT the renderer's `table-pinned-background`
+      // (which now carries `tableHeaderBackground` via the theme prop).
+      expect(vars["--malloy-render--tile-background"]).toBe(t.tile);
       expect(vars["--malloy-render--label-color"]).toBe(t.tileTitle);
       expect(vars["--malloy-render--value-color"]).toBe(t.valueColor);
    });
@@ -31,11 +34,11 @@ describe("buildTableCssVars", () => {
       expect(vars["--malloy-render--table-background"]).toBeUndefined();
    });
 
-   it("flips body color and pinned background in dark mode", () => {
+   it("flips body color and tile background in dark mode", () => {
       const dark = resolveTheme([], "dark");
       const vars = buildTableCssVars(dark);
       expect(vars["--malloy-render--table-body-color"]).toBe("#e2e8f0");
-      expect(vars["--malloy-render--table-pinned-background"]).toBe("#0f172a");
+      expect(vars["--malloy-render--tile-background"]).toBe("#0f172a");
    });
 
    it("honors a custom font size from the theme", () => {

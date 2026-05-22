@@ -13,6 +13,7 @@
 export const PER_MODE_COLOR_KEYS = [
    "background",
    "tableHeader",
+   "tableHeaderBackground",
    "tableBody",
    "tile",
    "tileTitle",

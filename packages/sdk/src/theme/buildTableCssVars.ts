@@ -32,8 +32,15 @@ export function buildTableCssVars(
       "--malloy-render--table-header-color": theme.tableHeader,
       "--malloy-render--table-body-color": theme.tableBody,
       "--malloy-render--table-border": theme.border,
-      "--malloy-render--table-pinned-background": theme.tile,
       "--malloy-render--table-pinned-border": theme.pinnedBorder,
+      // Custom var (not used by the renderer's own CSS). Drives the
+      // dashboard tile container background via our
+      // injectRendererOverrides rule on `.dashboard-item`. Kept
+      // separate from `--malloy-render--table-pinned-background`
+      // (which is the renderer's own var for the table header band)
+      // so the operator can theme the tile padding and the table
+      // header row independently.
+      "--malloy-render--tile-background": theme.tile,
       // Drives the dashboard tile title (e.g. "by_month" above a chart)
       // and the dimension-name text via injectRendererOverrides.
       "--malloy-render--label-color": theme.tileTitle,

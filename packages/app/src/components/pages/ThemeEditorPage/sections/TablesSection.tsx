@@ -14,14 +14,23 @@ interface TablesSectionProps {
    mode: ThemeMode;
 }
 
-type PerModeKey = "tableHeader" | "tableBody" | "tile" | "tileTitle";
+type PerModeKey =
+   | "tableHeader"
+   | "tableHeaderBackground"
+   | "tableBody"
+   | "tile"
+   | "tileTitle";
 
 /**
- * Edits the per-mode table tokens: header color, body text color, the
- * dashboard tile (padded container) background, and the tile title text
- * color. All four are stored as { light, dark } variants on the Theme
- * and the active variant is chosen by the editor-level Light/Dark
- * toggle (passed in via `mode`).
+ * Edits the per-mode table tokens: header text, header background, body
+ * text, the dashboard tile (padding around the table), and the tile
+ * title text. All are stored as { light, dark } variants on the Theme;
+ * the active variant is chosen by the editor-level Light/Dark toggle.
+ *
+ * Header background and tile background are separate because the
+ * operator's mental model is "the padding around the table" (tile) vs
+ * "the band at the top of the table" (header background) — even
+ * though the renderer historically reused one value for both.
  */
 export function TablesSection({
    theme,
@@ -51,6 +60,7 @@ export function TablesSection({
    };
 
    const headerColor = valueFor("tableHeader");
+   const headerBackground = valueFor("tableHeaderBackground");
    const bodyColor = valueFor("tableBody");
    const tile = valueFor("tile");
    const tileTitle = valueFor("tileTitle");
@@ -68,18 +78,25 @@ export function TablesSection({
             <TablePreview
                background={resolved.background}
                headerColor={headerColor}
+               headerBackground={headerBackground}
                bodyColor={bodyColor}
                border={resolved.border}
-               pinnedBackground={tile}
+               tileBackground={tile}
                fontFamily={resolved.font.family}
                fontSize={resolved.font.size}
             />
          </Box>
          <Stack spacing={2}>
             <ColorPickerField
-               label="Header color"
+               label="Header text color"
                value={headerColor}
                onChange={setColor("tableHeader")}
+               disabled={disabled}
+            />
+            <ColorPickerField
+               label="Header background"
+               value={headerBackground}
+               onChange={setColor("tableHeaderBackground")}
                disabled={disabled}
             />
             <ColorPickerField
@@ -89,7 +106,7 @@ export function TablesSection({
                disabled={disabled}
             />
             <ColorPickerField
-               label="Tile background"
+               label="Tile background (around the table)"
                value={tile}
                onChange={setColor("tile")}
                disabled={disabled}

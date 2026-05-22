@@ -32,6 +32,9 @@ export function resolveTheme(
    const perMode: Record<PerModeColorKey, { light?: string; dark?: string }> = {
       background: { ...(defaultPalette.background ?? {}) },
       tableHeader: { ...(defaultPalette.tableHeader ?? {}) },
+      tableHeaderBackground: {
+         ...(defaultPalette.tableHeaderBackground ?? {}),
+      },
       tableBody: { ...(defaultPalette.tableBody ?? {}) },
       tile: { ...(defaultPalette.tile ?? {}) },
       tileTitle: { ...(defaultPalette.tileTitle ?? {}) },
@@ -67,6 +70,7 @@ export function resolveTheme(
       font: { family: fontFamily, size: fontSize },
       background,
       tableHeader: pick("tableHeader"),
+      tableHeaderBackground: pick("tableHeaderBackground"),
       tableBody: pick("tableBody"),
       tile: pick("tile"),
       tileTitle: pick("tileTitle"),

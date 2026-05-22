@@ -2588,6 +2588,17 @@ components:
                   type: string
                 dark:
                   type: string
+            tableHeaderBackground:
+              type: object
+              description: Background color for the table header row, per mode.
+                Distinct from `tile` (the dashboard tile container that wraps
+                each chart / table) so operators can theme the header band
+                independently from the padding around the table.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
             tableBody:
               type: object
               description: Foreground color for table body cells per mode.

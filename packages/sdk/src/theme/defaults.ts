@@ -36,6 +36,13 @@ export const DEFAULT_THEME: Required<Theme> = {
          light: "#5d626b",
          dark: "#cbd5e1",
       },
+      // Background of the table header row, independent of the
+      // tile (dashboard tile container) so the operator can theme
+      // the header band on its own.
+      tableHeaderBackground: {
+         light: "#f5fafc",
+         dark: "#1e293b",
+      },
       tableBody: {
          light: "#727883",
          dark: "#e2e8f0",

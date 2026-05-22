@@ -28,6 +28,7 @@ export interface ResolvedTheme {
 
    background: string;
    tableHeader: string;
+   tableHeaderBackground: string;
    tableBody: string;
    tile: string;
    tileTitle: string;

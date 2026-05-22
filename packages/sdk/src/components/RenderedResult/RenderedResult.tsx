@@ -164,13 +164,24 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    background-color: var(--malloy-render--background) !important;
 }
 .malloy-render .malloy-dashboard .dashboard-item {
-   background: var(--malloy-render--table-pinned-background) !important;
+   /* Tile padding around each chart / table. Uses our custom
+      --malloy-render--tile-background so the operator can theme the
+      tile separately from the table header row (which paints from
+      --malloy-render--table-pinned-background below). */
+   background: var(--malloy-render--tile-background) !important;
    color: var(--malloy-render--table-body-color) !important;
    box-shadow: none !important;
    border: var(--malloy-render--table-border) !important;
 }
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;
+}
+.malloy-render .malloy-table .th.column-cell {
+   /* Non-pinned tables have no header background in the renderer's
+      own CSS (only pinned scrolled tables paint the pinned-header
+      with this var). Force the same value here so every table has a
+      visible header band reflecting the operator's choice. */
+   background: var(--malloy-render--table-pinned-background) !important;
 }
 .malloy-render .dashboard-item-title,
 .malloy-render .dashboard-dimension-name {

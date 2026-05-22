@@ -1,19 +1,25 @@
 import { Box } from "@mui/material";
 
 interface TablePreviewProps {
+   /** Table interior background (cells body). */
    background: string;
+   /** Header text color. */
    headerColor: string;
+   /** Header row background (the band at the top of the table). */
+   headerBackground: string;
+   /** Body cell text color. */
    bodyColor: string;
    border: string;
-   pinnedBackground: string;
+   /** Padding/wrapper around the table (the dashboard tile colour). */
+   tileBackground: string;
    fontFamily: string;
    fontSize: number;
 }
 
 /**
  * Static 4-column 3-row sample table that paints with the editor's draft
- * table tokens. Mirrors the renderer's `.malloy-table` structure in
- * spirit (header band + body cells) without depending on a real result.
+ * table tokens. Mirrors the actual rendered structure: a tile wrapper
+ * (padding) surrounds an inner table with its own header band.
  */
 export function TablePreview(props: TablePreviewProps) {
    const cells = [
@@ -26,53 +32,63 @@ export function TablePreview(props: TablePreviewProps) {
    return (
       <Box
          sx={{
-            backgroundColor: props.background,
-            borderRadius: 1,
-            border: props.border,
-            fontFamily: props.fontFamily,
-            fontSize: props.fontSize,
-            color: props.bodyColor,
-            overflow: "hidden",
+            // Outer wrapper paints the tile colour around the table to
+            // mirror what the operator sees on the actual package page.
+            backgroundColor: props.tileBackground,
+            padding: 1.5,
+            borderRadius: 1.5,
             display: "inline-block",
          }}
          aria-label="Table preview"
       >
          <Box
             sx={{
-               display: "grid",
-               gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+               backgroundColor: props.background,
+               borderRadius: 1,
+               border: props.border,
+               fontFamily: props.fontFamily,
+               fontSize: props.fontSize,
+               color: props.bodyColor,
+               overflow: "hidden",
             }}
          >
-            {headers.map((h) => (
-               <Box
-                  key={h}
-                  sx={{
-                     backgroundColor: props.pinnedBackground,
-                     color: props.headerColor,
-                     fontWeight: 600,
-                     px: 1.5,
-                     py: 1,
-                     borderBottom: props.border,
-                  }}
-               >
-                  {h}
-               </Box>
-            ))}
-            {cells.flatMap((row, rIdx) =>
-               row.map((cell, cIdx) => (
+            <Box
+               sx={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+               }}
+            >
+               {headers.map((h) => (
                   <Box
-                     key={`${rIdx}-${cIdx}`}
+                     key={h}
                      sx={{
+                        backgroundColor: props.headerBackground,
+                        color: props.headerColor,
+                        fontWeight: 600,
                         px: 1.5,
                         py: 1,
-                        borderBottom:
-                           rIdx < cells.length - 1 ? props.border : "none",
+                        borderBottom: props.border,
                      }}
                   >
-                     {cell}
+                     {h}
                   </Box>
-               )),
-            )}
+               ))}
+               {cells.flatMap((row, rIdx) =>
+                  row.map((cell, cIdx) => (
+                     <Box
+                        key={`${rIdx}-${cIdx}`}
+                        sx={{
+                           px: 1.5,
+                           py: 1,
+                           borderBottom:
+                              rIdx < cells.length - 1 ? props.border : "none",
+                        }}
+                     >
+                        {cell}
+                     </Box>
+                  )),
+               )}
+            </Box>
          </Box>
       </Box>
    );
