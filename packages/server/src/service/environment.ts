@@ -236,7 +236,10 @@ export class Environment {
       logger.info(
          `Loaded ${malloyConfig.apiConnections.length} connections for environment ${environmentName}`,
          {
-            apiConnections: malloyConfig.apiConnections,
+            connections: malloyConfig.apiConnections.map((c) => ({
+               name: c.name,
+               type: c.type,
+            })),
          },
       );
 
@@ -776,7 +779,6 @@ export class Environment {
          `Adding package ${packageName} to environment ${this.environmentName}`,
          {
             packagePath,
-            malloyConfig: this.malloyConfig.malloyConfig,
          },
       );
 
@@ -842,6 +844,12 @@ export class Environment {
       const stagingPath = this.allocateStagingPath(packageName);
       await fs.promises.mkdir(path.dirname(stagingPath), { recursive: true });
 
+      logger.debug("install.phase1.download.started", {
+         environmentName: this.environmentName,
+         packageName,
+         stagingPath,
+      });
+      const downloadStartedAt = performance.now();
       try {
          await downloader(stagingPath);
       } catch (err) {
@@ -850,8 +858,17 @@ export class Environment {
             .catch(() => {});
          throw err;
       }
+      logger.debug("install.phase1.download.completed", {
+         environmentName: this.environmentName,
+         packageName,
+         durationMs: performance.now() - downloadStartedAt,
+      });
 
       return this.withPackageLock(packageName, async () => {
+         logger.debug("install.phase2.swap.started", {
+            environmentName: this.environmentName,
+            packageName,
+         });
          const canonicalPath = safeJoinUnderRoot(
             this.environmentPath,
             packageName,
@@ -870,6 +887,11 @@ export class Environment {
                recursive: true,
             });
             await fs.promises.rename(canonicalPath, retiredPath);
+            logger.debug("install.phase2.retired_old", {
+               environmentName: this.environmentName,
+               packageName,
+               retiredPath,
+            });
          }
 
          let newPackage: Package;
@@ -883,6 +905,11 @@ export class Environment {
                canonicalPath,
                () => this.malloyConfig.malloyConfig,
             );
+            logger.debug("install.phase2.committed", {
+               environmentName: this.environmentName,
+               packageName,
+               canonicalPath,
+            });
          } catch (err) {
             // Rollback: clobber whatever (partial) content sits at canonical
             // — Package.create's own failure-cleanup may have already rm'd
@@ -894,9 +921,11 @@ export class Environment {
             await fs.promises
                .rm(canonicalPath, { recursive: true, force: true })
                .catch(() => {});
+            let restored = false;
             if (retiredPath) {
                try {
                   await fs.promises.rename(retiredPath, canonicalPath);
+                  restored = true;
                } catch (restoreErr) {
                   logger.error(
                      "Failed to restore retired package after install rollback",
@@ -912,6 +941,12 @@ export class Environment {
                .rm(stagingPath, { recursive: true, force: true })
                .catch(() => {});
             this.deletePackageStatus(packageName);
+            logger.debug("install.phase2.rollback", {
+               environmentName: this.environmentName,
+               packageName,
+               restored,
+               errorName: err instanceof Error ? err.name : "Unknown",
+            });
             throw err;
          }
 
@@ -927,6 +962,11 @@ export class Environment {
          if (retiredPath) {
             const pathToClean = retiredPath;
             setImmediate(() => {
+               logger.debug("install.phase3.retired_cleanup", {
+                  environmentName: this.environmentName,
+                  packageName,
+                  retiredPath: pathToClean,
+               });
                void fs.promises
                   .rm(pathToClean, { recursive: true, force: true })
                   .catch((err) => {
