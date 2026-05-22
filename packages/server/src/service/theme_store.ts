@@ -1,5 +1,5 @@
 import { Mutex } from "async-mutex";
-import { getInstanceTheme, Theme } from "../config";
+import { getInstanceTheme, sanitizeTheme, Theme } from "../config";
 import { logger } from "../logger";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
 import { StorageManager } from "../storage/StorageManager";
@@ -16,6 +16,11 @@ const THEME_ROW_ID = "default";
  * remains the boot seed only. This mirrors how environments + packages
  * are handled — the JSON config is the seed; runtime mutations live in
  * the DB and survive across restarts.
+ *
+ * Every payload read out of the DB is run through `sanitizeTheme` so a
+ * schema change can't put a stale shape in front of the editor (e.g.
+ * old per-mode `series` arrays after the simplification revert). The
+ * editor receives only fields that match the current type.
  *
  * Single in-process consumer; a Mutex serializes set / reset against
  * concurrent reads to avoid the cache + DB diverging.
@@ -42,29 +47,7 @@ export class ThemeStore {
     */
    async initialize(): Promise<void> {
       await this.mutex.runExclusive(async () => {
-         if (this.cacheLoaded) return;
-         const row = await this.db.get<{ payload: string }>(
-            "SELECT payload FROM themes WHERE id = ?",
-            [THEME_ROW_ID],
-         );
-         if (row?.payload) {
-            try {
-               this.cached = JSON.parse(row.payload) as Theme;
-            } catch (error) {
-               logger.warn(
-                  "ThemeStore: stored theme JSON is unparseable; treating as empty",
-                  { error },
-               );
-               this.cached = undefined;
-            }
-         } else {
-            const seed = getInstanceTheme(this.serverRoot);
-            if (seed) {
-               this.cached = seed;
-               await this.persistLocked(seed);
-            }
-         }
-         this.cacheLoaded = true;
+         await this.loadLocked();
       });
    }
 
@@ -92,30 +75,39 @@ export class ThemeStore {
       return this.mutex.runExclusive(async () => {
          await this.db.run("DELETE FROM themes WHERE id = ?", [THEME_ROW_ID]);
          this.cached = undefined;
-         // Re-run the seed-from-file path so the cache reflects whatever
-         // the boot-seed currently is (or stays undefined if none).
          this.cacheLoaded = false;
-         await this.initializeLocked();
+         await this.loadLocked();
          return this.cached;
       });
    }
 
-   private async initializeLocked(): Promise<void> {
+   /**
+    * Single source of truth for loading the cache. Must be called with
+    * the mutex held. Idempotent: returns immediately if already loaded.
+    */
+   private async loadLocked(): Promise<void> {
       if (this.cacheLoaded) return;
       const row = await this.db.get<{ payload: string }>(
          "SELECT payload FROM themes WHERE id = ?",
          [THEME_ROW_ID],
       );
       if (row?.payload) {
+         let parsed: unknown;
          try {
-            this.cached = JSON.parse(row.payload) as Theme;
+            parsed = JSON.parse(row.payload);
          } catch (error) {
             logger.warn(
                "ThemeStore: stored theme JSON is unparseable; treating as empty",
                { error },
             );
-            this.cached = undefined;
+            this.cacheLoaded = true;
+            return;
          }
+         // Run through sanitizeTheme so stale schema shapes (e.g. an
+         // old per-mode `series` object) get dropped before the editor
+         // ever sees them. Operators can keep editing without hitting
+         // Reset; fields that match the current shape survive.
+         this.cached = sanitizeTheme(parsed, "ThemeStore.load");
       } else {
          const seed = getInstanceTheme(this.serverRoot);
          if (seed) {

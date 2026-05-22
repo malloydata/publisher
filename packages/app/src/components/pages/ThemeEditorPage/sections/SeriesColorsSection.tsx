@@ -45,7 +45,13 @@ export function SeriesColorsSection({
    mode,
 }: SeriesColorsSectionProps) {
    const resolved = resolveTheme([theme], mode);
-   const series = theme.palette?.series ?? resolved.series;
+   // Defensive: if a stale schema shape sneaked past the server-side
+   // sanitiser (e.g. an old per-mode `series` object from a previous
+   // version of Publisher), fall back to the resolved default rather
+   // than crashing on `.map`.
+   const series = Array.isArray(theme.palette?.series)
+      ? theme.palette.series
+      : resolved.series;
 
    // Stable per-row ids so React keys survive insertions and deletions in
    // the middle of the list. Without them the popover state and any

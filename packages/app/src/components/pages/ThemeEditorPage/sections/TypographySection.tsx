@@ -38,8 +38,17 @@ export function TypographySection({
    mode,
 }: TypographySectionProps) {
    const resolved = resolveTheme([theme], mode);
-   const family = theme.font?.family ?? resolved.font.family;
-   const size = theme.font?.size ?? resolved.font.size;
+   // Defensive: an old per-mode font shape from a previous Publisher
+   // version would deserialise as an object here. Fall back to the
+   // resolved default so the picker still mounts.
+   const family =
+      typeof theme.font?.family === "string"
+         ? theme.font.family
+         : resolved.font.family;
+   const size =
+      typeof theme.font?.size === "number"
+         ? theme.font.size
+         : resolved.font.size;
 
    const setFamily = (next: string) => {
       onChange({ ...theme, font: { ...theme.font, family: next } });
