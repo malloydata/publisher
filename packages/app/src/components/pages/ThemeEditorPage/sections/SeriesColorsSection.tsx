@@ -16,6 +16,7 @@ import {
 import { useRef } from "react";
 import { ColorPickerField } from "../ColorPickerField";
 import { BarChartPreview } from "../previews/BarChartPreview";
+import { LineChartPreview } from "../previews/LineChartPreview";
 
 let __seriesRowCounter = 0;
 const nextRowId = () => `series-row-${++__seriesRowCounter}`;
@@ -105,11 +106,18 @@ export function SeriesColorsSection({
             color="text.secondary"
             sx={{ mb: 1, display: "block" }}
          >
-            Sample bar chart
+            Sample charts
          </Typography>
-         <Box sx={{ mb: 2 }}>
+         <Stack
+            direction="row"
+            spacing={2}
+            useFlexGap
+            flexWrap="wrap"
+            sx={{ mb: 2 }}
+         >
             <BarChartPreview theme={resolved} />
-         </Box>
+            <LineChartPreview theme={resolved} />
+         </Stack>
 
          <Stack spacing={2} sx={{ mb: 3 }}>
             <ColorPickerField
