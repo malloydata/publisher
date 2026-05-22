@@ -70,7 +70,7 @@ export default function AddEnvironmentDialog() {
             variant="contained"
             onClick={handleClickOpen}
             startIcon={<AddCircleRounded />}
-            sx={{ mt: 2, color: "white" }}
+            sx={{ mt: 2 }}
          >
             Create New Environment
          </Button>

@@ -265,14 +265,14 @@ export function MutableCell({
 
    return (
       <StyledCard
-         sx={{
+         sx={(theme) => ({
             position: "relative",
             marginTop: "5px",
             marginBottom: "5px",
             borderWidth: "1.5px",
-            backgroundColor: "#fff",
+            backgroundColor: theme.palette.background.paper,
             minHeight: "50px",
-         }}
+         })}
          onMouseEnter={() => setIsHovered(true)}
          onMouseLeave={() => {
             setIsHovered(false);

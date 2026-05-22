@@ -155,10 +155,10 @@ export function NotebookCell({
       (cell.type === "markdown" && (
          <CleanNotebookCell>
             <Box
-               sx={{
+               sx={(theme) => ({
                   "& h1, & h2, & h3, & h4, & h5, & h6": {
                      fontWeight: "600",
-                     color: "#1a1a1a",
+                     color: theme.palette.text.primary,
                      marginBottom: "8px",
                      marginTop: "16px",
                   },
@@ -166,13 +166,13 @@ export function NotebookCell({
                   "& h2": { fontSize: "24px" },
                   "& h3": { fontSize: "20px" },
                   "& p": {
-                     color: "#333333",
+                     color: theme.palette.text.primary,
                      lineHeight: "1.7",
                      marginBottom: "8px",
                      fontSize: "16px",
                   },
                   "& ul, & ol": {
-                     color: "#333333",
+                     color: theme.palette.text.primary,
                      lineHeight: "1.7",
                      marginBottom: "8px",
                      fontSize: "16px",
@@ -180,7 +180,7 @@ export function NotebookCell({
                   "& li": {
                      marginBottom: "4px",
                   },
-               }}
+               })}
             >
                {index === 0 ? (
                   <Stack
@@ -318,8 +318,8 @@ export function NotebookCell({
                </DialogTitle>
                <DialogContent>
                   <Box
-                     sx={{
-                        border: "1px solid #e0e0e0",
+                     sx={(theme) => ({
+                        border: `1px solid ${theme.palette.divider}`,
                         borderRadius: "8px",
                         padding: "16px",
                         fontFamily: "monospace",
@@ -327,8 +327,9 @@ export function NotebookCell({
                         lineHeight: "1.5",
                         overflow: "auto",
                         maxHeight: "70vh",
-                        backgroundColor: "#ffffff",
-                     }}
+                        backgroundColor: theme.palette.background.paper,
+                        color: theme.palette.text.primary,
+                     })}
                   >
                      <pre
                         className="code-display"

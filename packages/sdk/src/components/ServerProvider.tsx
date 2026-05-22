@@ -1,6 +1,14 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import axios from "axios";
-import React, { createContext, ReactNode, useContext, useMemo } from "react";
+import React, {
+   createContext,
+   ReactNode,
+   useCallback,
+   useContext,
+   useEffect,
+   useMemo,
+   useState,
+} from "react";
 import {
    ConnectionsApi,
    DatabasesApi,
@@ -12,9 +20,42 @@ import {
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
+import { resolveMode } from "../theme/resolveTheme";
 import { ThemeProvider } from "../theme/ThemeContext";
-import type { Theme } from "../theme/types";
+import type { Theme, ThemeMode } from "../theme/types";
 import { globalQueryClient } from "../utils/queryClient";
+
+const THEME_MODE_STORAGE_KEY = "publisher:themeMode";
+
+/** SSR-safe read of the viewer's persisted mode choice. */
+function readStoredMode(): ThemeMode | "auto" | undefined {
+   if (typeof window === "undefined") return undefined;
+   try {
+      const raw = window.localStorage.getItem(THEME_MODE_STORAGE_KEY);
+      if (raw === "light" || raw === "dark" || raw === "auto") return raw;
+   } catch {
+      // localStorage can throw (Safari private mode, sandboxed iframes).
+   }
+   return undefined;
+}
+
+function writeStoredMode(mode: ThemeMode | "auto" | undefined) {
+   if (typeof window === "undefined") return;
+   try {
+      if (mode === undefined) {
+         window.localStorage.removeItem(THEME_MODE_STORAGE_KEY);
+      } else {
+         window.localStorage.setItem(THEME_MODE_STORAGE_KEY, mode);
+      }
+   } catch {
+      // Persistence is best-effort; swallow.
+   }
+}
+
+function getPrefersDark(): boolean {
+   if (typeof window === "undefined" || !window.matchMedia) return false;
+   return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
 
 // There's a bug in the OpenAPI generator that causes it to ignore baseURL in
 // the axios request if axios.defaults.baseURL is not set. The per-instance
@@ -161,6 +202,44 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    // on every render when instanceTheme is unchanged.
    const themeLayers = useMemo(() => [instanceTheme], [instanceTheme]);
 
+   // Viewer's light/dark/auto preference. localStorage is the source of
+   // truth across reloads; matchMedia provides the OS hint that 'auto'
+   // resolves against.
+   const [userChoice, setUserChoice] = useState<ThemeMode | "auto" | undefined>(
+      readStoredMode,
+   );
+   const [prefersDark, setPrefersDark] = useState<boolean>(getPrefersDark);
+
+   useEffect(() => {
+      if (typeof window === "undefined" || !window.matchMedia) return;
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const listener = (e: MediaQueryListEvent) => setPrefersDark(e.matches);
+      media.addEventListener("change", listener);
+      return () => media.removeEventListener("change", listener);
+   }, []);
+
+   const setMode = useCallback((next: ThemeMode | "auto") => {
+      setUserChoice(next);
+      writeStoredMode(next);
+   }, []);
+
+   // When the operator forbids viewer overrides, ignore localStorage and
+   // honour only the instance defaultMode (with the OS preference for
+   // 'auto'). The toggle UI hides itself in this case, but this guard
+   // protects against an old localStorage entry from before the operator
+   // locked it.
+   const allowUserToggle = instanceTheme?.allowUserToggle ?? true;
+   const effectiveUserChoice = allowUserToggle ? userChoice : undefined;
+   const mode: ThemeMode = useMemo(
+      () =>
+         resolveMode(
+            instanceTheme?.defaultMode,
+            effectiveUserChoice,
+            prefersDark,
+         ),
+      [instanceTheme?.defaultMode, effectiveUserChoice, prefersDark],
+   );
+
    const value: ServerContextValue = {
       server,
       getAccessToken,
@@ -174,18 +253,16 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
       <ServerContext.Provider value={value}>
          <ThemeProvider
             layers={themeLayers}
-            mode="light"
-            userChoice={undefined}
-            setMode={NOOP_SET_MODE}
-            allowUserToggle={false}
+            mode={mode}
+            userChoice={effectiveUserChoice}
+            setMode={setMode}
+            allowUserToggle={allowUserToggle}
          >
             {children}
          </ThemeProvider>
       </ServerContext.Provider>
    );
 };
-
-const NOOP_SET_MODE = () => {};
 
 export const useServer = (): ServerContextValue => {
    const context = useContext(ServerContext);

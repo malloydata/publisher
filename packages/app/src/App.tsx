@@ -6,8 +6,6 @@ import {
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
 import "@malloydata/malloy-explorer/styles.css";
-import CssBaseline from "@mui/material/CssBaseline";
-import { ThemeProvider } from "@mui/material/styles";
 import * as React from "react";
 import { Suspense, useMemo } from "react";
 import {
@@ -16,7 +14,7 @@ import {
    RouterProvider,
 } from "react-router-dom";
 import { HeaderProps } from "./components/layout/Header/Header";
-import theme from "./theme";
+import { PublisherMuiThemeProvider } from "./theme/PublisherMuiThemeProvider";
 
 /**
  * Vite automatically handles code splitting and chunking when using
@@ -59,12 +57,11 @@ export const createMalloyRouter = (
          element: (
             <ServerProvider>
                <WorkbookStorageProvider workbookStorage={workbookStorage}>
-                  <ThemeProvider theme={theme}>
-                     <CssBaseline />
+                  <PublisherMuiThemeProvider>
                      <Suspense fallback={<Loading />}>
                         <MainPage headerProps={headerProps} />
                      </Suspense>
-                  </ThemeProvider>
+                  </PublisherMuiThemeProvider>
                </WorkbookStorageProvider>
             </ServerProvider>
          ),
