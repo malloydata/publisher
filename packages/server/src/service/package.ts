@@ -28,6 +28,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { formatDuration, logger } from "../logger";
+import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { ignoreDotfiles } from "../utils";
 import { Model } from "./model";
@@ -90,6 +91,7 @@ export class Package {
       packagePath: string,
       environmentMalloyConfig: PackageConnectionInput,
    ): Promise<Package> {
+      assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
       const manifestValidationTime = performance.now();
@@ -515,7 +517,10 @@ export class Package {
    private static async validatePackageManifestExistsOrThrowError(
       packagePath: string,
    ) {
-      const packageConfigPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
+      const packageConfigPath = safeJoinUnderRoot(
+         packagePath,
+         PACKAGE_MANIFEST_NAME,
+      );
       try {
          await fs.stat(packageConfigPath);
       } catch {

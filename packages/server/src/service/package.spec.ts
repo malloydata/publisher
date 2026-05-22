@@ -13,7 +13,7 @@ import { Package } from "./package";
 type PartialModel = Pick<Model, "getPath">;
 
 describe("service/package", () => {
-   const testPackageDirectory = "testPackage";
+   const testPackageDirectory = resolve("testPackage");
 
    beforeEach(async () => {
       await fs.mkdir(testPackageDirectory, { recursive: true });
@@ -100,11 +100,7 @@ describe("service/package", () => {
                   testPackageDirectory,
                   new Map(),
                ),
-            ).rejects.toThrowError(
-               new PackageNotFoundError(
-                  "Package manifest for testPackage does not exist.",
-               ),
-            );
+            ).rejects.toBeInstanceOf(PackageNotFoundError);
          });
          it(
             "should return a Package object if the package exists",
