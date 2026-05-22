@@ -119,14 +119,14 @@ export function SeriesColorsSection({
             <LineChartPreview theme={resolved} />
          </Stack>
 
-         <Stack spacing={2} sx={{ mb: 3 }}>
+         <Box sx={{ mb: 3 }}>
             <ColorPickerField
                label="Chart background"
                value={background}
                onChange={setBackground}
                disabled={disabled}
             />
-         </Stack>
+         </Box>
 
          <Typography variant="subtitle2" sx={{ mb: 1, mt: 1, fontWeight: 600 }}>
             Series colors
@@ -139,12 +139,23 @@ export function SeriesColorsSection({
             Cycling palette for multi-series charts. Shared between light and
             dark so brand stays consistent.
          </Typography>
-         <Stack spacing={1.5}>
+         <Box
+            sx={{
+               display: "grid",
+               // auto-fill packs as many ~240px pickers per row as fit,
+               // so wide viewports show 3-4 swatches side by side and
+               // narrow ones fall back to a single column.
+               gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+               columnGap: 2,
+               rowGap: 1.5,
+               mb: 2,
+            }}
+         >
             {series.map((color, i) => (
                <Stack
                   direction="row"
                   spacing={1}
-                  alignItems="center"
+                  alignItems="flex-end"
                   key={idsRef.current[i]}
                >
                   <ColorPickerField
@@ -167,18 +178,18 @@ export function SeriesColorsSection({
                   </Tooltip>
                </Stack>
             ))}
-            <Box>
-               <Button
-                  variant="outlined"
-                  size="small"
-                  startIcon={<AddIcon />}
-                  onClick={addColor}
-                  disabled={disabled}
-               >
-                  Add color
-               </Button>
-            </Box>
-         </Stack>
+         </Box>
+         <Box>
+            <Button
+               variant="outlined"
+               size="small"
+               startIcon={<AddIcon />}
+               onClick={addColor}
+               disabled={disabled}
+            >
+               Add color
+            </Button>
+         </Box>
       </Box>
    );
 }

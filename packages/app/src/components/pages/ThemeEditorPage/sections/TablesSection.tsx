@@ -3,7 +3,7 @@ import {
    type Theme,
    type ThemeMode,
 } from "@malloy-publisher/sdk";
-import { Box, Stack, Typography } from "@mui/material";
+import { Box, Typography } from "@mui/material";
 import { ColorPickerField } from "../ColorPickerField";
 import { TablePreview } from "../previews/TablePreview";
 
@@ -86,7 +86,17 @@ export function TablesSection({
                fontSize={resolved.font.size}
             />
          </Box>
-         <Stack spacing={2}>
+         <Box
+            sx={{
+               display: "grid",
+               // Tiles section labels are longer ("Tile background
+               // (around the table)") so the cell minimum sits a bit
+               // wider than the series grid.
+               gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+               columnGap: 2,
+               rowGap: 2,
+            }}
+         >
             <ColorPickerField
                label="Header text color"
                value={headerColor}
@@ -117,7 +127,7 @@ export function TablesSection({
                onChange={setColor("tileTitle")}
                disabled={disabled}
             />
-         </Stack>
+         </Box>
       </Box>
    );
 }
