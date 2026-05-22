@@ -4,6 +4,7 @@ import {
    ConnectionAuthError,
    ConnectionError,
    internalErrorToHttpError,
+   PayloadTooLargeError,
 } from "./errors";
 
 describe("internalErrorToHttpError", () => {
@@ -38,5 +39,19 @@ describe("internalErrorToHttpError", () => {
       const { status, json } = internalErrorToHttpError(new Error("boom"));
       expect(status).toBe(500);
       expect(json.message).toBe("boom");
+   });
+
+   it("maps PayloadTooLargeError to 413", () => {
+      const { status, json } = internalErrorToHttpError(
+         new PayloadTooLargeError(
+            "Query returned more than 100000 rows; refine the query or raise PUBLISHER_MAX_QUERY_ROWS.",
+         ),
+      );
+      expect(status).toBe(413);
+      expect(json).toEqual({
+         code: 413,
+         message:
+            "Query returned more than 100000 rows; refine the query or raise PUBLISHER_MAX_QUERY_ROWS.",
+      });
    });
 });

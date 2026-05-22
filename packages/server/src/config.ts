@@ -2,7 +2,11 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { components } from "./api";
-import { API_PREFIX, PUBLISHER_CONFIG_NAME } from "./constants";
+import {
+   API_PREFIX,
+   DEFAULT_MAX_QUERY_ROWS,
+   PUBLISHER_CONFIG_NAME,
+} from "./constants";
 import { logger } from "./logger";
 
 /**
@@ -223,6 +227,30 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
       checkIntervalMs,
       backpressureEnabled,
    };
+};
+
+/**
+ * Resolve the row cap applied to ad-hoc connection SQL queries.
+ * Reads `PUBLISHER_MAX_QUERY_ROWS`; falls back to
+ * {@link DEFAULT_MAX_QUERY_ROWS} when unset or empty.
+ *
+ * Throws at startup on malformed input (matching the loud-failure
+ * stance of {@link getMemoryGovernorConfig}) so a typo in a k8s
+ * manifest surfaces immediately instead of silently disabling the
+ * cap. A value of `0` is accepted and disables wrapping entirely;
+ * use it only when you intend to opt out of the row cap (e.g. when
+ * Step 2's byte budget is the only thing you want enforcing the
+ * bound).
+ */
+export const getMaxQueryRows = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_QUERY_ROWS");
+   if (raw === undefined) return DEFAULT_MAX_QUERY_ROWS;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_MAX_QUERY_ROWS must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
 };
 
 function substituteEnvVars(value: string): string {

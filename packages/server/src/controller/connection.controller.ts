@@ -1,7 +1,12 @@
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
-import { BadRequestError, ConnectionError } from "../errors";
+import { getMaxQueryRows } from "../config";
+import {
+   BadRequestError,
+   ConnectionError,
+   PayloadTooLargeError,
+} from "../errors";
 import { logger } from "../logger";
 import { testConnectionConfig } from "../service/connection";
 import { validateDuckdbApiSurface } from "../service/connection_config";
@@ -442,6 +447,21 @@ export class ConnectionController {
       options: string,
       packageName?: string,
    ): Promise<ApiQueryData> {
+      // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
+      // and array-shaped JSON bodies as `string[]`, not `string`. The route
+      // handlers up-cast for TypeScript's benefit, so re-validate here at the
+      // controller boundary before forwarding to the connector.
+      if (typeof sqlStatement !== "string") {
+         throw new BadRequestError("sqlStatement must be a string");
+      }
+      if (
+         options !== undefined &&
+         options !== null &&
+         typeof options !== "string"
+      ) {
+         throw new BadRequestError("options must be a string");
+      }
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
@@ -450,7 +470,27 @@ export class ConnectionController {
 
       let runSQLOptions: RunSQLOptions = {};
       if (options) {
-         runSQLOptions = JSON.parse(options) as RunSQLOptions;
+         // JSON.parse happily produces `null`, `42`, `"foo"`, `[1,2,3]`, etc.
+         // Anything that isn't a plain object would either crash later when
+         // we touch `.abortSignal` / `.rowLimit` (null), or mutate a caller
+         // string / array and pass it to the connector. Reject at the
+         // boundary alongside the other CodeQL type guards above.
+         let parsed: unknown;
+         try {
+            parsed = JSON.parse(options);
+         } catch {
+            throw new BadRequestError("options must be valid JSON");
+         }
+         if (
+            parsed === null ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
+         ) {
+            throw new BadRequestError(
+               'options must be a JSON object (e.g. {"rowLimit": 100})',
+            );
+         }
+         runSQLOptions = parsed as RunSQLOptions;
       }
       if (runSQLOptions.abortSignal) {
          // Add support for abortSignal in the future
@@ -458,15 +498,35 @@ export class ConnectionController {
          runSQLOptions.abortSignal = undefined;
       }
 
+      // Bound the response by clamping rowLimit to (cap + 1). The +1 is a
+      // sentinel: a response of cap+1 rows means the original would have
+      // overflowed, and we fail the request with HTTP 413 rather than
+      // serializing it. A caller-supplied rowLimit lower than cap+1 is kept,
+      // so users can still ask for fewer rows; we only enforce the ceiling.
+      // Cap of 0 disables the bound. We trust the connector to honor
+      // RunSQLOptions.rowLimit; connectors that don't are upstream bugs.
+      const maxRows = getMaxQueryRows();
+      if (maxRows > 0) {
+         runSQLOptions.rowLimit = Math.min(
+            runSQLOptions.rowLimit ?? maxRows + 1,
+            maxRows + 1,
+         );
+      }
+
+      let result;
       try {
-         return {
-            data: JSON.stringify(
-               await malloyConnection.runSQL(sqlStatement, runSQLOptions),
-            ),
-         };
+         result = await malloyConnection.runSQL(sqlStatement, runSQLOptions);
       } catch (error) {
          throw new ConnectionError((error as Error).message);
       }
+
+      if (maxRows > 0 && result.rows.length > maxRows) {
+         throw new PayloadTooLargeError(
+            `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
+         );
+      }
+
+      return { data: JSON.stringify(result) };
    }
 
    public async getConnectionTemporaryTable(
