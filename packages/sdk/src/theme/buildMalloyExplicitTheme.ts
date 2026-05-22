@@ -9,23 +9,27 @@ import type { ResolvedTheme } from "./types";
  * reach table chrome and dashboard tiles directly instead of going
  * through the outer-wrapper var cascade.
  *
- * `background` here paints the renderer's HTML chrome (the area
- * between dashboard tiles). It's sourced from the mode-keyed
- * `dashboardRoot` field, NOT from the operator-customisable
- * `palette.background` (which is for the chart canvas via Vega). That
- * separation keeps a bold accent colour scoped to charts and tiles
- * without bleeding into the surrounding panel.
+ * Two background fields here are mode-keyed and intentionally NOT
+ * operator-customizable:
  *
- * `tableBackground` is deliberately omitted because it would paint the
- * entire table interior; a full-page table would become overwhelmingly
- * coloured. Tables read on the page's default background with the
- * accent on the header row only.
+ * - `background` paints the renderer's HTML chrome (the area between
+ *   dashboard tiles). Sourced from `theme.dashboardRoot`.
+ * - `tableBackground` paints the renderer's table interior. Sourced
+ *   from `theme.tableBackground`.
+ *
+ * Both default to white in light mode (no regression on existing
+ * installs) and slate in dark mode (so table header/body text doesn't
+ * paint light-on-white). They're decoupled from `palette.background`
+ * (which the operator CAN customize, and which flows to the chart
+ * canvas via Vega) so a bold accent color stays scoped to charts and
+ * tiles without bleeding into the surrounding panel or table interior.
  */
 export function buildMalloyExplicitTheme(
    theme: ResolvedTheme,
 ): MalloyExplicitTheme {
    return {
       background: theme.dashboardRoot,
+      tableBackground: theme.tableBackground,
       tableHeaderColor: theme.tableHeader,
       tableBodyColor: theme.tableBody,
       tableBorder: theme.border,

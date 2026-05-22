@@ -103,6 +103,20 @@ describe("resolveTheme cascade", () => {
       expect(t.background).toBe("#ff8800");
       expect(t.dashboardRoot).toBe("#1e293b");
    });
+
+   it("tableBackground is mode-keyed and immune to operator background overrides", () => {
+      // Light keeps white; dark goes slate so table text doesn't paint
+      // light-on-white.
+      expect(resolveTheme([], "light").tableBackground).toBe("#ffffff");
+      expect(resolveTheme([], "dark").tableBackground).toBe("#1e293b");
+      const t = resolveTheme(
+         [{ palette: { background: { dark: "#ff8800" } } }],
+         "dark",
+      );
+      // Accent stays scoped to the chart canvas only.
+      expect(t.background).toBe("#ff8800");
+      expect(t.tableBackground).toBe("#1e293b");
+   });
 });
 
 describe("resolveMode", () => {

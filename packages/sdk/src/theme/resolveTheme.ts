@@ -82,6 +82,10 @@ export function resolveTheme(
       // visually unchanged. Dark uses slate so the panel doesn't read as
       // a bright box against the dark page chrome.
       dashboardRoot: isDark ? "#1e293b" : "#ffffff",
+      // Table interior background. Same pattern as dashboardRoot: light
+      // keeps white (no regression), dark goes slate so header / body
+      // text don't paint light-on-white in dark mode.
+      tableBackground: isDark ? "#1e293b" : "#ffffff",
    };
 }
 
