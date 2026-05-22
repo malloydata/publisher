@@ -187,6 +187,18 @@ export function isCappableSelect(sql: string): boolean {
  * This function does not validate.
  */
 export function wrapWithRowLimit(sql: string, limit: number): string {
+   // Defense-in-depth against type-confusion: every operation below
+   // (`indexOfUnquotedSemicolon`, `slice`, template-literal interpolation)
+   // has subtly different semantics on arrays vs strings, and a non-string
+   // `sql` would let a multi-statement payload slip through without ever
+   // hitting our `;`-detection. Callers are expected to validate first
+   // (and `isCappableSelect` already does), but we re-check here so this
+   // helper is safe by contract.
+   if (typeof sql !== "string") {
+      throw new TypeError(
+         `wrapWithRowLimit: sql must be a string (got ${typeof sql})`,
+      );
+   }
    if (!Number.isInteger(limit) || limit < 0) {
       throw new RangeError(
          `wrapWithRowLimit: limit must be a non-negative integer (got ${limit})`,

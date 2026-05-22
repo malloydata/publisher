@@ -2,7 +2,7 @@ import type { Connection } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
-import { PayloadTooLargeError } from "../errors";
+import { BadRequestError, PayloadTooLargeError } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { PUBLISHER_CAP_ALIAS } from "../sql_helpers";
 import { ConnectionController } from "./connection.controller";
@@ -184,6 +184,82 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
       const wrappedSql = runSQL.firstCall.args[0] as string;
       // Default cap is 100_000, so the wrapper should ask for cap+1 = 100_001.
       expect(wrappedSql.endsWith("LIMIT 100001")).toBe(true);
+   });
+
+   /**
+    * Express parses repeated query parameters and array-shaped JSON bodies
+    * as `string[]`, not `string`. The route handlers up-cast for TypeScript,
+    * so we re-validate at the controller boundary. Without this guard, a
+    * non-string `sqlStatement` would slip past `indexOfUnquotedSemicolon`
+    * inside `wrapWithRowLimit` (array `.indexOf(";")` is always -1), and
+    * a multi-statement payload could be wrapped into the LIMIT subquery —
+    * the exact dataflow CodeQL flags as
+    * `js/type-confusion-through-parameter-tampering`.
+    */
+   it.each([
+      ["array sqlStatement", ["SELECT 1", "SELECT 2"]],
+      ["object sqlStatement", { evil: true }],
+      ["number sqlStatement", 42],
+      ["null sqlStatement", null],
+      ["undefined sqlStatement", undefined],
+   ])(
+      "rejects non-string sqlStatement (%s) with BadRequestError",
+      async (_label, sqlStatement) => {
+         const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+         const { controller } = buildController(runSQL);
+
+         await expect(
+            controller.getConnectionQueryData(
+               "env",
+               "conn",
+               sqlStatement as unknown as string,
+               "",
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.called).toBe(false);
+      },
+   );
+
+   it.each([
+      ["array options", ["{}", "{}"]],
+      ["object options", { foo: "bar" }],
+      ["number options", 42],
+   ])(
+      "rejects non-string options (%s) with BadRequestError",
+      async (_label, options) => {
+         const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+         const { controller } = buildController(runSQL);
+
+         await expect(
+            controller.getConnectionQueryData(
+               "env",
+               "conn",
+               "SELECT 1",
+               options as unknown as string,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.called).toBe(false);
+      },
+   );
+
+   it("accepts undefined / null options as 'no options'", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+      const { controller } = buildController(runSQL);
+
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         undefined as unknown as string,
+      );
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         null as unknown as string,
+      );
+
+      expect(runSQL.callCount).toBe(2);
    });
 
    it("forwards parsed RunSQLOptions, scrubbing abortSignal", async () => {

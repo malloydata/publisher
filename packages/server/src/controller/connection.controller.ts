@@ -448,6 +448,25 @@ export class ConnectionController {
       options: string,
       packageName?: string,
    ): Promise<ApiQueryData> {
+      // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
+      // and array-shaped JSON bodies as `string[]`, not `string`. The route
+      // handlers up-cast to `string` for TypeScript's benefit, so we re-validate
+      // here at the controller boundary before the value reaches the SQL helpers.
+      // Without this guard, an attacker could send a non-string `sqlStatement`
+      // and bypass `indexOfUnquotedSemicolon`'s separator detection inside
+      // `wrapWithRowLimit` (array `.indexOf(";")` is always -1), letting a
+      // multi-statement payload slip past the row-cap rewriter.
+      if (typeof sqlStatement !== "string") {
+         throw new BadRequestError("sqlStatement must be a string");
+      }
+      if (
+         options !== undefined &&
+         options !== null &&
+         typeof options !== "string"
+      ) {
+         throw new BadRequestError("options must be a string");
+      }
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,

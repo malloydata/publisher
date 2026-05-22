@@ -98,6 +98,25 @@ describe("wrapWithRowLimit", () => {
       expect(() => wrapWithRowLimit("SELECT 1", NaN)).toThrow(RangeError);
    });
 
+   /**
+    * Defense-in-depth: callers are expected to validate that `sql` is a
+    * string before reaching here (the controller does, and `isCappableSelect`
+    * also rejects non-strings), but `wrapWithRowLimit` re-checks so a future
+    * caller can't reintroduce the type-confusion vector CodeQL flagged on
+    * the original PR.
+    */
+   it.each([
+      ["array", ["SELECT 1", "SELECT 2"]],
+      ["object", { sql: "SELECT 1" }],
+      ["number", 42],
+      ["null", null],
+      ["undefined", undefined],
+   ])("rejects non-string sql (%s) with TypeError", (_label, sql) => {
+      expect(() => wrapWithRowLimit(sql as unknown as string, 10)).toThrow(
+         TypeError,
+      );
+   });
+
    it("accepts a zero limit (used when the cap is explicitly set to 0)", () => {
       const wrapped = wrapWithRowLimit("SELECT 1", 0);
       expect(wrapped).toBe(
