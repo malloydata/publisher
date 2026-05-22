@@ -10,6 +10,11 @@ import {
    Card,
    CardContent,
    CardHeader,
+   Dialog,
+   DialogActions,
+   DialogContent,
+   DialogContentText,
+   DialogTitle,
    Snackbar,
    Stack,
    ToggleButton,
@@ -62,6 +67,12 @@ export default function ThemeEditorPage() {
    const [draft, setDraft] = useState<Theme>(savedTheme);
    const [snackbar, setSnackbar] = useState<string | null>(null);
    const debounceRef = useRef<NodeJS.Timeout | null>(null);
+   // Destructive actions go through a confirm dialog so the operator
+   // doesn't lose hand-tuned colours to an accidental click. Two
+   // separate booleans rather than one shared "mode" state so the
+   // labels and handlers stay obvious at the call site.
+   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
    // Tracks the savedTheme value that the draft last agreed with. The
    // resync effect uses this to tell external updates (initial load,
@@ -192,7 +203,7 @@ export default function ThemeEditorPage() {
                   size="small"
                   startIcon={<UndoIcon />}
                   disabled={frozen || !dirty}
-                  onClick={() => setDraft(savedTheme)}
+                  onClick={() => setConfirmDiscardOpen(true)}
                >
                   Discard changes
                </Button>
@@ -201,7 +212,7 @@ export default function ThemeEditorPage() {
                   size="small"
                   startIcon={<RestartAltIcon />}
                   disabled={frozen || resetMutation.isPending}
-                  onClick={() => resetMutation.mutate()}
+                  onClick={() => setConfirmResetOpen(true)}
                >
                   Reset to defaults
                </Button>
@@ -279,6 +290,70 @@ export default function ThemeEditorPage() {
             message={snackbar ?? ""}
             anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
          />
+
+         <Dialog
+            open={confirmDiscardOpen}
+            onClose={() => setConfirmDiscardOpen(false)}
+            aria-labelledby="discard-confirm-title"
+         >
+            <DialogTitle id="discard-confirm-title">
+               Discard changes?
+            </DialogTitle>
+            <DialogContent>
+               <DialogContentText>
+                  Unsaved edits to the visualization theme will be lost.
+                  Previously-saved colors stay intact.
+               </DialogContentText>
+            </DialogContent>
+            <DialogActions>
+               <Button onClick={() => setConfirmDiscardOpen(false)}>
+                  Cancel
+               </Button>
+               <Button
+                  color="error"
+                  onClick={() => {
+                     setDraft(savedTheme);
+                     setConfirmDiscardOpen(false);
+                  }}
+                  autoFocus
+               >
+                  Discard
+               </Button>
+            </DialogActions>
+         </Dialog>
+
+         <Dialog
+            open={confirmResetOpen}
+            onClose={() => setConfirmResetOpen(false)}
+            aria-labelledby="reset-confirm-title"
+         >
+            <DialogTitle id="reset-confirm-title">
+               Reset to defaults?
+            </DialogTitle>
+            <DialogContent>
+               <DialogContentText>
+                  Every customized color and font for the visualization theme
+                  will be cleared, restoring the publisher.config.json boot seed
+                  (or the built-in defaults). This applies immediately to every
+                  viewer.
+               </DialogContentText>
+            </DialogContent>
+            <DialogActions>
+               <Button onClick={() => setConfirmResetOpen(false)}>
+                  Cancel
+               </Button>
+               <Button
+                  color="error"
+                  onClick={() => {
+                     resetMutation.mutate();
+                     setConfirmResetOpen(false);
+                  }}
+                  autoFocus
+               >
+                  Reset
+               </Button>
+            </DialogActions>
+         </Dialog>
       </Box>
    );
 }
