@@ -5,7 +5,24 @@ export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
-export const ROW_LIMIT = 1000;
+/**
+ * Default row cap applied to Malloy model queries (the `runnable.run`
+ * path used by `getQueryResults` and notebook cell execution) when
+ * the user's query doesn't carry its own `LIMIT`. Override at startup
+ * via `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`.
+ *
+ * This is *the default*, not a hard ceiling. A Malloy query that
+ * carries `LIMIT 50000` overrides this. The hard ceiling is
+ * {@link DEFAULT_MAX_QUERY_ROWS} (env-tuned via
+ * `PUBLISHER_MAX_QUERY_ROWS`), which the model-query path now also
+ * enforces — preventing a user `LIMIT 10000000` from blowing up the
+ * process.
+ *
+ * Tuned conservatively (1000) because notebook UIs typically render
+ * tabular previews; operators who need larger ad-hoc exports can
+ * raise it.
+ */
+export const DEFAULT_QUERY_ROW_LIMIT = 1000;
 /**
  * Maximum number of rows the ad-hoc connection SQL endpoints
  * (`/environments/.../connections/.../sqlQuery` and the deprecated

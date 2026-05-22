@@ -35,15 +35,17 @@ import type {
    SerializedNotebookCell,
 } from "../package_load/protocol";
 import {
-   MODEL_FILE_SUFFIX,
-   NOTEBOOK_FILE_SUFFIX,
-   ROW_LIMIT,
-} from "../constants";
+   getDefaultQueryRowLimit,
+   getMaxQueryRows,
+   getMaxResponseBytes,
+} from "../config";
+import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import {
    BadRequestError,
    ModelCompilationError,
    ModelNotFoundError,
+   PayloadTooLargeError,
 } from "../errors";
 import { logger } from "../logger";
 import { BuildManifest } from "../storage/DatabaseInterface";
@@ -57,6 +59,10 @@ import {
    type FilterParams,
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   assertWithinModelResponseLimits,
+   resolveModelQueryRowLimit,
+} from "./model_limits";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -597,9 +603,12 @@ export class Model {
          throw new BadRequestError(`Invalid query: ${errorMessage}`);
       }
 
-      const rowLimit =
-         (await runnable.getPreparedResult({ givens })).resultExplore.limit ||
-         ROW_LIMIT;
+      const maxRows = getMaxQueryRows();
+      const maxBytes = getMaxResponseBytes();
+      const rowLimit = resolveModelQueryRowLimit(
+         (await runnable.getPreparedResult({ givens })).resultExplore.limit,
+         { defaultLimit: getDefaultQueryRowLimit(), maxRows },
+      );
       const endTime = performance.now();
       const executionTime = endTime - startTime;
 
@@ -638,6 +647,22 @@ export class Model {
          throw new BadRequestError(`Query execution failed: ${errorMessage}`);
       }
 
+      const wrappedResult = API.util.wrapResult(queryResults);
+      // Best-effort byte check: we've already buffered `queryResults` and
+      // built `wrappedResult` by the time we get here, so this surfaces
+      // oversize responses with a clean HTTP 413 instead of letting the
+      // controller transmit a half-megabyte payload — it is not OOM
+      // prevention. True prevention requires streaming `Result`
+      // construction, which is out of scope for this step. The row cap
+      // above is the primary OOM defense.
+      const serializedBytes =
+         maxBytes > 0
+            ? Buffer.byteLength(JSON.stringify(wrappedResult), "utf8")
+            : 0;
+      assertWithinModelResponseLimits(queryResults.totalRows, serializedBytes, {
+         maxRows,
+         maxBytes,
+      });
       this.queryExecutionHistogram.record(executionTime, {
          "malloy.model.path": this.modelPath,
          "malloy.model.query.name": queryName,
@@ -649,7 +674,7 @@ export class Model {
          "malloy.model.query.status": "success",
       });
       return {
-         result: API.util.wrapResult(queryResults),
+         result: wrappedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
@@ -792,9 +817,16 @@ export class Model {
                }
             }
 
-            const rowLimit =
+            const cellMaxRows = getMaxQueryRows();
+            const cellMaxBytes = getMaxResponseBytes();
+            const rowLimit = resolveModelQueryRowLimit(
                (await runnableToExecute.getPreparedResult({ givens }))
-                  .resultExplore.limit || ROW_LIMIT;
+                  .resultExplore.limit,
+               {
+                  defaultLimit: getDefaultQueryRowLimit(),
+                  maxRows: cellMaxRows,
+               },
+            );
             const result = await runnableToExecute.run({ rowLimit, givens });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
@@ -802,11 +834,29 @@ export class Model {
                result?._queryResult &&
                this.modelInfo &&
                JSON.stringify(API.util.wrapResult(result));
+            // Same caveat as `getQueryResults`: by the time we measure
+            // bytes the response has already been buffered and stringified,
+            // so this is loud-failure detection (clean 413 instead of
+            // partial transmission), not OOM prevention. The row cap above
+            // is the primary defense.
+            if (result?._queryResult && queryResult) {
+               assertWithinModelResponseLimits(
+                  result.totalRows,
+                  Buffer.byteLength(queryResult, "utf8"),
+                  { maxRows: cellMaxRows, maxBytes: cellMaxBytes },
+               );
+            }
          } catch (error) {
             if (error instanceof FilterValidationError) {
                throw new BadRequestError(error.message);
             }
             if (error instanceof MalloyError) {
+               throw error;
+            }
+            // Surface PayloadTooLargeError as-is so the error middleware
+            // maps it to HTTP 413; without this it would get swallowed
+            // into a generic 400 BadRequestError below.
+            if (error instanceof PayloadTooLargeError) {
                throw error;
             }
             const errorMessage =
