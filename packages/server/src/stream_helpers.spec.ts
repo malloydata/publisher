@@ -113,7 +113,12 @@ describe("streamSqlWithBudget", () => {
       expect(captured.value?.abortSignal).toBeDefined();
    });
 
-   it("overrides any caller-supplied abortSignal with its own", async () => {
+   it("composes the caller-supplied abortSignal with its internal cap-abort signal", async () => {
+      // Step 5: the caller's signal is the query timeout. Composing
+      // both sources means EITHER an external timeout OR an internal
+      // cap overflow terminates the iterator. The combined signal
+      // must be a fresh AbortSignal (not either input by reference);
+      // aborting either input must mark the composed signal aborted.
       const captured = { value: undefined as RunSQLOptions | undefined };
       const callerAc = new AbortController();
       const conn = fakeStreamingConnection({
@@ -126,10 +131,36 @@ describe("streamSqlWithBudget", () => {
          { rowLimit: 10, abortSignal: callerAc.signal },
          { maxRows: 5, maxBytes: 0 },
       );
-      // The signal the helper installed is its own (not the caller's),
-      // since aborting the caller's signal must not terminate the
-      // helper's iteration partway through.
-      expect(captured.value?.abortSignal).not.toBe(callerAc.signal);
+      const observed = captured.value?.abortSignal;
+      expect(observed).toBeInstanceOf(AbortSignal);
+      // Composed signal is a new object (`AbortSignal.any` returns a
+      // fresh signal), not the caller's signal by reference.
+      expect(observed).not.toBe(callerAc.signal);
+      expect(observed?.aborted).toBe(false);
+   });
+
+   it("composed signal aborts when the caller's signal aborts", async () => {
+      // Drive the external (caller) signal manually and confirm the
+      // composed signal that reached the driver tracks it. This is the
+      // half of composition that runWithQueryTimeout depends on for
+      // 504 to actually cancel an in-flight query.
+      if (typeof AbortSignal.any !== "function") return;
+      const captured = { value: undefined as RunSQLOptions | undefined };
+      const callerAc = new AbortController();
+      const conn = fakeStreamingConnection({
+         rows: [{ a: 1 }],
+         capturedOptions: captured,
+      });
+      await streamSqlWithBudget(
+         conn,
+         "SELECT 1",
+         { rowLimit: 10, abortSignal: callerAc.signal },
+         { maxRows: 5, maxBytes: 0 },
+      );
+      const observed = captured.value?.abortSignal;
+      expect(observed?.aborted).toBe(false);
+      callerAc.abort();
+      expect(observed?.aborted).toBe(true);
    });
 
    it("throws PayloadTooLargeError and aborts the iterator on the (cap+1)-th row", async () => {

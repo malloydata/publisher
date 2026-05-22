@@ -1,13 +1,19 @@
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
-import { getMaxQueryRows, getMaxResponseBytes } from "../config";
+import {
+   getMaxQueryRows,
+   getMaxResponseBytes,
+   getQueryTimeoutMs,
+} from "../config";
 import {
    BadRequestError,
    ConnectionError,
    PayloadTooLargeError,
 } from "../errors";
+import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
+import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
 import { validateDuckdbApiSurface } from "../service/connection_config";
 import { ConnectionService } from "../service/connection_service";
@@ -463,6 +469,13 @@ export class ConnectionController {
          throw new BadRequestError("options must be a string");
       }
 
+      // Shed load before any disk / DB work; same rationale as
+      // QueryController. The env-fetch is cached so this is effectively
+      // a single O(1) boolean read on the hot path.
+      const environmentForAdmission =
+         await this.environmentStore.getEnvironment(environmentName, false);
+      environmentForAdmission.assertCanAdmitQuery();
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
@@ -529,30 +542,60 @@ export class ConnectionController {
       // streamSqlWithBudget so the byte cap can fire mid-stream. Other
       // connections fall back to the buffered path; client-side byte
       // counting there would be security theatre.
+      //
+      // The whole driver call is wrapped in runWithQueryTimeout so a
+      // hung query is surfaced as HTTP 504 instead of holding the
+      // HTTP socket open until the load balancer cuts the connection.
+      // The timeout signal is plumbed into RunSQLOptions.abortSignal
+      // so the abort actually cancels the underlying network call —
+      // not just unblocks the awaiter.
       if (isStreamingConnection(malloyConnection)) {
-         let streamed;
-         try {
-            streamed = await streamSqlWithBudget(
-               malloyConnection,
-               sqlStatement,
-               runSQLOptions,
-               { maxRows, maxBytes },
-            );
-         } catch (error) {
-            if (error instanceof PayloadTooLargeError) throw error;
-            throw new ConnectionError((error as Error).message);
-         }
+         const streamed = await runWithQueryTimeout(async (signal) => {
+            const optionsWithSignal: RunSQLOptions = {
+               ...runSQLOptions,
+               abortSignal: signal,
+            };
+            try {
+               return await streamSqlWithBudget(
+                  malloyConnection,
+                  sqlStatement,
+                  optionsWithSignal,
+                  { maxRows, maxBytes },
+               );
+            } catch (error) {
+               if (error instanceof PayloadTooLargeError) throw error;
+               // If runWithQueryTimeout is about to wrap this in a
+               // QueryTimeoutError (because the timer fired), the
+               // ConnectionError we'd throw here is discarded — the
+               // timeout verdict wins. So this branch only matters
+               // for genuine driver failures.
+               throw new ConnectionError((error as Error).message);
+            }
+         }, getQueryTimeoutMs());
          return { data: JSON.stringify(streamed) };
       }
 
-      let result;
-      try {
-         result = await malloyConnection.runSQL(sqlStatement, runSQLOptions);
-      } catch (error) {
-         throw new ConnectionError((error as Error).message);
-      }
+      const result = await runWithQueryTimeout(async (signal) => {
+         const optionsWithSignal: RunSQLOptions = {
+            ...runSQLOptions,
+            abortSignal: signal,
+         };
+         try {
+            return await malloyConnection.runSQL(
+               sqlStatement,
+               optionsWithSignal,
+            );
+         } catch (error) {
+            throw new ConnectionError((error as Error).message);
+         }
+      }, getQueryTimeoutMs());
 
       if (maxRows > 0 && result.rows.length > maxRows) {
+         // Tick the cap-exceeded counter on the buffered path too
+         // so `publisher_query_cap_exceeded_total{cap_type="rows",
+         // source="connection_sql"}` captures rejections from
+         // *all* connectors, not just streaming-capable ones.
+         recordQueryCapExceeded("rows", "connection_sql");
          throw new PayloadTooLargeError(
             `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
          );

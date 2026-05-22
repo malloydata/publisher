@@ -510,6 +510,14 @@ export class Model {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
+      // Optional caller-supplied abort signal. Plumbed straight into
+      // `runnable.run` so a publisher-issued query timeout (see
+      // `runWithQueryTimeout`) actually cancels the work in flight
+      // instead of just unblocking the awaiter. Pass `undefined` to
+      // keep the legacy "no timeout" behavior — useful for
+      // background callers (materialization, tests) that own their
+      // own deadline.
+      abortSignal?: AbortSignal,
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
@@ -614,7 +622,7 @@ export class Model {
 
       let queryResults;
       try {
-         queryResults = await runnable.run({ rowLimit, givens });
+         queryResults = await runnable.run({ rowLimit, givens, abortSignal });
       } catch (error) {
          // Record error metrics
          const errorEndTime = performance.now();
@@ -659,10 +667,12 @@ export class Model {
          maxBytes > 0
             ? Buffer.byteLength(JSON.stringify(wrappedResult), "utf8")
             : 0;
-      assertWithinModelResponseLimits(queryResults.totalRows, serializedBytes, {
-         maxRows,
-         maxBytes,
-      });
+      assertWithinModelResponseLimits(
+         queryResults.totalRows,
+         serializedBytes,
+         { maxRows, maxBytes },
+         "model_query",
+      );
       this.queryExecutionHistogram.record(executionTime, {
          "malloy.model.path": this.modelPath,
          "malloy.model.query.name": queryName,
@@ -757,6 +767,9 @@ export class Model {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
+      // See `getQueryResults`: forwarded into `runnable.run` so the
+      // publisher's wall-clock timeout actually cancels the query.
+      abortSignal?: AbortSignal,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -827,7 +840,11 @@ export class Model {
                   maxRows: cellMaxRows,
                },
             );
-            const result = await runnableToExecute.run({ rowLimit, givens });
+            const result = await runnableToExecute.run({
+               rowLimit,
+               givens,
+               abortSignal,
+            });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
             queryResult =
@@ -844,6 +861,7 @@ export class Model {
                   result.totalRows,
                   Buffer.byteLength(queryResult, "utf8"),
                   { maxRows: cellMaxRows, maxBytes: cellMaxBytes },
+                  "notebook_cell",
                );
             }
          } catch (error) {

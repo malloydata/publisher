@@ -41,6 +41,7 @@ import {
    NotImplementedError,
 } from "./errors";
 import { logger } from "./logger";
+import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import { EnvironmentStore } from "./service/environment_store";
 
@@ -459,8 +460,18 @@ export function registerLegacyRoutes(
 
    // queryData (deprecated GET) + sqlQuery (supported POST), per-project +
    // per-package
+   // Legacy `/projects/...` query routes keep the GET `queryData`
+   // endpoints (unlike the modern `/environments/...` surface, which
+   // removed them) so existing SDK clients are not broken. The
+   // missing protection is concurrency: without `queryConcurrency()`
+   // a flood of legacy clients can saturate the pod even while the
+   // modern routes are properly gated. Apply the same per-pod cap
+   // here so the legacy surface respects PUBLISHER_MAX_CONCURRENT_QUERIES.
+   // Admission, timeout, and row/byte caps are already enforced by
+   // the shared controllers downstream.
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(
@@ -481,6 +492,7 @@ export function registerLegacyRoutes(
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/queryData`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             res.status(200).json(
@@ -502,6 +514,7 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlQuery`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
@@ -528,6 +541,7 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlQuery`,
+      queryConcurrency(),
       async (req, res) => {
          try {
             let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
@@ -780,6 +794,7 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
+      queryConcurrency(),
       async (req, res) => {
          if (req.body.versionId) {
             setVersionIdError(res);
@@ -856,6 +871,7 @@ export function registerLegacyRoutes(
    // Cell execution route comes BEFORE the general getNotebook wildcard
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
+      queryConcurrency(),
       async (req, res) => {
          if (req.query.versionId) {
             setVersionIdError(res);

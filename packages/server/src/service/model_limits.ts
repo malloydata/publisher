@@ -33,6 +33,10 @@
  */
 
 import { PayloadTooLargeError } from "../errors";
+import {
+   recordQueryCapExceeded,
+   type QueryCapSource,
+} from "../query_cap_metrics";
 
 export interface ResolveRowLimitConfig {
    /**
@@ -86,13 +90,19 @@ export function assertWithinModelResponseLimits(
    rowCount: number,
    serializedBytes: number,
    { maxRows, maxBytes }: ModelResponseLimitsConfig,
+   source: QueryCapSource,
 ): void {
    if (maxRows > 0 && rowCount > maxRows) {
+      // Tick the counter *before* throwing so it reflects the
+      // event even if a downstream `catch` swallows the error
+      // (notebook handlers and MCP tools both do this in places).
+      recordQueryCapExceeded("rows", source);
       throw new PayloadTooLargeError(
          `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
       );
    }
    if (maxBytes > 0 && serializedBytes > maxBytes) {
+      recordQueryCapExceeded("bytes", source);
       throw new PayloadTooLargeError(
          `Query response exceeded ${maxBytes} bytes (was ${serializedBytes}). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.`,
       );

@@ -780,6 +780,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
   /environments/{environmentName}/connections/{connectionName}/sqlTemporaryTable:
     post:
@@ -878,63 +880,11 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  # TODO: Remove this endpoint.
-  /environments/{environmentName}/connections/{connectionName}/queryData:
-    get:
-      tags:
-        - connections
-      operationId: get-querydata
-      deprecated: true
-      summary: Execute SQL query (deprecated)
-      description: |
-        **DEPRECATED**: This endpoint is deprecated and may be removed in future versions.
-        Use the POST version instead for better security and functionality.
-
-        Executes a SQL statement against the specified database connection and returns the results.
-        The query results include data, metadata, and execution information.
-
-        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the POST
-        sqlQuery endpoint.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: sqlStatement
-          in: query
-          description: SQL statement
-          required: false
-          schema:
-            type: string
-        - name: options
-          in: query
-          description: Options
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Query execution results
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/QueryData"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
+  # NOTE: The GET …/connections/{connectionName}/queryData endpoint
+  # was removed alongside the operational-guards changes. Use the
+  # POST …/sqlQuery endpoint above instead — it accepts the SQL in
+  # the request body and obeys the row, byte, and timeout caps from
+  # the OOM-mitigation work.
 
   # ──────────────────────────────────────────────────────────────────
   # Per-package connection data routes.
@@ -1289,6 +1239,8 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
   /environments/{environmentName}/packages/{packageName}/connections/{connectionName}/sqlTemporaryTable:
     post:
@@ -1398,68 +1350,9 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  # TODO: Remove this endpoint.
-  /environments/{environmentName}/packages/{packageName}/connections/{connectionName}/queryData:
-    get:
-      tags:
-        - connections
-      operationId: get-querydata-in-package
-      deprecated: true
-      summary: Execute SQL query (per-package, deprecated)
-      description: |
-        **DEPRECATED**: Use the POST version instead.
-
-        Executes a SQL statement against the specified database connection,
-        resolved in the context of the named package, and returns the results.
-
-        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the
-        environment-level sqlQuery endpoint.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package whose connection context to use
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: connectionName
-          in: path
-          description: Name of the connection
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: sqlStatement
-          in: query
-          description: SQL statement
-          required: false
-          schema:
-            type: string
-        - name: options
-          in: query
-          description: Options
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Query execution results
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/QueryData"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
+  # NOTE: The GET …/packages/{packageName}/connections/{connectionName}/queryData
+  # endpoint was removed alongside the operational-guards changes.
+  # Use the matching POST …/sqlQuery endpoint instead.
 
   /environments/{environmentName}/packages:
     get:
@@ -1832,12 +1725,16 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
   /environments/{environmentName}/packages/{packageName}/models/{path}/compile:
     post:
@@ -2067,12 +1964,16 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
   /environments/{environmentName}/packages/{packageName}/databases:
     get:
@@ -2488,8 +2389,21 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     ServiceUnavailable:
-      description: The service is temporarily unavailable, typically due to
-        initialization, or draining state (Rolling updates, etc.)
+      description: |
+        The service is temporarily unable to accept the request. Possible
+        causes:
+          * Initialization or draining state (rolling updates, graceful
+            shutdown).
+          * Memory back-pressure — the publisher's RSS crossed the
+            high-water mark derived from PUBLISHER_MAX_MEMORY_BYTES and
+            PUBLISHER_MEMORY_HIGH_WATER_FRACTION, so new queries are
+            rejected until RSS drops below the low-water mark
+            (PUBLISHER_MEMORY_LOW_WATER_FRACTION).
+          * Per-pod query concurrency cap reached — PUBLISHER_MAX_CONCURRENT_QUERIES
+            in-flight queries are already running on this pod.
+        Clients should retry with backoff; under sustained pressure, scale
+        out, raise PUBLISHER_MAX_MEMORY_BYTES / PUBLISHER_MAX_CONCURRENT_QUERIES,
+        or refine the offending queries.
       content:
         application/json:
           schema:
@@ -2497,9 +2411,26 @@ components:
     PayloadTooLarge:
       description: |
         The request was well-formed but the response exceeds a server-side
-        size cap (e.g. an ad-hoc SQL query returned more rows than
-        PUBLISHER_MAX_QUERY_ROWS). Refine the query or raise the cap;
-        retrying without changes will not succeed.
+        size cap. Two caps can fire:
+          * PUBLISHER_MAX_QUERY_ROWS (default 100000) — too many rows.
+          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) — JSON-serialized
+            response too large.
+        The error message identifies which cap fired. Refine the query (add
+        a LIMIT, more selective WHERE, project fewer columns) or raise the
+        relevant cap; retrying without changes will not succeed. The
+        per-cap rejection counter is exported as
+        publisher_query_cap_exceeded_total{cap_type, source}.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    GatewayTimeout:
+      description: |
+        The query exceeded the per-request wall-clock budget
+        (PUBLISHER_QUERY_TIMEOUT_MS) and was aborted server-side.
+        Refine the query (add a more selective WHERE, lower LIMIT,
+        simplify joins) or raise the timeout. Retrying without
+        changes is unlikely to succeed.
       content:
         application/json:
           schema:
