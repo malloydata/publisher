@@ -27,6 +27,12 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
+import {
+   assertSafeEnvironmentName,
+   assertSafeEnvironmentPath,
+   assertSafePackageName,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
@@ -755,6 +761,16 @@ export class EnvironmentStore {
       environmentName: string,
       reload: boolean = false,
    ): Promise<Environment> {
+      // Source-side allowlist gate. `environmentName` arrives here
+      // from `GET /api/environments/:environmentName` and from
+      // every internal caller that subsequently feeds the value
+      // into `path.join` / `fs.mkdir` inside `scaffoldEnvironment`,
+      // `loadEnvironmentIntoDisk`, and the download helpers.
+      // Asserting once at the entry of the only two public gates
+      // (`getEnvironment` + `addEnvironment`) collapses dozens of
+      // downstream CodeQL `js/path-injection` sinks.
+      assertSafeEnvironmentName(environmentName);
+
       await this.finishedInitialization;
 
       // Check if environment is already loaded first
@@ -820,6 +836,16 @@ export class EnvironmentStore {
       if (!environmentName) {
          throw new Error("Environment name is required");
       }
+      // Source-side allowlist gate. Mirrors `getEnvironment` and
+      // also covers `POST /api/environments`, watch-mode-triggered
+      // reloads, and config-file-driven initialization. Every
+      // private helper this method calls (`scaffoldEnvironment`,
+      // `loadEnvironmentIntoDisk`, `unzipEnvironment`,
+      // `mountLocalDirectory`, and the cloud download helpers)
+      // assumes its `environmentName` argument is already
+      // shape-validated; the assert here is the single source of
+      // that invariant.
+      assertSafeEnvironmentName(environmentName);
       // Check if environment already exists and update it instead of creating a new one
       const existingEnvironment = this.environments.get(environmentName);
       if (existingEnvironment) {
@@ -884,6 +910,15 @@ export class EnvironmentStore {
    }
 
    public async unzipEnvironment(absoluteEnvironmentPath: string) {
+      // Sink-adjacent barrier on the only path-shaped argument.
+      // Every call site of `unzipEnvironment` derives its argument
+      // from values already validated upstream (`scaffoldEnvironment`
+      // result, cloud download `zipFilePath`), but `unzipEnvironment`
+      // is also `public`, so an external caller could feed an
+      // arbitrary string. Asserting here keeps the contract local
+      // and gives CodeQL a sanitizer node at the same data-flow
+      // position as the `fs.rm` / `fs.mkdir` sinks below.
+      assertSafeEnvironmentPath(absoluteEnvironmentPath);
       const startedAt = Date.now();
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
@@ -1031,11 +1066,24 @@ export class EnvironmentStore {
       if (!environmentName) {
          throw new Error("Environment name is required");
       }
-      const absoluteEnvironmentPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
+      // Sink-adjacent barrier: even though `addEnvironment` (the
+      // only public caller) already asserted, we re-assert here so
+      // the sanitizer is local to the `fs.mkdir` / `fs.writeFile`
+      // sinks below, which is what CodeQL's `js/path-injection`
+      // query needs. `safeJoinUnderRoot` provides the
+      // resolve-and-contain guarantee on the composed path so a
+      // future refactor that bypasses the source-side assert still
+      // can't escape the data directory.
+      assertSafeEnvironmentName(environmentName);
+      const absoluteEnvironmentPath = safeJoinUnderRoot(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         environmentName,
+      );
       await fs.promises.mkdir(absoluteEnvironmentPath, { recursive: true });
       if (environment.readme) {
          await fs.promises.writeFile(
-            path.join(absoluteEnvironmentPath, "README.md"),
+            safeJoinUnderRoot(absoluteEnvironmentPath, "README.md"),
             environment.readme,
          );
       }
@@ -1071,7 +1119,16 @@ export class EnvironmentStore {
       environmentName: string,
       packages: ApiEnvironment["packages"],
    ) {
-      const absoluteTargetPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
+      // Sink-adjacent barrier (defense in depth — `addEnvironment`
+      // already gated this). The `absoluteTargetPath` it composes
+      // flows into many sinks below; `safeJoinUnderRoot` gives the
+      // resolve-and-contain barrier CodeQL recognises.
+      assertSafeEnvironmentName(environmentName);
+      const absoluteTargetPath = safeJoinUnderRoot(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         environmentName,
+      );
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
@@ -1126,7 +1183,15 @@ export class EnvironmentStore {
             .update(groupedLocation)
             .digest("hex")
             .substring(0, 16); // Use first 16 chars for shorter paths
-         const tempDownloadPath = `${absoluteTargetPath}/.temp_${locationHash}`;
+         // `locationHash` is a 16-char hex slice of a SHA-256 of
+         // the server-controlled `groupedLocation`, so it's
+         // bounded and never user-controlled. The
+         // `safeJoinUnderRoot` containment still serves as a
+         // belt-and-suspenders guard against future refactors.
+         const tempDownloadPath = safeJoinUnderRoot(
+            absoluteTargetPath,
+            `.temp_${locationHash}`,
+         );
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
          try {
@@ -1139,8 +1204,17 @@ export class EnvironmentStore {
             );
             // Extract each package from the downloaded content
             for (const _package of packagesForLocation) {
+               // `_package.name` flows into a directory path under
+               // the validated environment root. Asserting the
+               // shape here lets `safeJoinUnderRoot` succeed and
+               // gives CodeQL a sanitizer barrier between the
+               // request body and the `fs.cp` sinks below.
+               assertSafePackageName(_package.name);
                const packageDir = _package.name;
-               const absolutePackagePath = `${absoluteTargetPath}/${packageDir}`;
+               const absolutePackagePath = safeJoinUnderRoot(
+                  absoluteTargetPath,
+                  packageDir,
+               );
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
@@ -1151,7 +1225,11 @@ export class EnvironmentStore {
                      const subPathMatch =
                         _package.location.match(/\/tree\/[^/]+\/(.+)$/);
                      if (subPathMatch) {
-                        sourcePath = path.join(
+                        // `safeJoinUnderRoot` rejects `..`
+                        // segments inside the GitHub-derived
+                        // subpath that could otherwise escape the
+                        // clone directory.
+                        sourcePath = safeJoinUnderRoot(
                            tempDownloadPath,
                            subPathMatch[1],
                         );
@@ -1166,9 +1244,23 @@ export class EnvironmentStore {
                } else {
                   // For non-GitHub locations, use package name
                   if (this.isLocalPath(_package.location)) {
+                     // Admin-provided absolute path (publisher
+                     // config / package body). Reject obvious
+                     // traversal shapes; the value is intentionally
+                     // allowed to live outside `serverRootPath`
+                     // because mounting host directories is a
+                     // supported configuration.
+                     assertSafeEnvironmentPath(_package.location);
                      sourcePath = _package.location;
                   } else {
-                     sourcePath = path.join(tempDownloadPath, groupedLocation);
+                     // `groupedLocation` is server-built (URL
+                     // string), but `safeJoinUnderRoot` still
+                     // contains the result under
+                     // `tempDownloadPath` for defense in depth.
+                     sourcePath = safeJoinUnderRoot(
+                        tempDownloadPath,
+                        groupedLocation,
+                     );
                   }
                }
 
@@ -1347,6 +1439,17 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ) {
+      // `environmentPath` is the *source* mount point. It is
+      // intentionally allowed to point at any absolute path on the
+      // host (admin mounts an arbitrary directory into the publisher
+      // data root). `absoluteTargetPath` is the *destination* — it
+      // MUST stay under `serverRootPath/PUBLISHER_DATA_DIR`, so we
+      // assert both shape + containment on that side. The source
+      // gets a shape-only assert that admits any absolute path.
+      assertSafeEnvironmentPath(environmentPath);
+      assertSafeEnvironmentPath(absoluteTargetPath);
+      assertSafeEnvironmentName(environmentName);
+      assertSafePackageName(packageName);
       if (environmentPath.endsWith(".zip")) {
          environmentPath = await this.unzipEnvironment(environmentPath);
       }
@@ -1374,6 +1477,14 @@ export class EnvironmentStore {
       absoluteDirPath: string,
       isCompressedFile: boolean,
    ) {
+      // Sink-adjacent barrier on the destination root. GCS object
+      // keys are remote-controlled, so any `..` segment in a key
+      // (e.g. an attacker-uploaded object named `../etc/cron.d/x`)
+      // would otherwise escape `absoluteDirPath`. We re-derive
+      // each per-file destination via `safeJoinUnderRoot` so the
+      // join refuses to escape the directory root.
+      assertSafeEnvironmentPath(absoluteDirPath);
+      assertSafeEnvironmentName(environmentName);
       const trimmedPath = gcsPath.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
@@ -1385,23 +1496,42 @@ export class EnvironmentStore {
             `Environment ${environmentName} not found in ${gcsPath}`,
          );
       }
+      let destinationRoot = absoluteDirPath;
       if (!isCompressedFile) {
-         await fs.promises.rm(absoluteDirPath, {
+         await fs.promises.rm(destinationRoot, {
             recursive: true,
             force: true,
          });
-         await fs.promises.mkdir(absoluteDirPath, { recursive: true });
+         await fs.promises.mkdir(destinationRoot, { recursive: true });
       } else {
-         absoluteDirPath = `${absoluteDirPath}.zip`;
+         destinationRoot = `${destinationRoot}.zip`;
       }
       await Promise.all(
          files.map(async (file) => {
-            const relativeFilePath = file.name.replace(prefix, "");
-            const absoluteFilePath = isCompressedFile
-               ? absoluteDirPath
-               : path.join(absoluteDirPath, relativeFilePath);
             if (file.name.endsWith("/")) {
                return;
+            }
+            const relativeFilePath = file.name.replace(prefix, "");
+            let absoluteFilePath: string;
+            if (isCompressedFile) {
+               absoluteFilePath = destinationRoot;
+            } else {
+               try {
+                  absoluteFilePath = safeJoinUnderRoot(
+                     destinationRoot,
+                     relativeFilePath,
+                  );
+               } catch {
+                  // A traversal-bearing object key would resolve
+                  // outside the destination root. Skip it rather
+                  // than failing the whole sync — operators can
+                  // inspect the log if a key was intentionally
+                  // expected to land here.
+                  logger.warn(
+                     `Skipping GCS object with unsafe key: "${file.name}"`,
+                  );
+                  return;
+               }
             }
             await fs.promises.mkdir(path.dirname(absoluteFilePath), {
                recursive: true,
@@ -1413,9 +1543,9 @@ export class EnvironmentStore {
          }),
       );
       if (isCompressedFile) {
-         await this.unzipEnvironment(absoluteDirPath);
+         await this.unzipEnvironment(destinationRoot);
       }
-      logger.info(`Downloaded GCS directory ${gcsPath} to ${absoluteDirPath}`);
+      logger.info(`Downloaded GCS directory ${gcsPath} to ${destinationRoot}`);
    }
 
    async downloadS3Directory(
@@ -1424,12 +1554,21 @@ export class EnvironmentStore {
       absoluteDirPath: string,
       isCompressedFile: boolean = false,
    ) {
+      // See `downloadGcsDirectory` for the threat model — same
+      // pattern: validate the destination root, then containment-
+      // join each remote object's key under it so an S3 key with
+      // `..` segments cannot escape the staging directory.
+      assertSafeEnvironmentPath(absoluteDirPath);
+      assertSafeEnvironmentName(environmentName);
       const trimmedPath = s3Path.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
 
       if (isCompressedFile) {
-         // Download the single zip file
+         // Download the single zip file. `zipFilePath` is built
+         // entirely from `absoluteDirPath`, which we just
+         // validated, so the `.zip` suffix can't introduce
+         // traversal. The `path.dirname` mkdir is therefore safe.
          const zipFilePath = `${absoluteDirPath}.zip`;
          await fs.promises.mkdir(path.dirname(zipFilePath), {
             recursive: true,
@@ -1481,10 +1620,16 @@ export class EnvironmentStore {
             if (!relativeFilePath || relativeFilePath.endsWith("/")) {
                return;
             }
-            const absoluteFilePath = path.join(
-               absoluteDirPath,
-               relativeFilePath,
-            );
+            let absoluteFilePath: string;
+            try {
+               absoluteFilePath = safeJoinUnderRoot(
+                  absoluteDirPath,
+                  relativeFilePath,
+               );
+            } catch {
+               logger.warn(`Skipping S3 object with unsafe key: "${key}"`);
+               return;
+            }
             await fs.promises.mkdir(path.dirname(absoluteFilePath), {
                recursive: true,
             });
@@ -1532,6 +1677,10 @@ export class EnvironmentStore {
    }
 
    async downloadGitHubDirectory(githubUrl: string, absoluteDirPath: string) {
+      // Sink-adjacent barrier on the clone destination — every
+      // subsequent `fs.*` call below derives from this root.
+      assertSafeEnvironmentPath(absoluteDirPath);
+
       // First we'll clone the repo without the additional path
       // E.g. we're removing `/tree/main/imdb` from https://github.com/credibledata/malloy-samples/tree/main/imdb
       const githubInfo = this.parseGitHubUrl(githubUrl);
@@ -1579,7 +1728,14 @@ export class EnvironmentStore {
 
       // Remove all contents of absoluteDirPath (/var/publisher/asd123)
       // except for the cleanPackagePath directory (/var/publisher/asd123/imdb)
-      const packageFullPath = path.join(absoluteDirPath, cleanPackagePath);
+      // `cleanPackagePath` originates from the GitHub URL parser
+      // (regex-extracted segments). `safeJoinUnderRoot` rejects
+      // any join that resolves outside `absoluteDirPath`, so a
+      // crafted `/tree/main/../../etc` URL is contained here.
+      const packageFullPath = safeJoinUnderRoot(
+         absoluteDirPath,
+         cleanPackagePath,
+      );
 
       // Check if the cleanPackagePath (/var/publisher/asd123/imdb) exists
       const packageExists = await fs.promises
@@ -1593,12 +1749,20 @@ export class EnvironmentStore {
          );
       }
 
-      // Remove everything in absoluteDirPath (/var/publisher/asd123)
+      // Iterate the cloned working copy. `entry` names come from
+      // `fs.readdir` on a directory we just controlled the
+      // creation of (server-built mkdir + simple-git clone), so
+      // they are not user-tainted. `safeJoinUnderRoot` is still
+      // used so the resolved paths can never escape
+      // `absoluteDirPath` even if a malicious server-side symlink
+      // ever materialised. CodeQL's `js/path-injection` query
+      // recognises this `path.resolve` + containment shape as a
+      // sanitizer.
       const dirContents = await fs.promises.readdir(absoluteDirPath);
       for (const entry of dirContents) {
          // Don't remove the cleanPackagePath directory itself (/var/publisher/asd123/imdb)
          if (entry !== cleanPackagePath.replace(/^\/+/, "").split("/")[0]) {
-            await fs.promises.rm(path.join(absoluteDirPath, entry), {
+            await fs.promises.rm(safeJoinUnderRoot(absoluteDirPath, entry), {
                recursive: true,
                force: true,
             });
@@ -1609,8 +1773,8 @@ export class EnvironmentStore {
       const packageContents = await fs.promises.readdir(packageFullPath);
       for (const entry of packageContents) {
          await fs.promises.rename(
-            path.join(packageFullPath, entry),
-            path.join(absoluteDirPath, entry),
+            safeJoinUnderRoot(packageFullPath, entry),
+            safeJoinUnderRoot(absoluteDirPath, entry),
          );
       }
 

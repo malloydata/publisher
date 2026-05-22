@@ -22,9 +22,13 @@ import {
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
-import path from "path";
 import { components } from "../api";
 import { logAxiosError, logger } from "../logger";
+import {
+   assertSafeConnectionName,
+   assertSafeEnvironmentPath,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    assembleEnvironmentConnections,
@@ -814,7 +818,17 @@ export async function deleteDuckLakeConnectionFile(
    connectionName: string,
    environmentPath: string,
 ): Promise<void> {
-   const ducklakePath = path.join(
+   // Source-side allowlist + containment join. The DELETE
+   // /environments/:env/connections/:name route propagates both
+   // params here unvalidated; assert the shape and resolve under
+   // the environment root so a `..`-laden name can neither escape
+   // the directory nor reach `fs.access` / `fs.rm` as raw input.
+   // CodeQL's `js/path-injection` query recognises this combination
+   // (`assertSafeConnectionName` allowlist + `safeJoinUnderRoot`
+   // resolve-and-contain) as a sanitizer barrier.
+   assertSafeEnvironmentPath(environmentPath);
+   assertSafeConnectionName(connectionName);
+   const ducklakePath = safeJoinUnderRoot(
       environmentPath,
       `${connectionName}_ducklake.duckdb`,
    );

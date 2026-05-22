@@ -3,6 +3,8 @@ import * as path from "path";
 
 import { BadRequestError } from "./errors";
 import {
+   assertSafeConnectionName,
+   assertSafeEnvironmentName,
    assertSafeEnvironmentPath,
    assertSafePackageName,
    assertSafeRelativeModelPath,
@@ -46,6 +48,56 @@ describe("assertSafePackageName", () => {
       ["object", { name: "pkg" }],
    ])("rejects non-string %s (%p)", (_label, value) => {
       expect(() => assertSafePackageName(value)).toThrow(BadRequestError);
+   });
+});
+
+// `assertSafeEnvironmentName` and `assertSafeConnectionName` share the
+// SAFE_NAME_RE allowlist with `assertSafePackageName`; the per-helper
+// tests below pin a couple of representative shapes so a future
+// regression that diverges one rule from the others is caught
+// immediately. The exhaustive matrix lives on `assertSafePackageName`
+// above.
+describe("assertSafeEnvironmentName", () => {
+   it.each(["env", "my-environment", "Env_1", "a.b.c"])(
+      "accepts %p",
+      (name) => {
+         expect(() => assertSafeEnvironmentName(name)).not.toThrow();
+      },
+   );
+
+   it.each([
+      ["traversal", "../etc"],
+      ["abs", "/etc/env"],
+      ["leading dot", ".staging"],
+      ["empty", ""],
+      ["null byte", "env\0"],
+   ])("rejects %s (%p)", (_label, name) => {
+      expect(() => assertSafeEnvironmentName(name)).toThrow(BadRequestError);
+   });
+
+   it("rejects non-string inputs", () => {
+      expect(() => assertSafeEnvironmentName(undefined)).toThrow(
+         BadRequestError,
+      );
+      expect(() => assertSafeEnvironmentName(null)).toThrow(BadRequestError);
+   });
+});
+
+describe("assertSafeConnectionName", () => {
+   it.each(["bigquery", "duck_db", "my-conn-1", "default"])(
+      "accepts %p",
+      (name) => {
+         expect(() => assertSafeConnectionName(name)).not.toThrow();
+      },
+   );
+
+   it.each([
+      ["traversal", "../passwd"],
+      ["slash", "a/b"],
+      ["empty", ""],
+      ["space", "my conn"],
+   ])("rejects %s (%p)", (_label, name) => {
+      expect(() => assertSafeConnectionName(name)).toThrow(BadRequestError);
    });
 });
 

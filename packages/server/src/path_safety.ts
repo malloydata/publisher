@@ -53,6 +53,44 @@ export function assertSafePackageName(packageName: unknown): void {
 }
 
 /**
+ * Reject anything that isn't a plausible environment name. Environment
+ * names share the same shape as package names — single path segment,
+ * no traversal, no leading dot — because both are interpolated into
+ * on-disk directory names (`{serverRoot}/publisher_data/{name}` for
+ * environments; `{environmentPath}/{name}` for packages). Aliasing
+ * via a thin wrapper rather than re-using `assertSafePackageName`
+ * directly makes the call sites read correctly and leaves room to
+ * tighten one rule without affecting the other.
+ */
+export function assertSafeEnvironmentName(environmentName: unknown): void {
+   if (
+      typeof environmentName !== "string" ||
+      !SAFE_NAME_RE.test(environmentName)
+   ) {
+      throw new BadRequestError(
+         `Invalid environment name: must be 1-255 characters of letters, digits, "-", "_", or "." and must not start with "."`,
+      );
+   }
+}
+
+/**
+ * Reject anything that isn't a plausible single-segment connection
+ * name. Same shape as package/environment names because connection
+ * names are interpolated into filesystem paths
+ * (`{environmentPath}/{connectionName}.ducklake`).
+ */
+export function assertSafeConnectionName(connectionName: unknown): void {
+   if (
+      typeof connectionName !== "string" ||
+      !SAFE_NAME_RE.test(connectionName)
+   ) {
+      throw new BadRequestError(
+         `Invalid connection name: must be 1-255 characters of letters, digits, "-", "_", or "." and must not start with "."`,
+      );
+   }
+}
+
+/**
  * Reject anything that isn't a plausible *relative* path to a model
  * file inside a package directory. Forward slashes are allowed (models
  * live in subdirectories like `models/foo.malloy`); backslashes,

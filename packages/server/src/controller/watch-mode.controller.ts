@@ -1,8 +1,8 @@
 import chokidar, { FSWatcher } from "chokidar";
 import { RequestHandler } from "express";
-import path from "path";
 import { components } from "../api";
 import { logger } from "../logger";
+import { assertSafeEnvironmentName, safeJoinUnderRoot } from "../path_safety";
 import { EnvironmentStore } from "../service/environment_store";
 
 type StartWatchReq = components["schemas"]["StartWatchRequest"];
@@ -32,6 +32,15 @@ export class WatchModeController {
       res,
    ) => {
       const watchName = req.body.environmentName ?? "";
+      // Validate the request-supplied environment name BEFORE any
+      // filesystem access. `watchName` is interpolated into
+      // `path.join(serverRootPath, watchName)` below and reaches
+      // `chokidar.watch` (which spawns `fs.watch` on the resolved
+      // path); a `..`-laden value would let a caller watch any
+      // directory under the server root. The allowlist matches the
+      // one applied at `EnvironmentStore.addEnvironment` so all
+      // surfaces share a single shape rule.
+      assertSafeEnvironmentName(watchName);
       const environmentManifest =
          await EnvironmentStore.reloadEnvironmentManifest(
             this.environmentStore.serverRootPath,
@@ -53,7 +62,11 @@ export class WatchModeController {
          return;
       }
 
-      this.watchingPath = path.join(
+      // `safeJoinUnderRoot` is the resolve-and-contain sink barrier
+      // for `chokidar.watch`. `watchName` is already shape-validated
+      // above, but the secondary containment check defends against
+      // any future refactor that bypasses the source-side allowlist.
+      this.watchingPath = safeJoinUnderRoot(
          this.environmentStore.serverRootPath,
          watchName,
       );

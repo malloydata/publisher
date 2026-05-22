@@ -28,6 +28,11 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { formatDuration, logger } from "../logger";
+import {
+   assertSafeEnvironmentPath,
+   assertSafePackageName,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { ignoreDotfiles } from "../utils";
 import { Model } from "./model";
@@ -90,6 +95,15 @@ export class Package {
       packagePath: string,
       environmentMalloyConfig: PackageConnectionInput,
    ): Promise<Package> {
+      // Sink-adjacent barrier: validate the path-shape inputs at the
+      // entry of every public Package static method. The Environment
+      // layer already validates `packageName` and resolves
+      // `packagePath` via `safeJoinUnderRoot` upstream, but CodeQL
+      // can't see across that module boundary; re-asserting here
+      // makes the sanitizer visible at the same data-flow node as
+      // the `fs.rm` / `fs.stat` sinks reached below.
+      assertSafePackageName(packageName);
+      assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
       await Package.validatePackageManifestExistsOrThrowError(packagePath);
       const manifestValidationTime = performance.now();
@@ -515,7 +529,16 @@ export class Package {
    private static async validatePackageManifestExistsOrThrowError(
       packagePath: string,
    ) {
-      const packageConfigPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
+      // Sink-adjacent barrier. Public callers (`Package.create`)
+      // already validate `packagePath`; private callers might
+      // someday be added that don't. Asserting here is a O(1)
+      // guard that keeps CodeQL's sanitizer recognition local to
+      // the `fs.stat` sink.
+      assertSafeEnvironmentPath(packagePath);
+      const packageConfigPath = safeJoinUnderRoot(
+         packagePath,
+         PACKAGE_MANIFEST_NAME,
+      );
       try {
          await fs.stat(packageConfigPath);
       } catch {

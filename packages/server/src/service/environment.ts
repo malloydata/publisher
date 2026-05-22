@@ -14,6 +14,7 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import {
+   assertSafeEnvironmentName,
    assertSafeEnvironmentPath,
    assertSafePackageName,
    assertSafeRelativeModelPath,
@@ -176,6 +177,15 @@ export class Environment {
       environmentPath: string,
       connections: ApiConnection[],
    ): Promise<Environment> {
+      // Sink-adjacent barrier: re-assert the shape at the entry of
+      // every Environment static / public method so CodeQL's
+      // `js/path-injection` query sees the sanitizer at the same
+      // data-flow node as the `fs.stat` sink below. The constructor
+      // also runs `assertSafeEnvironmentPath`; running it here is
+      // belt-and-suspenders against a future refactor that bypasses
+      // the constructor.
+      assertSafeEnvironmentName(environmentName);
+      assertSafeEnvironmentPath(environmentPath);
       if (!(await fs.promises.stat(environmentPath))?.isDirectory()) {
          throw new EnvironmentNotFoundError(
             `Environment path ${environmentPath} not found`,
@@ -214,6 +224,13 @@ export class Environment {
    }
 
    public async reloadEnvironmentMetadata(): Promise<ApiEnvironment> {
+      // Sink-adjacent barrier on `this.environmentPath` — even though
+      // the constructor already ran `assertSafeEnvironmentPath`,
+      // CodeQL conservatively treats `this.*` as tainted because
+      // other methods on this class accept request-derived names.
+      // Re-asserting at the sink gives the static analyser a
+      // sanitizer node at the same flow position as the readFile.
+      assertSafeEnvironmentPath(this.environmentPath);
       let readme = "";
       try {
          readme = (
