@@ -1,8 +1,8 @@
 /**
  * Helpers for streaming the ad-hoc connection SQL endpoints
- * (`/environments/.../connections/.../sqlQuery` and the deprecated
- * `queryData` GET twin) so the publisher process never has to hold
- * a whole result set in memory before returning it.
+ * (`/environments/.../connections/.../sqlQuery`) so the publisher
+ * process never has to hold a whole result set in memory before
+ * returning it.
  *
  * The Step 1 row cap (`PUBLISHER_MAX_QUERY_ROWS`) is necessary but
  * not sufficient: row count is a poor proxy for memory pressure
@@ -28,6 +28,7 @@ import type {
 } from "@malloydata/malloy";
 
 import { PayloadTooLargeError } from "./errors";
+import { recordQueryCapExceeded } from "./query_cap_metrics";
 
 /**
  * Runtime check + type narrow for streaming-capable connections.
@@ -89,15 +90,39 @@ export async function streamSqlWithBudget(
    budget: StreamBudget,
 ): Promise<MalloyQueryData> {
    const { maxRows, maxBytes } = budget;
-   const ac = new AbortController();
+   const capAc = new AbortController();
    const rows: QueryRecord[] = [];
    let byteTotal = 0;
    let overflowMessage: string | undefined;
 
+   // Compose two abort sources so a caller-supplied signal (the
+   // publisher's query timeout) and the internal cap-abort signal
+   // *both* cancel the underlying iterator:
+   //
+   //   - If the caller's signal fires first, the controller's
+   //     `runWithQueryTimeout` will throw `QueryTimeoutError` → 504.
+   //   - If the cap-abort fires first, we throw
+   //     `PayloadTooLargeError` → 413.
+   //
+   // Without composition the streaming branch would silently drop
+   // the caller's signal — historically the only way to abort here
+   // was the cap, so the legacy controller cleared
+   // `runSQLOptions.abortSignal`. Step 5 reverses that: the caller's
+   // signal is now authoritative.
+   //
+   // `AbortSignal.any` is widely available (Node 20+); guard with a
+   // typeof check so a stale runtime falls back to the legacy
+   // cap-only behavior instead of crashing at module load.
+   const externalSignal = runSQLOptions.abortSignal;
+   const composedSignal: AbortSignal =
+      externalSignal && typeof AbortSignal.any === "function"
+         ? AbortSignal.any([externalSignal, capAc.signal])
+         : capAc.signal;
+
    try {
       for await (const row of connection.runSQLStream(sql, {
          ...runSQLOptions,
-         abortSignal: ac.signal,
+         abortSignal: composedSignal,
       })) {
          rows.push(row);
          if (maxBytes > 0) {
@@ -108,14 +133,16 @@ export async function streamSqlWithBudget(
             // cost in the bounded-success case.
             byteTotal += Buffer.byteLength(JSON.stringify(row), "utf8");
             if (byteTotal > maxBytes) {
+               recordQueryCapExceeded("bytes", "connection_sql");
                overflowMessage = `Query response exceeded ${maxBytes} bytes (had at least ${byteTotal}). Refine the query (project fewer columns, add a LIMIT, or filter wide values) or raise PUBLISHER_MAX_RESPONSE_BYTES.`;
-               ac.abort();
+               capAc.abort();
                break;
             }
          }
          if (maxRows > 0 && rows.length > maxRows) {
+            recordQueryCapExceeded("rows", "connection_sql");
             overflowMessage = `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`;
-            ac.abort();
+            capAc.abort();
             break;
          }
       }
@@ -123,8 +150,9 @@ export async function streamSqlWithBudget(
       // `pg-query-stream` surfaces `query.destroy()` (which our
       // abort handler triggers) as a synthetic error in some
       // versions. Swallow it iff we triggered the abort ourselves —
-      // otherwise it's a real connection error that the controller
-      // must see.
+      // otherwise it's a real connection error (or the caller's
+      // timeout, which the controller's runWithQueryTimeout will
+      // surface as a 504) that the controller must see.
       if (!overflowMessage) throw err;
    }
 

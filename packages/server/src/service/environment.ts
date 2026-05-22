@@ -1,5 +1,6 @@
 import type { GivenValue, LogMessage } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
+import { metrics } from "@opentelemetry/api";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -68,6 +69,49 @@ type RetiredConnectionGeneration = {
 };
 
 const RETIRED_CONNECTION_DRAIN_MS = 30_000;
+
+/**
+ * Module-scoped admission-rejection counters. Lazy-initialized so
+ * the OTel JS `ProxyMeter` cannot strand them on a NoOp instrument
+ * created before the SDK MeterProvider was registered (a real risk
+ * in unit tests; see comment in `query_timeout.ts`). Environment
+ * name is attached as a label so dashboards can identify hot
+ * environments without grepping logs.
+ */
+import { type Counter } from "@opentelemetry/api";
+let queryAdmissionRejectionsCounter: Counter | null = null;
+let packageAdmissionRejectionsCounter: Counter | null = null;
+function getQueryAdmissionRejectionsCounter(): Counter {
+   if (queryAdmissionRejectionsCounter) return queryAdmissionRejectionsCounter;
+   queryAdmissionRejectionsCounter = metrics
+      .getMeter("publisher")
+      .createCounter("publisher_query_admission_rejections_total", {
+         description:
+            "Queries rejected with 503 because Environment.assertCanAdmitQuery() observed memory back-pressure",
+      });
+   return queryAdmissionRejectionsCounter;
+}
+function getPackageAdmissionRejectionsCounter(): Counter {
+   if (packageAdmissionRejectionsCounter) {
+      return packageAdmissionRejectionsCounter;
+   }
+   packageAdmissionRejectionsCounter = metrics
+      .getMeter("publisher")
+      .createCounter("publisher_package_admission_rejections_total", {
+         description:
+            "Package loads rejected with 503 because Environment.assertCanAdmitNewPackage() observed memory back-pressure",
+      });
+   return packageAdmissionRejectionsCounter;
+}
+
+/**
+ * Visible for tests; production code never calls this. Resets the
+ * lazy caches so a fresh MeterProvider can capture future writes.
+ */
+export function resetAdmissionTelemetryForTesting(): void {
+   queryAdmissionRejectionsCounter = null;
+   packageAdmissionRejectionsCounter = null;
+}
 
 export class Environment {
    private packages: Map<string, Package> = new Map();
@@ -580,8 +624,43 @@ export class Environment {
    ): void {
       if (allowAdmission) return;
       if (!this.memoryGovernor?.isBackpressured()) return;
+      // Increment *before* throwing so the metric ticks even on
+      // the not-uncommon "caught and swallowed" path. The label
+      // shape mirrors `assertCanAdmitQuery` so a dashboard panel
+      // can sum both rejection kinds by environment.
+      getPackageAdmissionRejectionsCounter().add(1, {
+         environment: this.environmentName,
+         reason,
+      });
       throw new ServiceUnavailableError(
-         `Publisher is under memory pressure and cannot ${reason} (package "${packageName}", environment "${this.environmentName}"). Retry after the server's memory usage drops below the configured low-water mark.`,
+         `Publisher is under memory pressure and cannot ${reason} (package "${packageName}", environment "${this.environmentName}"). Retry after the server's memory usage drops below the low-water mark (PUBLISHER_MEMORY_LOW_WATER_FRACTION of PUBLISHER_MAX_MEMORY_BYTES), or raise PUBLISHER_MAX_MEMORY_BYTES if you have headroom.`,
+      );
+   }
+
+   /**
+    * Reject incoming queries with HTTP 503 when the memory governor
+    * has tripped its high-water mark. Used by every query controller
+    * (connection SQL, model query, notebook cell, MCP `execute_query`)
+    * to shed load before the query runs — complementing
+    * {@link assertCanAdmitNewPackage}, which only fires on cache-miss
+    * package loads and so leaves already-loaded packages fully
+    * queryable under pressure. With this in place, "back-pressured"
+    * means "no new work of any kind" until the governor's low-water
+    * mark is crossed.
+    *
+    * Cheap O(1) boolean read; no allocation when happy.
+    */
+   public assertCanAdmitQuery(): void {
+      if (!this.memoryGovernor?.isBackpressured()) return;
+      // Tick first so the counter reflects every rejection even
+      // when the controller's catch block swallows the error (e.g.
+      // an MCP tool surfaces it as a content payload rather than
+      // letting it bubble to the HTTP error mapper).
+      getQueryAdmissionRejectionsCounter().add(1, {
+         environment: this.environmentName,
+      });
+      throw new ServiceUnavailableError(
+         `Publisher is under memory pressure and cannot accept new queries (environment "${this.environmentName}"). Retry after the server's memory usage drops below the low-water mark (PUBLISHER_MEMORY_LOW_WATER_FRACTION of PUBLISHER_MAX_MEMORY_BYTES), or raise PUBLISHER_MAX_MEMORY_BYTES if you have headroom.`,
       );
    }
 

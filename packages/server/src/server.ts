@@ -35,6 +35,8 @@ import {
 import { logger, loggerMiddleware } from "./logger";
 
 import { getMemoryGovernorConfig } from "./config";
+import { checkHeapConfiguration } from "./heap_check";
+import { queryConcurrency } from "./query_concurrency";
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
@@ -154,6 +156,12 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
+// Probe the V8 heap ceiling once at startup and warn if it's below
+// the recommended floor. The row/byte caps from Steps 1–3 still
+// bound per-request memory; this is a "your --max-old-space-size
+// looks low for the default caps" advisory so operators don't
+// chase OOMKills before checking the obvious config.
+checkHeapConfiguration();
 const environmentStore = new EnvironmentStore(SERVER_ROOT);
 const manifestService = new ManifestService(environmentStore);
 const watchModeController = new WatchModeController(environmentStore);
@@ -713,55 +721,18 @@ app.post(
    },
 );
 
-/**
- * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlQuery POST method instead
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/queryData`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionQueryData(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-               req.query.options as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/queryData`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionQueryData(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-               req.query.options as string,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
+// NOTE: The deprecated `GET …/connections/:connectionName/queryData`
+// and `GET …/packages/:packageName/connections/:connectionName/queryData`
+// routes were removed in the operational-guards changeset.
+// They had been marked `@deprecated` for several releases; clients
+// must now use the POST `…/sqlQuery` endpoints below, which take the
+// SQL in the request body so the row/byte caps and query-timeout
+// signals introduced in the OOM-mitigation work apply uniformly.
+// The legacy `GET /projects/…/queryData` twins under `server-old.ts`
+// remain in place for now.
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlQuery`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
@@ -791,6 +762,7 @@ app.post(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
@@ -821,6 +793,7 @@ app.post(
  */
 app.get(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/temporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -843,6 +816,7 @@ app.get(
  */
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/temporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -863,6 +837,7 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlTemporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -882,6 +857,7 @@ app.post(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1076,6 +1052,7 @@ app.get(
 // to avoid the wildcard matching incorrectly
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
+   queryConcurrency(),
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -1168,6 +1145,7 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
+   queryConcurrency(),
    async (req, res) => {
       if (req.body.versionId) {
          setVersionIdError(res);

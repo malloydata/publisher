@@ -4,9 +4,11 @@ import { fileURLToPath } from "url";
 import { components } from "./api";
 import {
    API_PREFIX,
+   DEFAULT_MAX_CONCURRENT_QUERIES,
    DEFAULT_MAX_QUERY_ROWS,
    DEFAULT_MAX_RESPONSE_BYTES,
    DEFAULT_QUERY_ROW_LIMIT,
+   DEFAULT_QUERY_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
@@ -297,6 +299,47 @@ export const getDefaultQueryRowLimit = (): number => {
    if (raw <= 0) {
       throw new Error(
          `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT must be a positive integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the per-query wall-clock timeout (milliseconds). Reads
+ * `PUBLISHER_QUERY_TIMEOUT_MS`; falls back to
+ * {@link DEFAULT_QUERY_TIMEOUT_MS} when unset or empty.
+ *
+ * `0` is accepted and disables the timeout entirely. Loud-failure
+ * on bad input (negative, non-integer, non-numeric) so a typo in a
+ * k8s manifest surfaces at startup.
+ */
+export const getQueryTimeoutMs = (): number => {
+   const raw = parseIntEnv("PUBLISHER_QUERY_TIMEOUT_MS");
+   if (raw === undefined) return DEFAULT_QUERY_TIMEOUT_MS;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_QUERY_TIMEOUT_MS must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the per-pod inbound query concurrency cap. Reads
+ * `PUBLISHER_MAX_CONCURRENT_QUERIES`; falls back to
+ * {@link DEFAULT_MAX_CONCURRENT_QUERIES} when unset or empty.
+ *
+ * `0` is accepted and disables the cap entirely (use only when you
+ * have another concurrency control upstream, e.g. an explicit
+ * connection pool sized at the load balancer). Loud-failure on bad
+ * input.
+ */
+export const getMaxConcurrentQueries = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_CONCURRENT_QUERIES");
+   if (raw === undefined) return DEFAULT_MAX_CONCURRENT_QUERIES;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_MAX_CONCURRENT_QUERIES must be a non-negative integer (got ${raw})`,
       );
    }
    return raw;

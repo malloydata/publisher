@@ -1318,3 +1318,93 @@ describe("getDefaultQueryRowLimit", () => {
       expect(() => getDefaultQueryRowLimit()).toThrow();
    });
 });
+
+describe("getQueryTimeoutMs", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+   });
+
+   it("returns DEFAULT_QUERY_TIMEOUT_MS when the env var is unset", async () => {
+      const { getQueryTimeoutMs } = await import("./config");
+      const { DEFAULT_QUERY_TIMEOUT_MS } = await import("./constants");
+      expect(getQueryTimeoutMs()).toBe(DEFAULT_QUERY_TIMEOUT_MS);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "30000";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(getQueryTimeoutMs()).toBe(30000);
+   });
+
+   it("accepts 0 (used to opt out of the timeout)", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "0";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(getQueryTimeoutMs()).toBe(0);
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "-1";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(() => getQueryTimeoutMs()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "1.5";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(() => getQueryTimeoutMs()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "slow";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(() => getQueryTimeoutMs()).toThrow();
+   });
+});
+
+describe("getMaxConcurrentQueries", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
+   });
+
+   it("returns DEFAULT_MAX_CONCURRENT_QUERIES when the env var is unset", async () => {
+      const { getMaxConcurrentQueries } = await import("./config");
+      const { DEFAULT_MAX_CONCURRENT_QUERIES } = await import("./constants");
+      expect(getMaxConcurrentQueries()).toBe(DEFAULT_MAX_CONCURRENT_QUERIES);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "8";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(getMaxConcurrentQueries()).toBe(8);
+   });
+
+   it("accepts 0 (used to opt out of the cap)", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "0";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(getMaxConcurrentQueries()).toBe(0);
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "-1";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(() => getMaxConcurrentQueries()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1.5";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(() => getMaxConcurrentQueries()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "many";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(() => getMaxConcurrentQueries()).toThrow();
+   });
+});

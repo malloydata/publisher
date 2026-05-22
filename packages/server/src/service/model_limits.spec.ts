@@ -88,76 +88,94 @@ describe("resolveModelQueryRowLimit", () => {
 describe("assertWithinModelResponseLimits", () => {
    it("does not throw when both counts are below their caps", () => {
       expect(() =>
-         assertWithinModelResponseLimits(500, 1_000, {
-            maxRows: 1000,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            500,
+            1_000,
+            { maxRows: 1000, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).not.toThrow();
    });
 
    it("does not throw when row count equals the cap exactly (sentinel hasn't fired)", () => {
       expect(() =>
-         assertWithinModelResponseLimits(1000, 1_000, {
-            maxRows: 1000,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            1000,
+            1_000,
+            { maxRows: 1000, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).not.toThrow();
    });
 
    it("throws PayloadTooLargeError with the row-cap message on row overflow", () => {
       expect(() =>
-         assertWithinModelResponseLimits(1001, 1_000, {
-            maxRows: 1000,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            1001,
+            1_000,
+            { maxRows: 1000, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).toThrow(PayloadTooLargeError);
       expect(() =>
-         assertWithinModelResponseLimits(1001, 1_000, {
-            maxRows: 1000,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            1001,
+            1_000,
+            { maxRows: 1000, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).toThrow("more than 1000 rows");
    });
 
    it("throws PayloadTooLargeError with the byte-cap message on byte overflow", () => {
       expect(() =>
-         assertWithinModelResponseLimits(10, 50_000, {
-            maxRows: 1000,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            10,
+            50_000,
+            { maxRows: 1000, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).toThrow(PayloadTooLargeError);
       expect(() =>
-         assertWithinModelResponseLimits(10, 50_000, {
-            maxRows: 1000,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            10,
+            50_000,
+            { maxRows: 1000, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).toThrow("exceeded 10000 bytes");
    });
 
    it("prefers the row-cap message when both caps would have fired (row check runs first)", () => {
       expect(() =>
-         assertWithinModelResponseLimits(2000, 50_000, {
-            maxRows: 1000,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            2000,
+            50_000,
+            { maxRows: 1000, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).toThrow("more than 1000 rows");
    });
 
    it("disables row cap when maxRows is 0", () => {
       expect(() =>
-         assertWithinModelResponseLimits(1_000_000, 1_000, {
-            maxRows: 0,
-            maxBytes: 10_000,
-         }),
+         assertWithinModelResponseLimits(
+            1_000_000,
+            1_000,
+            { maxRows: 0, maxBytes: 10_000 },
+            "model_query",
+         ),
       ).not.toThrow();
    });
 
    it("disables byte cap when maxBytes is 0", () => {
       expect(() =>
-         assertWithinModelResponseLimits(10, 1_000_000_000, {
-            maxRows: 1000,
-            maxBytes: 0,
-         }),
+         assertWithinModelResponseLimits(
+            10,
+            1_000_000_000,
+            { maxRows: 1000, maxBytes: 0 },
+            "model_query",
+         ),
       ).not.toThrow();
    });
 });
