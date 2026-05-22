@@ -1,4 +1,9 @@
-import type { Connection } from "@malloydata/malloy";
+import type {
+   Connection,
+   QueryRecord,
+   RunSQLOptions,
+   StreamingConnection,
+} from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
@@ -315,5 +320,236 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
          ),
       ).rejects.toBeInstanceOf(BadRequestError);
       expect(runSQL.called).toBe(false);
+   });
+});
+
+/**
+ * Tests for the streaming branch of
+ * {@link ConnectionController.getConnectionQueryData}. When the
+ * connection implements `canStream`, the controller routes through
+ * `streamSqlWithBudget` so the byte cap can fire mid-stream. The
+ * row cap is still enforced via `RunSQLOptions.rowLimit = cap+1` on
+ * the way in, plus an overflow check on the way out (same sentinel
+ * pattern as the non-streaming path).
+ */
+describe("ConnectionController.getConnectionQueryData streaming", () => {
+   const originalRowsEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
+   const originalBytesEnv = process.env.PUBLISHER_MAX_RESPONSE_BYTES;
+
+   afterEach(() => {
+      sinon.restore();
+      if (originalRowsEnv === undefined) {
+         delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+      } else {
+         process.env.PUBLISHER_MAX_QUERY_ROWS = originalRowsEnv;
+      }
+      if (originalBytesEnv === undefined) {
+         delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
+      } else {
+         process.env.PUBLISHER_MAX_RESPONSE_BYTES = originalBytesEnv;
+      }
+   });
+
+   /**
+    * Build a controller backed by a fake `StreamingConnection`.
+    * `seenSql` and `seenOptions` let tests assert the controller
+    * passed the SQL straight through and forwarded the budget-derived
+    * `rowLimit` to the driver.
+    */
+   function buildStreamingController(opts: {
+      rows: QueryRecord[];
+      honorRowLimit?: boolean;
+   }): {
+      controller: ConnectionController;
+      seenSql: { value: string | undefined };
+      seenOptions: { value: RunSQLOptions | undefined };
+   } {
+      const { rows, honorRowLimit = true } = opts;
+      const seenSql = { value: undefined as string | undefined };
+      const seenOptions = { value: undefined as RunSQLOptions | undefined };
+      const fakeConnection = {
+         canStream(): true {
+            return true;
+         },
+         async *runSQLStream(
+            sql: string,
+            options?: RunSQLOptions,
+         ): AsyncIterableIterator<QueryRecord> {
+            seenSql.value = sql;
+            seenOptions.value = options;
+            const limit =
+               honorRowLimit && typeof options?.rowLimit === "number"
+                  ? options.rowLimit
+                  : rows.length;
+            for (let i = 0; i < Math.min(rows.length, limit); i += 1) {
+               yield rows[i];
+            }
+         },
+      } as unknown as StreamingConnection;
+      const controller = new ConnectionController(
+         {} as unknown as EnvironmentStore,
+      );
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection as unknown as Connection);
+      return { controller, seenSql, seenOptions };
+   }
+
+   it("routes through runSQLStream and asks the driver for cap+1 rows", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "5";
+      const rows = [{ a: 1 }, { a: 2 }];
+      const { controller, seenSql, seenOptions } = buildStreamingController({
+         rows,
+      });
+
+      const result = await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT a FROM t",
+         "",
+      );
+
+      expect(seenSql.value).toBe("SELECT a FROM t");
+      expect(seenOptions.value?.rowLimit).toBe(6);
+      const parsed = JSON.parse(result.data ?? "") as { rows: QueryRecord[] };
+      expect(parsed.rows).toEqual(rows);
+   });
+
+   it("preserves a caller-supplied rowLimit when it is below the cap+1 ceiling", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "100";
+      const { controller, seenOptions } = buildStreamingController({
+         rows: [{ a: 1 }],
+      });
+
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT a FROM t",
+         JSON.stringify({ rowLimit: 10 }),
+      );
+
+      expect(seenOptions.value?.rowLimit).toBe(10);
+   });
+
+   it("throws PayloadTooLargeError when the stream yields more than the row cap", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "2";
+      const rows = [{ a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }];
+      const { controller } = buildStreamingController({
+         rows,
+         honorRowLimit: false,
+      });
+
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT a FROM t",
+            "",
+         ),
+      ).rejects.toBeInstanceOf(PayloadTooLargeError);
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT a FROM t",
+            "",
+         ),
+      ).rejects.toThrow("more than 2 rows");
+   });
+
+   it("throws PayloadTooLargeError when the stream exceeds the byte cap", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "60";
+      const big = "x".repeat(40);
+      const rows = [{ s: big }, { s: big }, { s: big }];
+      const { controller } = buildStreamingController({
+         rows,
+         honorRowLimit: false,
+      });
+
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT s FROM t",
+            "",
+         ),
+      ).rejects.toBeInstanceOf(PayloadTooLargeError);
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT s FROM t",
+            "",
+         ),
+      ).rejects.toThrow("exceeded 60 bytes");
+   });
+
+   it("disables byte cap when PUBLISHER_MAX_RESPONSE_BYTES=0", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+      const big = "x".repeat(10_000);
+      const rows: QueryRecord[] = Array.from({ length: 3 }, () => ({ s: big }));
+      const { controller } = buildStreamingController({
+         rows,
+         honorRowLimit: false,
+      });
+
+      const result = await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT s FROM t",
+         "",
+      );
+
+      const parsed = JSON.parse(result.data ?? "") as { rows: QueryRecord[] };
+      expect(parsed.rows.length).toBe(3);
+   });
+
+   it("omits rowLimit when PUBLISHER_MAX_QUERY_ROWS=0 and no caller limit is given", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];
+      const { controller, seenOptions } = buildStreamingController({
+         rows,
+         honorRowLimit: false,
+      });
+
+      const result = await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT a FROM t",
+         "",
+      );
+
+      expect(seenOptions.value?.rowLimit).toBeUndefined();
+      const parsed = JSON.parse(result.data ?? "") as { rows: QueryRecord[] };
+      expect(parsed.rows.length).toBe(3);
+   });
+
+   it("replaces caller-supplied abortSignal with a real AbortSignal", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+      const { controller, seenOptions } = buildStreamingController({
+         rows: [{ a: 1 }],
+      });
+
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1",
+         JSON.stringify({ abortSignal: {} }),
+      );
+
+      // The controller clears the caller-supplied abortSignal (which
+      // arrives over the wire as a JSON-shaped placeholder, not a
+      // real AbortSignal), and the streaming helper installs its own
+      // so it can abort the iterator on overflow.
+      const signal = seenOptions.value?.abortSignal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal?.aborted).toBe(false);
    });
 });
