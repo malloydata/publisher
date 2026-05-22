@@ -306,7 +306,10 @@ export default function ThemeEditorPage() {
                </DialogContentText>
             </DialogContent>
             <DialogActions>
-               <Button onClick={() => setConfirmDiscardOpen(false)}>
+               <Button
+                  onClick={() => setConfirmDiscardOpen(false)}
+                  sx={{ color: "text.primary" }}
+               >
                   Cancel
                </Button>
                <Button
@@ -339,7 +342,10 @@ export default function ThemeEditorPage() {
                </DialogContentText>
             </DialogContent>
             <DialogActions>
-               <Button onClick={() => setConfirmResetOpen(false)}>
+               <Button
+                  onClick={() => setConfirmResetOpen(false)}
+                  sx={{ color: "text.primary" }}
+               >
                   Cancel
                </Button>
                <Button
