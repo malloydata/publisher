@@ -141,19 +141,27 @@ function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
  * times in dev (HMR) is safe.
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
-.malloy-render .malloy-dashboard {
-   /* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard,
-      which paints white in dark mode and beats the outer
-      --malloy-render--background var. Override here so the dashboard
-      panel follows our theme's dashboardRoot color. */
+/* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard
+   and .dashboard-row-header, which would paint light grey in dark
+   mode and also bleed an operator-picked palette.background across
+   the panel chrome in light. Both surfaces use
+   --malloy-render--background here, which buildMalloyExplicitTheme
+   wires to dashboardRoot: a mode-keyed neutral that stays decoupled
+   from palette.background (the chart canvas) on purpose. Selectors
+   are duplicated at higher specificity to beat the renderer s own
+   scoped rules. */
+.malloy-render .malloy-dashboard,
+.malloy-render.malloy-render .malloy-dashboard,
+div.malloy-render .malloy-dashboard {
    background: var(--malloy-render--background) !important;
+   background-color: var(--malloy-render--background) !important;
    color: var(--malloy-render--table-body-color) !important;
 }
-.malloy-render .malloy-dashboard .dashboard-row-header {
-   /* dashboard.css also hardcodes background: #f7f9fc on the row
-      header (the sticky-top label area inside the dashboard). Same
-      treatment as the panel itself. */
+.malloy-render .malloy-dashboard .dashboard-row-header,
+.malloy-render.malloy-render .malloy-dashboard .dashboard-row-header,
+div.malloy-render .malloy-dashboard .dashboard-row-header {
    background: var(--malloy-render--background) !important;
+   background-color: var(--malloy-render--background) !important;
 }
 .malloy-render .malloy-dashboard .dashboard-item {
    background: var(--malloy-render--table-pinned-background) !important;

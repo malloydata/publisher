@@ -48,13 +48,13 @@ export interface ResolvedTheme {
     */
    dashboardRoot: string;
    /**
-    * Background for the renderer's table interior. Mode-keyed and
-    * intentionally NOT operator-customizable — the same accent-bleed
-    * concern that motivated `dashboardRoot` applies here. Without
-    * this, the renderer falls back to a hardcoded white interior in
-    * dark mode, which leaves the (light-slate) header and body text
-    * unreadable. Defaults to white in light (no regression) and slate
-    * in dark.
+    * Background for the renderer's table interior. Follows the
+    * operator's `palette.background` (the chart canvas colour) so
+    * tables and charts share a single "viz surface" colour. In dark
+    * mode this also keeps the (light-slate) header/body text from
+    * painting unreadable light-on-white against the renderer's
+    * hardcoded default. Distinct from `dashboardRoot`, which is the
+    * panel BETWEEN tiles and stays mode-keyed / neutral.
     */
    tableBackground: string;
 }

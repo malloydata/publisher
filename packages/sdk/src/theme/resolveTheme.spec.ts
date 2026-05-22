@@ -104,18 +104,22 @@ describe("resolveTheme cascade", () => {
       expect(t.dashboardRoot).toBe("#1e293b");
    });
 
-   it("tableBackground is mode-keyed and immune to operator background overrides", () => {
-      // Light keeps white; dark goes slate so table text doesn't paint
-      // light-on-white.
+   it("tableBackground follows the operator's palette.background", () => {
+      // Defaults track the per-mode background (white in light, slate
+      // in dark) so existing installs see no change.
       expect(resolveTheme([], "light").tableBackground).toBe("#ffffff");
       expect(resolveTheme([], "dark").tableBackground).toBe("#1e293b");
+      // An operator accent on palette.background bleeds into the table
+      // interior so charts and tables share a single viz surface
+      // colour. The dashboard panel between tiles stays neutral —
+      // that's dashboardRoot's job.
       const t = resolveTheme(
-         [{ palette: { background: { dark: "#ff8800" } } }],
-         "dark",
+         [{ palette: { background: { light: "#aacd85" } } }],
+         "light",
       );
-      // Accent stays scoped to the chart canvas only.
-      expect(t.background).toBe("#ff8800");
-      expect(t.tableBackground).toBe("#1e293b");
+      expect(t.background).toBe("#aacd85");
+      expect(t.tableBackground).toBe("#aacd85");
+      expect(t.dashboardRoot).toBe("#ffffff");
    });
 });
 

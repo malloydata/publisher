@@ -60,15 +60,19 @@ export function resolveTheme(
    const pick = (key: PerModeColorKey): string =>
       perMode[key][mode] ?? (defaultPalette[key]?.[mode] as string);
 
+   const background = pick("background");
    return {
       mode,
       series,
       font: { family: fontFamily, size: fontSize },
-      background: pick("background"),
+      background,
       tableHeader: pick("tableHeader"),
       tableBody: pick("tableBody"),
       tile: pick("tile"),
       tileTitle: pick("tileTitle"),
+      // Table interior follows the operator's chart background so
+      // tables and chart canvases share a single "viz surface" colour.
+      tableBackground: background,
       // Derived, mode-keyed defaults. Operators don't edit these in
       // v1; they're consistent borders / readable foreground text for
       // each mode. If a user later asks to customise them, expose them
@@ -78,14 +82,13 @@ export function resolveTheme(
       valueColor: isDark ? "#f1f5f9" : "#1f2937",
       foreground: isDark ? "#e2e8f0" : "#1f2937",
       axisFaint: isDark ? "#475569" : "#d1d5db",
-      // Dashboard panel background. Light keeps white so the page stays
-      // visually unchanged. Dark uses slate so the panel doesn't read as
-      // a bright box against the dark page chrome.
+      // Dashboard panel background (area BETWEEN tiles). Light keeps
+      // white so the page stays visually unchanged. Dark uses slate so
+      // the panel doesn't read as a bright box against the dark page
+      // chrome. Intentionally NOT tied to `palette.background`: the
+      // panel stays neutral so a bold accent on the chart canvas
+      // doesn't bleed into the surrounding chrome.
       dashboardRoot: isDark ? "#1e293b" : "#ffffff",
-      // Table interior background. Same pattern as dashboardRoot: light
-      // keeps white (no regression), dark goes slate so header / body
-      // text don't paint light-on-white in dark mode.
-      tableBackground: isDark ? "#1e293b" : "#ffffff",
    };
 }
 
