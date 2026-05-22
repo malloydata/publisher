@@ -1266,3 +1266,55 @@ describe("getMaxResponseBytes", () => {
       expect(() => getMaxResponseBytes()).toThrow();
    });
 });
+
+describe("getDefaultQueryRowLimit", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
+   });
+
+   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is unset", async () => {
+      const { getDefaultQueryRowLimit } = await import("./config");
+      const { DEFAULT_QUERY_ROW_LIMIT } = await import("./constants");
+      expect(getDefaultQueryRowLimit()).toBe(DEFAULT_QUERY_ROW_LIMIT);
+   });
+
+   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is empty", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      const { DEFAULT_QUERY_ROW_LIMIT } = await import("./constants");
+      expect(getDefaultQueryRowLimit()).toBe(DEFAULT_QUERY_ROW_LIMIT);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "250";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(getDefaultQueryRowLimit()).toBe(250);
+   });
+
+   it("rejects 0 (a default of 'zero rows' is always a misconfiguration)", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "0";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "-1";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "1.5";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "lots";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+});
