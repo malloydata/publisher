@@ -5,7 +5,7 @@ import { resolveTheme } from "./resolveTheme";
 describe("buildVegaThemeOverride", () => {
    it("populates range.category from the resolved series", () => {
       const t = resolveTheme(
-         [{ palette: { series: { light: ["#ff0080", "#ff6b00"] } } }],
+         [{ palette: { series: ["#ff0080", "#ff6b00"] } }],
          "light",
       );
       const config = buildVegaThemeOverride(t)("bar");
@@ -23,10 +23,7 @@ describe("buildVegaThemeOverride", () => {
    });
 
    it("propagates the font family to axis/legend/title text marks", () => {
-      const t = resolveTheme(
-         [{ font: { family: { light: "Roboto Mono" } } }],
-         "light",
-      );
+      const t = resolveTheme([{ font: { family: "Roboto Mono" } }], "light");
       const cfg = buildVegaThemeOverride(t)("bar") as {
          font: string;
          axis: { labelFont: string; titleFont: string };
@@ -37,6 +34,15 @@ describe("buildVegaThemeOverride", () => {
       expect(cfg.axis.labelFont).toBe("Roboto Mono");
       expect(cfg.legend.titleFont).toBe("Roboto Mono");
       expect(cfg.title.font).toBe("Roboto Mono");
+   });
+
+   it("uses the resolved foreground + axisFaint values (no mode branch)", () => {
+      const dark = resolveTheme([], "dark");
+      const cfg = buildVegaThemeOverride(dark)("bar") as {
+         axis: { labelColor: string; gridColor: string };
+      };
+      expect(cfg.axis.labelColor).toBe(dark.foreground);
+      expect(cfg.axis.gridColor).toBe(dark.axisFaint);
    });
 
    it("returns the same config across chart types in v1", () => {

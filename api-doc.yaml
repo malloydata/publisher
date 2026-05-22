@@ -2565,19 +2565,13 @@ components:
           description: Color tokens consumed by the Malloy renderer and the app shell.
           properties:
             series:
-              type: object
+              type: array
               description: Ordered list of hex colors used by multi-series charts
-                (passed to Vega's `range.category`), per mode. Each mode
-                keeps its own independent palette.
-              properties:
-                light:
-                  type: array
-                  items:
-                    type: string
-                dark:
-                  type: array
-                  items:
-                    type: string
+                (passed to Vega's `range.category`). Shared across light
+                and dark modes so the brand palette stays consistent
+                when viewers switch modes.
+              items:
+                type: string
             background:
               type: object
               description: Page and chart background per mode.
@@ -2624,25 +2618,16 @@ components:
         font:
           type: object
           description: Typography overrides applied to both the app shell and the
-            Malloy renderer (Vega text marks). Per-mode so light and dark
-            can use different fonts / sizes independently.
+            Malloy renderer (Vega text marks). Shared across light and
+            dark modes because font choice is a brand decision, not a
+            mode-specific one.
           properties:
             family:
-              type: object
-              description: CSS font-family stack per mode.
-              properties:
-                light:
-                  type: string
-                dark:
-                  type: string
+              type: string
+              description: CSS font-family stack.
             size:
-              type: object
-              description: Base font size in pixels for renderer text, per mode.
-              properties:
-                light:
-                  type: number
-                dark:
-                  type: number
+              type: number
+              description: Base font size in pixels for renderer text.
 
     Environment:
       type: object

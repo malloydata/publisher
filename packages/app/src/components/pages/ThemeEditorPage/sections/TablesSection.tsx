@@ -69,9 +69,7 @@ export function TablesSection({
                background={resolved.background}
                headerColor={headerColor}
                bodyColor={bodyColor}
-               border={
-                  mode === "dark" ? "1px solid #334155" : "1px solid #e5e7eb"
-               }
+               border={resolved.border}
                pinnedBackground={tile}
                fontFamily={resolved.font.family}
                fontSize={resolved.font.size}

@@ -12,28 +12,22 @@ describe("readChartAnnotations", () => {
       expect(readChartAnnotations(tag)).toBeUndefined();
    });
 
-   it("extracts a per-mode series palette", () => {
+   it("extracts a series palette (shared across modes)", () => {
       const tag = parse([
-         '# theme.palette.series.light = ["#ff0080", "#ff6b00", "#ffd000"]',
-         '# theme.palette.series.dark = ["#ff66b3"]',
+         '# theme.palette.series = ["#ff0080", "#ff6b00", "#ffd000"]',
       ]);
       const t = readChartAnnotations(tag);
-      expect(t?.palette?.series?.light).toEqual([
-         "#ff0080",
-         "#ff6b00",
-         "#ffd000",
-      ]);
-      expect(t?.palette?.series?.dark).toEqual(["#ff66b3"]);
+      expect(t?.palette?.series).toEqual(["#ff0080", "#ff6b00", "#ffd000"]);
    });
 
-   it("extracts a per-mode font family and size", () => {
+   it("extracts font family and size (shared across modes)", () => {
       const tag = parse([
-         '# theme.font.family.light = "Roboto"',
-         "# theme.font.size.light = 13",
+         '# theme.font.family = "Roboto"',
+         "# theme.font.size = 13",
       ]);
       const t = readChartAnnotations(tag);
-      expect(t?.font?.family?.light).toBe("Roboto");
-      expect(t?.font?.size?.light).toBe(13);
+      expect(t?.font?.family).toBe("Roboto");
+      expect(t?.font?.size).toBe(13);
    });
 
    it("extracts per-mode background and tableHeader overrides", () => {
@@ -52,8 +46,8 @@ describe("readChartAnnotations", () => {
 
    it("ignores theme keys with the wrong type without throwing", () => {
       const tag = parse([
-         "# theme.palette.series.light = 42",
-         "# theme.font.size.light = 'not a number'",
+         "# theme.palette.series = 42",
+         "# theme.font.size = 'not a number'",
       ]);
       const t = readChartAnnotations(tag);
       expect(t).toBeUndefined();

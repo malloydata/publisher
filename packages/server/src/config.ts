@@ -76,6 +76,20 @@ type GcsPath = `gs://${string}`;
 type ApiConnection = components["schemas"]["Connection"];
 export type Theme = components["schemas"]["Theme"];
 
+/**
+ * Palette colour keys that have separate light/dark variants.
+ * Kept in sync with `packages/sdk/src/theme/keys.ts` (the SDK uses its
+ * own copy because the dependency arrow points server → SDK via the
+ * generated API types, not the other way).
+ */
+const PER_MODE_COLOR_KEYS = [
+   "background",
+   "tableHeader",
+   "tableBody",
+   "tile",
+   "tileTitle",
+] as const;
+
 export type Package = {
    name: string;
    location: FilesystemPath | GcsPath;
@@ -545,32 +559,16 @@ export function sanitizeTheme(
    if ("palette" in obj && obj.palette && typeof obj.palette === "object") {
       const palette = obj.palette as Record<string, unknown>;
       const sanitized: NonNullable<Theme["palette"]> = {};
-      if (palette.series && typeof palette.series === "object") {
-         const raw = palette.series as Record<string, unknown>;
-         const out: { light?: string[]; dark?: string[] } = {};
-         for (const mode of ["light", "dark"] as const) {
-            const arr = raw[mode];
-            if (Array.isArray(arr)) {
-               // Preserve an explicit empty array as a clear-the-palette
-               // signal; resolveTheme treats [] as a real override.
-               out[mode] = arr.filter(
-                  (c): c is string => typeof c === "string",
-               );
-            }
-         }
-         if (Object.keys(out).length > 0) sanitized.series = out;
+      if (Array.isArray(palette.series)) {
+         // Preserve an explicit empty array as a clear-the-palette
+         // signal; resolveTheme treats [] as a real override.
+         sanitized.series = palette.series.filter(
+            (c): c is string => typeof c === "string",
+         );
       }
-      // Per-mode color knobs share the same shape: { light?: string, dark?: string }.
-      // Sanitize them uniformly so the schema can grow without
-      // duplicating the same five-line block per key.
-      const perModeKeys = [
-         "background",
-         "tableHeader",
-         "tableBody",
-         "tile",
-         "tileTitle",
-      ] as const;
-      for (const key of perModeKeys) {
+      // Per-mode colour keys share the same shape: { light?: string, dark?: string }.
+      // Sanitize uniformly so adding a new key only touches PER_MODE_COLOR_KEYS.
+      for (const key of PER_MODE_COLOR_KEYS) {
          const raw = palette[key];
          if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
          const r = raw as Record<string, unknown>;
@@ -586,23 +584,9 @@ export function sanitizeTheme(
    if ("font" in obj && obj.font && typeof obj.font === "object") {
       const font = obj.font as Record<string, unknown>;
       const sanitized: NonNullable<Theme["font"]> = {};
-      if (font.family && typeof font.family === "object") {
-         const raw = font.family as Record<string, unknown>;
-         const out: { light?: string; dark?: string } = {};
-         if (typeof raw.light === "string") out.light = raw.light;
-         if (typeof raw.dark === "string") out.dark = raw.dark;
-         if (Object.keys(out).length > 0) sanitized.family = out;
-      }
-      if (font.size && typeof font.size === "object") {
-         const raw = font.size as Record<string, unknown>;
-         const out: { light?: number; dark?: number } = {};
-         if (typeof raw.light === "number" && Number.isFinite(raw.light)) {
-            out.light = raw.light;
-         }
-         if (typeof raw.dark === "number" && Number.isFinite(raw.dark)) {
-            out.dark = raw.dark;
-         }
-         if (Object.keys(out).length > 0) sanitized.size = out;
+      if (typeof font.family === "string") sanitized.family = font.family;
+      if (typeof font.size === "number" && Number.isFinite(font.size)) {
+         sanitized.size = font.size;
       }
       if (Object.keys(sanitized).length > 0) theme.font = sanitized;
    }
@@ -615,6 +599,9 @@ export function sanitizeTheme(
  * inputs are already sanitized. The override wins per key at every level;
  * absent keys fall through to the base. Returns `undefined` only when both
  * sides are absent.
+ *
+ * Per-mode colour objects merge per-mode so an environment that sets
+ * only `palette.tile.dark` keeps the instance's `palette.tile.light`.
  */
 export function mergeThemes(
    base: Theme | undefined,
@@ -628,17 +615,12 @@ export function mergeThemes(
          ...(base.palette ?? {}),
          ...(override.palette ?? {}),
       };
-      if (base.palette?.background || override.palette?.background) {
-         merged.palette.background = {
-            ...(base.palette?.background ?? {}),
-            ...(override.palette?.background ?? {}),
-         };
-      }
-      if (base.palette?.tableHeader || override.palette?.tableHeader) {
-         merged.palette.tableHeader = {
-            ...(base.palette?.tableHeader ?? {}),
-            ...(override.palette?.tableHeader ?? {}),
-         };
+      for (const key of PER_MODE_COLOR_KEYS) {
+         const b = base.palette?.[key];
+         const o = override.palette?.[key];
+         if (b || o) {
+            merged.palette[key] = { ...(b ?? {}), ...(o ?? {}) };
+         }
       }
    }
    if (base.font || override.font) {

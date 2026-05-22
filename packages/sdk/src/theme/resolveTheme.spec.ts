@@ -8,12 +8,13 @@ describe("resolveTheme cascade", () => {
       expect(t.series.length).toBeGreaterThan(0);
       expect(t.background).toBe("#ffffff");
       expect(t.font.family).toContain("Inter");
+      expect(t.font.size).toBe(12);
    });
 
    it("applies the instance layer over defaults", () => {
       const instance: Theme = {
-         palette: { series: { light: ["#aaa", "#bbb"] } },
-         font: { family: { light: "Roboto, sans-serif" } },
+         palette: { series: ["#aaa", "#bbb"] },
+         font: { family: "Roboto, sans-serif" },
       };
       const t = resolveTheme([instance], "light");
       expect(t.series).toEqual(["#aaa", "#bbb"]);
@@ -22,18 +23,18 @@ describe("resolveTheme cascade", () => {
 
    it("environment layer overrides instance per-key", () => {
       const instance: Theme = {
-         palette: { series: { light: ["#aaa"] } },
-         font: { family: { light: "Roboto" } },
+         palette: { series: ["#aaa"] },
+         font: { family: "Roboto" },
       };
       const env: Theme = {
-         palette: { series: { light: ["#cc0000"] } },
+         palette: { series: ["#cc0000"] },
       };
       const t = resolveTheme([instance, env], "light");
       expect(t.series).toEqual(["#cc0000"]);
       expect(t.font.family).toBe("Roboto");
    });
 
-   it("background and tableHeader merge per-mode", () => {
+   it("per-mode colour keys merge per-mode across layers", () => {
       const instance: Theme = {
          palette: {
             background: { light: "#f0f0f0", dark: "#000" },
@@ -50,25 +51,42 @@ describe("resolveTheme cascade", () => {
       expect(lightT.tableHeader).toBe("#111");
    });
 
-   it("light and dark series palettes are independent", () => {
+   it("series and font are shared across modes", () => {
       const layer: Theme = {
-         palette: { series: { light: ["#aaa"], dark: ["#111"] } },
+         palette: { series: ["#aaa", "#bbb"] },
+         font: { family: "Roboto", size: 16 },
       };
-      expect(resolveTheme([layer], "light").series).toEqual(["#aaa"]);
-      expect(resolveTheme([layer], "dark").series).toEqual(["#111"]);
+      const light = resolveTheme([layer], "light");
+      const dark = resolveTheme([layer], "dark");
+      expect(light.series).toEqual(dark.series);
+      expect(light.font.family).toBe(dark.font.family);
+      expect(light.font.size).toBe(dark.font.size);
    });
 
-   it("an explicit empty series array clears the cascade for that mode", () => {
-      const t = resolveTheme([{ palette: { series: { light: [] } } }], "light");
+   it("an explicit empty series array clears the cascade", () => {
+      const t = resolveTheme([{ palette: { series: [] } }], "light");
       expect(t.series).toEqual([]);
    });
 
    it("undefined layers are skipped without throwing", () => {
       const t = resolveTheme(
-         [undefined, { palette: { series: { light: ["#z"] } } }, undefined],
+         [undefined, { palette: { series: ["#z"] } }, undefined],
          "light",
       );
       expect(t.series).toEqual(["#z"]);
+   });
+
+   it("exposes derived mode values (border, foreground, axisFaint)", () => {
+      const light = resolveTheme([], "light");
+      const dark = resolveTheme([], "dark");
+      expect(light.border).toBe("1px solid #e5e7eb");
+      expect(dark.border).toBe("1px solid #334155");
+      expect(light.foreground).toBe("#1f2937");
+      expect(dark.foreground).toBe("#e2e8f0");
+      expect(light.axisFaint).toBe("#d1d5db");
+      expect(dark.axisFaint).toBe("#475569");
+      expect(light.valueColor).toBe("#1f2937");
+      expect(dark.valueColor).toBe("#f1f5f9");
    });
 });
 

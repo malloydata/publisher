@@ -1,115 +1,91 @@
 import { DEFAULT_THEME } from "./defaults";
+import { PER_MODE_COLOR_KEYS, type PerModeColorKey } from "./keys";
 import type { ResolvedTheme, Theme, ThemeMode } from "./types";
 
 /**
  * Collapse the layered theme cascade into a {@link ResolvedTheme} that
- * downstream code can consume without null-checks. Order is low → high
- * precedence: built-in defaults, then each layer overrides the keys it
- * sets.
+ * downstream code can consume without null-checks or mode branches.
+ * Layer order is low → high precedence; later layers overwrite earlier
+ * ones for the keys they set. Per-mode colour objects merge per-mode
+ * (a layer that sets only `palette.tile.dark` doesn't clobber the
+ * instance-level `palette.tile.light`).
  *
- * The cascade is shallow-deep: top-level theme keys merge per-key, and
- * the `palette.background` / `palette.tableHeader` sub-objects merge
- * per-mode (light/dark).
+ * The derived fields on ResolvedTheme (border, pinnedBorder,
+ * valueColor, foreground, axisFaint) are computed once here from the
+ * active mode so the three builders that consume the theme stop
+ * recomputing them with duplicated hex literals.
  */
 export function resolveTheme(
    layers: Array<Theme | undefined>,
    mode: ThemeMode,
 ): ResolvedTheme {
-   const merged: Required<Theme> = {
-      defaultMode: DEFAULT_THEME.defaultMode,
-      allowUserToggle: DEFAULT_THEME.allowUserToggle,
-      palette: {
-         series: { ...(DEFAULT_THEME.palette?.series ?? {}) },
-         background: { ...(DEFAULT_THEME.palette?.background ?? {}) },
-         tableHeader: { ...(DEFAULT_THEME.palette?.tableHeader ?? {}) },
-         tableBody: { ...(DEFAULT_THEME.palette?.tableBody ?? {}) },
-         tile: { ...(DEFAULT_THEME.palette?.tile ?? {}) },
-         tileTitle: { ...(DEFAULT_THEME.palette?.tileTitle ?? {}) },
-      },
-      font: {
-         family: { ...(DEFAULT_THEME.font?.family ?? {}) },
-         size: { ...(DEFAULT_THEME.font?.size ?? {}) },
-      },
+   const defaultPalette = DEFAULT_THEME.palette ?? {};
+   const defaultFont = DEFAULT_THEME.font ?? {
+      family: "sans-serif",
+      size: 12,
    };
 
-   // Per-mode keys all share the same merge shape: per-mode {light,dark}
-   // overlay. Iterate so adding a new key only requires touching the list.
-   const perModeKeys = [
-      "background",
-      "tableHeader",
-      "tableBody",
-      "tile",
-      "tileTitle",
-   ] as const;
+   let series: string[] = [...((defaultPalette.series as string[]) ?? [])];
+   let fontFamily: string = defaultFont.family ?? "sans-serif";
+   let fontSize: number = defaultFont.size ?? 12;
+
+   const perMode: Record<PerModeColorKey, { light?: string; dark?: string }> = {
+      background: { ...(defaultPalette.background ?? {}) },
+      tableHeader: { ...(defaultPalette.tableHeader ?? {}) },
+      tableBody: { ...(defaultPalette.tableBody ?? {}) },
+      tile: { ...(defaultPalette.tile ?? {}) },
+      tileTitle: { ...(defaultPalette.tileTitle ?? {}) },
+   };
 
    for (const layer of layers) {
       if (!layer) continue;
-      if (layer.defaultMode) merged.defaultMode = layer.defaultMode;
-      if (typeof layer.allowUserToggle === "boolean") {
-         merged.allowUserToggle = layer.allowUserToggle;
+      if (Array.isArray(layer.palette?.series)) {
+         series = [...(layer.palette.series as string[])];
       }
-      if (layer.palette?.series) {
-         merged.palette!.series = {
-            ...(merged.palette!.series ?? {}),
-            ...layer.palette.series,
-         };
-      }
-      for (const key of perModeKeys) {
+      for (const key of PER_MODE_COLOR_KEYS) {
          const override = layer.palette?.[key];
          if (override) {
-            merged.palette![key] = {
-               ...(merged.palette![key] ?? {}),
-               ...override,
-            };
+            perMode[key] = { ...perMode[key], ...override };
          }
       }
-      if (layer.font?.family) {
-         merged.font!.family = {
-            ...(merged.font!.family ?? {}),
-            ...layer.font.family,
-         };
+      if (typeof layer.font?.family === "string") {
+         fontFamily = layer.font.family;
       }
-      if (layer.font?.size) {
-         merged.font!.size = {
-            ...(merged.font!.size ?? {}),
-            ...layer.font.size,
-         };
+      if (typeof layer.font?.size === "number") {
+         fontSize = layer.font.size;
       }
    }
 
-   // Pick the active mode's value for each per-mode key, falling back to
-   // DEFAULT_THEME when both the merged layers and the defaults somehow
-   // disagree (shouldn't happen, but the type still admits undefined).
-   const pickPerMode = (key: (typeof perModeKeys)[number]): string => {
-      const fromLayers = merged.palette![key]?.[mode];
-      if (typeof fromLayers === "string") return fromLayers;
-      return DEFAULT_THEME.palette![key]![mode]!;
-   };
-
-   const series =
-      merged.palette!.series?.[mode] ?? DEFAULT_THEME.palette!.series![mode]!;
-   const family =
-      merged.font!.family?.[mode] ?? DEFAULT_THEME.font!.family![mode]!;
-   const size = merged.font!.size?.[mode] ?? DEFAULT_THEME.font!.size![mode]!;
+   const isDark = mode === "dark";
+   const pick = (key: PerModeColorKey): string =>
+      perMode[key][mode] ?? (defaultPalette[key]?.[mode] as string);
 
    return {
       mode,
-      series: [...series],
-      background: pickPerMode("background"),
-      tableHeader: pickPerMode("tableHeader"),
-      tableBody: pickPerMode("tableBody"),
-      tile: pickPerMode("tile"),
-      tileTitle: pickPerMode("tileTitle"),
-      font: { family, size },
+      series,
+      font: { family: fontFamily, size: fontSize },
+      background: pick("background"),
+      tableHeader: pick("tableHeader"),
+      tableBody: pick("tableBody"),
+      tile: pick("tile"),
+      tileTitle: pick("tileTitle"),
+      // Derived, mode-keyed defaults. Operators don't edit these in
+      // v1; they're consistent borders / readable foreground text for
+      // each mode. If a user later asks to customise them, expose them
+      // on the schema and the editor and replace the literals below.
+      border: isDark ? "1px solid #334155" : "1px solid #e5e7eb",
+      pinnedBorder: isDark ? "1px solid #475569" : "1px solid #daedf3",
+      valueColor: isDark ? "#f1f5f9" : "#1f2937",
+      foreground: isDark ? "#e2e8f0" : "#1f2937",
+      axisFaint: isDark ? "#475569" : "#d1d5db",
    };
 }
 
 /**
- * Pick the active mode for a viewer given the operator's `defaultMode`
- * preference, any persisted choice the viewer has made (typically read
- * from localStorage by the caller), and a snapshot of the OS dark-mode
- * preference. Returns one of `"light" | "dark"` — `"auto"` is resolved
- * here, not propagated.
+ * Pick the active mode for a viewer given the operator's `defaultMode`,
+ * any persisted viewer choice, and a snapshot of the OS dark-mode
+ * preference. "auto" is resolved here; callers see only "light" or
+ * "dark".
  */
 export function resolveMode(
    defaultMode: Theme["defaultMode"] | undefined,

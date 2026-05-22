@@ -24,20 +24,19 @@ interface SeriesColorsSectionProps {
    theme: Theme;
    onChange: (next: Theme) => void;
    disabled: boolean;
-   /**
-    * The mode the preview is rendered in. The series palette itself is
-    * shared across modes (there's no .light/.dark variant for series),
-    * so the pickers don't change behavior — but the preview needs to
-    * pick up the active mode's background so the bars look right.
-    */
+   /** Active editor mode. Only used to render the preview accurately. */
    mode: ThemeMode;
 }
 
 const DEFAULT_NEW_COLOR = "#1877f2";
 
 /**
- * Edits `palette.series` — the cycling color palette used for
- * multi-series charts (Vega's `range.category`).
+ * Edits `palette.series` — the cycling colour palette used for
+ * multi-series charts (Vega's `range.category`). The series palette is
+ * shared between light and dark modes; brand identity should not flip
+ * when a viewer toggles modes. The Light/Dark toggle at the editor
+ * level still affects the preview background so the operator can see
+ * how the same colours read on each mode.
  */
 export function SeriesColorsSection({
    theme,
@@ -46,13 +45,10 @@ export function SeriesColorsSection({
    mode,
 }: SeriesColorsSectionProps) {
    const resolved = resolveTheme([theme], mode);
-   // The series array is per-mode; pickers below operate on whichever
-   // mode the editor toggle is currently on, and the other mode's
-   // palette is untouched.
-   const series = theme.palette?.series?.[mode] ?? resolved.series;
+   const series = theme.palette?.series ?? resolved.series;
 
    // Stable per-row ids so React keys survive insertions and deletions in
-   // the middle of the list. Without them the Popover state and any
+   // the middle of the list. Without them the popover state and any
    // in-flight text edits would re-attach to the wrong color when a row
    // is removed (the next row shifts up into the deleted row's key slot).
    const idsRef = useRef<string[]>([]);
@@ -66,10 +62,7 @@ export function SeriesColorsSection({
    const setSeries = (next: string[]) => {
       onChange({
          ...theme,
-         palette: {
-            ...theme.palette,
-            series: { ...theme.palette?.series, [mode]: next },
-         },
+         palette: { ...theme.palette, series: next },
       });
    };
 
