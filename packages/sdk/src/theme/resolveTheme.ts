@@ -19,12 +19,28 @@ export function resolveTheme(
       defaultMode: DEFAULT_THEME.defaultMode,
       allowUserToggle: DEFAULT_THEME.allowUserToggle,
       palette: {
-         series: [...(DEFAULT_THEME.palette?.series ?? [])],
+         series: { ...(DEFAULT_THEME.palette?.series ?? {}) },
          background: { ...(DEFAULT_THEME.palette?.background ?? {}) },
          tableHeader: { ...(DEFAULT_THEME.palette?.tableHeader ?? {}) },
+         tableBody: { ...(DEFAULT_THEME.palette?.tableBody ?? {}) },
+         tile: { ...(DEFAULT_THEME.palette?.tile ?? {}) },
+         tileTitle: { ...(DEFAULT_THEME.palette?.tileTitle ?? {}) },
       },
-      font: { ...DEFAULT_THEME.font },
+      font: {
+         family: { ...(DEFAULT_THEME.font?.family ?? {}) },
+         size: { ...(DEFAULT_THEME.font?.size ?? {}) },
+      },
    };
+
+   // Per-mode keys all share the same merge shape: per-mode {light,dark}
+   // overlay. Iterate so adding a new key only requires touching the list.
+   const perModeKeys = [
+      "background",
+      "tableHeader",
+      "tableBody",
+      "tile",
+      "tileTitle",
+   ] as const;
 
    for (const layer of layers) {
       if (!layer) continue;
@@ -33,49 +49,58 @@ export function resolveTheme(
          merged.allowUserToggle = layer.allowUserToggle;
       }
       if (layer.palette?.series) {
-         // An explicit empty array clears the cascade rather than falling
-         // through to defaults; operators may legitimately want no series
-         // palette (e.g., to force the renderer's own monochrome fallback).
-         merged.palette!.series = [...layer.palette.series];
-      }
-      if (layer.palette?.background) {
-         merged.palette!.background = {
-            ...merged.palette!.background,
-            ...layer.palette.background,
+         merged.palette!.series = {
+            ...(merged.palette!.series ?? {}),
+            ...layer.palette.series,
          };
       }
-      if (layer.palette?.tableHeader) {
-         merged.palette!.tableHeader = {
-            ...merged.palette!.tableHeader,
-            ...layer.palette.tableHeader,
+      for (const key of perModeKeys) {
+         const override = layer.palette?.[key];
+         if (override) {
+            merged.palette![key] = {
+               ...(merged.palette![key] ?? {}),
+               ...override,
+            };
+         }
+      }
+      if (layer.font?.family) {
+         merged.font!.family = {
+            ...(merged.font!.family ?? {}),
+            ...layer.font.family,
          };
       }
-      if (layer.font?.family) merged.font.family = layer.font.family;
-      if (typeof layer.font?.size === "number") {
-         merged.font.size = layer.font.size;
+      if (layer.font?.size) {
+         merged.font!.size = {
+            ...(merged.font!.size ?? {}),
+            ...layer.font.size,
+         };
       }
    }
 
-   const background =
-      merged.palette!.background?.[mode] ??
-      (mode === "dark"
-         ? DEFAULT_THEME.palette!.background!.dark!
-         : DEFAULT_THEME.palette!.background!.light!);
-   const tableHeader =
-      merged.palette!.tableHeader?.[mode] ??
-      (mode === "dark"
-         ? DEFAULT_THEME.palette!.tableHeader!.dark!
-         : DEFAULT_THEME.palette!.tableHeader!.light!);
+   // Pick the active mode's value for each per-mode key, falling back to
+   // DEFAULT_THEME when both the merged layers and the defaults somehow
+   // disagree (shouldn't happen, but the type still admits undefined).
+   const pickPerMode = (key: (typeof perModeKeys)[number]): string => {
+      const fromLayers = merged.palette![key]?.[mode];
+      if (typeof fromLayers === "string") return fromLayers;
+      return DEFAULT_THEME.palette![key]![mode]!;
+   };
+
+   const series =
+      merged.palette!.series?.[mode] ?? DEFAULT_THEME.palette!.series![mode]!;
+   const family =
+      merged.font!.family?.[mode] ?? DEFAULT_THEME.font!.family![mode]!;
+   const size = merged.font!.size?.[mode] ?? DEFAULT_THEME.font!.size![mode]!;
 
    return {
       mode,
-      series: merged.palette!.series ?? [],
-      background,
-      tableHeader,
-      font: {
-         family: merged.font.family ?? DEFAULT_THEME.font.family,
-         size: merged.font.size ?? DEFAULT_THEME.font.size,
-      },
+      series: [...series],
+      background: pickPerMode("background"),
+      tableHeader: pickPerMode("tableHeader"),
+      tableBody: pickPerMode("tableBody"),
+      tile: pickPerMode("tile"),
+      tileTitle: pickPerMode("tileTitle"),
+      font: { family, size },
    };
 }
 

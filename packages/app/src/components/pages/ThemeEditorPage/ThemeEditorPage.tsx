@@ -1,4 +1,6 @@
-import { useServer, type Theme } from "@malloy-publisher/sdk";
+import { useServer, type Theme, type ThemeMode } from "@malloy-publisher/sdk";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
+import LightModeIcon from "@mui/icons-material/LightMode";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import UndoIcon from "@mui/icons-material/Undo";
 import {
@@ -10,6 +12,8 @@ import {
    CardHeader,
    Snackbar,
    Stack,
+   ToggleButton,
+   ToggleButtonGroup,
    Typography,
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -147,7 +151,19 @@ export default function ThemeEditorPage() {
    }, [draftKey, savedKey, frozen, themeQuery.isSuccess]);
 
    const dirty = draftKey !== savedKey;
-   const sectionProps = { theme: draft, onChange: setDraft, disabled: frozen };
+
+   // Which per-mode variant the color pickers below edit. This is purely
+   // an editor-side concern; it doesn't change which mode VIEWERS see.
+   // Both light and dark variants live in the same Theme and are saved
+   // together — the toggle just decides which slot the pickers write.
+   const [editingMode, setEditingMode] = useState<ThemeMode>("light");
+
+   const sectionProps = {
+      theme: draft,
+      onChange: setDraft,
+      disabled: frozen,
+      mode: editingMode,
+   };
 
    return (
       <Box sx={{ p: 4, maxWidth: 980, mx: "auto" }}>
@@ -195,6 +211,39 @@ export default function ThemeEditorPage() {
                <code>publisher.config.json</code> directly to change the theme.
             </Alert>
          )}
+
+         <Box sx={{ mb: 3, display: "flex", alignItems: "center", gap: 2 }}>
+            <Typography variant="body2" color="text.secondary">
+               Editing colors for
+            </Typography>
+            <ToggleButtonGroup
+               value={editingMode}
+               exclusive
+               size="small"
+               onChange={(_, next) => {
+                  // Don't allow deselecting; ToggleButtonGroup fires
+                  // onChange with null when the active button is clicked.
+                  if (next === "light" || next === "dark") {
+                     setEditingMode(next);
+                  }
+               }}
+               disabled={frozen}
+               aria-label="Edit colors for mode"
+            >
+               <ToggleButton value="light" aria-label="Light mode">
+                  <LightModeIcon fontSize="small" sx={{ mr: 0.75 }} />
+                  Light
+               </ToggleButton>
+               <ToggleButton value="dark" aria-label="Dark mode">
+                  <DarkModeIcon fontSize="small" sx={{ mr: 0.75 }} />
+                  Dark
+               </ToggleButton>
+            </ToggleButtonGroup>
+            <Typography variant="caption" color="text.secondary">
+               Each mode has its own colors. Pickers below edit the active
+               mode&apos;s values.
+            </Typography>
+         </Box>
 
          <Stack spacing={3}>
             <Card>

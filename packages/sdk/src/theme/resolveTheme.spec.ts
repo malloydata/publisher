@@ -12,8 +12,8 @@ describe("resolveTheme cascade", () => {
 
    it("applies the instance layer over defaults", () => {
       const instance: Theme = {
-         palette: { series: ["#aaa", "#bbb"] },
-         font: { family: "Roboto, sans-serif" },
+         palette: { series: { light: ["#aaa", "#bbb"] } },
+         font: { family: { light: "Roboto, sans-serif" } },
       };
       const t = resolveTheme([instance], "light");
       expect(t.series).toEqual(["#aaa", "#bbb"]);
@@ -22,11 +22,11 @@ describe("resolveTheme cascade", () => {
 
    it("environment layer overrides instance per-key", () => {
       const instance: Theme = {
-         palette: { series: ["#aaa"] },
-         font: { family: "Roboto" },
+         palette: { series: { light: ["#aaa"] } },
+         font: { family: { light: "Roboto" } },
       };
       const env: Theme = {
-         palette: { series: ["#cc0000"] },
+         palette: { series: { light: ["#cc0000"] } },
       };
       const t = resolveTheme([instance, env], "light");
       expect(t.series).toEqual(["#cc0000"]);
@@ -50,14 +50,22 @@ describe("resolveTheme cascade", () => {
       expect(lightT.tableHeader).toBe("#111");
    });
 
-   it("an explicit empty series array clears the cascade", () => {
-      const t = resolveTheme([{ palette: { series: [] } }], "light");
+   it("light and dark series palettes are independent", () => {
+      const layer: Theme = {
+         palette: { series: { light: ["#aaa"], dark: ["#111"] } },
+      };
+      expect(resolveTheme([layer], "light").series).toEqual(["#aaa"]);
+      expect(resolveTheme([layer], "dark").series).toEqual(["#111"]);
+   });
+
+   it("an explicit empty series array clears the cascade for that mode", () => {
+      const t = resolveTheme([{ palette: { series: { light: [] } } }], "light");
       expect(t.series).toEqual([]);
    });
 
    it("undefined layers are skipped without throwing", () => {
       const t = resolveTheme(
-         [undefined, { palette: { series: ["#z"] } }, undefined],
+         [undefined, { palette: { series: { light: ["#z"] } } }, undefined],
          "light",
       );
       expect(t.series).toEqual(["#z"]);

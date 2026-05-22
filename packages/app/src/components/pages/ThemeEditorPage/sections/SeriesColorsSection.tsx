@@ -1,4 +1,8 @@
-import { resolveTheme, type Theme } from "@malloy-publisher/sdk";
+import {
+   resolveTheme,
+   type Theme,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
@@ -20,6 +24,13 @@ interface SeriesColorsSectionProps {
    theme: Theme;
    onChange: (next: Theme) => void;
    disabled: boolean;
+   /**
+    * The mode the preview is rendered in. The series palette itself is
+    * shared across modes (there's no .light/.dark variant for series),
+    * so the pickers don't change behavior — but the preview needs to
+    * pick up the active mode's background so the bars look right.
+    */
+   mode: ThemeMode;
 }
 
 const DEFAULT_NEW_COLOR = "#1877f2";
@@ -32,9 +43,13 @@ export function SeriesColorsSection({
    theme,
    onChange,
    disabled,
+   mode,
 }: SeriesColorsSectionProps) {
-   const series = theme.palette?.series ?? [];
-   const resolved = resolveTheme([theme], "light");
+   const resolved = resolveTheme([theme], mode);
+   // The series array is per-mode; pickers below operate on whichever
+   // mode the editor toggle is currently on, and the other mode's
+   // palette is untouched.
+   const series = theme.palette?.series?.[mode] ?? resolved.series;
 
    // Stable per-row ids so React keys survive insertions and deletions in
    // the middle of the list. Without them the Popover state and any
@@ -51,7 +66,10 @@ export function SeriesColorsSection({
    const setSeries = (next: string[]) => {
       onChange({
          ...theme,
-         palette: { ...theme.palette, series: next },
+         palette: {
+            ...theme.palette,
+            series: { ...theme.palette?.series, [mode]: next },
+         },
       });
    };
 

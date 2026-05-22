@@ -54,51 +54,51 @@ describe("ThemeStore", () => {
       const sm = await makeStorage();
       writeConfig({
          frozenConfig: false,
-         theme: { palette: { series: ["#abc"] } },
+         theme: { palette: { series: { light: ["#abc"] } } },
          environments: [],
       });
       const store = new ThemeStore(sm, TEST_ROOT);
       const seeded = await store.get();
-      expect(seeded?.palette?.series).toEqual(["#abc"]);
+      expect(seeded?.palette?.series?.light).toEqual(["#abc"]);
    });
 
    it("set then get round-trips", async () => {
       const sm = await makeStorage();
       writeConfig({ frozenConfig: false, environments: [] });
       const store = new ThemeStore(sm, TEST_ROOT);
-      const next = { palette: { series: ["#ff0080", "#00d4ff"] } };
+      const next = { palette: { series: { light: ["#ff0080", "#00d4ff"] } } };
       await store.set(next);
       const after = await store.get();
-      expect(after?.palette?.series).toEqual(["#ff0080", "#00d4ff"]);
+      expect(after?.palette?.series?.light).toEqual(["#ff0080", "#00d4ff"]);
    });
 
    it("second set overwrites the first", async () => {
       const sm = await makeStorage();
       writeConfig({ frozenConfig: false, environments: [] });
       const store = new ThemeStore(sm, TEST_ROOT);
-      await store.set({ palette: { series: ["#111"] } });
-      await store.set({ palette: { series: ["#222"] } });
-      expect((await store.get())?.palette?.series).toEqual(["#222"]);
+      await store.set({ palette: { series: { light: ["#111"] } } });
+      await store.set({ palette: { series: { light: ["#222"] } } });
+      expect((await store.get())?.palette?.series?.light).toEqual(["#222"]);
    });
 
    it("reset falls back to the boot seed", async () => {
       const sm = await makeStorage();
       writeConfig({
          frozenConfig: false,
-         theme: { palette: { series: ["#seed"] } },
+         theme: { palette: { series: { light: ["#seed"] } } },
          environments: [],
       });
       const store = new ThemeStore(sm, TEST_ROOT);
-      await store.set({ palette: { series: ["#edited"] } });
+      await store.set({ palette: { series: { light: ["#edited"] } } });
       const reseeded = await store.reset();
-      expect(reseeded?.palette?.series).toEqual(["#seed"]);
+      expect(reseeded?.palette?.series?.light).toEqual(["#seed"]);
    });
 
    it("reset clears completely when no boot seed exists", async () => {
       const sm = await makeStorage();
       writeConfig({ frozenConfig: false, environments: [] });
       const store = new ThemeStore(sm, TEST_ROOT);
-      await store.set({ palette: { series: ["#edited"] } });
+      await store.set({ palette: { series: { light: ["#edited"] } } });
       const reseeded = await store.reset();
       expect(reseeded).toBeUndefined();
    });

@@ -1,5 +1,9 @@
-import { resolveTheme, type Theme } from "@malloy-publisher/sdk";
-import { Alert, Box, Stack, Typography } from "@mui/material";
+import {
+   resolveTheme,
+   type Theme,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
+import { Box, Stack, Typography } from "@mui/material";
 import { ColorPickerField } from "../ColorPickerField";
 import { TablePreview } from "../previews/TablePreview";
 
@@ -7,43 +11,49 @@ interface TablesSectionProps {
    theme: Theme;
    onChange: (next: Theme) => void;
    disabled: boolean;
+   mode: ThemeMode;
 }
 
+type PerModeKey = "tableHeader" | "tableBody" | "tile" | "tileTitle";
+
 /**
- * Edits `palette.background.light` and `palette.tableHeader.light` —
- * the only table-related tokens the current Theme schema exposes.
- * Body color, borders, and pinned background still come from the
- * renderer's hardcoded defaults; they'll become editable once the
- * renderer's `theme` prop ships upstream.
+ * Edits the per-mode table tokens: header color, body text color, the
+ * dashboard tile (padded container) background, and the tile title text
+ * color. All four are stored as { light, dark } variants on the Theme
+ * and the active variant is chosen by the editor-level Light/Dark
+ * toggle (passed in via `mode`).
  */
 export function TablesSection({
    theme,
    onChange,
    disabled,
+   mode,
 }: TablesSectionProps) {
-   const resolved = resolveTheme([theme], "light");
-   const headerColor =
-      theme.palette?.tableHeader?.light ?? resolved.tableHeader;
-   const background = theme.palette?.background?.light ?? resolved.background;
+   const resolved = resolveTheme([theme], mode);
 
-   const setHeader = (hex: string) => {
+   // Read the active variant from the saved theme if set; otherwise fall
+   // back to the resolved value so the picker shows the colour that will
+   // actually render rather than an empty input.
+   const valueFor = (key: PerModeKey): string => {
+      const fromTheme = theme.palette?.[key]?.[mode];
+      if (typeof fromTheme === "string") return fromTheme;
+      return resolved[key];
+   };
+
+   const setColor = (key: PerModeKey) => (hex: string) => {
       onChange({
          ...theme,
          palette: {
             ...theme.palette,
-            tableHeader: { ...theme.palette?.tableHeader, light: hex },
+            [key]: { ...theme.palette?.[key], [mode]: hex },
          },
       });
    };
-   const setBackground = (hex: string) => {
-      onChange({
-         ...theme,
-         palette: {
-            ...theme.palette,
-            background: { ...theme.palette?.background, light: hex },
-         },
-      });
-   };
+
+   const headerColor = valueFor("tableHeader");
+   const bodyColor = valueFor("tableBody");
+   const tile = valueFor("tile");
+   const tileTitle = valueFor("tileTitle");
 
    return (
       <Box>
@@ -56,11 +66,13 @@ export function TablesSection({
          </Typography>
          <Box sx={{ mb: 2 }}>
             <TablePreview
-               background={background}
+               background={resolved.background}
                headerColor={headerColor}
-               bodyColor="#727883"
-               border="1px solid #e5e7eb"
-               pinnedBackground={background}
+               bodyColor={bodyColor}
+               border={
+                  mode === "dark" ? "1px solid #334155" : "1px solid #e5e7eb"
+               }
+               pinnedBackground={tile}
                fontFamily={resolved.font.family}
                fontSize={resolved.font.size}
             />
@@ -69,22 +81,28 @@ export function TablesSection({
             <ColorPickerField
                label="Header color"
                value={headerColor}
-               onChange={setHeader}
+               onChange={setColor("tableHeader")}
                disabled={disabled}
             />
             <ColorPickerField
-               label="Background"
-               value={background}
-               onChange={setBackground}
+               label="Body text color"
+               value={bodyColor}
+               onChange={setColor("tableBody")}
+               disabled={disabled}
+            />
+            <ColorPickerField
+               label="Tile background"
+               value={tile}
+               onChange={setColor("tile")}
+               disabled={disabled}
+            />
+            <ColorPickerField
+               label="Tile title color"
+               value={tileTitle}
+               onChange={setColor("tileTitle")}
                disabled={disabled}
             />
          </Stack>
-         <Alert severity="info" sx={{ mt: 2 }}>
-            Body text, borders, and dashboard tile colors come from the
-            renderer&apos;s defaults today. Editing those requires the upstream
-            renderer&apos;s <code>theme</code> prop, which is tracked as a
-            follow-up.
-         </Alert>
       </Box>
    );
 }

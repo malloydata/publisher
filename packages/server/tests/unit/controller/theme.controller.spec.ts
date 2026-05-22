@@ -52,11 +52,11 @@ describe("ThemeController", () => {
    it("getTheme returns the boot-seeded theme", async () => {
       const { controller } = await build({
          frozenConfig: false,
-         theme: { palette: { series: ["#abc"] } },
+         theme: { palette: { series: { light: ["#abc"] } } },
          environments: [],
       });
       const theme = await controller.getTheme();
-      expect(theme.palette?.series).toEqual(["#abc"]);
+      expect(theme.palette?.series?.light).toEqual(["#abc"]);
    });
 
    it("getTheme returns an empty object when no theme configured", async () => {
@@ -73,11 +73,11 @@ describe("ThemeController", () => {
          environments: [],
       });
       const saved = await controller.putTheme({
-         palette: { series: ["#ff0080"] },
+         palette: { series: { light: ["#ff0080"] } },
       });
-      expect(saved.palette?.series).toEqual(["#ff0080"]);
+      expect(saved.palette?.series?.light).toEqual(["#ff0080"]);
       // The next GET returns the same value.
-      expect((await controller.getTheme()).palette?.series).toEqual([
+      expect((await controller.getTheme()).palette?.series?.light).toEqual([
          "#ff0080",
       ]);
    });
@@ -85,11 +85,11 @@ describe("ThemeController", () => {
    it("putTheme accepts an empty object as a clear-all-overrides signal", async () => {
       const { controller } = await build({
          frozenConfig: false,
-         theme: { palette: { series: ["#aaa"] } },
+         theme: { palette: { series: { light: ["#aaa"] } } },
          environments: [],
       });
       // Seed the editor's draft, then PUT {} to clear it.
-      await controller.putTheme({ palette: { series: ["#edit"] } });
+      await controller.putTheme({ palette: { series: { light: ["#edit"] } } });
       const cleared = await controller.putTheme({});
       expect(cleared).toEqual({});
       expect(await controller.getTheme()).toEqual({});
@@ -114,19 +114,19 @@ describe("ThemeController", () => {
          environments: [],
       });
       await expect(
-         controller.putTheme({ palette: { series: ["#abc"] } }),
+         controller.putTheme({ palette: { series: { light: ["#abc"] } } }),
       ).rejects.toBeInstanceOf(FrozenConfigError);
    });
 
    it("resetTheme falls back to the boot seed", async () => {
       const { controller } = await build({
          frozenConfig: false,
-         theme: { palette: { series: ["#seed"] } },
+         theme: { palette: { series: { light: ["#seed"] } } },
          environments: [],
       });
-      await controller.putTheme({ palette: { series: ["#edit"] } });
+      await controller.putTheme({ palette: { series: { light: ["#edit"] } } });
       const reseeded = await controller.resetTheme();
-      expect(reseeded.palette?.series).toEqual(["#seed"]);
+      expect(reseeded.palette?.series?.light).toEqual(["#seed"]);
    });
 
    it("resetTheme throws FrozenConfigError when frozenConfig is true", async () => {

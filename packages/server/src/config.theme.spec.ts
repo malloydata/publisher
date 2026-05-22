@@ -51,7 +51,7 @@ describe("Theme cascade in publisher.config.json", () => {
          frozenConfig: false,
          theme: {
             defaultMode: "dark",
-            palette: { series: ["#ff0080"] },
+            palette: { series: { light: ["#ff0080"] } },
          },
          environments: [
             {
@@ -62,8 +62,10 @@ describe("Theme cascade in publisher.config.json", () => {
       });
       const cfg = getProcessedPublisherConfig(TEST_ROOT);
       expect(cfg.theme?.defaultMode).toBe("dark");
-      expect(cfg.theme?.palette?.series).toEqual(["#ff0080"]);
-      expect(cfg.environments[0].theme?.palette?.series).toEqual(["#ff0080"]);
+      expect(cfg.theme?.palette?.series?.light).toEqual(["#ff0080"]);
+      expect(cfg.environments[0].theme?.palette?.series?.light).toEqual([
+         "#ff0080",
+      ]);
    });
 
    it("environment theme overrides instance per key", () => {
@@ -71,23 +73,28 @@ describe("Theme cascade in publisher.config.json", () => {
          frozenConfig: false,
          theme: {
             defaultMode: "light",
-            palette: { series: ["#aaa"], background: { light: "#fff" } },
-            font: { family: "Inter" },
+            palette: {
+               series: { light: ["#aaa"] },
+               background: { light: "#fff" },
+            },
+            font: { family: { light: "Inter" } },
          },
          environments: [
             {
                name: "marketing",
                packages: [{ name: "pkg", location: "/tmp/pkg" }],
                theme: {
-                  palette: { series: ["#cc0000"] },
+                  palette: { series: { light: ["#cc0000"] } },
                },
             },
          ],
       });
       const cfg = getProcessedPublisherConfig(TEST_ROOT);
-      expect(cfg.environments[0].theme?.palette?.series).toEqual(["#cc0000"]);
+      expect(cfg.environments[0].theme?.palette?.series?.light).toEqual([
+         "#cc0000",
+      ]);
       // Font and background fall through from instance default.
-      expect(cfg.environments[0].theme?.font?.family).toBe("Inter");
+      expect(cfg.environments[0].theme?.font?.family?.light).toBe("Inter");
       expect(cfg.environments[0].theme?.palette?.background?.light).toBe(
          "#fff",
       );
@@ -98,7 +105,7 @@ describe("Theme cascade in publisher.config.json", () => {
          frozenConfig: false,
          theme: {
             defaultMode: "nonsense",
-            palette: { series: ["#a"] },
+            palette: { series: { light: ["#a"] } },
          },
          environments: [
             {
@@ -109,17 +116,17 @@ describe("Theme cascade in publisher.config.json", () => {
       });
       const cfg = getProcessedPublisherConfig(TEST_ROOT);
       expect(cfg.theme?.defaultMode).toBeUndefined();
-      expect(cfg.theme?.palette?.series).toEqual(["#a"]);
+      expect(cfg.theme?.palette?.series?.light).toEqual(["#a"]);
    });
 
    it("getInstanceTheme returns the same instance theme", () => {
       writeConfig({
          frozenConfig: false,
-         theme: { palette: { series: ["#abc"] } },
+         theme: { palette: { series: { light: ["#abc"] } } },
          environments: [],
       });
       const t = getInstanceTheme(TEST_ROOT);
-      expect(t?.palette?.series).toEqual(["#abc"]);
+      expect(t?.palette?.series?.light).toEqual(["#abc"]);
    });
 });
 
@@ -129,7 +136,7 @@ describe("mergeThemes", () => {
    });
 
    it("returns the override when base is missing", () => {
-      const o: Theme = { palette: { series: ["#x"] } };
+      const o: Theme = { palette: { series: { light: ["#x"] } } };
       expect(mergeThemes(undefined, o)).toEqual(o);
    });
 

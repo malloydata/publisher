@@ -5,7 +5,7 @@ import { resolveTheme } from "./resolveTheme";
 describe("buildVegaThemeOverride", () => {
    it("populates range.category from the resolved series", () => {
       const t = resolveTheme(
-         [{ palette: { series: ["#ff0080", "#ff6b00"] } }],
+         [{ palette: { series: { light: ["#ff0080", "#ff6b00"] } } }],
          "light",
       );
       const config = buildVegaThemeOverride(t)("bar");
@@ -23,7 +23,10 @@ describe("buildVegaThemeOverride", () => {
    });
 
    it("propagates the font family to axis/legend/title text marks", () => {
-      const t = resolveTheme([{ font: { family: "Roboto Mono" } }], "light");
+      const t = resolveTheme(
+         [{ font: { family: { light: "Roboto Mono" } } }],
+         "light",
+      );
       const cfg = buildVegaThemeOverride(t)("bar") as {
          font: string;
          axis: { labelFont: string; titleFont: string };

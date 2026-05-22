@@ -2565,11 +2565,19 @@ components:
           description: Color tokens consumed by the Malloy renderer and the app shell.
           properties:
             series:
-              type: array
+              type: object
               description: Ordered list of hex colors used by multi-series charts
-                (passed to Vega's `range.category`).
-              items:
-                type: string
+                (passed to Vega's `range.category`), per mode. Each mode
+                keeps its own independent palette.
+              properties:
+                light:
+                  type: array
+                  items:
+                    type: string
+                dark:
+                  type: array
+                  items:
+                    type: string
             background:
               type: object
               description: Page and chart background per mode.
@@ -2586,17 +2594,55 @@ components:
                   type: string
                 dark:
                   type: string
+            tableBody:
+              type: object
+              description: Foreground color for table body cells per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            tile:
+              type: object
+              description: Background color of the dashboard tile (the padded
+                container that wraps each chart / table) per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            tileTitle:
+              type: object
+              description: Foreground color for the title text that sits in the
+                dashboard tile padding (e.g. the "by_month" label above a
+                chart) per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
         font:
           type: object
           description: Typography overrides applied to both the app shell and the
-            Malloy renderer (Vega text marks).
+            Malloy renderer (Vega text marks). Per-mode so light and dark
+            can use different fonts / sizes independently.
           properties:
             family:
-              type: string
-              description: CSS font-family stack.
+              type: object
+              description: CSS font-family stack per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
             size:
-              type: number
-              description: Base font size in pixels for renderer text.
+              type: object
+              description: Base font size in pixels for renderer text, per mode.
+              properties:
+                light:
+                  type: number
+                dark:
+                  type: number
 
     Environment:
       type: object

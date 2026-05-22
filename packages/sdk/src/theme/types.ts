@@ -15,6 +15,9 @@ export interface ResolvedTheme {
    series: string[];
    background: string;
    tableHeader: string;
+   tableBody: string;
+   tile: string;
+   tileTitle: string;
    font: {
       family: string;
       size: number;

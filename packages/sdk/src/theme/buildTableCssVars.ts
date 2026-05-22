@@ -30,48 +30,50 @@ import type { ResolvedTheme } from "./types";
 export function buildTableCssVars(
    theme: ResolvedTheme,
 ): Record<string, string> {
-   const body = theme.mode === "dark" ? "#e2e8f0" : "#727883";
    const border =
       theme.mode === "dark" ? "1px solid #334155" : "1px solid #e5e7eb";
-   // Tiles sit ON the chart background. In dark mode the chart background
-   // is slate (#1e293b); tiles use the page-outer dark (#0f172a) so they
-   // read as recessed cards instead of fighting the container.
-   const pinnedBg = theme.mode === "dark" ? "#0f172a" : "#f5fafc";
    const pinnedBorder =
       theme.mode === "dark" ? "1px solid #475569" : "1px solid #daedf3";
-   // Dashboard tiles split text into a small "label" (field name) and a
-   // big "value" (the number). The label is secondary, the value is the
-   // primary read. Pick contrast accordingly.
-   const labelColor = theme.mode === "dark" ? "#94a3b8" : "#5d626b";
+   // The dashboard tile title and dimension-name text colour come from
+   // theme.tileTitle. The value text below them stays a step heavier
+   // for hierarchy; pick a contrast variant per mode.
    const valueColor = theme.mode === "dark" ? "#f1f5f9" : "#1f2937";
    const fontSize = `${theme.font.size}px`;
 
    return {
-      // --malloy-render--* set: direct consumers and our own override rules.
-      "--malloy-render--background": theme.background,
+      // --malloy-render--* set: direct consumers and our own override
+      // rules in injectRendererOverrides. `background` and
+      // `table-background` are intentionally omitted: the operator's
+      // colour should stay scoped to the viz surfaces (charts via Vega,
+      // tables via the renderer's `theme.tableBackground` prop). The
+      // dashboard root and row-headers fall through to the renderer's
+      // own neutral default so the chrome between tiles doesn't take
+      // on the operator's accent colour.
       "--malloy-render--font-family": theme.font.family,
-      "--malloy-render--table-background": theme.background,
       "--malloy-render--table-header-color": theme.tableHeader,
-      "--malloy-render--table-body-color": body,
+      "--malloy-render--table-body-color": theme.tableBody,
       "--malloy-render--table-border": border,
-      "--malloy-render--table-pinned-background": pinnedBg,
+      "--malloy-render--table-pinned-background": theme.tile,
       "--malloy-render--table-pinned-border": pinnedBorder,
       "--malloy-render--table-font-size": fontSize,
-      "--malloy-render--label-color": labelColor,
+      // label-color drives the dashboard tile title (e.g. "by_month"
+      // above a chart). The renderer doesn't expose this in its theme
+      // prop yet, so the value lands here for the
+      // injectRendererOverrides CSS rule to pick up.
+      "--malloy-render--label-color": theme.tileTitle,
       "--malloy-render--value-color": valueColor,
 
       // --malloy-theme--* set: source for the renderer's internal
       // `var(--malloy-theme--<key>)` fallbacks. These are what the
-      // renderer's QWe() writes through when no `# theme.*` annotation
-      // is present, and they win over our outer --malloy-render--* set
+      // renderer writes through when no `# theme.*` annotation is
+      // present, and they win over our outer --malloy-render--* set
       // for the table/dashboard styling that goes through that path.
-      "--malloy-theme--background": theme.background,
+      // Same omission of `background`: don't paint the dashboard root.
       "--malloy-theme--font-family": theme.font.family,
-      "--malloy-theme--table-background": theme.background,
       "--malloy-theme--table-header-color": theme.tableHeader,
-      "--malloy-theme--table-body-color": body,
+      "--malloy-theme--table-body-color": theme.tableBody,
       "--malloy-theme--table-border": border,
-      "--malloy-theme--table-pinned-background": pinnedBg,
+      "--malloy-theme--table-pinned-background": theme.tile,
       "--malloy-theme--table-pinned-border": pinnedBorder,
       "--malloy-theme--table-font-size": fontSize,
    };

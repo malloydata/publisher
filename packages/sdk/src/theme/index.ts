@@ -1,3 +1,4 @@
+export { buildMalloyExplicitTheme } from "./buildMalloyExplicitTheme";
 export { buildTableCssVars } from "./buildTableCssVars";
 export { buildVegaThemeOverride } from "./buildVegaThemeOverride";
 export { DEFAULT_THEME } from "./defaults";

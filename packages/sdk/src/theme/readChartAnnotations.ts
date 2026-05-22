@@ -7,15 +7,18 @@ import type { Theme } from "./types";
  * `undefined` if the tag has no `theme` namespace.
  *
  * Recognized annotation forms (all optional, all sit under the `theme`
- * namespace):
+ * namespace, all per-mode):
  *
- *   # theme.palette.series = ["#ff0080", "#ff6b00"]
+ *   # theme.palette.series.light = ["#ff0080", "#ff6b00"]
+ *   # theme.palette.series.dark  = ["#ff66b3"]
  *   # theme.palette.background.light = "#fff"
  *   # theme.palette.background.dark  = "#000"
  *   # theme.palette.tableHeader.light = "#666"
  *   # theme.palette.tableHeader.dark  = "#aaa"
- *   # theme.font.family = "Roboto, sans-serif"
- *   # theme.font.size = 13
+ *   # theme.font.family.light = "Roboto, sans-serif"
+ *   # theme.font.family.dark  = "Roboto, sans-serif"
+ *   # theme.font.size.light = 13
+ *   # theme.font.size.dark  = 13
  *
  * Annotations are silently ignored when the field has the wrong type. The
  * goal is "the worst a typo can do is no styling" rather than "a typo
@@ -31,29 +34,36 @@ export function readChartAnnotations(tag: Tag | undefined): Theme | undefined {
    const palette = theme.tag("palette");
    if (palette) {
       const p: NonNullable<Theme["palette"]> = {};
-      const series = palette.textArray("series");
-      if (series && series.length > 0) p.series = series;
 
-      const background = palette.tag("background");
-      if (background) {
-         const bg: NonNullable<NonNullable<Theme["palette"]>["background"]> =
-            {};
-         const light = background.text("light");
-         const dark = background.text("dark");
-         if (light) bg.light = light;
-         if (dark) bg.dark = dark;
-         if (Object.keys(bg).length > 0) p.background = bg;
+      const series = palette.tag("series");
+      if (series) {
+         const s: { light?: string[]; dark?: string[] } = {};
+         const light = series.textArray("light");
+         const dark = series.textArray("dark");
+         if (light && light.length > 0) s.light = light;
+         if (dark && dark.length > 0) s.dark = dark;
+         if (Object.keys(s).length > 0) p.series = s;
       }
 
-      const tableHeader = palette.tag("tableHeader");
-      if (tableHeader) {
-         const th: NonNullable<NonNullable<Theme["palette"]>["tableHeader"]> =
-            {};
-         const light = tableHeader.text("light");
-         const dark = tableHeader.text("dark");
-         if (light) th.light = light;
-         if (dark) th.dark = dark;
-         if (Object.keys(th).length > 0) p.tableHeader = th;
+      // Plain per-mode colour keys: { light?: string, dark?: string }.
+      const colorKeys = [
+         "background",
+         "tableHeader",
+         "tableBody",
+         "tile",
+         "tileTitle",
+      ] as const;
+      for (const key of colorKeys) {
+         const sub = palette.tag(key);
+         if (!sub) continue;
+         const v: { light?: string; dark?: string } = {};
+         const light = sub.text("light");
+         const dark = sub.text("dark");
+         if (light) v.light = light;
+         if (dark) v.dark = dark;
+         if (Object.keys(v).length > 0) {
+            (p as Record<string, unknown>)[key] = v;
+         }
       }
 
       if (Object.keys(p).length > 0) out.palette = p;
@@ -62,10 +72,28 @@ export function readChartAnnotations(tag: Tag | undefined): Theme | undefined {
    const font = theme.tag("font");
    if (font) {
       const f: NonNullable<Theme["font"]> = {};
-      const family = font.text("family");
-      const size = font.numeric("size");
-      if (family) f.family = family;
-      if (typeof size === "number" && Number.isFinite(size)) f.size = size;
+
+      const family = font.tag("family");
+      if (family) {
+         const v: { light?: string; dark?: string } = {};
+         const light = family.text("light");
+         const dark = family.text("dark");
+         if (light) v.light = light;
+         if (dark) v.dark = dark;
+         if (Object.keys(v).length > 0) f.family = v;
+      }
+
+      const size = font.tag("size");
+      if (size) {
+         const v: { light?: number; dark?: number } = {};
+         const light = size.numeric("light");
+         const dark = size.numeric("dark");
+         if (typeof light === "number" && Number.isFinite(light))
+            v.light = light;
+         if (typeof dark === "number" && Number.isFinite(dark)) v.dark = dark;
+         if (Object.keys(v).length > 0) f.size = v;
+      }
+
       if (Object.keys(f).length > 0) out.font = f;
    }
 

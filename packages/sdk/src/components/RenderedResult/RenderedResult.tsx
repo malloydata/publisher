@@ -1,5 +1,6 @@
 import { Box } from "@mui/material";
 import React, { Suspense, useLayoutEffect, useRef } from "react";
+import { buildMalloyExplicitTheme } from "../../theme/buildMalloyExplicitTheme";
 import { buildTableCssVars } from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
@@ -53,6 +54,12 @@ const createRenderer = async (
    const renderer = new MalloyRenderer({
       onClick: onDrill,
       vegaConfigOverride: buildVegaThemeOverride(theme),
+      // Pass the explicit theme so table chrome and dashboard tiles
+      // pick up the operator's colours directly. Without this the
+      // renderer's own inline style writes `--malloy-render--*` values
+      // sourced from its built-in defaults and shadows whatever we set
+      // on the outer wrapper.
+      theme: buildMalloyExplicitTheme(theme),
       onError: (error) => {
          console.error("Error rendering visualization:", typeof error, error);
       },
@@ -135,7 +142,6 @@ function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
 .malloy-render .malloy-dashboard {
-   background: var(--malloy-render--background) !important;
    color: var(--malloy-render--table-body-color) !important;
 }
 .malloy-render .malloy-dashboard .dashboard-item {
@@ -143,9 +149,6 @@ const PUBLISHER_RENDERER_OVERRIDES_CSS = `
    color: var(--malloy-render--table-body-color) !important;
    box-shadow: none !important;
    border: var(--malloy-render--table-border) !important;
-}
-.malloy-render .malloy-dashboard .dashboard-row-header {
-   background: var(--malloy-render--background) !important;
 }
 .malloy-render .malloy-dashboard .dashboard-row-header-separator {
    background: var(--malloy-render--table-border) !important;

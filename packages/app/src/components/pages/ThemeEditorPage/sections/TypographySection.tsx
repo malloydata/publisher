@@ -1,4 +1,8 @@
-import { resolveTheme, type Theme } from "@malloy-publisher/sdk";
+import {
+   resolveTheme,
+   type Theme,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
 import { Box, MenuItem, Stack, TextField, Typography } from "@mui/material";
 import { TypographyPreview } from "../previews/TypographyPreview";
 
@@ -6,6 +10,12 @@ interface TypographySectionProps {
    theme: Theme;
    onChange: (next: Theme) => void;
    disabled: boolean;
+   /**
+    * Accepted for prop-shape parity with the other sections; typography
+    * is mode-independent so the value is only used to resolve the
+    * preview's defaults.
+    */
+   mode: ThemeMode;
 }
 
 const FONT_OPTIONS: Array<{ label: string; value: string }> = [
@@ -27,16 +37,32 @@ export function TypographySection({
    theme,
    onChange,
    disabled,
+   mode,
 }: TypographySectionProps) {
-   const resolved = resolveTheme([theme], "light");
-   const family = theme.font?.family ?? resolved.font.family;
-   const size = theme.font?.size ?? resolved.font.size;
+   const resolved = resolveTheme([theme], mode);
+   // Font family / size are per-mode; edits to one mode don't touch the
+   // other. Fall back to the resolved (defaults) value when this mode
+   // hasn't been customised yet so the picker shows what will render.
+   const family = theme.font?.family?.[mode] ?? resolved.font.family;
+   const size = theme.font?.size?.[mode] ?? resolved.font.size;
 
    const setFamily = (next: string) => {
-      onChange({ ...theme, font: { ...theme.font, family: next } });
+      onChange({
+         ...theme,
+         font: {
+            ...theme.font,
+            family: { ...theme.font?.family, [mode]: next },
+         },
+      });
    };
    const setSize = (next: number) => {
-      onChange({ ...theme, font: { ...theme.font, size: next } });
+      onChange({
+         ...theme,
+         font: {
+            ...theme.font,
+            size: { ...theme.font?.size, [mode]: next },
+         },
+      });
    };
 
    const matchingOption = FONT_OPTIONS.find((o) => o.value === family);
