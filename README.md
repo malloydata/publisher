@@ -111,6 +111,7 @@ Full documentation is available at **[docs.malloydata.dev/documentation/user_gui
 - [REST API](https://docs.malloydata.dev/documentation/user_guides/publishing/rest_api) - Build custom applications
 - [Publisher SDK](https://docs.malloydata.dev/documentation/user_guides/publishing/publisher_sdk) - Embed analytics in React apps
 - [MCP for AI Agents](https://docs.malloydata.dev/documentation/user_guides/publishing/mcp_agents) - Connect Claude and other AI assistants
+- [Theming](https://docs.malloydata.dev/documentation/user_guides/publishing/theming) - Customize colors, fonts, and light/dark mode
 
 ## How the Pieces Fit Together
 
@@ -289,6 +290,46 @@ The publisher exports OpenTelemetry metrics (under the `publisher` meter) so the
 | `publisher_process_rss_bytes`, `publisher_heap_size_limit_bytes`, `publisher_heap_used_bytes` | Gauges | Process RSS, V8 heap ceiling (`--max-old-space-size`), V8 used heap.                                       |
 | `publisher_memory_backpressure_active`, `_activations_total`                 | Gauge, counter   | Current governor state and historical activations.                                                            |
 | `http_server_requests_total{http.status_code}`                               | Counter          | Coarse 413/503/504 totals — pair with the dedicated counters above for per-cause breakdown.                  |
+
+### Theming
+
+Publisher renders charts, tables, and dashboard tiles with a light/dark theme. You can change it in three places, from broadest to narrowest:
+
+1. The config file `publisher.config.json`, at the instance level and optionally overridden per environment under `environments[].theme`.
+2. The in-app Theme Editor at `/settings/theme`, which lets an operator iterate against the live UI.
+3. Per-chart `# theme.*` annotations inside a `.malloy` file, for one-off styling on a single view.
+
+These cascade: defaults → instance config → environment config → editor (per environment) → annotation. Each layer only overrides the keys it sets.
+
+The Theme Editor writes to a runtime store (SQLite, persisted alongside other server state). It's blocked when `publisher.config.json` has `frozenConfig: true`, the same way every other runtime mutation is.
+
+Theme object shape:
+
+```jsonc
+{
+  "theme": {
+    "defaultMode": "light",
+    "allowUserToggle": true,
+    "palette": {
+      "series": ["#14b3cb", "#e47404", "#1474a4"],
+      "background":            { "light": "#ffffff", "dark": "#1e293b" },
+      "tableHeader":           { "light": "#5d626b", "dark": "#cbd5e1" },
+      "tableHeaderBackground": { "light": "#f5fafc", "dark": "#1e293b" },
+      "tableBody":             { "light": "#727883", "dark": "#e2e8f0" },
+      "tile":                  { "light": "#f5fafc", "dark": "#0f172a" },
+      "tileTitle":             { "light": "#5d626b", "dark": "#94a3b8" },
+      "mapColor":              { "light": "#14b3cb", "dark": "#14b3cb" }
+    },
+    "font": { "family": "Inter, sans-serif", "size": 12 }
+  }
+}
+```
+
+`defaultMode` accepts `"light"`, `"dark"`, or `"auto"`. With `"auto"` the viewer's OS preference (`prefers-color-scheme`) wins until they override it from the header toggle. Setting `allowUserToggle: false` hides the toggle and locks viewers into `defaultMode`.
+
+`palette.series` and `font` are shared across modes; the rest of the palette keys take an explicit `{ light, dark }` pair. `mapColor` is the saturated end of the choropleth gradient on `# shape_map` and `# segment_map` visualizations.
+
+See [Theming Publisher](https://docs.malloydata.dev/documentation/user_guides/publishing/theming) in the public docs for the full walkthrough, including the editor UI and per-chart annotation examples.
 
 ## Community
 
