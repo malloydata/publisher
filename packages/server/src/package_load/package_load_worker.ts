@@ -556,11 +556,10 @@ function extractQueries(modelPath: string, modelDef: ModelDef): ApiQueryWire[] {
       .map((q) => ({
          name: q.as || q.name,
          sourceName: typeof q.structRef === "string" ? q.structRef : undefined,
-         annotations: q?.annotation?.blockNotes
-            ?.filter((note: { at: { url: string } }) =>
-               note.at.url.includes(modelPath),
-            )
-            .map((note: { text: string }) => note.text),
+         annotations:
+            q?.annotation?.blockNotes?.map(
+               (note: { text: string }) => note.text,
+            ) ?? [],
       }));
 }
 

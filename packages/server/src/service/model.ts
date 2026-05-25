@@ -977,11 +977,10 @@ export class Model {
                typeof queryObj.structRef === "string"
                   ? queryObj.structRef
                   : undefined,
-            annotations: queryObj?.annotation?.blockNotes
-               ?.filter((note: { at: { url: string } }) =>
-                  note.at.url.includes(modelPath),
-               )
-               .map((note: { text: string }) => note.text),
+            annotations:
+               queryObj?.annotation?.blockNotes?.map(
+                  (note: { text: string }) => note.text,
+               ) ?? [],
          }));
    }
 
