@@ -18,7 +18,6 @@ import { useRef } from "react";
 import { ColorPickerField } from "../ColorPickerField";
 import { BarChartPreview } from "../previews/BarChartPreview";
 import { LineChartPreview } from "../previews/LineChartPreview";
-import { MapPreview } from "../previews/MapPreview";
 
 let __seriesRowCounter = 0;
 const nextRowId = () => `series-row-${++__seriesRowCounter}`;
@@ -51,29 +50,21 @@ export function SeriesColorsSection({
 }: SeriesColorsSectionProps) {
    const resolved = resolveTheme([theme], mode);
 
-   // Per-mode pickers (chart canvas + map gradient end colour).
+   // Background picker is per-mode (chart canvas in light vs dark).
    const background = theme.palette?.background?.[mode] ?? resolved.background;
-   const mapColor = theme.palette?.mapColor?.[mode] ?? resolved.mapColor;
-   const setPerModeColor =
-      (key: "background" | "mapColor") => (hex: string) => {
-         // Same legacy-shape guard as TablesSection.setColor: a string
-         // in this slot (pre-per-mode shape) would spread into
-         // character-indexed garbage.
-         const existing = theme.palette?.[key];
-         const base =
-            existing && typeof existing === "object" && !Array.isArray(existing)
-               ? existing
-               : {};
-         onChange({
-            ...theme,
-            palette: {
-               ...theme.palette,
-               [key]: { ...base, [mode]: hex },
-            },
-         });
-      };
-   const setBackground = setPerModeColor("background");
-   const setMapColor = setPerModeColor("mapColor");
+   const setBackground = (hex: string) => {
+      // Legacy-shape guard: a string in this slot (pre-per-mode shape)
+      // would spread into character-indexed garbage.
+      const existing = theme.palette?.background;
+      const base =
+         existing && typeof existing === "object" && !Array.isArray(existing)
+            ? existing
+            : {};
+      onChange({
+         ...theme,
+         palette: { ...theme.palette, background: { ...base, [mode]: hex } },
+      });
+   };
 
    // Defensive: if a stale schema shape sneaked past the server-side
    // sanitiser (e.g. an old per-mode `series` object from a previous
@@ -147,28 +138,13 @@ export function SeriesColorsSection({
          >
             <BarChartPreview theme={resolved} />
             <LineChartPreview theme={resolved} />
-            <MapPreview theme={resolved} />
          </Stack>
 
-         <Box
-            sx={{
-               mb: 3,
-               display: "grid",
-               gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-               columnGap: 2,
-               rowGap: 2,
-            }}
-         >
+         <Box sx={{ mb: 3 }}>
             <ColorPickerField
                label="Chart background"
                value={background}
                onChange={setBackground}
-               disabled={disabled}
-            />
-            <ColorPickerField
-               label="Map color (gradient saturated end)"
-               value={mapColor}
-               onChange={setMapColor}
                disabled={disabled}
             />
          </Box>

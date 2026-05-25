@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MapsSection } from "./sections/MapsSection";
 import { SeriesColorsSection } from "./sections/SeriesColorsSection";
 import { TablesSection } from "./sections/TablesSection";
 import { TypographySection } from "./sections/TypographySection";
@@ -286,6 +287,13 @@ export default function ThemeEditorPage() {
                <CardHeader title="Charts" />
                <CardContent>
                   <SeriesColorsSection {...sectionProps} />
+               </CardContent>
+            </Card>
+
+            <Card>
+               <CardHeader title="Maps" />
+               <CardContent>
+                  <MapsSection {...sectionProps} />
                </CardContent>
             </Card>
 
