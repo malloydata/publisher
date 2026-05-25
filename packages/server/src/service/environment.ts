@@ -191,14 +191,7 @@ export class Environment {
       logger.info(
          `Loaded ${malloyConfig.apiConnections.length} connections for environment ${environmentName}`,
          {
-            // Log only name + type. The full apiConnections array carries
-            // bigqueryConnection.serviceAccountKeyJson / snowflakeConnection.privateKey
-            // / postgresConnection.password and would leak them through winston
-            // serialization. See connection.ts:1129 for the parallel fix.
-            connections: malloyConfig.apiConnections.map((c) => ({
-               name: c.name,
-               type: c.type,
-            })),
+            apiConnections: malloyConfig.apiConnections,
          },
       );
 
@@ -703,15 +696,7 @@ export class Environment {
          `Adding package ${packageName} to environment ${this.environmentName}`,
          {
             packagePath,
-            // Do NOT spread the full malloyConfig: its `connections` registry
-            // carries the live Malloy connection objects, which for BigQuery /
-            // Snowflake / Postgres hold serviceAccountKeyJson / privateKey /
-            // password in memory and may serialize them through winston.
-            // Log only the connection names + types instead.
-            connections: this.apiConnections.map((c) => ({
-               name: c.name,
-               type: c.type,
-            })),
+            malloyConfig: this.malloyConfig.malloyConfig,
          },
       );
 
