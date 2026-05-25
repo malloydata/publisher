@@ -29,11 +29,6 @@ import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
 import { components } from "../api";
-import { deserializeError } from "../package_load/package_load_pool";
-import type {
-   SerializedModel,
-   SerializedNotebookCell,
-} from "../package_load/protocol";
 import {
    getDefaultQueryRowLimit,
    getMaxQueryRows,
@@ -48,6 +43,11 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { logger } from "../logger";
+import { deserializeError } from "../package_load/package_load_pool";
+import type {
+   SerializedModel,
+   SerializedNotebookCell,
+} from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {

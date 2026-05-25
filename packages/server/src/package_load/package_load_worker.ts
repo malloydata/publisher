@@ -46,26 +46,26 @@
  */
 import {
    contextOverlay,
+   isSourceDef,
+   MalloyConfig,
+   MalloyError,
+   modelDefToModelInfo,
+   Runtime,
    type Annotation,
    type BuildManifestEntry,
    type Connection,
    type FetchSchemaOptions,
    type LookupConnection,
-   MalloyConfig,
-   MalloyError,
    type ModelDef,
    type ModelMaterializer,
-   modelDefToModelInfo,
    type NamedModelObject,
    type NamedQueryDef,
    type Query,
-   Runtime,
    type SQLSourceDef,
    type SQLSourceRequest,
    type StructDef,
    type TableSourceDef,
    type TurtleDef,
-   isSourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -73,8 +73,8 @@ import {
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
 import * as fs from "fs";
-import * as path from "path";
 import { parentPort, threadId } from "node:worker_threads";
+import * as path from "path";
 import recursive from "recursive-readdir";
 import { fileURLToPath, pathToFileURL } from "url";
 
