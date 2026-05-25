@@ -41,6 +41,15 @@ export function buildTableCssVars(
       // so the operator can theme the tile padding and the table
       // header row independently.
       "--malloy-render--tile-background": theme.tile,
+      // Custom var for the dashboard PANEL (area between tiles).
+      // Set on the outer Publisher wrapper rather than relying on the
+      // renderer's own `--malloy-render--background` because that var
+      // gets shadowed by an inline write deeper in the renderer's DOM
+      // when annotations are present — and our intent here is to keep
+      // the panel neutral regardless of any annotation. The
+      // injectRendererOverrides CSS reads this var on .malloy-dashboard
+      // and its row-header / row-body children.
+      "--publisher-dashboard-root": theme.dashboardRoot,
       // Drives the dashboard tile title (e.g. "by_month" above a chart)
       // and the dimension-name text via injectRendererOverrides.
       "--malloy-render--label-color": theme.tileTitle,

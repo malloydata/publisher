@@ -153,15 +153,27 @@ const PUBLISHER_RENDERER_OVERRIDES_CSS = `
 .malloy-render .malloy-dashboard,
 .malloy-render.malloy-render .malloy-dashboard,
 div.malloy-render .malloy-dashboard {
-   background: var(--malloy-render--background) !important;
-   background-color: var(--malloy-render--background) !important;
+   /* --publisher-dashboard-root is set on the outer Publisher wrapper
+      (see buildTableCssVars) and stays decoupled from
+      --malloy-render--background, which gets shadowed inside the
+      renderer when a theme.background annotation is present. The
+      dedicated var means the panel between tiles always paints the
+      operator neutral dashboardRoot regardless of annotations. */
+   background: var(--publisher-dashboard-root) !important;
+   background-color: var(--publisher-dashboard-root) !important;
    color: var(--malloy-render--table-body-color) !important;
 }
+.malloy-render .malloy-dashboard .dashboard-row,
+.malloy-render .malloy-dashboard .dashboard-row-body,
 .malloy-render .malloy-dashboard .dashboard-row-header,
 .malloy-render.malloy-render .malloy-dashboard .dashboard-row-header,
 div.malloy-render .malloy-dashboard .dashboard-row-header {
-   background: var(--malloy-render--background) !important;
-   background-color: var(--malloy-render--background) !important;
+   /* Belt + suspenders: dashboard.css hardcodes .dashboard-row-header
+      to #f7f9fc, and row / row-body have no explicit background but
+      get caught in any annotation-driven inline writes. Force all of
+      them to the neutral panel colour. */
+   background: var(--publisher-dashboard-root) !important;
+   background-color: var(--publisher-dashboard-root) !important;
 }
 .malloy-render .malloy-dashboard .dashboard-item {
    /* Tile padding around each chart / table. Uses our custom
