@@ -2,7 +2,6 @@ import { useServer, type Theme, type ThemeMode } from "@malloy-publisher/sdk";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
-import UndoIcon from "@mui/icons-material/Undo";
 import {
    Alert,
    Box,
@@ -67,12 +66,20 @@ export default function ThemeEditorPage() {
    const [draft, setDraft] = useState<Theme>(savedTheme);
    const [snackbar, setSnackbar] = useState<string | null>(null);
    const debounceRef = useRef<NodeJS.Timeout | null>(null);
-   // Destructive actions go through a confirm dialog so the operator
-   // doesn't lose hand-tuned colours to an accidental click. Two
-   // separate booleans rather than one shared "mode" state so the
-   // labels and handlers stay obvious at the call site.
-   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+   // Bumped whenever Reset or an auto-save fires. Each save closure
+   // captures the value at issue time and aborts (or ignores its
+   // onSuccess) if the ref has advanced past it. This prevents an
+   // in-flight save from stomping a subsequent reset's setQueryData.
+   const saveGenRef = useRef(0);
+   // Reset goes through a confirm dialog so the operator doesn't wipe
+   // hand-tuned colours with an accidental click.
    const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+   // Guard the auto-save effect against firing during the brief
+   // pending window of themeQuery — without this, an edit made before
+   // the initial /api/v0/theme response lands ends up auto-saving the
+   // empty-state draft (resolved-defaults snapshot + the edit) over
+   // the real saved theme. Flips to true on first successful resync.
+   const hasSyncedOnceRef = useRef(false);
 
    // Tracks the savedTheme value that the draft last agreed with. The
    // resync effect uses this to tell external updates (initial load,
@@ -83,12 +90,19 @@ export default function ThemeEditorPage() {
    const lastSyncedSavedKeyRef = useRef<string | null>(null);
 
    useEffect(() => {
+      // Wait until the theme query actually resolves before treating
+      // the savedTheme as authoritative. Without this, the resync
+      // effect's first-load branch runs against the empty `{}` from
+      // the pending query and unlocks auto-save before the real saved
+      // theme arrives.
+      if (!themeQuery.isSuccess) return;
       const savedKey = JSON.stringify(savedTheme);
       const draftKey = JSON.stringify(draft);
       if (lastSyncedSavedKeyRef.current === null) {
          // First successful load: adopt saved as draft baseline.
          setDraft(savedTheme);
          lastSyncedSavedKeyRef.current = savedKey;
+         hasSyncedOnceRef.current = true;
          return;
       }
       if (savedKey === lastSyncedSavedKeyRef.current) return;
@@ -103,31 +117,32 @@ export default function ThemeEditorPage() {
       // not in the dep array — re-running on every keystroke would defeat
       // the divergence check.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [savedTheme]);
+   }, [savedTheme, themeQuery.isSuccess]);
 
    const saveMutation = useMutation({
       mutationFn: async (theme: Theme) => {
          const res = await apiClients.publisher.putTheme(theme);
          return res.data as Theme;
       },
-      onSuccess: (saved) => {
-         queryClient.setQueryData(["theme"], saved);
-         queryClient.invalidateQueries({ queryKey: ["status"] });
-         setSnackbar("Saved");
-      },
-      onError: (err: unknown) => {
-         setSnackbar(
-            err instanceof Error
-               ? `Save failed: ${err.message}`
-               : "Save failed",
-         );
-      },
+      // onSuccess / onError handled per-call so the closure can compare
+      // against the generation it was issued in. Reset bumps the
+      // generation; any save whose generation is stale silently drops
+      // its response instead of stomping the reset's setQueryData.
    });
 
    const resetMutation = useMutation({
       mutationFn: async () => {
          const res = await apiClients.publisher.resetTheme();
          return res.data as Theme;
+      },
+      onMutate: () => {
+         // Cancel any pending debounce and invalidate any in-flight
+         // save's onSuccess before the reset request hits the wire.
+         saveGenRef.current++;
+         if (debounceRef.current) {
+            clearTimeout(debounceRef.current);
+            debounceRef.current = null;
+         }
       },
       onSuccess: (reseeded) => {
          queryClient.setQueryData(["theme"], reseeded);
@@ -145,16 +160,35 @@ export default function ThemeEditorPage() {
 
    // Auto-save debounce: any change to the draft triggers a save after
    // AUTO_SAVE_DELAY_MS of inactivity. Skip when the draft equals the
-   // saved value (no-op edits) or when the instance is frozen.
+   // saved value (no-op edits), when the instance is frozen, or when
+   // the initial /status resync hasn't landed (otherwise we'd PUT a
+   // draft built off the empty pre-query state).
    const draftKey = useMemo(() => JSON.stringify(draft), [draft]);
    const savedKey = useMemo(() => JSON.stringify(savedTheme), [savedTheme]);
    useEffect(() => {
       if (frozen) return;
       if (!themeQuery.isSuccess) return;
+      if (!hasSyncedOnceRef.current) return;
       if (draftKey === savedKey) return;
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-         saveMutation.mutate(draft);
+         const myGen = ++saveGenRef.current;
+         saveMutation.mutate(draft, {
+            onSuccess: (saved) => {
+               if (saveGenRef.current !== myGen) return;
+               queryClient.setQueryData(["theme"], saved);
+               queryClient.invalidateQueries({ queryKey: ["status"] });
+               setSnackbar("Saved");
+            },
+            onError: (err: unknown) => {
+               if (saveGenRef.current !== myGen) return;
+               setSnackbar(
+                  err instanceof Error
+                     ? `Save failed: ${err.message}`
+                     : "Save failed",
+               );
+            },
+         });
       }, AUTO_SAVE_DELAY_MS);
       return () => {
          if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -163,8 +197,6 @@ export default function ThemeEditorPage() {
       // debounce on every mutation state change and double-save.
       // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [draftKey, savedKey, frozen, themeQuery.isSuccess]);
-
-   const dirty = draftKey !== savedKey;
 
    // Which per-mode variant the color pickers below edit. This is purely
    // an editor-side concern; it doesn't change which mode VIEWERS see.
@@ -197,26 +229,15 @@ export default function ThemeEditorPage() {
                   automatically and apply to every viewer on next page load.
                </Typography>
             </Box>
-            <Stack direction="row" spacing={1}>
-               <Button
-                  variant="outlined"
-                  size="small"
-                  startIcon={<UndoIcon />}
-                  disabled={frozen || !dirty}
-                  onClick={() => setConfirmDiscardOpen(true)}
-               >
-                  Discard changes
-               </Button>
-               <Button
-                  variant="outlined"
-                  size="small"
-                  startIcon={<RestartAltIcon />}
-                  disabled={frozen || resetMutation.isPending}
-                  onClick={() => setConfirmResetOpen(true)}
-               >
-                  Reset to defaults
-               </Button>
-            </Stack>
+            <Button
+               variant="outlined"
+               size="small"
+               startIcon={<RestartAltIcon />}
+               disabled={frozen || resetMutation.isPending}
+               onClick={() => setConfirmResetOpen(true)}
+            >
+               Reset to defaults
+            </Button>
          </Stack>
 
          {frozen && (
@@ -290,40 +311,6 @@ export default function ThemeEditorPage() {
             message={snackbar ?? ""}
             anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
          />
-
-         <Dialog
-            open={confirmDiscardOpen}
-            onClose={() => setConfirmDiscardOpen(false)}
-            aria-labelledby="discard-confirm-title"
-         >
-            <DialogTitle id="discard-confirm-title">
-               Discard changes?
-            </DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Unsaved edits to the visualization theme will be lost.
-                  Previously-saved colors stay intact.
-               </DialogContentText>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  onClick={() => setConfirmDiscardOpen(false)}
-                  sx={{ color: "text.primary" }}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  color="error"
-                  onClick={() => {
-                     setDraft(savedTheme);
-                     setConfirmDiscardOpen(false);
-                  }}
-                  autoFocus
-               >
-                  Discard
-               </Button>
-            </DialogActions>
-         </Dialog>
 
          <Dialog
             open={confirmResetOpen}

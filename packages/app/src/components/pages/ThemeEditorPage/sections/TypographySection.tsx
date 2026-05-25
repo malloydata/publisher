@@ -50,11 +50,18 @@ export function TypographySection({
          ? theme.font.size
          : resolved.font.size;
 
+   // Guard against legacy non-object `theme.font` values (e.g. an
+   // operator-edited config that put a stray string there). Same
+   // shape concern as the per-mode color spreads in TablesSection.
+   const fontBase = () =>
+      theme.font && typeof theme.font === "object" && !Array.isArray(theme.font)
+         ? theme.font
+         : {};
    const setFamily = (next: string) => {
-      onChange({ ...theme, font: { ...theme.font, family: next } });
+      onChange({ ...theme, font: { ...fontBase(), family: next } });
    };
    const setSize = (next: number) => {
-      onChange({ ...theme, font: { ...theme.font, size: next } });
+      onChange({ ...theme, font: { ...fontBase(), size: next } });
    };
 
    const matchingOption = FONT_OPTIONS.find((o) => o.value === family);

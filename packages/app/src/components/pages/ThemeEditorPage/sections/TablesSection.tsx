@@ -50,11 +50,22 @@ export function TablesSection({
    };
 
    const setColor = (key: PerModeKey) => (hex: string) => {
+      // Guard the spread against legacy non-object shapes on disk.
+      // A pre-per-mode Publisher persisted these slots as bare strings;
+      // spreading a string in object position produces character-
+      // indexed garbage like {0:'#',1:'2',...,light:hex}. Only spread
+      // when the existing value is already a {light,dark}-shaped
+      // object, otherwise start fresh.
+      const existing = theme.palette?.[key];
+      const base =
+         existing && typeof existing === "object" && !Array.isArray(existing)
+            ? existing
+            : {};
       onChange({
          ...theme,
          palette: {
             ...theme.palette,
-            [key]: { ...theme.palette?.[key], [mode]: hex },
+            [key]: { ...base, [mode]: hex },
          },
       });
    };

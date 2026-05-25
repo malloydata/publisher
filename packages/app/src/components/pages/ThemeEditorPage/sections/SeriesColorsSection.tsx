@@ -1,4 +1,5 @@
 import {
+   DEFAULT_THEME,
    resolveTheme,
    type Theme,
    type ThemeMode,
@@ -52,11 +53,19 @@ export function SeriesColorsSection({
    // Background picker is per-mode (chart canvas in light vs dark).
    const background = theme.palette?.background?.[mode] ?? resolved.background;
    const setBackground = (hex: string) => {
+      // Same legacy-shape guard as TablesSection.setColor: a string in
+      // theme.palette.background (pre-per-mode shape) would spread into
+      // character-indexed garbage.
+      const existing = theme.palette?.background;
+      const base =
+         existing && typeof existing === "object" && !Array.isArray(existing)
+            ? existing
+            : {};
       onChange({
          ...theme,
          palette: {
             ...theme.palette,
-            background: { ...theme.palette?.background, [mode]: hex },
+            background: { ...base, [mode]: hex },
          },
       });
    };
@@ -82,10 +91,26 @@ export function SeriesColorsSection({
    }
 
    const setSeries = (next: string[]) => {
-      onChange({
-         ...theme,
-         palette: { ...theme.palette, series: next },
-      });
+      // If the operator's array equals the SDK default palette
+      // exactly, drop the explicit `series` so the cascade keeps
+      // resolving dynamically — that way a future Publisher release
+      // with new brand defaults still reaches this user. As soon as
+      // they pick a non-default colour, the field re-materialises.
+      // (Compared against DEFAULT_THEME rather than the resolved
+      // theme so collapse means 'fall back to SDK defaults', not
+      // 'self-reference what's already saved'.)
+      const defaults =
+         (DEFAULT_THEME.palette?.series as string[] | undefined) ?? [];
+      const matchesDefaults =
+         next.length === defaults.length &&
+         next.every((c, i) => c === defaults[i]);
+      const nextPalette: NonNullable<Theme["palette"]> = { ...theme.palette };
+      if (matchesDefaults) {
+         delete nextPalette.series;
+      } else {
+         nextPalette.series = next;
+      }
+      onChange({ ...theme, palette: nextPalette });
    };
 
    const addColor = () => {
