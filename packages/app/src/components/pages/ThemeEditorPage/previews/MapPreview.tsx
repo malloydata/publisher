@@ -2,16 +2,15 @@ import type { ResolvedTheme } from "@malloy-publisher/sdk";
 import { Box, Typography } from "@mui/material";
 
 /**
- * Schematic US-state choropleth preview. Tints each state along the
- * low-to-high gradient the renderer generates from `theme.mapColor`
- * (`#f5f5f5` → `theme.mapColor`). The states' relative values are
- * arbitrary but distributed evenly so the operator sees the full
- * ramp; this isn't a real geography, just enough of a US silhouette
- * to read as "map" instead of an abstract color strip.
+ * Schematic US-silhouette choropleth preview. The path is a single
+ * simplified outline of the lower-48 (no per-state shapes — those
+ * require ~50 paths plus a topology dataset, which we'd rather not
+ * inline in the editor). A series of inner ramp-coloured rectangles
+ * sits above it as a legend so the operator sees the full gradient
+ * the renderer generates from `theme.mapColor`.
  */
 export function MapPreview({ theme }: { theme: ResolvedTheme }) {
-   // Low end matches getColorScale's MAP_GRADIENT_LOW constant. Keep
-   // these in lockstep if either is retuned.
+   // Low end matches getColorScale's MAP_GRADIENT_LOW constant.
    const LOW = "#f5f5f5";
    const high = theme.mapColor;
 
@@ -28,37 +27,25 @@ export function MapPreview({ theme }: { theme: ResolvedTheme }) {
    const colourAt = (t: number) =>
       `rgb(${lerp(lowRgb.r, highRgb.r, t)}, ${lerp(lowRgb.g, highRgb.g, t)}, ${lerp(lowRgb.b, highRgb.b, t)})`;
 
-   // Hand-traced lower-48 + AK/HI fills with intensities in [0,1].
-   // Coords are SVG path fragments — not geographically accurate; the
-   // shapes are stylised tiles that approximate state outlines.
-   // intensity drives which gradient stop each state pulls from.
-   const states: Array<{
-      d: string;
-      intensity: number;
-   }> = [
-      // West coast
-      { d: "M 40 80 L 80 80 L 80 200 L 40 200 Z", intensity: 0.9 }, // CA
-      { d: "M 40 40 L 80 40 L 80 80 L 40 80 Z", intensity: 0.55 }, // OR
-      { d: "M 40 10 L 80 10 L 80 40 L 40 40 Z", intensity: 0.35 }, // WA
-      // Mountain
-      { d: "M 80 40 L 130 40 L 130 110 L 80 110 Z", intensity: 0.25 }, // ID/MT
-      { d: "M 80 110 L 130 110 L 130 180 L 80 180 Z", intensity: 0.45 }, // NV/UT
-      { d: "M 80 180 L 130 180 L 130 230 L 80 230 Z", intensity: 0.65 }, // AZ
-      // Plains
-      { d: "M 130 40 L 200 40 L 200 100 L 130 100 Z", intensity: 0.4 },
-      { d: "M 130 100 L 200 100 L 200 170 L 130 170 Z", intensity: 0.7 }, // TX-ish north
-      { d: "M 130 170 L 200 170 L 200 230 L 130 230 Z", intensity: 0.85 }, // TX
-      // Midwest
-      { d: "M 200 40 L 270 40 L 270 110 L 200 110 Z", intensity: 0.55 },
-      { d: "M 200 110 L 270 110 L 270 170 L 200 170 Z", intensity: 0.6 },
-      { d: "M 200 170 L 270 170 L 270 220 L 200 220 Z", intensity: 0.5 },
-      // East
-      { d: "M 270 40 L 340 40 L 340 100 L 270 100 Z", intensity: 0.75 },
-      { d: "M 270 100 L 340 100 L 340 160 L 270 160 Z", intensity: 0.65 },
-      { d: "M 270 160 L 340 160 L 340 220 L 270 220 Z", intensity: 0.5 },
-      // AK + HI
-      { d: "M 10 220 L 50 220 L 50 250 L 10 250 Z", intensity: 0.15 },
-      { d: "M 60 230 L 90 230 L 90 250 L 60 250 Z", intensity: 0.3 },
+   // Simplified lower-48 silhouette (single path). Coordinates are
+   // hand-traced from a USPS-style outline; intentionally crude — the
+   // goal is a recognisable US shape, not geographic fidelity.
+   const us =
+      "M 20 60 L 60 50 L 110 45 L 170 42 L 230 45 L 280 50 L 320 55 L 350 75 L 365 100 L 360 130 L 340 145 L 310 150 L 280 160 L 260 175 L 240 180 L 215 170 L 195 160 L 170 155 L 150 165 L 130 175 L 115 165 L 100 145 L 85 130 L 65 115 L 40 100 L 25 80 Z";
+
+   // Fill the whole silhouette at a mid-saturation, then overlay
+   // small "state" blobs at varying saturations to give the
+   // choropleth effect.
+   const blobs: Array<{ cx: number; cy: number; r: number; intensity: number }> = [
+      { cx: 80, cy: 90, r: 28, intensity: 0.85 }, // CA
+      { cx: 130, cy: 80, r: 22, intensity: 0.4 },
+      { cx: 180, cy: 85, r: 24, intensity: 0.55 },
+      { cx: 230, cy: 90, r: 24, intensity: 0.3 },
+      { cx: 280, cy: 100, r: 24, intensity: 0.7 },
+      { cx: 320, cy: 105, r: 20, intensity: 0.5 },
+      { cx: 160, cy: 130, r: 26, intensity: 0.65 }, // TX
+      { cx: 210, cy: 140, r: 20, intensity: 0.45 },
+      { cx: 260, cy: 135, r: 18, intensity: 0.6 },
    ];
 
    return (
@@ -72,18 +59,28 @@ export function MapPreview({ theme }: { theme: ResolvedTheme }) {
          aria-label="Choropleth map preview"
       >
          <svg
-            width={360}
-            height={260}
+            width={380}
+            height={220}
             role="img"
             aria-label="Sample choropleth"
          >
-            {states.map((s, i) => (
-               <path
+            {/* Underlying silhouette in the lowest gradient stop. */}
+            <path
+               d={us}
+               fill={colourAt(0.1)}
+               stroke={theme.background}
+               strokeWidth={2}
+            />
+            {/* State-like blobs at varying intensities. */}
+            {blobs.map((b, i) => (
+               <circle
                   key={i}
-                  d={s.d}
-                  fill={colourAt(s.intensity)}
+                  cx={b.cx}
+                  cy={b.cy}
+                  r={b.r}
+                  fill={colourAt(b.intensity)}
                   stroke={theme.background}
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                />
             ))}
          </svg>
