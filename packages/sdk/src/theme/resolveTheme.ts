@@ -38,6 +38,7 @@ export function resolveTheme(
       tableBody: { ...(defaultPalette.tableBody ?? {}) },
       tile: { ...(defaultPalette.tile ?? {}) },
       tileTitle: { ...(defaultPalette.tileTitle ?? {}) },
+      mapColor: { ...(defaultPalette.mapColor ?? {}) },
    };
 
    for (const layer of layers) {
@@ -74,6 +75,7 @@ export function resolveTheme(
       tableBody: pick("tableBody"),
       tile: pick("tile"),
       tileTitle: pick("tileTitle"),
+      mapColor: pick("mapColor"),
       // Table interior follows the operator's chart background so
       // tables and chart canvases share a single "viz surface" colour.
       tableBackground: background,

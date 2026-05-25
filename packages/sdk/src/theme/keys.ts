@@ -17,6 +17,7 @@ export const PER_MODE_COLOR_KEYS = [
    "tableBody",
    "tile",
    "tileTitle",
+   "mapColor",
 ] as const;
 
 export type PerModeColorKey = (typeof PER_MODE_COLOR_KEYS)[number];

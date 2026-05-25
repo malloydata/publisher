@@ -58,6 +58,15 @@ export const DEFAULT_THEME: Required<Theme> = {
          light: "#5d626b",
          dark: "#94a3b8",
       },
+      // Saturated end of the choropleth / heatmap gradient. The
+      // renderer pairs this with a near-neutral low end. Defaults
+      // match the first series colour (teal) so unbranded installs
+      // get a brand-coherent gradient instead of the renderer's
+      // hardcoded blue ramp.
+      mapColor: {
+         light: MALLOY_BRAND.teal,
+         dark: MALLOY_BRAND.teal,
+      },
    },
    font: {
       family: DEFAULT_FONT_FAMILY,

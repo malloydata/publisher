@@ -2626,6 +2626,17 @@ components:
                   type: string
                 dark:
                   type: string
+            mapColor:
+              type: object
+              description: Saturated end of the gradient used by choropleth maps
+                and other sequential color scales. The renderer pairs it
+                with a near-neutral low end so the operator only picks
+                the brand-saturated colour.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
         font:
           type: object
           description: Typography overrides applied to both the app shell and the

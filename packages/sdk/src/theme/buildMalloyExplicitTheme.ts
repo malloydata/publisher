@@ -50,5 +50,9 @@ export function buildMalloyExplicitTheme(
       tablePinnedBorder: theme.pinnedBorder,
       tableFontSize: `${theme.font.size}px`,
       fontFamily: theme.font.family,
+      // Saturated end of the choropleth gradient. The renderer
+      // generates a low-to-high ramp from a neutral grey to this
+      // colour for shape-map / segment-map plugins via getColorScale.
+      mapColor: theme.mapColor,
    };
 }

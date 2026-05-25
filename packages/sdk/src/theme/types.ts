@@ -32,6 +32,12 @@ export interface ResolvedTheme {
    tableBody: string;
    tile: string;
    tileTitle: string;
+   /**
+    * Saturated end of the gradient used by sequential color scales
+    * (choropleth maps, heatmaps). The renderer pairs it with a
+    * near-neutral low-end so the operator only picks the brand end.
+    */
+   mapColor: string;
 
    border: string;
    pinnedBorder: string;

@@ -89,6 +89,7 @@ const PER_MODE_COLOR_KEYS = [
    "tableBody",
    "tile",
    "tileTitle",
+   "mapColor",
 ] as const;
 
 export type Package = {

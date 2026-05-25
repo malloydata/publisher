@@ -3,10 +3,14 @@ import { buildTableCssVars } from "./buildTableCssVars";
 import { resolveTheme } from "./resolveTheme";
 
 describe("buildTableCssVars", () => {
-   it("emits a single --malloy-render--* namespace (no shadow set)", () => {
+   it("emits only --malloy-render--* and --publisher-* namespaces (no shadow --malloy-theme--*)", () => {
       const vars = buildTableCssVars(resolveTheme([], "light"));
       for (const key of Object.keys(vars)) {
-         expect(key.startsWith("--malloy-render--")).toBe(true);
+         const allowed =
+            key.startsWith("--malloy-render--") ||
+            key.startsWith("--publisher-");
+         expect(allowed).toBe(true);
+         expect(key.startsWith("--malloy-theme--")).toBe(false);
       }
    });
 
