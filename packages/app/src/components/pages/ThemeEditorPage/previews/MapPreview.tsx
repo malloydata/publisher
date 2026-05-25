@@ -1,18 +1,55 @@
 import type { ResolvedTheme } from "@malloy-publisher/sdk";
 import { Box, Typography } from "@mui/material";
+import { geoAlbersUsa, geoPath } from "d3-geo";
+import { useMemo } from "react";
+import { feature } from "topojson-client";
+import usAtlas from "us-atlas/states-10m.json";
 
 /**
- * Schematic US-silhouette choropleth preview. The path is a single
- * simplified outline of the lower-48 (no per-state shapes — those
- * require ~50 paths plus a topology dataset, which we'd rather not
- * inline in the editor). A series of inner ramp-coloured rectangles
- * sits above it as a legend so the operator sees the full gradient
- * the renderer generates from `theme.mapColor`.
+ * Real US-states choropleth preview. Renders the same `us-atlas`
+ * states-10m TopoJSON the renderer's shape-map plugin uses, so the
+ * preview shape matches the actual `sales_by_state`-style map a
+ * viewer sees on a package page. Each state is tinted along the
+ * gradient the renderer generates from `theme.mapColor`
+ * (`#f5f5f5` → `theme.mapColor`) using a stable hash-based intensity
+ * so re-renders don't reshuffle the colour assignment.
  */
 export function MapPreview({ theme }: { theme: ResolvedTheme }) {
-   // Low end matches getColorScale's MAP_GRADIENT_LOW constant.
+   // Low end matches getColorScale's MAP_GRADIENT_LOW constant in
+   // the renderer. Keep these in lockstep if either is retuned.
    const LOW = "#f5f5f5";
    const high = theme.mapColor;
+
+   const { paths } = useMemo(() => {
+      // us-atlas ships a single TopoJSON with `states` as an object;
+      // `feature` extracts the GeoJSON FeatureCollection.
+      // The TopoJSON types are wide so we cast at the boundary.
+      const collection = feature(
+         usAtlas as Parameters<typeof feature>[0],
+         (usAtlas as { objects: { states: unknown } }).objects
+            .states as Parameters<typeof feature>[1],
+      ) as { features: Array<{ id?: string; properties?: { name?: string } }> };
+
+      const projection = geoAlbersUsa().fitSize([380, 220], collection);
+      const path = geoPath(projection);
+
+      // Stable intensity per state: hash the state id (FIPS code) to
+      // a [0,1] number so the gradient assignment stays consistent
+      // across renders without needing a real data field.
+      const hash = (s: string) => {
+         let h = 0;
+         for (let i = 0; i < s.length; i++) {
+            h = (h * 31 + s.charCodeAt(i)) & 0xffffffff;
+         }
+         return ((h >>> 0) % 1000) / 1000;
+      };
+
+      const out = collection.features.map((feat) => ({
+         d: path(feat as Parameters<typeof path>[0]) ?? "",
+         intensity: hash(String(feat.id ?? feat.properties?.name ?? "")),
+      }));
+      return { paths: out };
+   }, []);
 
    const hexToRgb = (hex: string) => {
       const m = hex.match(/^#([0-9a-fA-F]{6})$/);
@@ -26,27 +63,6 @@ export function MapPreview({ theme }: { theme: ResolvedTheme }) {
       Math.round(a + (b - a) * t);
    const colourAt = (t: number) =>
       `rgb(${lerp(lowRgb.r, highRgb.r, t)}, ${lerp(lowRgb.g, highRgb.g, t)}, ${lerp(lowRgb.b, highRgb.b, t)})`;
-
-   // Simplified lower-48 silhouette (single path). Coordinates are
-   // hand-traced from a USPS-style outline; intentionally crude — the
-   // goal is a recognisable US shape, not geographic fidelity.
-   const us =
-      "M 20 60 L 60 50 L 110 45 L 170 42 L 230 45 L 280 50 L 320 55 L 350 75 L 365 100 L 360 130 L 340 145 L 310 150 L 280 160 L 260 175 L 240 180 L 215 170 L 195 160 L 170 155 L 150 165 L 130 175 L 115 165 L 100 145 L 85 130 L 65 115 L 40 100 L 25 80 Z";
-
-   // Fill the whole silhouette at a mid-saturation, then overlay
-   // small "state" blobs at varying saturations to give the
-   // choropleth effect.
-   const blobs: Array<{ cx: number; cy: number; r: number; intensity: number }> = [
-      { cx: 80, cy: 90, r: 28, intensity: 0.85 }, // CA
-      { cx: 130, cy: 80, r: 22, intensity: 0.4 },
-      { cx: 180, cy: 85, r: 24, intensity: 0.55 },
-      { cx: 230, cy: 90, r: 24, intensity: 0.3 },
-      { cx: 280, cy: 100, r: 24, intensity: 0.7 },
-      { cx: 320, cy: 105, r: 20, intensity: 0.5 },
-      { cx: 160, cy: 130, r: 26, intensity: 0.65 }, // TX
-      { cx: 210, cy: 140, r: 20, intensity: 0.45 },
-      { cx: 260, cy: 135, r: 18, intensity: 0.6 },
-   ];
 
    return (
       <Box
@@ -62,25 +78,15 @@ export function MapPreview({ theme }: { theme: ResolvedTheme }) {
             width={380}
             height={220}
             role="img"
-            aria-label="Sample choropleth"
+            aria-label="Sample US choropleth"
          >
-            {/* Underlying silhouette in the lowest gradient stop. */}
-            <path
-               d={us}
-               fill={colourAt(0.1)}
-               stroke={theme.background}
-               strokeWidth={2}
-            />
-            {/* State-like blobs at varying intensities. */}
-            {blobs.map((b, i) => (
-               <circle
+            {paths.map((p, i) => (
+               <path
                   key={i}
-                  cx={b.cx}
-                  cy={b.cy}
-                  r={b.r}
-                  fill={colourAt(b.intensity)}
+                  d={p.d}
+                  fill={colourAt(p.intensity)}
                   stroke={theme.background}
-                  strokeWidth={1.5}
+                  strokeWidth={0.5}
                />
             ))}
          </svg>
