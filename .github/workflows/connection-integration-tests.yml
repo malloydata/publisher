@@ -12,6 +12,7 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
+      - ".github/workflows/connection-integration-tests.yml"
   workflow_dispatch:
 
 env:
@@ -23,6 +24,15 @@ jobs:
     name: Connection Integration Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Skip on fork PRs: pull_request runs from a fork don't have access
+    # to repo secrets, so the BQ_PRESTO_TRINO_KEY / BIGQUERY_PUBLIC_DATA_SA
+    # `if [ -z ... ]; then exit 1; fi` checks below would hard-fail with
+    # a confusing red CI for an external contributor whose change had
+    # nothing to do with credentials. Push to main and same-repo PRs
+    # still run normally; workflow_dispatch bypasses the gate.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
 
     services:
       postgres:
@@ -73,6 +83,37 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/bq-credentials.json" >> $GITHUB_ENV
           echo "BIGQUERY_TEST_PROJECT_ID=$(jq -r '.project_id' /tmp/bq-credentials.json)" >> $GITHUB_ENV
           echo "BigQuery credentials file written to /tmp/bq-credentials.json"
+
+      # Separate from BQ_PRESTO_TRINO_KEY above. The new
+      # BIGQUERY_PUBLIC_DATA_SA service account has read-only access to
+      # `bigquery-public-data` and is what the
+      # `BigQuery direct connection (public-data)` describe block in
+      # connection.spec.ts uses to round-trip a real query against
+      # `bigquery-public-data.samples.shakespeare`. Kept on its own env
+      # vars (`BIGQUERY_PUBLIC_DATA_*`) so the existing BQ tests against
+      # the org-internal SA continue to pass without interference.
+      - name: Setup BigQuery public-data credentials
+        env:
+          BIGQUERY_PUBLIC_DATA_SA: ${{ secrets.BIGQUERY_PUBLIC_DATA_SA }}
+        run: |
+          if [ -z "$BIGQUERY_PUBLIC_DATA_SA" ]; then
+            echo "BIGQUERY_PUBLIC_DATA_SA is not set on the publisher repo"
+            exit 1
+          fi
+          # Detect base64 vs raw JSON (mirrors the BQ_PRESTO_TRINO_KEY
+          # handling above; this SA is uploaded as raw JSON but stay
+          # symmetric with the existing pattern).
+          if echo "$BIGQUERY_PUBLIC_DATA_SA" | grep -qE '^\s*eyJ'; then
+            echo "Detected Base64 credentials. Decoding..."
+            echo "$BIGQUERY_PUBLIC_DATA_SA" | base64 --decode > /tmp/bq-public-data-credentials.json
+          else
+            echo "Detected raw JSON credentials."
+            echo "$BIGQUERY_PUBLIC_DATA_SA" > /tmp/bq-public-data-credentials.json
+          fi
+          jq . /tmp/bq-public-data-credentials.json > /dev/null
+          echo "BIGQUERY_PUBLIC_DATA_CREDENTIALS=/tmp/bq-public-data-credentials.json" >> $GITHUB_ENV
+          echo "BIGQUERY_PUBLIC_DATA_PROJECT_ID=$(jq -r '.project_id' /tmp/bq-public-data-credentials.json)" >> $GITHUB_ENV
+          echo "BigQuery public-data credentials file written to /tmp/bq-public-data-credentials.json"
 
       - name: Run connection integration tests
         env:
