@@ -12,9 +12,9 @@ const THEME_ROW_ID = "default";
  *
  * Boot semantics: on first read after process start, if the table is
  * empty, the row is seeded from `publisher.config.json`'s top-level
- * `theme` block (if any). Subsequent writes go to SQLite; the JSON file
+ * `theme` block (if any). Subsequent writes go to DuckDB; the JSON file
  * remains the boot seed only. This mirrors how environments + packages
- * are handled — the JSON config is the seed; runtime mutations live in
+ * are handled. The JSON config is the seed; runtime mutations live in
  * the DB and survive across restarts.
  *
  * Every payload read out of the DB is run through `sanitizeTheme` so a

@@ -87,8 +87,9 @@ paths:
       summary: Get the active instance theme
       description: |
         Returns the theme used by the Malloy renderer for charts/tables/dashboards.
-        Reflects edits made via the in-app Theme Editor (persisted to the server's
-        SQLite database). Empty object when no theme has been configured.
+        Reflects edits made via the in-app Theme Editor (persisted to the
+        server's internal DuckDB metadata store via the shared StorageManager).
+        Empty object when no theme has been configured.
       responses:
         "200":
           description: Active theme.
