@@ -4,8 +4,12 @@ import * as os from "os";
 import * as path from "path";
 
 import { ServiceUnavailableError } from "../errors";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 import { buildEnvironmentMalloyConfig } from "./connection";
-import { Environment } from "./environment";
+import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 
 /**
@@ -176,5 +180,165 @@ describe("Environment admission gate (memory governor choke point)", () => {
       }
       expect(caught).toBeDefined();
       expect(caught).not.toBeInstanceOf(ServiceUnavailableError);
+   });
+});
+
+describe("Environment.assertCanAdmitQuery (query-path back-pressure)", () => {
+   let envDir: string;
+
+   beforeEach(() => {
+      envDir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "publisher-env-query-admission-"),
+      );
+   });
+
+   afterEach(() => {
+      fs.rmSync(envDir, { recursive: true, force: true });
+   });
+
+   it("is a no-op when no governor is attached", () => {
+      const env = makeEnvironment(envDir);
+      // No governor — must not throw. Equivalent of an OSS / non-Docker
+      // deployment that never opted into PUBLISHER_MAX_MEMORY_BYTES.
+      expect(() => env.assertCanAdmitQuery()).not.toThrow();
+   });
+
+   it("is a no-op when the governor is happy (under high-water mark)", () => {
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+      governor.backpressured = false;
+
+      expect(() => env.assertCanAdmitQuery()).not.toThrow();
+   });
+
+   it("throws ServiceUnavailableError (→503) when back-pressured", () => {
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+      governor.backpressured = true;
+
+      expect(() => env.assertCanAdmitQuery()).toThrow(ServiceUnavailableError);
+   });
+
+   it("error message names the environment so operators can pinpoint the hot pod's load", () => {
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+      governor.backpressured = true;
+
+      let caught: unknown;
+      try {
+         env.assertCanAdmitQuery();
+      } catch (err) {
+         caught = err;
+      }
+      expect(caught).toBeInstanceOf(ServiceUnavailableError);
+      expect((caught as Error).message).toContain('environment "test-env"');
+      expect((caught as Error).message).toContain("memory pressure");
+   });
+
+   it("clearing back-pressure immediately re-admits queries (matches governor hysteresis)", () => {
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+
+      governor.backpressured = true;
+      expect(() => env.assertCanAdmitQuery()).toThrow(ServiceUnavailableError);
+
+      governor.backpressured = false;
+      expect(() => env.assertCanAdmitQuery()).not.toThrow();
+   });
+
+   it("detaching the governor reverts to legacy admit-everything", () => {
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+      governor.backpressured = true;
+
+      env.setMemoryGovernor(null);
+      // Even with the stub still claiming back-pressure, a detached
+      // governor leaves nothing to consult. Mirrors the package-admission
+      // detach behavior.
+      expect(() => env.assertCanAdmitQuery()).not.toThrow();
+   });
+});
+
+describe("Environment admission telemetry", () => {
+   let envDir: string;
+   let harness: MetricsHarness;
+
+   beforeEach(async () => {
+      envDir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "publisher-env-admission-telemetry-"),
+      );
+      harness = await startMetricsHarness();
+      resetAdmissionTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      fs.rmSync(envDir, { recursive: true, force: true });
+      resetAdmissionTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   it("publisher_query_admission_rejections_total ticks per query rejection, labeled by environment", async () => {
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+      governor.backpressured = true;
+
+      // Drive three rejections so the counter is unambiguous (a
+      // single-tick assertion can pass against a leaked counter
+      // from a different test; three is harder to fake).
+      for (let i = 0; i < 3; i++) {
+         expect(() => env.assertCanAdmitQuery()).toThrow(
+            ServiceUnavailableError,
+         );
+      }
+      expect(
+         await harness.collectCounter(
+            "publisher_query_admission_rejections_total",
+            { environment: "test-env" },
+         ),
+      ).toBe(3);
+   });
+
+   it("counter stays at zero when the governor is happy (no spurious ticks)", async () => {
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+      // Not back-pressured.
+      env.assertCanAdmitQuery();
+      env.assertCanAdmitQuery();
+      // No rejection should have been recorded; verifies that the
+      // counter doesn't tick on the happy-path admission either.
+      expect(
+         await harness.collectCounter(
+            "publisher_query_admission_rejections_total",
+         ),
+      ).toBe(0);
+   });
+
+   it("publisher_package_admission_rejections_total ticks per package-load rejection", async () => {
+      // Ensure the package directory exists so the 404 doesn't
+      // short-circuit ahead of the back-pressure gate.
+      const pkgName = "real-pkg";
+      fs.mkdirSync(path.join(envDir, pkgName));
+
+      const env = makeEnvironment(envDir);
+      const governor = new StubGovernor();
+      env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
+      governor.backpressured = true;
+
+      await expect(env.addPackage(pkgName)).rejects.toBeInstanceOf(
+         ServiceUnavailableError,
+      );
+      expect(
+         await harness.collectCounter(
+            "publisher_package_admission_rejections_total",
+            { environment: "test-env", reason: "add a new package" },
+         ),
+      ).toBe(1);
    });
 });

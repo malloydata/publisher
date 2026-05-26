@@ -27,9 +27,6 @@ import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon from "./ContentTypeIcon";
-// TODO(redesign-followup): port the Connections section into the redesigned
-// flat-row aesthetic (currently rendered with its original card/table styling).
-import Connections from "./Connections";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -212,10 +209,6 @@ export default function Package({
                   ))}
                   {databases.length === 0 && <EmptyRow label="No data files" />}
                </PackageSection>
-
-               <Box sx={{ mb: 4 }}>
-                  <Connections resourceUri={resourceUri} />
-               </Box>
 
                {hasReadme && (
                   <Box sx={{ mt: 6 }}>

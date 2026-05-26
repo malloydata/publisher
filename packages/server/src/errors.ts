@@ -30,6 +30,10 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(409, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);
+   } else if (error instanceof PayloadTooLargeError) {
+      return httpError(413, error.message);
+   } else if (error instanceof QueryTimeoutError) {
+      return httpError(504, error.message);
    } else {
       return httpError(500, error.message);
    }
@@ -131,6 +135,36 @@ export class InvalidStateTransitionError extends Error {
  * HTTP 503 so an upstream proxy / client can retry with back-off.
  */
 export class ServiceUnavailableError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * Thrown when a response would exceed a server-side size cap (e.g. an
+ * ad-hoc connection SQL query that returned more than
+ * `PUBLISHER_MAX_QUERY_ROWS` rows). Mapped to HTTP 413 so callers know
+ * the request was well-formed but the result is too large for the
+ * publisher to materialize; the remediation is "refine the query" or
+ * "raise the cap", not "retry".
+ */
+export class PayloadTooLargeError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * Thrown when a query exceeded the configured wall-clock budget
+ * (`PUBLISHER_QUERY_TIMEOUT_MS`) and the publisher aborted it
+ * mid-execution. Mapped to HTTP 504 (`Gateway Timeout`) because the
+ * publisher acts as a gateway to the underlying database — the
+ * upstream caller did nothing wrong, but the downstream query took
+ * too long. Distinct from {@link ServiceUnavailableError} so clients
+ * can distinguish "back off, the pod is loaded" (503, retryable)
+ * from "this specific query is too expensive" (504, refine it).
+ */
+export class QueryTimeoutError extends Error {
    constructor(message: string) {
       super(message);
    }

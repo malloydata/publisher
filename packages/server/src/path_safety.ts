@@ -44,7 +44,9 @@ const MAX_ENVIRONMENT_PATH_LEN = 4096;
  * production package name we've seen fits within it, and tightening
  * here costs nothing.
  */
-export function assertSafePackageName(packageName: unknown): void {
+export function assertSafePackageName(
+   packageName: unknown,
+): asserts packageName is string {
    if (typeof packageName !== "string" || !SAFE_NAME_RE.test(packageName)) {
       throw new BadRequestError(
          `Invalid package name: must be 1-255 characters of letters, digits, "-", "_", or "." and must not start with "."`,
@@ -58,7 +60,9 @@ export function assertSafePackageName(packageName: unknown): void {
  * live in subdirectories like `models/foo.malloy`); backslashes,
  * absolute paths, NUL bytes, and `..` / `.` segments are not.
  */
-export function assertSafeRelativeModelPath(modelPath: unknown): void {
+export function assertSafeRelativeModelPath(
+   modelPath: unknown,
+): asserts modelPath is string {
    if (
       typeof modelPath !== "string" ||
       modelPath.length === 0 ||
@@ -90,7 +94,9 @@ export function assertSafeRelativeModelPath(modelPath: unknown): void {
  * sanitizer-barrier pattern CodeQL's `js/path-injection` query
  * recognises.
  */
-export function assertSafeEnvironmentPath(environmentPath: unknown): void {
+export function assertSafeEnvironmentPath(
+   environmentPath: unknown,
+): asserts environmentPath is string {
    if (typeof environmentPath !== "string") {
       throw new BadRequestError(`Invalid environment path: must be a string`);
    }

@@ -5,6 +5,7 @@ import * as sinon from "sinon";
 import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
+import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
 import { EnvironmentStore } from "./environment_store";
 
@@ -1017,6 +1018,108 @@ describe("Project Service Error Recovery", () => {
             expect(projectAgain.metadata.name).toBe(projectName);
          },
          { timeout: 30000 },
+      );
+   });
+});
+
+const TRAVERSAL_NAMES: ReadonlyArray<readonly [string, string]> = [
+   ["leading traversal", "../etc"],
+   ["embedded traversal", "foo/../../bar"],
+   ["slash in name", "foo/bar"],
+   ["backslash in name", "foo\\bar"],
+   ["leading dot", ".staging"],
+   ["bare dot-dot", ".."],
+   ["bare dot", "."],
+   ["empty", ""],
+   ["NUL byte", "foo\0bar"],
+   ["oversized", "a".repeat(256)],
+   ["absolute", "/etc/passwd"],
+] as const;
+
+describe("EnvironmentStore path-injection guards", () => {
+   let environmentStore: EnvironmentStore;
+
+   beforeEach(async () => {
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+      mkdirSync(serverRootPath);
+      mock(isPublisherConfigFrozen).mockReturnValue(false);
+      mock.module("../config", () => ({
+         isPublisherConfigFrozen: () => false,
+      }));
+      environmentStore = new EnvironmentStore(serverRootPath);
+      await environmentStore.finishedInitialization;
+   });
+
+   afterEach(() => {
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+      mkdirSync(serverRootPath);
+   });
+
+   describe("addEnvironment", () => {
+      it.each(TRAVERSAL_NAMES)(
+         "rejects %s as environment.name (%p)",
+         async (_label, name) => {
+            await expect(
+               environmentStore.addEnvironment({ name } as never, true),
+            ).rejects.toBeInstanceOf(BadRequestError);
+         },
+      );
+
+      it.each(TRAVERSAL_NAMES)(
+         "rejects %s as packages[].name (%p)",
+         async (_label, packageName) => {
+            await expect(
+               environmentStore.addEnvironment(
+                  {
+                     name: "ok-env",
+                     packages: [
+                        {
+                           name: packageName,
+                           location: "https://github.com/example/repo",
+                        },
+                     ],
+                  } as never,
+                  true,
+               ),
+            ).rejects.toBeInstanceOf(BadRequestError);
+         },
+      );
+   });
+
+   describe("updateEnvironment", () => {
+      it.each(TRAVERSAL_NAMES)(
+         "rejects %s as environment.name (%p)",
+         async (_label, name) => {
+            await expect(
+               environmentStore.updateEnvironment({ name } as never),
+            ).rejects.toBeInstanceOf(BadRequestError);
+         },
+      );
+   });
+
+   describe("deleteEnvironment", () => {
+      it.each(TRAVERSAL_NAMES)(
+         "rejects %s as environmentName (%p)",
+         async (_label, name) => {
+            await expect(
+               environmentStore.deleteEnvironment(name),
+            ).rejects.toBeInstanceOf(BadRequestError);
+         },
+      );
+   });
+
+   describe("getEnvironment", () => {
+      it.each(TRAVERSAL_NAMES)(
+         "rejects %s as environmentName (%p)",
+         async (_label, name) => {
+            await expect(
+               environmentStore.getEnvironment(name),
+            ).rejects.toBeInstanceOf(BadRequestError);
+         },
       );
    });
 });

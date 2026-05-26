@@ -2,7 +2,15 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { components } from "./api";
-import { API_PREFIX, PUBLISHER_CONFIG_NAME } from "./constants";
+import {
+   API_PREFIX,
+   DEFAULT_MAX_CONCURRENT_QUERIES,
+   DEFAULT_MAX_QUERY_ROWS,
+   DEFAULT_MAX_RESPONSE_BYTES,
+   DEFAULT_QUERY_ROW_LIMIT,
+   DEFAULT_QUERY_TIMEOUT_MS,
+   PUBLISHER_CONFIG_NAME,
+} from "./constants";
 import { logger } from "./logger";
 
 /**
@@ -223,6 +231,118 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
       checkIntervalMs,
       backpressureEnabled,
    };
+};
+
+/**
+ * Resolve the row cap applied to ad-hoc connection SQL queries.
+ * Reads `PUBLISHER_MAX_QUERY_ROWS`; falls back to
+ * {@link DEFAULT_MAX_QUERY_ROWS} when unset or empty.
+ *
+ * Throws at startup on malformed input (matching the loud-failure
+ * stance of {@link getMemoryGovernorConfig}) so a typo in a k8s
+ * manifest surfaces immediately instead of silently disabling the
+ * cap. A value of `0` is accepted and disables wrapping entirely;
+ * use it only when you intend to opt out of the row cap (e.g. when
+ * Step 2's byte budget is the only thing you want enforcing the
+ * bound).
+ */
+export const getMaxQueryRows = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_QUERY_ROWS");
+   if (raw === undefined) return DEFAULT_MAX_QUERY_ROWS;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_MAX_QUERY_ROWS must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the byte cap applied to ad-hoc connection SQL responses
+ * when the underlying connection implements `StreamingConnection`.
+ * Reads `PUBLISHER_MAX_RESPONSE_BYTES`; falls back to
+ * {@link DEFAULT_MAX_RESPONSE_BYTES} when unset or empty.
+ *
+ * Mirrors {@link getMaxQueryRows}'s loud-failure semantics: throws
+ * at startup on malformed input so a typo in a k8s manifest surfaces
+ * immediately. A value of `0` is accepted and disables the byte cap
+ * entirely; use it only when you intend to rely on the row cap alone
+ * (e.g. for benchmarking).
+ */
+export const getMaxResponseBytes = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_RESPONSE_BYTES");
+   if (raw === undefined) return DEFAULT_MAX_RESPONSE_BYTES;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_MAX_RESPONSE_BYTES must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the default row limit applied to Malloy model queries
+ * (the `runnable.run` path used by `getQueryResults` and notebook
+ * cell execution) when the user's query doesn't carry its own
+ * `LIMIT`. Reads `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`; falls back to
+ * {@link DEFAULT_QUERY_ROW_LIMIT} when unset or empty.
+ *
+ * Unlike {@link getMaxQueryRows}, `0` is rejected — a default of
+ * "return zero rows" is almost certainly a misconfiguration (it
+ * would silently break every notebook), and the operator probably
+ * wanted `PUBLISHER_MAX_QUERY_ROWS=0` to opt out of the *hard cap*
+ * instead. Loud failure surfaces the typo at startup.
+ */
+export const getDefaultQueryRowLimit = (): number => {
+   const raw = parseIntEnv("PUBLISHER_DEFAULT_QUERY_ROW_LIMIT");
+   if (raw === undefined) return DEFAULT_QUERY_ROW_LIMIT;
+   if (raw <= 0) {
+      throw new Error(
+         `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT must be a positive integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the per-query wall-clock timeout (milliseconds). Reads
+ * `PUBLISHER_QUERY_TIMEOUT_MS`; falls back to
+ * {@link DEFAULT_QUERY_TIMEOUT_MS} when unset or empty.
+ *
+ * `0` is accepted and disables the timeout entirely. Loud-failure
+ * on bad input (negative, non-integer, non-numeric) so a typo in a
+ * k8s manifest surfaces at startup.
+ */
+export const getQueryTimeoutMs = (): number => {
+   const raw = parseIntEnv("PUBLISHER_QUERY_TIMEOUT_MS");
+   if (raw === undefined) return DEFAULT_QUERY_TIMEOUT_MS;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_QUERY_TIMEOUT_MS must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
+ * Resolve the per-pod inbound query concurrency cap. Reads
+ * `PUBLISHER_MAX_CONCURRENT_QUERIES`; falls back to
+ * {@link DEFAULT_MAX_CONCURRENT_QUERIES} when unset or empty.
+ *
+ * `0` is accepted and disables the cap entirely (use only when you
+ * have another concurrency control upstream, e.g. an explicit
+ * connection pool sized at the load balancer). Loud-failure on bad
+ * input.
+ */
+export const getMaxConcurrentQueries = (): number => {
+   const raw = parseIntEnv("PUBLISHER_MAX_CONCURRENT_QUERIES");
+   if (raw === undefined) return DEFAULT_MAX_CONCURRENT_QUERIES;
+   if (raw < 0) {
+      throw new Error(
+         `PUBLISHER_MAX_CONCURRENT_QUERIES must be a non-negative integer (got ${raw})`,
+      );
+   }
+   return raw;
 };
 
 function substituteEnvVars(value: string): string {

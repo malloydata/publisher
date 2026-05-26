@@ -1,8 +1,19 @@
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
-import { BadRequestError, ConnectionError } from "../errors";
+import {
+   getMaxQueryRows,
+   getMaxResponseBytes,
+   getQueryTimeoutMs,
+} from "../config";
+import {
+   BadRequestError,
+   ConnectionError,
+   PayloadTooLargeError,
+} from "../errors";
+import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
+import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
 import { validateDuckdbApiSurface } from "../service/connection_config";
 import { ConnectionService } from "../service/connection_service";
@@ -12,6 +23,7 @@ import {
 } from "../service/db_utils";
 import type { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
+import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -442,6 +454,28 @@ export class ConnectionController {
       options: string,
       packageName?: string,
    ): Promise<ApiQueryData> {
+      // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
+      // and array-shaped JSON bodies as `string[]`, not `string`. The route
+      // handlers up-cast for TypeScript's benefit, so re-validate here at the
+      // controller boundary before forwarding to the connector.
+      if (typeof sqlStatement !== "string") {
+         throw new BadRequestError("sqlStatement must be a string");
+      }
+      if (
+         options !== undefined &&
+         options !== null &&
+         typeof options !== "string"
+      ) {
+         throw new BadRequestError("options must be a string");
+      }
+
+      // Shed load before any disk / DB work; same rationale as
+      // QueryController. The env-fetch is cached so this is effectively
+      // a single O(1) boolean read on the hot path.
+      const environmentForAdmission =
+         await this.environmentStore.getEnvironment(environmentName, false);
+      environmentForAdmission.assertCanAdmitQuery();
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
@@ -450,7 +484,27 @@ export class ConnectionController {
 
       let runSQLOptions: RunSQLOptions = {};
       if (options) {
-         runSQLOptions = JSON.parse(options) as RunSQLOptions;
+         // JSON.parse happily produces `null`, `42`, `"foo"`, `[1,2,3]`, etc.
+         // Anything that isn't a plain object would either crash later when
+         // we touch `.abortSignal` / `.rowLimit` (null), or mutate a caller
+         // string / array and pass it to the connector. Reject at the
+         // boundary alongside the other CodeQL type guards above.
+         let parsed: unknown;
+         try {
+            parsed = JSON.parse(options);
+         } catch {
+            throw new BadRequestError("options must be valid JSON");
+         }
+         if (
+            parsed === null ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
+         ) {
+            throw new BadRequestError(
+               'options must be a JSON object (e.g. {"rowLimit": 100})',
+            );
+         }
+         runSQLOptions = parsed as RunSQLOptions;
       }
       if (runSQLOptions.abortSignal) {
          // Add support for abortSignal in the future
@@ -458,15 +512,96 @@ export class ConnectionController {
          runSQLOptions.abortSignal = undefined;
       }
 
-      try {
-         return {
-            data: JSON.stringify(
-               await malloyConnection.runSQL(sqlStatement, runSQLOptions),
-            ),
-         };
-      } catch (error) {
-         throw new ConnectionError((error as Error).message);
+      // Bound the response with two layered caps:
+      //
+      //   - Row cap (PUBLISHER_MAX_QUERY_ROWS) — pushed to the driver as
+      //     RunSQLOptions.rowLimit = min(callerLimit, cap+1). The +1 is a
+      //     sentinel: a response of cap+1 rows means the original would have
+      //     overflowed, so we fail the request with HTTP 413 rather than
+      //     serializing it. A caller-supplied rowLimit lower than cap+1 is
+      //     kept; we only enforce the ceiling. Cap of 0 disables the bound.
+      //
+      //   - Byte cap (PUBLISHER_MAX_RESPONSE_BYTES) — the actual memory
+      //     bound, since a single 10 MB JSON column can blow past the
+      //     row cap's safe envelope. Only enforceable on streaming
+      //     connections; row-buffered `runSQL` has already done the
+      //     damage by the time we'd count bytes.
+      //
+      // We trust connectors to honor RunSQLOptions.rowLimit; connectors
+      // that don't are upstream bugs.
+      const maxRows = getMaxQueryRows();
+      const maxBytes = getMaxResponseBytes();
+      if (maxRows > 0) {
+         runSQLOptions.rowLimit = Math.min(
+            runSQLOptions.rowLimit ?? maxRows + 1,
+            maxRows + 1,
+         );
       }
+
+      // Streaming-capable connections (Postgres, DuckDB, ...) go through
+      // streamSqlWithBudget so the byte cap can fire mid-stream. Other
+      // connections fall back to the buffered path; client-side byte
+      // counting there would be security theatre.
+      //
+      // The whole driver call is wrapped in runWithQueryTimeout so a
+      // hung query is surfaced as HTTP 504 instead of holding the
+      // HTTP socket open until the load balancer cuts the connection.
+      // The timeout signal is plumbed into RunSQLOptions.abortSignal
+      // so the abort actually cancels the underlying network call —
+      // not just unblocks the awaiter.
+      if (isStreamingConnection(malloyConnection)) {
+         const streamed = await runWithQueryTimeout(async (signal) => {
+            const optionsWithSignal: RunSQLOptions = {
+               ...runSQLOptions,
+               abortSignal: signal,
+            };
+            try {
+               return await streamSqlWithBudget(
+                  malloyConnection,
+                  sqlStatement,
+                  optionsWithSignal,
+                  { maxRows, maxBytes },
+               );
+            } catch (error) {
+               if (error instanceof PayloadTooLargeError) throw error;
+               // If runWithQueryTimeout is about to wrap this in a
+               // QueryTimeoutError (because the timer fired), the
+               // ConnectionError we'd throw here is discarded — the
+               // timeout verdict wins. So this branch only matters
+               // for genuine driver failures.
+               throw new ConnectionError((error as Error).message);
+            }
+         }, getQueryTimeoutMs());
+         return { data: JSON.stringify(streamed) };
+      }
+
+      const result = await runWithQueryTimeout(async (signal) => {
+         const optionsWithSignal: RunSQLOptions = {
+            ...runSQLOptions,
+            abortSignal: signal,
+         };
+         try {
+            return await malloyConnection.runSQL(
+               sqlStatement,
+               optionsWithSignal,
+            );
+         } catch (error) {
+            throw new ConnectionError((error as Error).message);
+         }
+      }, getQueryTimeoutMs());
+
+      if (maxRows > 0 && result.rows.length > maxRows) {
+         // Tick the cap-exceeded counter on the buffered path too
+         // so `publisher_query_cap_exceeded_total{cap_type="rows",
+         // source="connection_sql"}` captures rejections from
+         // *all* connectors, not just streaming-capable ones.
+         recordQueryCapExceeded("rows", "connection_sql");
+         throw new PayloadTooLargeError(
+            `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
+         );
+      }
+
+      return { data: JSON.stringify(result) };
    }
 
    public async getConnectionTemporaryTable(
@@ -475,23 +610,75 @@ export class ConnectionController {
       sqlStatement: string,
       packageName?: string,
    ): Promise<ApiTemporaryTable> {
+      // Express parses repeated query parameters / array-shaped JSON
+      // bodies as `string[]`. The route handlers up-cast for
+      // TypeScript's benefit; re-validate here at the controller
+      // boundary before forwarding to the connector — same pattern
+      // as `getConnectionQueryData`.
+      if (typeof sqlStatement !== "string") {
+         throw new BadRequestError("sqlStatement must be a string");
+      }
+
+      // Shed load before any disk / DB work; same rationale as
+      // `getConnectionQueryData`. `manifestTemporaryTable` issues a
+      // real `CREATE TEMPORARY TABLE AS (<sql>)` against the
+      // connector, so a back-pressured publisher must reject these
+      // with HTTP 503 just like ad-hoc SELECTs.
+      const environmentForAdmission =
+         await this.environmentStore.getEnvironment(environmentName, false);
+      environmentForAdmission.assertCanAdmitQuery();
+
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
          connectionName,
          packageName,
       );
 
-      try {
-         return {
-            table: JSON.stringify(
-               await (
-                  malloyConnection as PersistSQLResults
-               ).manifestTemporaryTable(sqlStatement),
-            ),
-         };
-      } catch (error) {
-         throw new ConnectionError((error as Error).message);
-      }
+      // `manifestTemporaryTable(sqlCommand: string): Promise<string>`
+      // does not accept an `abortSignal`, so we cannot push
+      // cancellation down to the driver. Instead we race the call
+      // against the publisher's timeout signal so the HTTP response
+      // unblocks at the wall-clock deadline regardless of whether
+      // the underlying DDL responds. The DDL continues running in
+      // the database — the publisher just stops waiting and
+      // returns HTTP 504. This is strictly better than holding the
+      // socket and concurrency slot open until the load balancer
+      // kills the connection, but it does mean a runaway DDL is
+      // not actually cancelled (driver-side enhancement needed in
+      // `@malloydata/db-*` to plumb abort through).
+      //
+      // The `runWithQueryTimeout` wrapper's catch handler checks its
+      // `timedOut` flag at error time, so any rejection that
+      // propagates after the timer has fired is re-emitted as
+      // `QueryTimeoutError` regardless of its shape — that's why
+      // we re-throw the abort reason here unwrapped.
+      return await runWithQueryTimeout(async (signal) => {
+         try {
+            const tableName = await Promise.race([
+               (malloyConnection as PersistSQLResults).manifestTemporaryTable(
+                  sqlStatement,
+               ),
+               new Promise<never>((_resolve, reject) => {
+                  if (signal.aborted) {
+                     reject(signal.reason);
+                     return;
+                  }
+                  signal.addEventListener(
+                     "abort",
+                     () => reject(signal.reason),
+                     { once: true },
+                  );
+               }),
+            ]);
+            return { table: JSON.stringify(tableName) };
+         } catch (error) {
+            // If the abort fired first, the timeout wrapper above
+            // will convert this to QueryTimeoutError on its own
+            // — don't bury the reason in ConnectionError.
+            if (signal.aborted) throw error;
+            throw new ConnectionError((error as Error).message);
+         }
+      }, getQueryTimeoutMs());
    }
 
    public async testConnectionConfiguration(
