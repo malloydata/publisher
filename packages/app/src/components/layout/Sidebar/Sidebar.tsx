@@ -101,10 +101,13 @@ function SidebarHeader({
    return (
       <Box
          sx={{
-            height: 56,
+            minHeight: 56,
             display: "flex",
+            flexDirection: isCollapsed ? "column" : "row",
             alignItems: "center",
             justifyContent: isCollapsed ? "center" : "space-between",
+            gap: isCollapsed ? 0.5 : 0,
+            py: isCollapsed ? 1 : 0,
             px: isCollapsed ? 0 : 2,
             flexShrink: 0,
          }}
@@ -141,15 +144,18 @@ function SidebarHeader({
                </Typography>
             )}
          </Box>
-         {!isCollapsed && (
+         <Tooltip
+            title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            placement="right"
+         >
             <IconButton
                size="small"
                onClick={onToggleCollapse}
-               aria-label="Collapse sidebar"
+               aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             >
                <SidebarToggleIcon fontSize="small" />
             </IconButton>
-         )}
+         </Tooltip>
       </Box>
    );
 }
