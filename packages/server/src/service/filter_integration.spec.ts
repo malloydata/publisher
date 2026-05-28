@@ -486,6 +486,75 @@ describe("filter integration", () => {
    });
 
    // -----------------------------------------------------------------------
+   // Mixed givens + #(filter) composition on the query-results path
+   //
+   // PR 5/6 of the givens migration deprecates `#(filter)` but keeps both
+   // injection paths working independently and in combination. These tests
+   // assert that `model.getQueryResults` (the path behind POST /…/query)
+   // composes a `given:` substitution with a `filterParams` WHERE-injection
+   // — same model, same call, both effects apply.
+   // -----------------------------------------------------------------------
+   describe("givens + filterParams composition", () => {
+      it("composes a given override with filterParams on getQueryResults", async () => {
+         await writeFile(
+            "orders_givens_filter.malloy",
+            MODEL_WITH_GIVENS_AND_FILTER,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "orders_givens_filter.malloy",
+            getConnections(),
+         );
+
+         // given restricts to APAC; filterParam restricts to active.
+         // APAC + active: only (5,'APAC','active',300) → order_count=1, total_amount=300.
+         const { compactResult } = await model.getQueryResults(
+            "orders",
+            "by_given_region",
+            undefined,
+            { status: "active" },
+            undefined,
+            { target_region: "APAC" },
+         );
+
+         const r = asRows(compactResult);
+         expect(r.length).toBe(1);
+         expect(Number(r[0].order_count)).toBe(1);
+         expect(Number(r[0].total_amount)).toBe(300);
+      });
+
+      it("falls back to the given default when no override is supplied", async () => {
+         await writeFile(
+            "orders_givens_filter.malloy",
+            MODEL_WITH_GIVENS_AND_FILTER,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "orders_givens_filter.malloy",
+            getConnections(),
+         );
+
+         // Default given target_region='US'; filterParam restricts to active.
+         // US + active: (1,'US','active',100) and (2,'US','active',200) → order_count=2, total_amount=300.
+         const { compactResult } = await model.getQueryResults(
+            "orders",
+            "by_given_region",
+            undefined,
+            { status: "active" },
+            undefined,
+            undefined,
+         );
+
+         const r = asRows(compactResult);
+         expect(r.length).toBe(1);
+         expect(Number(r[0].order_count)).toBe(2);
+         expect(Number(r[0].total_amount)).toBe(300);
+      });
+   });
+
+   // -----------------------------------------------------------------------
    // Required filter enforcement
    // -----------------------------------------------------------------------
    describe("required filter enforcement", () => {
