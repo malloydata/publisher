@@ -210,6 +210,20 @@ export default function Package({
                   {databases.length === 0 && <EmptyRow label="No data files" />}
                </PackageSection>
 
+               <PackageSection title="Materializations">
+                  <PackageItemRow
+                     icon={<ContentTypeIcon type="materialization" />}
+                     tint={MALLOY_BRAND.teal}
+                     label="Materializations & Manifest"
+                     onClick={(event) =>
+                        onClick(
+                           `/${environmentName}/${packageName}/materializations`,
+                           event,
+                        )
+                     }
+                  />
+               </PackageSection>
+
                {hasReadme && (
                   <Box sx={{ mt: 6 }}>
                      <Notebook
@@ -270,7 +284,7 @@ function PackageSection({
    children,
 }: {
    title: string;
-   count: number;
+   count?: number;
    children: React.ReactNode;
 }) {
    return (
@@ -287,9 +301,11 @@ function PackageSection({
             >
                {title}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-               ({count})
-            </Typography>
+            {count !== undefined && (
+               <Typography variant="caption" color="text.secondary">
+                  ({count})
+               </Typography>
+            )}
          </Stack>
          <Box>{children}</Box>
       </Box>
