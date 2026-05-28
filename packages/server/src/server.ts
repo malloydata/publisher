@@ -35,6 +35,7 @@ import {
 import { logger, loggerMiddleware } from "./logger";
 
 import { getMemoryGovernorConfig } from "./config";
+import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { ManifestController } from "./controller/manifest.controller";
@@ -314,30 +315,6 @@ const setVersionIdError = (res: express.Response) => {
       new NotImplementedError("Version IDs not implemented."),
    );
    res.status(status).json(json);
-};
-
-/**
- * Attach RFC 8594 deprecation headers when the request carries any of the
- * legacy `#(filter)` API surface (`filterParams` / `bypassFilters` on POST,
- * `filter_params` / `bypass_filters` on the notebook-cell GET). The
- * complementary operator-facing notice for legacy *models* (independent of
- * whether the caller used the deprecated request fields) ships as a
- * one-time warn log in `Model`'s constructor — see model.ts.
- */
-const setFilterDeprecationHeaders = (
-   res: express.Response,
-   options: { filterParams?: unknown; bypassFilters?: unknown },
-): void => {
-   if (
-      options.filterParams !== undefined ||
-      options.bypassFilters !== undefined
-   ) {
-      res.setHeader("Deprecation", "true");
-      res.setHeader(
-         "Link",
-         '<https://github.com/malloydata/publisher/blob/main/docs/givens.md>; rel="deprecation"; type="text/markdown"',
-      );
-   }
 };
 
 app.use(
@@ -1132,8 +1109,8 @@ app.get(
             givens,
          );
          setFilterDeprecationHeaders(res, {
-            filterParams: req.query.filter_params,
-            bypassFilters: bypassFilters,
+            filterParams,
+            bypassFilters,
          });
          res.status(200).json(result);
       } catch (error) {
