@@ -27,7 +27,7 @@ import {
    liveTableKey,
 } from "./materialized_table_gc";
 import { Model } from "./model";
-import { quoteTablePath, splitTablePath } from "./quoting";
+import { splitTablePath } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
 
 /**
@@ -91,12 +91,17 @@ export function manifestTableKey(
  * running a zero-row SELECT. Returns `true` if the table resolves,
  * `false` if the query fails (assumed "table not found").
  */
+/**
+ * `tableName` is interpolated verbatim into the probe SQL — the caller
+ * supplies it already quoted for the dialect (the `#@ persist name=…`
+ * contract), matching how Malloy substitutes the name on the read side.
+ */
 export async function tablePhysicallyExists(
    connection: MalloyConnection,
-   quotedTableName: string,
+   tableName: string,
 ): Promise<boolean> {
    try {
-      await connection.runSQL(`SELECT 1 FROM ${quotedTableName} WHERE 1=0`);
+      await connection.runSQL(`SELECT 1 FROM ${tableName} WHERE 1=0`);
       return true;
    } catch {
       return false;
@@ -731,7 +736,7 @@ export class MaterializationService {
 
          // getBuildPlan() throws if the tag is missing, so check first to
          // keep plain models in the same package buildable.
-         const modelTag = malloyModel.tagParse({ prefix: /^##! / }).tag;
+         const modelTag = malloyModel.annotations.parseAsTag("!").tag;
          if (!modelTag.has("experimental", "persistence")) {
             logger.debug(
                "Model has no ##! experimental.persistence tag, skipping",
@@ -775,7 +780,7 @@ export class MaterializationService {
       const tableOwners = new Map<string, string>();
       for (const [sourceID, source] of Object.entries(allSources)) {
          const tableName =
-            source.tagParse({ prefix: /^#@ / }).tag.text("name") || source.name;
+            source.annotations.parseAsTag("@").tag.text("name") || source.name;
          const key = `${source.connectionName}::${tableName}`;
          const existing = tableOwners.get(key);
          if (existing) {
@@ -844,12 +849,16 @@ export class MaterializationService {
 
       const connectionName = persistSource.connectionName;
       const tableName =
-         persistSource.tagParse({ prefix: /^#@ / }).tag.text("name") ||
+         persistSource.annotations.parseAsTag("@").tag.text("name") ||
          persistSource.name;
-      const { schemaPrefix, bareName } = splitTablePath(tableName);
-      const stagingTableName = `${schemaPrefix}${bareName}${stagingSuffix(buildId)}`;
-      const dialect = persistSource.dialect;
-      const quoted = (p: string) => quoteTablePath(p, dialect);
+      const { bareName } = splitTablePath(tableName);
+      const stagingTableName = `${tableName}${stagingSuffix(buildId)}`;
+
+      // Table names go into DDL verbatim. Malloy assumes a table name handed
+      // to it (here, via the build manifest) is already quoted for the
+      // dialect and substitutes it into generated SQL as-is; our DDL has to
+      // match that exact identifier or the CREATE and the read diverge. The
+      // model author owns quoting the `#@ persist name=...` value.
 
       // Guard: refuse to overwrite a pre-existing table that was not
       // created by a previous materialization build. Without this check a
@@ -858,7 +867,7 @@ export class MaterializationService {
       // DROP TABLE below would silently destroy it.
       const tableKey = manifestTableKey(connectionName, tableName);
       if (!knownMaterializedTables.has(tableKey)) {
-         if (await tablePhysicallyExists(connection, quoted(tableName))) {
+         if (await tablePhysicallyExists(connection, tableName)) {
             throw new BadRequestError(
                `Refusing to materialize source '${persistSource.name}': ` +
                   `target table '${tableName}' already exists on connection ` +
@@ -877,26 +886,22 @@ export class MaterializationService {
 
       const startTime = performance.now();
 
-      await connection.runSQL(
-         `DROP TABLE IF EXISTS ${quoted(stagingTableName)}`,
-      );
+      await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
 
       // If any step after CREATE throws we must best-effort drop the
       // staging table, else it orphans under a name that GC will never
       // find (no manifest row is written for a failed build).
       try {
          await connection.runSQL(
-            `CREATE TABLE ${quoted(stagingTableName)} AS (${buildSQL})`,
+            `CREATE TABLE ${stagingTableName} AS (${buildSQL})`,
          );
-         await connection.runSQL(`DROP TABLE IF EXISTS ${quoted(tableName)}`);
+         await connection.runSQL(`DROP TABLE IF EXISTS ${tableName}`);
          await connection.runSQL(
-            `ALTER TABLE ${quoted(stagingTableName)} RENAME TO ${dialect.quoteTablePath(bareName)}`,
+            `ALTER TABLE ${stagingTableName} RENAME TO ${bareName}`,
          );
       } catch (err) {
          try {
-            await connection.runSQL(
-               `DROP TABLE IF EXISTS ${quoted(stagingTableName)}`,
-            );
+            await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
          } catch (cleanupErr) {
             logger.warn(
                "Build: failed to clean up staging table after a failed rebuild; physical leak",

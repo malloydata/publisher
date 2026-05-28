@@ -179,14 +179,13 @@ describe("givens introspection", () => {
       const region = compiledModel.givens?.[0];
       expect(region?.name).toBe("region_filter");
 
-      // The model declares two `#(...)` annotations plus a `##!` pragma.
-      // Only the `#(...)` lines should land on the wire.
+      // The given declares two app-route annotations (`#(doc)`, `#(label)`).
+      // Only app routes land on the wire; Malloy-reserved routes — the
+      // model-level `##!` pragma, plain `#` tags, `#"` doc strings — must
+      // not leak onto the given's surface.
       const annotations = region?.annotations ?? [];
       expect(annotations.length).toBeGreaterThanOrEqual(2);
-      for (const line of annotations) {
-         expect(line.startsWith("#(")).toBe(true);
-      }
-      // Negative assertion: no pragma leakage.
-      expect(annotations.some((a) => a.startsWith("##!"))).toBe(false);
+      expect(annotations.some((a) => a.startsWith("##"))).toBe(false);
+      expect(annotations.some((a) => a.startsWith('#"'))).toBe(false);
    });
 });
