@@ -35,6 +35,7 @@ import {
 import { logger, loggerMiddleware } from "./logger";
 
 import { getMemoryGovernorConfig } from "./config";
+import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { ManifestController } from "./controller/manifest.controller";
@@ -1098,17 +1099,20 @@ app.get(
             }
          }
 
-         res.status(200).json(
-            await modelController.executeNotebookCell(
-               req.params.environmentName,
-               req.params.packageName,
-               notebookPath,
-               cellIndex,
-               filterParams,
-               bypassFilters,
-               givens,
-            ),
+         const result = await modelController.executeNotebookCell(
+            req.params.environmentName,
+            req.params.packageName,
+            notebookPath,
+            cellIndex,
+            filterParams,
+            bypassFilters,
+            givens,
          );
+         setFilterDeprecationHeaders(res, {
+            filterParams,
+            bypassFilters,
+         });
+         res.status(200).json(result);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -1155,22 +1159,25 @@ app.post(
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
-         res.status(200).json(
-            await queryController.getQuery(
-               req.params.environmentName,
-               req.params.packageName,
-               modelPath,
-               req.body.sourceName as string,
-               req.body.queryName as string,
-               req.body.query as string,
-               req.body.compactJson === true,
-               (req.body.filterParams ?? req.body.sourceFilters) as
-                  | Record<string, string | string[]>
-                  | undefined,
-               req.body.bypassFilters === true ? true : undefined,
-               req.body.givens as Record<string, GivenValue> | undefined,
-            ),
+         const result = await queryController.getQuery(
+            req.params.environmentName,
+            req.params.packageName,
+            modelPath,
+            req.body.sourceName as string,
+            req.body.queryName as string,
+            req.body.query as string,
+            req.body.compactJson === true,
+            (req.body.filterParams ?? req.body.sourceFilters) as
+               | Record<string, string | string[]>
+               | undefined,
+            req.body.bypassFilters === true ? true : undefined,
+            req.body.givens as Record<string, GivenValue> | undefined,
          );
+         setFilterDeprecationHeaders(res, {
+            filterParams: req.body.filterParams ?? req.body.sourceFilters,
+            bypassFilters: req.body.bypassFilters === true ? true : undefined,
+         });
+         res.status(200).json(result);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
