@@ -269,17 +269,20 @@ function EnvironmentCard({
                }}
             >
                <Box
-                  sx={{
+                  sx={(theme) => ({
                      width: 36,
                      height: 36,
                      borderRadius: 1.5,
-                     bgcolor: "grey.100",
+                     bgcolor:
+                        theme.palette.mode === "dark"
+                           ? "rgba(255, 255, 255, 0.08)"
+                           : "grey.100",
                      display: "flex",
                      alignItems: "center",
                      justifyContent: "center",
                      flexShrink: 0,
                      color: "text.primary",
-                  }}
+                  })}
                >
                   <FolderOutlinedIcon sx={{ fontSize: 20 }} />
                </Box>

@@ -28,13 +28,14 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.197",
+      "version": "0.0.199",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
         "@mui/material": "^7.0.2",
         "@tanstack/react-query": "^5.59.16",
         "@vitejs/plugin-react": "^4.3.1",
+        "react-colorful": "^5.6.1",
         "react-router-dom": "^7.6.2",
       },
       "devDependencies": {
@@ -80,7 +81,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.197",
+      "version": "0.0.199",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -92,6 +93,7 @@
       "devDependencies": {
         "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
         "@malloydata/malloy-query-builder": "^0.0.394",
+        "@malloydata/malloy-tag": "^0.0.383",
         "@openapitools/openapi-generator-cli": "^2.20.2",
         "@shikijs/langs": "^1.16.3",
         "@shikijs/themes": "^1.16.3",
@@ -118,6 +120,7 @@
         "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
         "@malloydata/malloy-interfaces": "^0.0.394",
         "@malloydata/malloy-query-builder": "^0.0.394",
+        "@malloydata/malloy-tag": "^0.0.383",
         "@malloydata/render": "^0.0.394",
         "@mui/icons-material": ">=7.1.1",
         "@mui/material": ">=7.1.1",
@@ -133,7 +136,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.197",
+      "version": "0.0.199",
       "bin": {
         "malloy-publisher": "dist/server.mjs",
       },
@@ -2964,6 +2967,8 @@
     "raw-body": ["raw-body@3.0.1", "", { "dependencies": { "bytes": "3.1.2", "http-errors": "2.0.0", "iconv-lite": "0.7.0", "unpipe": "1.0.0" } }, "sha512-9G8cA+tuMS75+6G/TzW8OtLzmBDMo8p1JRxN5AZ+LAp8uxGA8V8GZm4GQ4/N5QNQEnLmg6SS7wyuSmbKepiKqA=="],
 
     "react": ["react@19.1.1", "", {}, "sha512-w8nqGImo45dmMIfljjMwOGtbmC/mk4CMYhWIicdSflH91J9TyCyczcPFXJzrZ/ZXcgGRFeP6BU0BEJTw6tZdfQ=="],
+
+    "react-colorful": ["react-colorful@5.7.0", "", { "peerDependencies": { "react": ">=16.8.0", "react-dom": ">=16.8.0" } }, "sha512-fuesYIemttah97XmsIHmz4OORDHiSFzyc9HMAIrCHJou2jaRQmL8cFJ76K4zQhhj8jzwOBlOi4BaGTjjOZCfTg=="],
 
     "react-dom": ["react-dom@19.1.1", "", { "dependencies": { "scheduler": "^0.26.0" }, "peerDependencies": { "react": "^19.1.1" } }, "sha512-Dlq/5LAZgF0Gaz6yiqZCf6VCcZs1ghAJyrsu84Q/GT0gV+mCxbfmKNoGRKBYMJ8IEdGPqu49YWXD02GCknEDkw=="],
 

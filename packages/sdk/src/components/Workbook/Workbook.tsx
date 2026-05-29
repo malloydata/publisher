@@ -218,7 +218,7 @@ export default function Workbook({ workbookPath, resourceUri }: WorkbookProps) {
             onClick={() => handleAddCell(isMarkdown, index)}
             variant="contained"
             sx={{
-               backgroundColor: "#fff",
+               backgroundColor: (theme) => theme.palette.background.paper,
                color: (theme) =>
                   theme.palette.mode === "dark"
                      ? theme.palette.grey[100]

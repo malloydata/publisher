@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
@@ -130,18 +131,19 @@ export function NotebookCell({
       resourceUri: resourceUri,
    });
 
+   const { mode } = usePublisherTheme();
    useEffect(() => {
       if (cell.type === "code")
-         highlight(filterMalloyCode(cell.text), "malloy").then((code) => {
+         highlight(filterMalloyCode(cell.text), "malloy", mode).then((code) => {
             setHighlightedMalloyCode(code);
          });
-   }, [cell]);
+   }, [cell, mode]);
 
    useEffect(() => {
-      highlight(queryResultCodeSnippet, "typescript").then((code) => {
+      highlight(queryResultCodeSnippet, "typescript", mode).then((code) => {
          setHighlightedEmbedCode(code);
       });
-   }, [queryResultCodeSnippet]);
+   }, [queryResultCodeSnippet, mode]);
 
    const copyToClipboard = () => {
       const url = window.location.href;
@@ -155,10 +157,10 @@ export function NotebookCell({
       (cell.type === "markdown" && (
          <CleanNotebookCell>
             <Box
-               sx={{
+               sx={(theme) => ({
                   "& h1, & h2, & h3, & h4, & h5, & h6": {
                      fontWeight: "600",
-                     color: "#1a1a1a",
+                     color: theme.palette.text.primary,
                      marginBottom: "8px",
                      marginTop: "16px",
                   },
@@ -166,13 +168,13 @@ export function NotebookCell({
                   "& h2": { fontSize: "24px" },
                   "& h3": { fontSize: "20px" },
                   "& p": {
-                     color: "#333333",
+                     color: theme.palette.text.primary,
                      lineHeight: "1.7",
                      marginBottom: "8px",
                      fontSize: "16px",
                   },
                   "& ul, & ol": {
-                     color: "#333333",
+                     color: theme.palette.text.primary,
                      lineHeight: "1.7",
                      marginBottom: "8px",
                      fontSize: "16px",
@@ -180,7 +182,7 @@ export function NotebookCell({
                   "& li": {
                      marginBottom: "4px",
                   },
-               }}
+               })}
             >
                {index === 0 ? (
                   <Stack
@@ -272,7 +274,14 @@ export function NotebookCell({
                                  <SearchIcon
                                     sx={{
                                        fontSize: "18px",
-                                       color: "text.secondary",
+                                       // grey.700 is a dark warm grey
+                                       // that stays legible on the
+                                       // white-ish IconButton in both
+                                       // light and dark mode. The
+                                       // button background is
+                                       // hardcoded white, so the icon
+                                       // must be hardcoded dark.
+                                       color: "grey.700",
                                     }}
                                  />
                               </IconButton>
@@ -318,8 +327,8 @@ export function NotebookCell({
                </DialogTitle>
                <DialogContent>
                   <Box
-                     sx={{
-                        border: "1px solid #e0e0e0",
+                     sx={(theme) => ({
+                        border: `1px solid ${theme.palette.divider}`,
                         borderRadius: "8px",
                         padding: "16px",
                         fontFamily: "monospace",
@@ -327,8 +336,9 @@ export function NotebookCell({
                         lineHeight: "1.5",
                         overflow: "auto",
                         maxHeight: "70vh",
-                        backgroundColor: "#ffffff",
-                     }}
+                        backgroundColor: theme.palette.background.paper,
+                        color: theme.palette.text.primary,
+                     })}
                   >
                      <pre
                         className="code-display"
@@ -449,11 +459,19 @@ export function NotebookCell({
                      />
                   </Box>
 
-                  {/* Top right corner controls */}
+                  {/* Top right corner controls.
+                      `top: -12px` lifts the buttons above the
+                      CleanMetricCard's inner ResultContainer so the
+                      dashboard panel (which now paints slate in dark
+                      mode) doesn't bisect them. The icons were already
+                      visually overlapping the panel's top edge in
+                      light mode too, but the white-on-white made it
+                      invisible; in dark mode the contrast made the
+                      clipping obvious. */}
                   <Stack
                      sx={{
                         position: "absolute",
-                        top: "8px",
+                        top: "-12px",
                         right: "8px",
                         flexDirection: "row",
                         gap: "8px",
@@ -477,7 +495,7 @@ export function NotebookCell({
                            }}
                         >
                            <CodeIcon
-                              sx={{ fontSize: "18px", color: "text.secondary" }}
+                              sx={{ fontSize: "18px", color: "grey.700" }}
                            />
                         </IconButton>
                      )}
@@ -493,7 +511,7 @@ export function NotebookCell({
                         onClick={() => setResultsDialogOpen(true)}
                      >
                         <SearchIcon
-                           sx={{ fontSize: "18px", color: "text.secondary" }}
+                           sx={{ fontSize: "18px", color: "grey.700" }}
                         />
                      </IconButton>
                   </Stack>

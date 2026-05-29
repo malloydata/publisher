@@ -40,6 +40,7 @@ import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
+import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
@@ -47,6 +48,7 @@ import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
 import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
+import { ThemeStore } from "./service/theme_store";
 
 export { normalizeQueryArray } from "./query_param_utils";
 
@@ -197,6 +199,8 @@ const manifestController = new ManifestController(
    environmentStore,
    manifestService,
 );
+const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
+const themeController = new ThemeController(themeStore, SERVER_ROOT);
 
 export const mcpApp = express();
 
@@ -346,9 +350,45 @@ app.use(drainingGuard);
 app.get(`${API_PREFIX}/status`, async (_req, res) => {
    try {
       const status = await environmentStore.getStatus();
-      res.status(200).json(status);
+      // Compose theme onto the status response so the SDK can read both
+      // in one round trip on app boot. ThemeStore is the source of truth;
+      // publisher.config.json is only a boot seed (see ThemeStore). The
+      // field is always present (an empty object means "no overrides
+      // yet"), so the OpenAPI shape and the runtime payload agree.
+      const theme = await themeStore.get();
+      res.status(200).json({ ...status, theme: theme ?? {} });
    } catch (error) {
       logger.error("Error getting status", { error });
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
+
+app.get(`${API_PREFIX}/theme`, async (_req, res) => {
+   try {
+      res.status(200).json(await themeController.getTheme());
+   } catch (error) {
+      logger.error("Error getting theme", { error });
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
+
+app.put(`${API_PREFIX}/theme`, async (req, res) => {
+   try {
+      res.status(200).json(await themeController.putTheme(req.body));
+   } catch (error) {
+      logger.error("Error saving theme", { error });
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
+
+app.delete(`${API_PREFIX}/theme`, async (_req, res) => {
+   try {
+      res.status(200).json(await themeController.resetTheme());
+   } catch (error) {
+      logger.error("Error resetting theme", { error });
       const { json, status } = internalErrorToHttpError(error as Error);
       res.status(status).json(json);
    }

@@ -79,6 +79,67 @@ paths:
                 $ref: "#/components/schemas/ServerStatus"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /theme:
+    get:
+      tags:
+        - publisher
+      operationId: get-theme
+      summary: Get the active instance theme
+      description: |
+        Returns the theme used by the Malloy renderer for charts/tables/dashboards.
+        Reflects edits made via the in-app Theme Editor (persisted to the
+        server's internal DuckDB metadata store via the shared StorageManager).
+        Empty object when no theme has been configured.
+      responses:
+        "200":
+          description: Active theme.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Theme"
+    put:
+      tags:
+        - publisher
+      operationId: put-theme
+      summary: Save the instance theme
+      description: |
+        Persists the supplied theme as the new instance theme. Returns the saved
+        theme. Rejected with 403 when publisher.config.json has frozenConfig=true.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Theme"
+      responses:
+        "200":
+          description: Saved theme.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Theme"
+        "403":
+          description: Theme editing is disabled because frozenConfig is true.
+        "400":
+          description: Payload was empty or all fields were malformed.
+    delete:
+      tags:
+        - publisher
+      operationId: reset-theme
+      summary: Reset the instance theme to the boot seed or default
+      description: |
+        Drops the saved theme from the server. The next GET returns either the
+        publisher.config.json boot seed (if present) or an empty object.
+        Rejected with 403 when publisher.config.json has frozenConfig=true.
+      responses:
+        "200":
+          description: Theme after reset (boot seed or empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Theme"
+        "403":
+          description: Theme editing is disabled because frozenConfig is true.
   /environments:
     get:
       tags:
@@ -2489,6 +2550,118 @@ components:
           type: boolean
           description: Whether the server configuration is frozen (read-only mode). When
             true, all mutation operations are disabled.
+        theme:
+          $ref: "#/components/schemas/Theme"
+          description: Instance-wide default theme. Per-environment overrides are
+            applied on each Environment.theme.
+
+    Theme:
+      type: object
+      description: Visual theme applied to Malloy renderer output (chart palette,
+        fonts, table chrome) and to the Publisher app shell. Cascade order is
+        instance → environment → per-chart Malloy annotation, with later layers
+        overriding earlier ones for the keys they set.
+      properties:
+        defaultMode:
+          type: string
+          enum: [ "light", "dark", "auto" ]
+          description: Initial color mode for new viewers. "auto" follows the
+            browser's prefers-color-scheme until the viewer overrides.
+        allowUserToggle:
+          type: boolean
+          description: When true, the Publisher app renders a light/dark toggle and
+            persists the viewer's choice to localStorage. When false, the
+            defaultMode is enforced.
+        palette:
+          type: object
+          description: Color tokens consumed by the Malloy renderer and the app shell.
+          properties:
+            series:
+              type: array
+              description: Ordered list of hex colors used by multi-series charts
+                (passed to Vega's `range.category`). Shared across light
+                and dark modes so the brand palette stays consistent
+                when viewers switch modes.
+              items:
+                type: string
+            background:
+              type: object
+              description: Page and chart background per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            tableHeader:
+              type: object
+              description: Foreground color for the table header per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            tableHeaderBackground:
+              type: object
+              description: Background color for the table header row, per mode.
+                Distinct from `tile` (the dashboard tile container that wraps
+                each chart / table) so operators can theme the header band
+                independently from the padding around the table.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            tableBody:
+              type: object
+              description: Foreground color for table body cells per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            tile:
+              type: object
+              description: Background color of the dashboard tile (the padded
+                container that wraps each chart / table) per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            tileTitle:
+              type: object
+              description: Foreground color for the title text that sits in the
+                dashboard tile padding (e.g. the "by_month" label above a
+                chart) per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            mapColor:
+              type: object
+              description: Saturated end of the gradient used by choropleth maps
+                and other sequential color scales. The renderer pairs it
+                with a near-neutral low end so the operator only picks
+                the brand-saturated colour.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+        font:
+          type: object
+          description: Typography overrides applied to both the app shell and the
+            Malloy renderer (Vega text marks). Shared across light and
+            dark modes because font choice is a brand decision, not a
+            mode-specific one.
+          properties:
+            family:
+              type: string
+              description: CSS font-family stack.
+            size:
+              type: number
+              description: Base font size in pixels for renderer text.
 
     Environment:
       type: object
@@ -2531,6 +2704,11 @@ components:
             dataPath:
               type: string
               description: Cloud storage path (s3:// or gs://) for DuckLake data files
+        theme:
+          $ref: "#/components/schemas/Theme"
+          description: Resolved theme for this environment (instance default merged
+            with the environment-level override). The client applies this theme
+            while viewing packages inside this environment.
 
     Package:
       type: object

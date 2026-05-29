@@ -117,17 +117,20 @@ function PackageCard({
          <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>
             <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
                <Box
-                  sx={{
+                  sx={(theme) => ({
                      width: 36,
                      height: 36,
                      borderRadius: 1.5,
-                     bgcolor: "grey.100",
+                     bgcolor:
+                        theme.palette.mode === "dark"
+                           ? "rgba(255, 255, 255, 0.08)"
+                           : "grey.100",
                      display: "flex",
                      alignItems: "center",
                      justifyContent: "center",
                      flexShrink: 0,
                      color: "text.primary",
-                  }}
+                  })}
                >
                   <Inventory2OutlinedIcon sx={{ fontSize: 20 }} />
                </Box>

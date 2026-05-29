@@ -230,13 +230,16 @@ export function AnalyzePackageButton({
                      </FormControl>
                   ) : availableWorkspaces.length === 1 ? (
                      <Box
-                        sx={{
+                        sx={(theme) => ({
                            p: 2,
                            border: 1,
                            borderColor: "divider",
                            borderRadius: 1,
-                           backgroundColor: "grey.50",
-                        }}
+                           backgroundColor:
+                              theme.palette.mode === "dark"
+                                 ? "rgba(255, 255, 255, 0.04)"
+                                 : "grey.50",
+                        })}
                      >
                         <Typography
                            variant="body2"

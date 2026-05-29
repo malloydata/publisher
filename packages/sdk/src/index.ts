@@ -3,4 +3,5 @@ export { default as ConnectionExplorer } from "./components/Environment/Connecti
 export { useServer } from "./components/ServerProvider";
 export * from "./hooks";
 export { useRawQueryData } from "./hooks/useRawQueryData";
+export * from "./theme";
 export * from "./utils/formatting";

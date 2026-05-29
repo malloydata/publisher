@@ -262,6 +262,20 @@ export class StorageManager {
       }
    }
 
+   /**
+    * Access the underlying DuckDB connection for callers that need raw
+    * SQL access (e.g. the ThemeStore singleton) and don't fit the
+    * structured `ResourceRepository` interface. Use sparingly; prefer
+    * `getRepository()` for anything that maps cleanly onto the existing
+    * repository methods.
+    */
+   getDuckDbConnection(): DuckDBConnection {
+      if (!this.duckDbConnection) {
+         throw new Error("Storage not initialized");
+      }
+      return this.duckDbConnection;
+   }
+
    getRepository(): ResourceRepository {
       if (!this.repository) {
          throw new Error("Storage not initialized. Call initialize() first.");
