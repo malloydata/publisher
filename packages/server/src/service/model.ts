@@ -166,6 +166,21 @@ export class Model {
       this.modelInfo =
          modelInfo ??
          (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
+
+      // One-time deprecation notice per Model instance. Surfaces only when
+      // the model declares `#(filter)` annotations so operators migrating
+      // toward `given:` see a clear pointer in the server log without
+      // spamming for models that have already moved over.
+      if (this.filterMap.size > 0) {
+         logger.warn(
+            `Model "${packageName}/${modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see https://github.com/malloydata/publisher/blob/main/docs/givens.md`,
+            {
+               packageName,
+               modelPath,
+               filterSourceCount: this.filterMap.size,
+            },
+         );
+      }
    }
 
    /**

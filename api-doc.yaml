@@ -1932,13 +1932,24 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
         - name: filter_params
           in: query
-          description: JSON-encoded filter parameter values keyed by filter name
+          deprecated: true
+          description: |
+            **DEPRECATED**: Use `givens` (native Malloy runtime parameters) instead.
+            Targets the deprecated `#(filter)` annotation path. See docs/givens.md
+            for migration recipes.
+
+            JSON-encoded filter parameter values keyed by filter name.
           required: false
           schema:
             type: string
         - name: bypass_filters
           in: query
-          description: When true, skip filter injection entirely
+          deprecated: true
+          description: |
+            **DEPRECATED**: Use `givens` (native Malloy runtime parameters) instead.
+            See docs/givens.md for migration recipes.
+
+            When true, skip filter injection entirely.
           required: false
           schema:
             type: string
@@ -2679,7 +2690,12 @@ components:
 
     Filter:
       type: object
-      description: A filter declared via #(filter) annotation on a Malloy source
+      deprecated: true
+      description: |
+        **DEPRECATED**: Use the `Given` schema (native Malloy runtime parameters)
+        instead. See docs/givens.md for migration recipes.
+
+        A filter declared via #(filter) annotation on a Malloy source.
       properties:
         name:
           type: string
@@ -2793,14 +2809,25 @@ components:
           description: Version ID
         filterParams:
           type: object
-          description: Filter parameter values keyed by filter name. Used with sources
-            that declare \#(filter) annotations. Each value is either a string
-            or an array of strings.
+          deprecated: true
+          description: |
+            **DEPRECATED**: Use `givens` (native Malloy runtime parameters) instead.
+            Targets the deprecated `#(filter)` annotation path. See docs/givens.md
+            for migration recipes.
+
+            Filter parameter values keyed by filter name. Used with sources that
+            declare `#(filter)` annotations. Each value is either a string or an
+            array of strings.
           additionalProperties: true
         bypassFilters:
           type: boolean
           default: false
-          description: When true, skip server-side \#(filter) injection entirely.
+          deprecated: true
+          description: |
+            **DEPRECATED**: Use `givens` (native Malloy runtime parameters) instead.
+            See docs/givens.md for migration recipes.
+
+            When true, skip server-side `#(filter)` injection entirely.
         givens:
           $ref: "#/components/schemas/Givens"
 
