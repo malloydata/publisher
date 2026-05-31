@@ -52,6 +52,7 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 - **`serving`** — ready to handle requests.
 - **`initializing`** — loading packages and connections from `publisher.config.json`. Normal on boot, and especially noticeable on the first run when sample packages need to be cloned from GitHub. Wait for `serving`.
 - **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` (see [Configuration](#configuration)).
+- **`throttled`** — the memory governor has hit its back-pressure limit and is rejecting new package loads and queries to stay under `PUBLISHER_MAX_MEMORY_BYTES`. Already-loaded packages remain serviceable; the control plane should treat the worker as unhealthy for new load until memory drops. Only reported when the memory governor is enabled.
 
 ---
 
