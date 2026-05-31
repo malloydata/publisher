@@ -708,13 +708,25 @@ export class EnvironmentStore {
    }
 
    public async getStatus() {
+      // Surface the memory governor's back-pressure as a "throttled"
+      // operational state so the control plane can stop routing new package
+      // loads/queries to a throttled worker. Draining takes precedence: a
+      // shutting-down server should keep reporting "draining". When the
+      // governor is disabled (no PUBLISHER_MAX_MEMORY_BYTES) this never fires.
+      const baseState = getOperationalState();
+      const operationalState = (
+         baseState !== "draining" &&
+         (this.memoryGovernor?.isBackpressured() ?? false)
+            ? "throttled"
+            : baseState
+      ) as components["schemas"]["ServerStatus"]["operationalState"];
+
       const status = {
          timestamp: Date.now(),
          environments: [] as Array<components["schemas"]["Environment"]>,
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
-         operationalState:
-            getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
+         operationalState,
       };
 
       const environments = await this.listEnvironments(true);
