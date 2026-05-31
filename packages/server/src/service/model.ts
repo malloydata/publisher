@@ -1,5 +1,5 @@
 import {
-   Annotation,
+   Annotations,
    API,
    Connection,
    FixedConnectionMap,
@@ -50,6 +50,7 @@ import {
 import { logger } from "../logger";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
+import { annotationTexts } from "./annotations";
 import {
    buildFilterClause,
    FilterValidationError,
@@ -255,10 +256,10 @@ export class Model {
                malloyGivens.length > 0
                   ? (malloyGivens.map(malloyGivenToApi) as ApiGiven[])
                   : undefined;
-            const sourceResult = Model.getSources(modelPath, modelDef, givens);
+            const sourceResult = Model.getSources(modelDef, givens);
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
-            queries = Model.getQueries(modelPath, modelDef);
+            queries = Model.getQueries(modelDef);
 
             // Collect sourceInfos from imported models first
             // This follows the same pattern as notebook imports handling
@@ -744,24 +745,9 @@ export class Model {
          } as ApiNotebookCell;
       });
 
-      // Collect all annotations from the inherits chain
-      const allAnnotations: string[] = [];
-      if (this.modelDef) {
-         // Traverse the inherits chain to collect all annotations
-         // Type as Annotation to handle the inherits chain properly
-         let currentAnnotation: Annotation | undefined =
-            this.modelDef.annotation;
-
-         while (currentAnnotation) {
-            if (currentAnnotation.notes) {
-               allAnnotations.push(
-                  ...currentAnnotation.notes.map((note) => note.text),
-               );
-            }
-            // Navigate to the inherited annotation if it exists
-            currentAnnotation = currentAnnotation.inherits;
-         }
-      }
+      const allAnnotations = new Annotations(
+         this.modelDef?.annotations,
+      ).texts();
 
       return {
          type: "notebook",
@@ -976,10 +962,7 @@ export class Model {
       return malloyConfig;
    }
 
-   private static getQueries(
-      modelPath: string,
-      modelDef: ModelDef,
-   ): ApiQuery[] {
+   private static getQueries(modelDef: ModelDef): ApiQuery[] {
       const isNamedQuery = (
          object: NamedModelObject,
       ): object is NamedQueryDef => object.type === "query";
@@ -992,16 +975,11 @@ export class Model {
                typeof queryObj.structRef === "string"
                   ? queryObj.structRef
                   : undefined,
-            annotations: queryObj?.annotation?.blockNotes
-               ?.filter((note: { at: { url: string } }) =>
-                  note.at.url.includes(modelPath),
-               )
-               .map((note: { text: string }) => note.text),
+            annotations: annotationTexts(queryObj.annotations),
          }));
    }
 
    private static getSources(
-      modelPath: string,
       modelDef: ModelDef,
       givens?: ApiGiven[],
    ): {
@@ -1014,22 +992,21 @@ export class Model {
          .filter((obj) => isSourceDef(obj))
          .map((sourceObj) => {
             const sourceName = sourceObj.as || sourceObj.name;
-            const annotations = (sourceObj as StructDef).annotation?.blockNotes
-               ?.filter((note) => note.at.url.includes(modelPath))
-               .map((note) => note.text);
+            const annotations = annotationTexts(
+               (sourceObj as StructDef).annotations,
+            );
 
             // Parse #(filter) from ALL annotations, traversing the inherits
             // chain so that filters on a base source (e.g. `recalls`) are
             // picked up by an extending source (`manufacturer_recalls is
             // recalls extend {}`).  The Malloy compiler stores the base
-            // source's annotations in `annotation.inherits`.
+            // source's annotations in `annotations.inherits`.
             //
             // The chain goes child → parent, so we collect child-first.
             // parseFilters uses "last wins" dedup, so we reverse to put
             // parent annotations first and child annotations last (winning).
             const collectedAnnotations: string[][] = [];
-            let curAnnotation: Annotation | undefined = (sourceObj as StructDef)
-               .annotation;
+            let curAnnotation = (sourceObj as StructDef).annotations;
             while (curAnnotation) {
                if (curAnnotation.blockNotes) {
                   collectedAnnotations.push(
@@ -1081,9 +1058,7 @@ export class Model {
                   (turtleObj) =>
                      ({
                         name: turtleObj.as || turtleObj.name,
-                        annotations: turtleObj?.annotation?.blockNotes
-                           ?.filter((note) => note.at.url.includes(modelPath))
-                           .map((note) => note.text),
+                        annotations: annotationTexts(turtleObj.annotations),
                      }) as ApiView,
                );
 

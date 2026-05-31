@@ -46,7 +46,6 @@
  */
 import {
    contextOverlay,
-   type Annotation,
    type BuildManifestEntry,
    type Connection,
    type FetchSchemaOptions,
@@ -84,6 +83,7 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
+import { annotationTexts, type AnnotationsDef } from "../service/annotations";
 import { parseFilters, type FilterDefinition } from "../service/filter";
 import {
    malloyGivenToApi,
@@ -271,14 +271,17 @@ class ProxyConnection {
 
 function serializeFetchOptions(options: FetchSchemaOptions): {
    refreshTimestamp?: number;
-   modelAnnotation?: Annotation;
+   modelAnnotation?: AnnotationsDef;
 } {
-   const out: { refreshTimestamp?: number; modelAnnotation?: Annotation } = {};
+   const out: {
+      refreshTimestamp?: number;
+      modelAnnotation?: AnnotationsDef;
+   } = {};
    if (options.refreshTimestamp !== undefined) {
       out.refreshTimestamp = options.refreshTimestamp;
    }
-   if (options.modelAnnotation !== undefined) {
-      out.modelAnnotation = options.modelAnnotation;
+   if (options.modelAnnotations !== undefined) {
+      out.modelAnnotation = options.modelAnnotations;
    }
    return out;
 }
@@ -473,7 +476,6 @@ function appendLocalSourceInfos(
 }
 
 function extractSources(
-   modelPath: string,
    modelDef: ModelDef,
    givens: ApiGivenWire[] | undefined,
 ): { sources: ApiSourceWire[]; filterMap: Map<string, FilterDefinition[]> } {
@@ -483,12 +485,12 @@ function extractSources(
       .map((sourceObj) => {
          const sourceName =
             (sourceObj as StructDef).as || (sourceObj as StructDef).name;
-         const annotations = (sourceObj as StructDef).annotation?.blockNotes
-            ?.filter((note) => note.at.url.includes(modelPath))
-            .map((note) => note.text);
+         const annotations = annotationTexts(
+            (sourceObj as StructDef).annotations,
+         );
 
          const collected: string[][] = [];
-         let cur: Annotation | undefined = (sourceObj as StructDef).annotation;
+         let cur = (sourceObj as StructDef).annotations;
          while (cur) {
             if (cur.blockNotes) {
                collected.push(cur.blockNotes.map((note) => note.text));
@@ -531,9 +533,7 @@ function extractSources(
             )
             .map((turtle) => ({
                name: turtle.as || turtle.name,
-               annotations: turtle?.annotation?.blockNotes
-                  ?.filter((note) => note.at.url.includes(modelPath))
-                  .map((note) => note.text),
+               annotations: annotationTexts(turtle.annotations),
             }));
 
          return {
@@ -548,7 +548,7 @@ function extractSources(
    return { sources, filterMap };
 }
 
-function extractQueries(modelPath: string, modelDef: ModelDef): ApiQueryWire[] {
+function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
    const isNamedQuery = (obj: NamedModelObject): obj is NamedQueryDef =>
       obj.type === "query";
    return Object.values(modelDef.contents)
@@ -556,11 +556,7 @@ function extractQueries(modelPath: string, modelDef: ModelDef): ApiQueryWire[] {
       .map((q) => ({
          name: q.as || q.name,
          sourceName: typeof q.structRef === "string" ? q.structRef : undefined,
-         annotations: q?.annotation?.blockNotes
-            ?.filter((note: { at: { url: string } }) =>
-               note.at.url.includes(modelPath),
-            )
-            .map((note: { text: string }) => note.text),
+         annotations: annotationTexts(q.annotations),
       }));
 }
 
@@ -621,8 +617,8 @@ async function compileMalloyModel(
    );
    appendLocalSourceInfos(modelDef, sourceInfos, importedNames);
 
-   const { sources, filterMap } = extractSources(modelPath, modelDef, givens);
-   const queries = extractQueries(modelPath, modelDef);
+   const { sources, filterMap } = extractSources(modelDef, givens);
+   const queries = extractQueries(modelDef);
 
    return {
       modelPath,
@@ -798,10 +794,10 @@ async function compileNotebookModel(
          collected.importedNames,
       );
       finalSourceInfos = collected.sourceInfos;
-      const extracted = extractSources(modelPath, finalModelDef, finalGivens);
+      const extracted = extractSources(finalModelDef, finalGivens);
       finalSources = extracted.sources;
       finalFilterMap = extracted.filterMap;
-      finalQueries = extractQueries(modelPath, finalModelDef);
+      finalQueries = extractQueries(finalModelDef);
    }
 
    return {
