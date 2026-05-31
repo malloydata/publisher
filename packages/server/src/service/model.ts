@@ -592,6 +592,7 @@ export class Model {
                   queryString = injectFilterRefinement(
                      queryString,
                      filterClause,
+                     effectiveSource,
                   );
                }
             }
@@ -836,6 +837,7 @@ export class Model {
                         const refinedQuery = injectFilterRefinement(
                            cell.text,
                            filterClause,
+                           effectiveSource,
                         );
                         runnableToExecute =
                            cell.modelMaterializer.loadQuery(refinedQuery);

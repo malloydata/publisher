@@ -416,10 +416,53 @@ describe("service/filter", () => {
    describe("injectFilterRefinement", () => {
       it("returns original query when clause is empty", () => {
          const query = "run: orders -> summary";
-         expect(injectFilterRefinement(query, "")).toBe(query);
+         expect(injectFilterRefinement(query, "", "orders")).toBe(query);
       });
 
-      it("appends refinement to named view query", () => {
+      it("splices extend after source for named view query", () => {
+         const query = "run: orders -> summary";
+         const clause = "`status` = 'active'";
+         expect(injectFilterRefinement(query, clause, "orders")).toBe(
+            "run: orders extend {where: `status` = 'active'} -> summary",
+         );
+      });
+
+      it("splices extend after source for ad-hoc query", () => {
+         const query =
+            "run: orders -> { group_by: status; aggregate: order_count }";
+         const clause = "`region` = 'US'";
+         expect(injectFilterRefinement(query, clause, "orders")).toBe(
+            "run: orders extend {where: `region` = 'US'} -> { group_by: status; aggregate: order_count }",
+         );
+      });
+
+      it("splices once even when source name appears later in the query body", () => {
+         const query =
+            "run: orders -> { group_by: status; aggregate: orders_per_day is count() }";
+         const clause = "`region` = 'US'";
+         expect(injectFilterRefinement(query, clause, "orders")).toBe(
+            "run: orders extend {where: `region` = 'US'} -> { group_by: status; aggregate: orders_per_day is count() }",
+         );
+      });
+
+      it("splices extend before pipeline (handles inline multi-stage pipeline)", () => {
+         const query =
+            "run: orders -> { group_by: region; aggregate: c is count() } -> { select: region }";
+         const clause = "`status` = 'active'";
+         expect(injectFilterRefinement(query, clause, "orders")).toBe(
+            "run: orders extend {where: `status` = 'active'} -> { group_by: region; aggregate: c is count() } -> { select: region }",
+         );
+      });
+
+      it("handles leading whitespace/newlines that getQueryResults prepends", () => {
+         const query = "\nrun: orders -> summary";
+         const clause = "`status` = 'active'";
+         expect(injectFilterRefinement(query, clause, "orders")).toBe(
+            "\nrun: orders extend {where: `status` = 'active'} -> summary",
+         );
+      });
+
+      it("falls back to tail refinement when source name is not provided", () => {
          const query = "run: orders -> summary";
          const clause = "`status` = 'active'";
          expect(injectFilterRefinement(query, clause)).toBe(
@@ -427,20 +470,19 @@ describe("service/filter", () => {
          );
       });
 
-      it("appends refinement to ad-hoc query", () => {
-         const query =
-            "run: orders -> { group_by: status; aggregate: order_count }";
-         const clause = "`region` = 'US'";
-         expect(injectFilterRefinement(query, clause)).toBe(
-            "run: orders -> { group_by: status; aggregate: order_count } + {where: `region` = 'US'}",
+      it("falls back to tail refinement when source name doesn't appear before an arrow", () => {
+         const query = "run: someNamedQuery";
+         const clause = "`status` = 'active'";
+         expect(injectFilterRefinement(query, clause, "orders")).toBe(
+            "run: someNamedQuery + {where: `status` = 'active'}",
          );
       });
 
-      it("trims trailing whitespace before appending", () => {
-         const query = "run: orders -> summary   \n  ";
+      it("trims trailing whitespace before tail-refinement fallback", () => {
+         const query = "run: someNamedQuery   \n  ";
          const clause = "`status` = 'active'";
          expect(injectFilterRefinement(query, clause)).toBe(
-            "run: orders -> summary + {where: `status` = 'active'}",
+            "run: someNamedQuery + {where: `status` = 'active'}",
          );
       });
    });

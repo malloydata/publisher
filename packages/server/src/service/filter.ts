@@ -269,18 +269,39 @@ export function buildFilterClause(
 }
 
 /**
- * Append a filter refinement to a Malloy query string.
- * Uses Malloy's `+ {where: ...}` refinement syntax.
+ * Inject a filter clause into a Malloy query string.
+ *
+ * When `sourceName` is supplied and matches a token in the query (e.g.
+ * `run: orders -> ...`), splices `extend {where: <clause>}` after the source.
+ * That form pushes the predicate to the source level, so it survives multi-stage
+ * pipelines that drop the filtered dimension and avoids tail-position issues
+ * with refinements after `limit` clauses.
+ *
+ * When no source name is available (e.g. `run: someNamedQuery` with no
+ * source in the run target), falls back to a tail `+ {where: ...}` refinement,
+ * which the Malloy compiler hoists down to the source for named queries.
  *
  * If `filterClause` is empty, returns the original query unchanged.
  */
 export function injectFilterRefinement(
    query: string,
    filterClause: string,
+   sourceName?: string,
 ): string {
    if (!filterClause) {
       return query;
    }
+
+   if (sourceName) {
+      const escaped = sourceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const sourceRegex = new RegExp(`\\b${escaped}\\b(?=\\s*->)`);
+      const match = query.match(sourceRegex);
+      if (match && match.index !== undefined) {
+         const insertAt = match.index + sourceName.length;
+         return `${query.slice(0, insertAt)} extend {where: ${filterClause}}${query.slice(insertAt)}`;
+      }
+   }
+
    return `${query.trimEnd()} + {where: ${filterClause}}`;
 }
 
