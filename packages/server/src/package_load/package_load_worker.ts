@@ -414,6 +414,7 @@ interface ApiSourceWire {
    views?: { name: string; annotations?: string[] }[];
    filters?: unknown[];
    givens?: unknown[];
+   authorize?: string[];
 }
 interface ApiQueryWire {
    name: string;

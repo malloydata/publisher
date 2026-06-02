@@ -189,6 +189,21 @@ export class Model {
    }
 
    /**
+    * Effective authorize expressions gating a source: file-level
+    * `##(authorize)` followed by the source's own `#(authorize)`, evaluated as
+    * one OR disjunction at request time. Empty array means unrestricted. Reads
+    * the per-source list surfaced on `sources` (which rides the worker
+    * serialization boundary), so it works for both freshly-created and
+    * deserialized models. Enforcement wiring lands in a later PR.
+    */
+   public getAuthorize(sourceName: string): string[] {
+      return (
+         this.sources?.find((source) => source.name === sourceName)
+            ?.authorize ?? []
+      );
+   }
+
+   /**
     * Best-effort extraction of a source name from an ad-hoc Malloy query string.
     * Matches patterns like `run: source_name -> ...` or `source_name -> ...`.
     */
