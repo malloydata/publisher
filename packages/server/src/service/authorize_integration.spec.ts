@@ -286,4 +286,59 @@ source: gated is duckdb.table('customers')
 
       expect(model.getNotebookError()).toBeUndefined();
    });
+
+   it("fails model load when a file-level ##(authorize) references an unknown given", async () => {
+      await writeModel(
+         "file_unknown_given.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(authorize) "$NOPE = 'x'"
+
+source: gated is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "file_unknown_given.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      expect(err?.message).toContain("gated");
+      expect(err?.message).toMatch(/NOPE|not declared/i);
+   });
+
+   it("validates expressions over number and list givens, not just strings", async () => {
+      await writeModel(
+         "given_types.malloy",
+         `##! experimental.givens
+
+given:
+  AGE :: number
+  TENANT :: string
+  ALLOWED :: string[]
+
+#(authorize) "$AGE > 18"
+#(authorize) "$TENANT in $ALLOWED"
+source: gated is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "given_types.malloy",
+         getConnections(),
+      );
+
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(model.getAuthorize("gated")).toEqual([
+         "$AGE > 18",
+         "$TENANT in $ALLOWED",
+      ]);
+   });
 });
