@@ -167,6 +167,119 @@ describe("Package.create via worker pool", () => {
       }
    });
 
+   it("validates and surfaces a valid #(authorize) model through the worker", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "gated.malloy"),
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.sql("select 1 as id")`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("gated.malloy");
+         const apiModel = (await model!.getModel()) as {
+            sources?: { name?: string; authorize?: string[] }[];
+         };
+         // The worker compiled the authorize probe (no throw) and surfaced the
+         // effective expression list — proves worker-path validation runs.
+         expect(apiModel.sources?.[0]?.authorize).toEqual([
+            "$ROLE = 'analyst'",
+         ]);
+         expect(model!.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("rejects a package whose #(authorize) references an unknown given (worker validation)", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "badgate.malloy"),
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$NOPE = 'x'"
+source: gated is duckdb.sql("select 1 as id")`,
+      );
+
+      const { ModelCompilationError } = await import("../errors");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         // Must surface as a 424 ModelCompilationError across the worker
+         // boundary, not a generic 500 — the worker serializes it with
+         // isCompilationError so the main thread re-wraps it.
+         await expect(
+            Package.create("env", "pkg", tempDir, malloyConfig),
+         ).rejects.toBeInstanceOf(ModelCompilationError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("validates a valid #(authorize) source in a .malloynb notebook through the worker", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "gated.malloynb"),
+         `>>>markdown
+# Gated notebook
+
+>>>malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.sql("select 1 as id")`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("gated.malloynb");
+         // compileNotebookModel ran authorize validation (no throw) and
+         // surfaced the gate — the notebook compile path was previously
+         // unexercised by tests.
+         expect(model!.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("rejects a .malloynb notebook whose #(authorize) references an unknown given", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "badgate.malloynb"),
+         `>>>malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$NOPE = 'x'"
+source: gated is duckdb.sql("select 1 as id")`,
+      );
+
+      const { ModelCompilationError } = await import("../errors");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         await expect(
+            Package.create("env", "pkg", tempDir, malloyConfig),
+         ).rejects.toBeInstanceOf(ModelCompilationError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    // NB: kept last in this describe — swapping the singleton for a
    // pre-shutdown pool also tears down the shared `pool` (the swap
    // implementation shuts down the outgoing singleton). Subsequent

@@ -79,7 +79,9 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
+import { ModelCompilationError } from "../errors";
 import { type AnnotationsDef } from "../service/annotations";
+import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
 import {
    extractQueriesFromModelDef,
@@ -414,6 +416,7 @@ interface ApiSourceWire {
    views?: { name: string; annotations?: string[] }[];
    filters?: unknown[];
    givens?: unknown[];
+   authorize?: string[];
 }
 interface ApiQueryWire {
    name: string;
@@ -550,6 +553,10 @@ async function compileMalloyModel(
 
    const { sources, filterMap } = extractSources(modelDef, givens);
    const queries = extractQueries(modelDef);
+   // Validate #(authorize) at compile time (shared with Model.create). Throws
+   // on an unknown given / source-field reference; compileOneModel's catch
+   // turns it into this model's compilationError.
+   await validateAuthorizeProbes(mm, sources);
 
    return {
       modelPath,
@@ -729,6 +736,8 @@ async function compileNotebookModel(
       finalSources = extracted.sources;
       finalFilterMap = extracted.filterMap;
       finalQueries = extractQueries(finalModelDef);
+      // Validate #(authorize) at compile time (shared with Model.create).
+      await validateAuthorizeProbes(mm, finalSources);
    }
 
    return {
@@ -823,6 +832,18 @@ function serializeError(error: unknown): SerializedError {
          message: error.message,
          stack: error.stack,
          malloyProblems: error.problems as unknown[],
+         isCompilationError: true,
+      };
+   }
+   // ModelCompilationError (e.g. an invalid #(authorize) annotation caught by
+   // validateAuthorizeProbes) carries no Malloy `problems`, but it must keep its
+   // compilation-error classification across the worker boundary so the main
+   // thread re-wraps it as a 424, not a generic 500.
+   if (error instanceof ModelCompilationError) {
+      return {
+         name: error.name,
+         message: error.message,
+         stack: error.stack,
          isCompilationError: true,
       };
    }

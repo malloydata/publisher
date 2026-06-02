@@ -191,6 +191,84 @@ describe("service/model", () => {
 
             sinon.restore();
          });
+
+         it("embeds model-level givens in each newSources SourceInfo", async () => {
+            const sourceInfo = {
+               name: "carriers",
+               schema: { fields: [] },
+            };
+            const givens = [
+               {
+                  name: "region",
+                  type: "string",
+                  annotations: ["#(doc) Region"],
+               },
+            ];
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined, // modelMaterializer
+               undefined, // modelDef
+               undefined, // sources
+               undefined, // queries
+               undefined, // sourceInfos
+               [
+                  {
+                     type: "code",
+                     text: "import 'carriers.malloy'",
+                     newSources: [sourceInfo],
+                  },
+               ], // runnableNotebookCells
+               undefined, // compilationError
+               undefined, // filterMap
+               givens, // givens
+            );
+
+            const notebook = await model.getNotebook();
+            expect(notebook.notebookCells).toHaveLength(1);
+            const parsed = JSON.parse(
+               notebook.notebookCells![0].newSources![0],
+            );
+            expect(parsed.name).toBe("carriers");
+            // SourceInfo fields are preserved untouched.
+            expect(parsed.schema).toEqual({ fields: [] });
+            // Givens ride along verbatim — no second getModel round-trip needed.
+            expect(parsed.givens).toEqual(givens);
+         });
+
+         it("omits givens from newSources when the model declares none", async () => {
+            const sourceInfo = { name: "carriers", schema: { fields: [] } };
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               [
+                  {
+                     type: "code",
+                     text: "import 'carriers.malloy'",
+                     newSources: [sourceInfo],
+                  },
+               ],
+               undefined,
+               undefined,
+               undefined, // no givens
+            );
+
+            const notebook = await model.getNotebook();
+            const parsed = JSON.parse(
+               notebook.notebookCells![0].newSources![0],
+            );
+            expect(parsed.name).toBe("carriers");
+            expect(parsed).not.toHaveProperty("givens");
+         });
       });
 
       describe("getQueryResults", () => {
@@ -528,6 +606,47 @@ describe("service/model", () => {
             });
 
             sinon.restore();
+         });
+
+         it("embeds model-level givens in executed cell newSources", async () => {
+            const sourceInfo = { name: "carriers", schema: { fields: [] } };
+            const givens = [
+               {
+                  name: "region",
+                  type: "string",
+                  annotations: ["#(doc) Region"],
+               },
+            ];
+            // A source-only code cell (no runnable) still emits newSources.
+            const runnableCells = [
+               {
+                  type: "code" as const,
+                  text: "import 'carriers.malloy'",
+                  newSources: [sourceInfo],
+               },
+            ];
+
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined, // modelMaterializer
+               undefined, // modelDef
+               undefined, // sources
+               undefined, // queries
+               undefined, // sourceInfos
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               runnableCells as any, // runnableNotebookCells
+               undefined, // compilationError
+               undefined, // filterMap
+               givens, // givens
+            );
+
+            const result = await model.executeNotebookCell(0);
+            const parsed = JSON.parse(result.newSources![0]);
+            expect(parsed.name).toBe("carriers");
+            expect(parsed.givens).toEqual(givens);
          });
       });
    });
