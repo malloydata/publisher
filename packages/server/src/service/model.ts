@@ -724,6 +724,32 @@ export class Model {
       } as ApiCompiledModel;
    }
 
+   /**
+    * Serialize a notebook cell's `newSources` to the wire shape (an array
+    * of JSON strings), embedding the model-level `givens` on every
+    * SourceInfo so consumers iterating `newSources` can render `given:`
+    * inputs without a second getModel round-trip. Matches `Source.givens`
+    * in the API spec ("Identical to CompiledModel.givens") and how
+    * `getSources` already copies the full list onto each CompiledModel
+    * source. When the model declares no givens, the SourceInfo is emitted
+    * untouched (no empty `givens` key).
+    *
+    * Shared by `getNotebookModel` (the notebook GET endpoint) and
+    * `executeNotebookCell` (the cell-run endpoint) so both surface givens
+    * identically.
+    */
+   private serializeNewSources(
+      newSources: Malloy.SourceInfo[] | undefined,
+   ): string[] | undefined {
+      return newSources?.map((source) =>
+         JSON.stringify(
+            this.givens && this.givens.length > 0
+               ? { ...source, givens: this.givens }
+               : source,
+         ),
+      );
+   }
+
    private async getNotebookModel(): Promise<ApiRawNotebook> {
       // Return raw cell contents without executing them
       const notebookCells: ApiNotebookCell[] = (
@@ -732,9 +758,7 @@ export class Model {
          return {
             type: cell.type,
             text: cell.text,
-            newSources: cell.newSources?.map((source) =>
-               JSON.stringify(source),
-            ),
+            newSources: this.serializeNewSources(cell.newSources),
             queryInfo: cell.queryInfo
                ? JSON.stringify(cell.queryInfo)
                : undefined,
@@ -892,7 +916,7 @@ export class Model {
          text: cell.text,
          queryName: queryName,
          result: queryResult,
-         newSources: cell.newSources?.map((source) => JSON.stringify(source)),
+         newSources: this.serializeNewSources(cell.newSources),
       };
    }
 
