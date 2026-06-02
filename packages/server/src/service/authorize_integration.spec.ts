@@ -151,6 +151,29 @@ source: plain is duckdb.table('customers')
       expect(model.getAuthorize("plain")).toEqual(["$ROLE = 'admin'"]);
    });
 
+   it("fails model load on a malformed authorize annotation (no silent drop)", async () => {
+      await writeModel(
+         "malformed.malloy",
+         `#(authorize) notquoted
+source: broken is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "malformed.malloy",
+         getConnections(),
+      );
+
+      // A malformed gate must surface as a compilation error, not vanish.
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      expect(err?.message).toMatch(/quote/i);
+      // No sources surfaced for a failed compile — the gate is not silently
+      // reported as unrestricted.
+      expect(model.getSources()).toBeUndefined();
+   });
+
    it("treats a source with no authorize annotations as unrestricted", async () => {
       await writeModel(
          "none.malloy",

@@ -2787,11 +2787,12 @@ components:
             $ref: "#/components/schemas/Given"
         authorize:
           type: array
-          description: Effective authorize expressions gating this source via
+          description: Effective authorize expressions declared on this source via
             `#(authorize)` / `##(authorize)` annotations — file-level expressions
             first, then the source's own. Each is a Malloy boolean expression over
-            declared givens; access is granted if any evaluates true. Empty/absent
-            means unrestricted. Display only — the server enforces.
+            declared givens. Surfaced for introspection only; these expressions
+            are NOT yet enforced by the query path (enforcement lands in a later
+            release), so their presence does not currently restrict access.
           items:
             type: string
 

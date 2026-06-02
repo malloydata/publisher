@@ -79,8 +79,10 @@ export interface ExtractedQuery {
  *
  * `givens` is attached unchanged to every source (Malloy exposes givens at the
  * model level, not per-source). `onParseError`, when supplied, is invoked with
- * the source name and error if a source's filter or authorize annotations fail
- * to parse; extraction continues regardless.
+ * the source name and error if a source's `#(filter)` annotations fail to parse;
+ * filter extraction then continues. Authorize parse errors are NOT routed here —
+ * they propagate (a malformed gate fails model load) so a security gate is never
+ * silently dropped.
  *
  * Authorize (`#(authorize)` / `##(authorize)`) is collected differently from
  * filters: it does NOT walk the `inherits` chain (a base source's gate is not
@@ -103,15 +105,15 @@ export function extractSourcesFromModelDef(
    const authorizeMap: AuthorizeMap = new Map();
 
    // File-level ##(authorize) is collected once and prepended to every source.
-   let fileLevelAuthorize: string[] = [];
-   try {
-      const fileNotes = (modelDef.annotations?.notes ?? []).map(
-         (note) => note.text,
-      );
-      fileLevelAuthorize = collectAuthorizeExprs(fileNotes);
-   } catch (err) {
-      onParseError?.("(file-level)", err);
-   }
+   // Unlike filters, a malformed authorize annotation is NOT swallowed: the
+   // parse error propagates so the model fails to load loudly (caught per-model
+   // upstream and turned into a compilationError). Silently dropping a gate —
+   // and in the worker path there is no onParseError callback, so it would be
+   // truly silent — could leave a source that the author meant to lock looking
+   // unrestricted.
+   const fileLevelAuthorize = collectAuthorizeExprs(
+      (modelDef.annotations?.notes ?? []).map((note) => note.text),
+   );
 
    const sources: ExtractedSource[] = Object.values(modelDef.contents)
       .filter((obj) => isSourceDef(obj))
@@ -158,22 +160,20 @@ export function extractSourcesFromModelDef(
 
          // Authorize: the source's OWN #(authorize) annotations only — no
          // inherits walk. File-level ##(authorize) is prepended so file gates
-         // and source gates form one OR disjunction.
+         // and source gates form one OR disjunction. A malformed annotation
+         // propagates (model fails to load) rather than silently dropping the
+         // gate — see the file-level note above.
+         const ownNotes = (struct.annotations?.blockNotes ?? []).map(
+            (note) => note.text,
+         );
+         const effective = [
+            ...fileLevelAuthorize,
+            ...collectAuthorizeExprs(ownNotes),
+         ];
          let authorize: string[] | undefined;
-         try {
-            const ownNotes = (struct.annotations?.blockNotes ?? []).map(
-               (note) => note.text,
-            );
-            const effective = [
-               ...fileLevelAuthorize,
-               ...collectAuthorizeExprs(ownNotes),
-            ];
-            if (effective.length > 0) {
-               authorizeMap.set(sourceName, effective);
-               authorize = effective;
-            }
-         } catch (err) {
-            onParseError?.(sourceName, err);
+         if (effective.length > 0) {
+            authorizeMap.set(sourceName, effective);
+            authorize = effective;
          }
 
          const views: ExtractedView[] = struct.fields
