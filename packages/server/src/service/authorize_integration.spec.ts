@@ -526,6 +526,32 @@ query: secret is gated -> { aggregate: c }
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
+   it("gates the source the query actually RUNS, not a decoy leading statement", async () => {
+      // Malloy runs the LAST `run:`. A multi-statement ad-hoc query that names
+      // an ungated source first and the gated source last must be gated on the
+      // gated source (the one that executes), not fooled by the leading one.
+      await writeModel(
+         "rt_multi.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+source: ungated is duckdb.table('customers') extend { measure: c is count() }
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      await expect(
+         runGated(
+            "rt_multi.malloy",
+            "run: ungated -> { aggregate: c }\nrun: gated -> { aggregate: c }",
+            { ROLE: "intern" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
    it("leaves a source with no authorize annotations unrestricted", async () => {
       await writeModel(
          "rt_open.malloy",

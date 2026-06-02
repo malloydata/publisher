@@ -682,30 +682,6 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
-      // Authorize gate — runs first, before filter injection or query
-      // compilation, and regardless of bypassFilters (authorize is an access
-      // gate, not a filter). Kept outside the loadQuery try below so an
-      // AccessDeniedError propagates as a 403 instead of being rewrapped 400.
-      //
-      // Resolve the gated source the same three ways a request can name one:
-      //  - explicit sourceName (normalize "" → undefined; the query-builder
-      //    treats blank as absent, so a blank here must not skip the gate);
-      //  - a named query (run: <queryName>), whose source we look up so a
-      //    `query: secret is gated -> ...` request can't dodge the gate;
-      //  - an ad-hoc query string.
-      let authorizeSource = sourceName || undefined;
-      if (!authorizeSource && queryName) {
-         authorizeSource = this.queries?.find(
-            (q) => q.name === queryName,
-         )?.sourceName;
-      }
-      if (!authorizeSource) {
-         authorizeSource = this.extractSourceName(query);
-      }
-      if (authorizeSource) {
-         await this.assertAuthorized(authorizeSource, givens ?? {});
-      }
-
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
          let queryString: string;
@@ -792,18 +768,20 @@ export class Model {
          throw new BadRequestError(`Invalid query: ${errorMessage}`);
       }
 
-      // Backstop: if surface syntax couldn't name a source above (e.g. a named
-      // query whose source isn't a plain string ref), resolve the gated source
-      // from the COMPILED query — the authoritative source it actually reads —
-      // and gate on that. Only runs when the early gate found nothing, so the
-      // common path keeps its single probe and gate-before-filter ordering.
-      // Outside the loadQuery try so AccessDeniedError stays a 403.
-      if (!authorizeSource) {
-         const compiledSource =
-            await this.resolveAuthorizeSourceFromRunnable(runnable);
-         if (compiledSource) {
-            await this.assertAuthorized(compiledSource, givens ?? {});
-         }
+      // Authorize gate. Resolve the gated source from the COMPILED query —
+      // the source Malloy actually runs (the LAST `run:` statement) — not from
+      // surface syntax. Surface-syntax resolution is both bypassable (a
+      // first-statement regex vs. last-statement execution: `run: ungated\nrun:
+      // gated` would gate `ungated` while running `gated`) and over-restrictive
+      // (it would gate a non-running leading statement). Gating the compiled
+      // structRef is authoritative and handles named-query / blank-source /
+      // multi-statement forms uniformly. Runs after loadQuery (so we have the
+      // compiled query) but OUTSIDE its try, so AccessDeniedError stays a 403;
+      // it is independent of bypassFilters (authorize is not a filter).
+      const authorizeSource =
+         await this.resolveAuthorizeSourceFromRunnable(runnable);
+      if (authorizeSource) {
+         await this.assertAuthorized(authorizeSource, givens ?? {});
       }
 
       const maxRows = getMaxQueryRows();
