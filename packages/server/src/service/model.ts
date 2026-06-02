@@ -38,6 +38,7 @@ import {
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import {
+   AccessDeniedError,
    BadRequestError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -53,7 +54,7 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { validateAuthorizeProbes } from "./authorize";
+import { evaluateAuthorize, validateAuthorizeProbes } from "./authorize";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    extractQueriesFromModelDef,
@@ -195,13 +196,60 @@ export class Model {
     * one OR disjunction at request time. Empty array means unrestricted. Reads
     * the per-source list surfaced on `sources` (which rides the worker
     * serialization boundary), so it works for both freshly-created and
-    * deserialized models. Enforcement wiring lands in a later PR.
+    * deserialized models.
     */
    public getAuthorize(sourceName: string): string[] {
       return (
          this.sources?.find((source) => source.name === sourceName)
             ?.authorize ?? []
       );
+   }
+
+   /**
+    * Runtime authorize gate. Throws `AccessDeniedError` (403) unless at least
+    * one of the source's in-scope authorize expressions evaluates true for the
+    * supplied givens. A source with no authorize annotations is unrestricted.
+    *
+    * Fail closed: any failure to evaluate the probe — a missing given value, a
+    * transient probe error, a missing/non-true result — denies. (Expression
+    * well-formedness was already validated at model load; see authorize.ts.)
+    * The 403 message names only the source, never the expression, so gate logic
+    * is not leaked to the caller.
+    */
+   public async assertAuthorized(
+      sourceName: string,
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      const exprs = this.getAuthorize(sourceName);
+      if (exprs.length === 0) return; // unrestricted
+      if (!this.modelMaterializer) {
+         throw new AccessDeniedError(
+            `Access denied for source "${sourceName}".`,
+         );
+      }
+      let passed = false;
+      try {
+         passed = await evaluateAuthorize(
+            this.modelMaterializer,
+            exprs,
+            givens,
+         );
+      } catch (err) {
+         // Fail closed — e.g. a referenced given had no supplied value.
+         logger.debug("Authorize probe failed; denying", {
+            sourceName,
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         throw new AccessDeniedError(
+            `Access denied for source "${sourceName}".`,
+         );
+      }
+      if (!passed) {
+         throw new AccessDeniedError(
+            `Access denied for source "${sourceName}".`,
+         );
+      }
    }
 
    /**
@@ -608,6 +656,15 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
+      // Authorize gate — runs first, before filter injection or query
+      // compilation, and regardless of bypassFilters (authorize is an access
+      // gate, not a filter). Kept outside the loadQuery try below so an
+      // AccessDeniedError propagates as a 403 instead of being rewrapped 400.
+      const authorizeSource = sourceName ?? this.extractSourceName(query);
+      if (authorizeSource) {
+         await this.assertAuthorized(authorizeSource, givens ?? {});
+      }
+
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
          let queryString: string;
@@ -889,6 +946,14 @@ export class Model {
             type: cell.type,
             text: cell.text,
          };
+      }
+
+      // Authorize gate — before filter injection / execution, regardless of
+      // bypassFilters. Outside the execution try below so AccessDeniedError
+      // propagates as a 403.
+      const authorizeSource = this.extractSourceName(cell.text);
+      if (authorizeSource) {
+         await this.assertAuthorized(authorizeSource, givens ?? {});
       }
 
       // For code cells, execute the runnable if available

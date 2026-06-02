@@ -18,6 +18,7 @@
  * `ModelCompilationError`).
  */
 
+import { type GivenValue } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
 
 const SOURCE_PREFIX = "#(authorize)";
@@ -48,9 +49,50 @@ export function buildAuthorizeProbe(exprs: string[]): string {
   }`;
 }
 
+/**
+ * Strict, fail-closed truthiness for a probe result cell. DuckDB (the probe's
+ * connection) returns a native boolean, but normalize defensively: only a real
+ * `true` / SQL `1` / `"true"` grants access. null, undefined, `0`, `false`, a
+ * missing cell — anything else — denies.
+ */
+export function isProbeTrue(cell: unknown): boolean {
+   return cell === true || cell === 1 || cell === "true";
+}
+
 /** Minimal materializer surface needed to compile (not run) the probe. */
 interface AuthorizeProbeCompiler {
    loadQuery(query: string): { getPreparedQuery(): Promise<unknown> };
+}
+
+/** Minimal materializer surface needed to run the probe (the runtime gate). */
+interface AuthorizeProbeExecutor {
+   loadQuery(query: string): {
+      run(opts: {
+         rowLimit?: number;
+         givens?: Record<string, GivenValue>;
+      }): Promise<{ data: { value: ReadonlyArray<Record<string, unknown>> } }>;
+   };
+}
+
+/**
+ * Evaluate a source's authorize disjunction against the supplied givens by
+ * running the probe. Returns true if ANY expression evaluates true (OR
+ * semantics). A missing row counts as false. Throws if the probe itself fails
+ * (e.g. a referenced given has no supplied value and no default) — the caller
+ * treats any throw as denial (fail closed), which is how "missing given value"
+ * becomes a 403 rather than a server error.
+ */
+export async function evaluateAuthorize(
+   executor: AuthorizeProbeExecutor,
+   exprs: string[],
+   givens: Record<string, GivenValue>,
+): Promise<boolean> {
+   const result = await executor
+      .loadQuery(buildAuthorizeProbe(exprs))
+      .run({ rowLimit: 1, givens });
+   const row = result?.data?.value?.[0];
+   if (!row) return false;
+   return exprs.some((_, i) => isProbeTrue(row[`__auth_${i}`]));
 }
 
 /** A source plus its effective authorize expressions. */

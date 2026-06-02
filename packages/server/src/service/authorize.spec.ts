@@ -1,5 +1,23 @@
 import { describe, expect, it } from "bun:test";
-import { collectAuthorizeExprs, parseAuthorizeAnnotation } from "./authorize";
+import {
+   collectAuthorizeExprs,
+   isProbeTrue,
+   parseAuthorizeAnnotation,
+} from "./authorize";
+
+describe("isProbeTrue", () => {
+   it("grants only on a genuine true / 1 / 'true'", () => {
+      expect(isProbeTrue(true)).toBe(true);
+      expect(isProbeTrue(1)).toBe(true);
+      expect(isProbeTrue("true")).toBe(true);
+   });
+
+   it("denies on anything else (fail closed)", () => {
+      for (const v of [false, 0, "false", "", null, undefined, {}, "TRUE", 2]) {
+         expect(isProbeTrue(v)).toBe(false);
+      }
+   });
+});
 
 describe("parseAuthorizeAnnotation", () => {
    it("parses a source-level #(authorize) expression", () => {

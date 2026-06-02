@@ -84,13 +84,18 @@ export interface ExtractedQuery {
  * they propagate (a malformed gate fails model load) so a security gate is never
  * silently dropped.
  *
- * Authorize (`#(authorize)` / `##(authorize)`) is collected differently from
- * filters: it does NOT walk the `inherits` chain (a base source's gate is not
- * inherited by an extension — that is intentional, enforcement is top-level
- * only). The effective list per source is the file-level `##(authorize)`
- * expressions (from `modelDef.annotations.notes`) followed by the source's own
- * `#(authorize)` expressions (from its own `blockNotes`), evaluated as one OR
- * disjunction at request time.
+ * Authorize (`#(authorize)` / `##(authorize)`) is collected from the source's
+ * own `blockNotes` only — we do NOT walk the `inherits` chain. Note Malloy's
+ * behavior for `X is Y extend {...}`: if X declares its own `#(authorize)`,
+ * X.blockNotes holds only X's gates (Y's are dropped — the intended "curated
+ * re-exposure"); if X declares none, Malloy surfaces Y's blockNotes on X, so
+ * the base gate carries to the un-annotated extension (a safe default — a
+ * locked base stays locked unless an extension explicitly re-exposes itself).
+ * This carry happens through `blockNotes`, not the `inherits` chain, so reading
+ * own-blockNotes is sufficient. Joins are a separate concern and are not gated.
+ * The effective list per source is the file-level `##(authorize)` expressions
+ * (from `modelDef.annotations.notes`) followed by the source's own
+ * `#(authorize)` expressions, evaluated as one OR disjunction at request time.
  */
 export function extractSourcesFromModelDef(
    modelDef: ModelDef,
