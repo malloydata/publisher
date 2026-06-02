@@ -1,22 +1,18 @@
 import {
-   Annotation,
+   Annotations,
    API,
    Connection,
    FixedConnectionMap,
    GivenValue,
-   isSourceDef,
    MalloyConfig,
    MalloyError,
    ModelDef,
    modelDefToModelInfo,
    ModelMaterializer,
-   NamedModelObject,
    NamedQueryDef,
    QueryData,
    QueryMaterializer,
    Runtime,
-   StructDef,
-   TurtleDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -54,11 +50,14 @@ import {
    buildFilterClause,
    FilterValidationError,
    injectFilterRefinement,
-   parseFilters,
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   extractQueriesFromModelDef,
+   extractSourcesFromModelDef,
+} from "./source_extraction";
 import {
    assertWithinModelResponseLimits,
    resolveModelQueryRowLimit,
@@ -68,9 +67,7 @@ type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 type ApiSource = components["schemas"]["Source"];
-type ApiFilter = components["schemas"]["Filter"];
 type ApiGiven = components["schemas"]["Given"];
-type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
 export type ApiConnection = components["schemas"]["Connection"];
 export type SnowflakeConnection = components["schemas"]["SnowflakeConnection"];
@@ -255,10 +252,10 @@ export class Model {
                malloyGivens.length > 0
                   ? (malloyGivens.map(malloyGivenToApi) as ApiGiven[])
                   : undefined;
-            const sourceResult = Model.getSources(modelPath, modelDef, givens);
+            const sourceResult = Model.getSources(modelDef, givens);
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
-            queries = Model.getQueries(modelPath, modelDef);
+            queries = Model.getQueries(modelDef);
 
             // Collect sourceInfos from imported models first
             // This follows the same pattern as notebook imports handling
@@ -744,24 +741,9 @@ export class Model {
          } as ApiNotebookCell;
       });
 
-      // Collect all annotations from the inherits chain
-      const allAnnotations: string[] = [];
-      if (this.modelDef) {
-         // Traverse the inherits chain to collect all annotations
-         // Type as Annotation to handle the inherits chain properly
-         let currentAnnotation: Annotation | undefined =
-            this.modelDef.annotation;
-
-         while (currentAnnotation) {
-            if (currentAnnotation.notes) {
-               allAnnotations.push(
-                  ...currentAnnotation.notes.map((note) => note.text),
-               );
-            }
-            // Navigate to the inherited annotation if it exists
-            currentAnnotation = currentAnnotation.inherits;
-         }
-      }
+      const allAnnotations = new Annotations(
+         this.modelDef?.annotations,
+      ).texts();
 
       return {
          type: "notebook",
@@ -976,132 +958,30 @@ export class Model {
       return malloyConfig;
    }
 
-   private static getQueries(
-      modelPath: string,
-      modelDef: ModelDef,
-   ): ApiQuery[] {
-      const isNamedQuery = (
-         object: NamedModelObject,
-      ): object is NamedQueryDef => object.type === "query";
-      return Object.values(modelDef.contents)
-         .filter(isNamedQuery)
-         .map((queryObj: NamedQueryDef) => ({
-            name: queryObj.as || queryObj.name,
-            // What to do when the source is not a string?
-            sourceName:
-               typeof queryObj.structRef === "string"
-                  ? queryObj.structRef
-                  : undefined,
-            annotations: queryObj?.annotation?.blockNotes
-               ?.filter((note: { at: { url: string } }) =>
-                  note.at.url.includes(modelPath),
-               )
-               .map((note: { text: string }) => note.text),
-         }));
+   private static getQueries(modelDef: ModelDef): ApiQuery[] {
+      // Shared with the package-load worker — see service/source_extraction.ts.
+      return extractQueriesFromModelDef(modelDef) as ApiQuery[];
    }
 
    private static getSources(
-      modelPath: string,
       modelDef: ModelDef,
       givens?: ApiGiven[],
    ): {
       sources: ApiSource[];
       filterMap: Map<string, FilterDefinition[]>;
    } {
-      const filterMap = new Map<string, FilterDefinition[]>();
-
-      const sources = Object.values(modelDef.contents)
-         .filter((obj) => isSourceDef(obj))
-         .map((sourceObj) => {
-            const sourceName = sourceObj.as || sourceObj.name;
-            const annotations = (sourceObj as StructDef).annotation?.blockNotes
-               ?.filter((note) => note.at.url.includes(modelPath))
-               .map((note) => note.text);
-
-            // Parse #(filter) from ALL annotations, traversing the inherits
-            // chain so that filters on a base source (e.g. `recalls`) are
-            // picked up by an extending source (`manufacturer_recalls is
-            // recalls extend {}`).  The Malloy compiler stores the base
-            // source's annotations in `annotation.inherits`.
-            //
-            // The chain goes child → parent, so we collect child-first.
-            // parseFilters uses "last wins" dedup, so we reverse to put
-            // parent annotations first and child annotations last (winning).
-            const collectedAnnotations: string[][] = [];
-            let curAnnotation: Annotation | undefined = (sourceObj as StructDef)
-               .annotation;
-            while (curAnnotation) {
-               if (curAnnotation.blockNotes) {
-                  collectedAnnotations.push(
-                     curAnnotation.blockNotes.map((note) => note.text),
-                  );
-               }
-               curAnnotation = curAnnotation.inherits;
-            }
-            const allAnnotations = collectedAnnotations.reverse().flat();
-            let filters: ApiFilter[] | undefined;
-            if (allAnnotations.length > 0) {
-               try {
-                  const parsed = parseFilters(allAnnotations);
-                  if (parsed.length > 0) {
-                     filterMap.set(sourceName, parsed);
-                     const structFields = (sourceObj as StructDef).fields;
-                     filters = parsed.map((f) => {
-                        const field = structFields.find(
-                           (fd) => (fd.as || fd.name) === f.dimension,
-                        );
-                        return {
-                           name: f.name,
-                           dimension: f.dimension,
-                           type: f.type,
-                           implicit: f.implicit,
-                           required: f.required,
-                           dimensionType: field?.type as string | undefined,
-                        };
-                     });
-                  }
-               } catch (err) {
-                  logger.warn(
-                     `Failed to parse filter annotations on source "${sourceName}"`,
-                     { error: err },
-                  );
-               }
-            }
-
-            const views = (sourceObj as StructDef).fields
-               .filter((turtleObj) => turtleObj.type === "turtle")
-               .filter((turtleObj) =>
-                  // TODO(kjnesbit): Fix non-reduce views. Filter out
-                  // non-reduce views, i.e., indexes. Need to discuss with Will.
-                  (turtleObj as TurtleDef).pipeline
-                     .map((stage) => stage.type)
-                     .every((type) => type == "reduce"),
-               )
-               .map(
-                  (turtleObj) =>
-                     ({
-                        name: turtleObj.as || turtleObj.name,
-                        annotations: turtleObj?.annotation?.blockNotes
-                           ?.filter((note) => note.at.url.includes(modelPath))
-                           .map((note) => note.text),
-                     }) as ApiView,
-               );
-
-            return {
-               name: sourceName,
-               annotations,
-               views,
-               filters,
-               // Malloy exposes givens at the model level, not per-source.
-               // First pass: surface the full model-level list on every source
-               // — matches how filter introspection already collapses
-               // inheritance into the per-source list. Refine to view-scoped
-               // filtering if a customer asks.
-               givens,
-            } as ApiSource;
-         });
-
-      return { sources, filterMap };
+      // Shared with the package-load worker — see service/source_extraction.ts.
+      // The service path logs filter parse failures; the worker stays silent.
+      const { sources, filterMap } = extractSourcesFromModelDef(
+         modelDef,
+         givens,
+         (sourceName, err) =>
+            logger.warn(
+               `Failed to parse filter annotations on source "${sourceName}"`,
+               { error: err },
+            ),
+      );
+      return { sources: sources as unknown as ApiSource[], filterMap };
    }
 
    static async getModelMaterializer(

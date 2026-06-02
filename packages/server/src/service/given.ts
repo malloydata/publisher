@@ -13,14 +13,18 @@
  * deps, so it's safe to bundle into the worker entry).
  */
 
+import type { Annotations } from "@malloydata/malloy";
+import { isReservedRoute } from "./annotations";
+
 /**
  * Duck-typed shape of a Malloy SDK `Given` instance (the value type
- * of `Model.givens`).
+ * of `Model.givens`). `Given` itself isn't re-exported from the
+ * package root, but the `Annotations` view it returns is.
  */
 export interface MalloyGiven {
    readonly name: string;
    readonly type: { type: string; filterType?: string };
-   getTaglines(prefix?: RegExp): string[];
+   readonly annotations: Annotations;
 }
 
 /**
@@ -51,11 +55,10 @@ export interface MalloyGivenApi {
  *   Rendering it here would duplicate the Malloy printer. Add
  *   when Malloy surfaces a stringified accessor.
  *
- * `annotations` is restricted to `#(...)` declaration annotations
- * (the caller-facing kind, e.g. `#(doc)`). `getTaglines()` with no
- * prefix would also return `##` doc-comment lines and the
- * model-level `##!` pragma, which aren't part of the given's
- * surface contract.
+ * `annotations` is restricted to app-route annotations (bracketed,
+ * caller-facing, e.g. `#(doc)`), excluding Malloy's reserved routes
+ * (plain `#` tags, `#"` doc strings, `##!` pragmas), which aren't part
+ * of the given's surface contract.
  *
  * Type rendering: `GivenTypeDef` is typed as `AtomicTypeDef |
  * FilterExpressionParamTypeDef`, but Malloy's grammar only emits
@@ -75,6 +78,9 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
    return {
       name: given.name,
       type: renderedType,
-      annotations: given.getTaglines(/^#\(/),
+      annotations: given.annotations
+         .forRoute(undefined)
+         .filter((note) => !isReservedRoute(note.route))
+         .map((note) => note.text),
    };
 }

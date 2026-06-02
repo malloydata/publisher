@@ -1084,7 +1084,7 @@ export function buildEnvironmentMalloyConfig(
             ...azureDuckDBCache.values(),
          ];
          const closeResults = await Promise.allSettled([
-            malloyConfig.releaseConnections(),
+            malloyConfig.shutdown("close"),
             ...wrapperPromises.map(async (promise) => {
                const connection = await promise;
                await connection.close();

@@ -736,7 +736,7 @@ export class Environment {
          );
          if (existingPackage !== undefined && reload) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
-               existingPackage.getMalloyConfig().releaseConnections(),
+               existingPackage.getMalloyConfig().shutdown("close"),
             );
          }
          this.packages.set(packageName, _package);
@@ -955,7 +955,7 @@ export class Environment {
 
          if (oldPackage) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
-               oldPackage.getMalloyConfig().releaseConnections(),
+               oldPackage.getMalloyConfig().shutdown("close"),
             );
          }
 
@@ -1139,7 +1139,7 @@ export class Environment {
          // any in-flight queries that already acquired a connection finish
          // before the underlying duckdb handle is released.
          this.retireConnectionGeneration(`package ${packageName}`, () =>
-            _package.getMalloyConfig().releaseConnections(),
+            _package.getMalloyConfig().shutdown("close"),
          );
 
          // Atomically rename the canonical tree out of the way so no reader
@@ -1235,7 +1235,7 @@ export class Environment {
       // they wrap. Without this, hard unload leaks per-package DuckDB handles.
       const packageReleases = await Promise.allSettled(
          Array.from(this.packages.values(), (pkg) =>
-            pkg.getMalloyConfig().releaseConnections(),
+            pkg.getMalloyConfig().shutdown("close"),
          ),
       );
       for (const result of packageReleases) {

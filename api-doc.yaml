@@ -2480,11 +2480,16 @@ components:
           description: Whether the server is fully initialized and ready to serve requests
         operationalState:
           type: string
-          enum: [ "initializing", "serving", "draining" ]
+          enum: [ "initializing", "serving", "draining", "throttled" ]
           description: Status of the server; initializing when the server is loading
             environments, packages and connections, serving when the server is
-            initialized and ready to serve requests, and draining when the
-            server is going to shut down
+            initialized and ready to serve requests, draining when the
+            server is going to shut down, and throttled when the server has hit
+            its memory back-pressure limit and is rejecting new package loads and
+            queries to stay under PUBLISHER_MAX_MEMORY_BYTES (see the memory
+            governor). Already-loaded packages remain serviceable while throttled;
+            the control plane treats a throttled worker as unhealthy for new load.
+            Only reported when the memory governor is enabled.
         frozenConfig:
           type: boolean
           description: Whether the server configuration is frozen (read-only mode). When
