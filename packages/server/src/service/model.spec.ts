@@ -325,11 +325,13 @@ describe("service/model", () => {
             const runStub = sinon
                .stub()
                .rejects(new MalloyError("stub-stop", []));
+            const runnableStub = {
+               getPreparedResult: preparedResultStub,
+               run: runStub,
+            };
             const modelMaterializer = {
-               loadQuery: sinon.stub().returns({
-                  getPreparedResult: preparedResultStub,
-                  run: runStub,
-               }),
+               loadQuery: sinon.stub().returns(runnableStub),
+               loadRestrictedQuery: sinon.stub().returns(runnableStub),
             };
 
             const model = new Model(
@@ -425,11 +427,13 @@ describe("service/model", () => {
                         typeof API.util.wrapResult
                      >,
                   );
+               const runnableStub = {
+                  getPreparedResult: preparedResultStub,
+                  run: runStub,
+               };
                const modelMaterializer = {
-                  loadQuery: sinon.stub().returns({
-                     getPreparedResult: preparedResultStub,
-                     run: runStub,
-                  }),
+                  loadQuery: sinon.stub().returns(runnableStub),
+                  loadRestrictedQuery: sinon.stub().returns(runnableStub),
                };
                const model = new Model(
                   packageName,
