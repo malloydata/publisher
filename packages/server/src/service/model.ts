@@ -54,7 +54,11 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import { evaluateAuthorize, validateAuthorizeProbes } from "./authorize";
+import {
+   collectAuthorizeExprs,
+   evaluateAuthorize,
+   validateAuthorizeProbes,
+} from "./authorize";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    extractQueriesFromModelDef,
@@ -115,6 +119,9 @@ export class Model {
     *  `Model.givens` already collapses inheritance; we just stash the list
     *  for surfacing on the compiled-model response. */
    private givens: ApiGiven[] | undefined;
+   /** Model-wide `##(authorize)` expressions; apply to every query in the
+    *  model, including ad-hoc inline sources not declared in the model. */
+   private fileLevelAuthorize: string[] = [];
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -162,6 +169,24 @@ export class Model {
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
       this.givens = givens;
+      // Model-wide ##(authorize) gates, derived from the file-level annotations
+      // on the modelDef (which survives the worker boundary). These apply to
+      // any query in the model, including ad-hoc inline `duckdb.sql(...)`
+      // sources that aren't declared model sources — so a file-level gate
+      // can't be bypassed by querying the warehouse through raw SQL. A
+      // successfully-loaded model has already had these validated; guard the
+      // parse defensively so the constructor never throws.
+      try {
+         this.fileLevelAuthorize = this.modelDef
+            ? collectAuthorizeExprs(
+                 (this.modelDef.annotations?.notes ?? []).map(
+                    (note) => note.text,
+                 ),
+              )
+            : [];
+      } catch {
+         this.fileLevelAuthorize = [];
+      }
       this.modelInfo =
          modelInfo ??
          (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
@@ -206,9 +231,24 @@ export class Model {
    }
 
    /**
+    * Effective authorize expressions for whatever a query runs against:
+    *  - a declared model source → its own list (file-level ++ source-level);
+    *  - anything else (an ad-hoc inline `duckdb.sql(...)` source, or a source
+    *    we couldn't name) → the model-wide file-level `##(authorize)` gates.
+    * The second case is what stops a file-level gate from being bypassed by
+    * querying the warehouse through raw inline SQL.
+    */
+   private effectiveAuthorizeFor(sourceName: string | undefined): string[] {
+      if (sourceName && this.sources?.some((s) => s.name === sourceName)) {
+         return this.getAuthorize(sourceName);
+      }
+      return this.fileLevelAuthorize;
+   }
+
+   /**
     * Runtime authorize gate. Throws `AccessDeniedError` (403) unless at least
-    * one of the source's in-scope authorize expressions evaluates true for the
-    * supplied givens. A source with no authorize annotations is unrestricted.
+    * one in-scope authorize expression evaluates true for the supplied givens.
+    * No in-scope expressions = unrestricted.
     *
     * Fail closed: any failure to evaluate the probe — a missing given value, a
     * transient probe error, a missing/non-true result — denies. (Expression
@@ -217,39 +257,33 @@ export class Model {
     * is not leaked to the caller.
     */
    public async assertAuthorized(
-      sourceName: string,
+      sourceName: string | undefined,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      const exprs = this.getAuthorize(sourceName);
+      const exprs = this.effectiveAuthorizeFor(sourceName);
       if (exprs.length === 0) return; // unrestricted
-      if (!this.modelMaterializer) {
-         throw new AccessDeniedError(
-            `Access denied for source "${sourceName}".`,
-         );
-      }
+      const label = sourceName ?? "(query)";
+      const deny = () => {
+         throw new AccessDeniedError(`Access denied for source "${label}".`);
+      };
+      if (!this.modelMaterializer) deny();
       let passed = false;
       try {
          passed = await evaluateAuthorize(
-            this.modelMaterializer,
+            this.modelMaterializer!,
             exprs,
             givens,
          );
       } catch (err) {
          // Fail closed — e.g. a referenced given had no supplied value.
          logger.debug("Authorize probe failed; denying", {
-            sourceName,
+            sourceName: label,
             modelPath: this.modelPath,
             error: err instanceof Error ? err.message : String(err),
          });
-         throw new AccessDeniedError(
-            `Access denied for source "${sourceName}".`,
-         );
+         deny();
       }
-      if (!passed) {
-         throw new AccessDeniedError(
-            `Access denied for source "${sourceName}".`,
-         );
-      }
+      if (!passed) deny();
    }
 
    /**
@@ -682,6 +716,24 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
+      // Early fast-path authorize gate (before loadQuery). Resolve the source
+      // from surface syntax; gate if it names one. This runs BEFORE compilation
+      // so the gate can't be used as a schema oracle — without it, a denied
+      // caller probing `run: gated -> { group_by: maybe_field }` would get a
+      // Malloy "field not found" vs a 403 and learn the gated source's columns.
+      // It does NOT replace the authoritative compiled-source gate below (which
+      // always runs and catches named-query / multi-statement forms surface
+      // syntax can't resolve); it only fails fast for the common case.
+      const earlySource =
+         sourceName ||
+         (queryName
+            ? this.queries?.find((q) => q.name === queryName)?.sourceName
+            : undefined) ||
+         this.extractSourceName(query);
+      if (earlySource) {
+         await this.assertAuthorized(earlySource, givens ?? {});
+      }
+
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
          let queryString: string;
@@ -768,20 +820,25 @@ export class Model {
          throw new BadRequestError(`Invalid query: ${errorMessage}`);
       }
 
-      // Authorize gate. Resolve the gated source from the COMPILED query —
-      // the source Malloy actually runs (the LAST `run:` statement) — not from
-      // surface syntax. Surface-syntax resolution is both bypassable (a
-      // first-statement regex vs. last-statement execution: `run: ungated\nrun:
-      // gated` would gate `ungated` while running `gated`) and over-restrictive
-      // (it would gate a non-running leading statement). Gating the compiled
-      // structRef is authoritative and handles named-query / blank-source /
-      // multi-statement forms uniformly. Runs after loadQuery (so we have the
-      // compiled query) but OUTSIDE its try, so AccessDeniedError stays a 403;
-      // it is independent of bypassFilters (authorize is not a filter).
-      const authorizeSource =
+      // Authoritative authorize gate: resolve the gated source from the
+      // COMPILED query — the source Malloy actually runs (the LAST `run:`
+      // statement) — not from surface syntax. Surface-syntax resolution alone
+      // is both bypassable (first-statement regex vs. last-statement execution:
+      // `run: ungated\nrun: gated` would gate `ungated` while running `gated`)
+      // and over-restrictive, so this compiled check always runs and is the
+      // source of truth; it handles named-query / blank-source / multi-statement
+      // forms uniformly. Skip only the redundant re-probe when it's the same
+      // source the early gate already cleared. Outside the loadQuery try so
+      // AccessDeniedError stays a 403; independent of bypassFilters.
+      const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
-      if (authorizeSource) {
-         await this.assertAuthorized(authorizeSource, givens ?? {});
+      // Run unless it's the redundant re-probe of the exact named source the
+      // early gate already cleared. When compiledSource is unknown/unresolved
+      // (e.g. an ad-hoc inline `duckdb.sql(...)` source), this still runs and
+      // assertAuthorized applies the model-wide file-level gate via
+      // effectiveAuthorizeFor — closing the inline-SQL bypass of `##(authorize)`.
+      if (!(compiledSource && compiledSource === earlySource)) {
+         await this.assertAuthorized(compiledSource, givens ?? {});
       }
 
       const maxRows = getMaxQueryRows();
@@ -981,15 +1038,17 @@ export class Model {
          };
       }
 
-      // Authorize gate — before filter injection / execution, regardless of
-      // bypassFilters. Resolve the gated source from the COMPILED cell query
+      // Authorize gate — only cells that actually run a query touch data, so
+      // gate exactly those (a source-def / import cell has no runnable and
+      // accesses nothing). Resolve the source from the COMPILED cell query
       // (authoritative — survives `run: <named query>` cells the text regex
-      // misses); fall back to text extraction when there's no runnable. Sits
-      // before the execution try below so AccessDeniedError stays a 403.
-      const authorizeSource = cell.runnable
-         ? await this.resolveAuthorizeSourceFromRunnable(cell.runnable)
-         : this.extractSourceName(cell.text);
-      if (authorizeSource) {
+      // misses); assertAuthorized applies the source's gate, or the model-wide
+      // file-level gate for an unknown/inline source. Before the execution try
+      // below so AccessDeniedError stays a 403; independent of bypassFilters.
+      if (cell.runnable) {
+         const authorizeSource = await this.resolveAuthorizeSourceFromRunnable(
+            cell.runnable,
+         );
          await this.assertAuthorized(authorizeSource, givens ?? {});
       }
 

@@ -565,6 +565,47 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
       expect(result.data).toBeDefined();
    });
 
+   const FILE_LEVEL = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(authorize) "$ROLE = 'admin'"
+
+source: declared is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   it("applies a file-level gate to an ad-hoc inline duckdb.sql query (no raw-SQL bypass)", async () => {
+      await writeModel("rt_filelevel.malloy", FILE_LEVEL);
+      // Inline SQL source is not a declared model source; the model-wide
+      // file-level gate must still apply, or it's a raw-warehouse bypass.
+      await expect(
+         runGated(
+            "rt_filelevel.malloy",
+            `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
+            { ROLE: "user" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // An admin (file-level gate satisfied) can run it.
+      const { result } = await runGated(
+         "rt_filelevel.malloy",
+         `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
+         { ROLE: "admin" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("does not over-gate ad-hoc inline SQL when the model has no file-level gate", async () => {
+      // Control: a per-source gate is NOT model-wide, so an inline ad-hoc query
+      // in a model whose only gate is source-level stays unrestricted.
+      await writeModel("rt_single.malloy", SINGLE_GATE);
+      const { result } = await runGated(
+         "rt_single.malloy",
+         `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
+      );
+      expect(result.data).toBeDefined();
+   });
+
    it("gates a notebook cell that runs a NAMED QUERY targeting a gated source", async () => {
       // `run: secret` has no `->`, so source resolution must come from the
       // compiled query, not a text regex — otherwise the gate is bypassed.
