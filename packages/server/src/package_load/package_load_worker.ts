@@ -55,16 +55,12 @@ import {
    type ModelDef,
    type ModelMaterializer,
    modelDefToModelInfo,
-   type NamedModelObject,
    type NamedQueryDef,
    type Query,
    Runtime,
    type SQLSourceDef,
    type SQLSourceRequest,
-   type StructDef,
    type TableSourceDef,
-   type TurtleDef,
-   isSourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -83,8 +79,12 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
-import { annotationTexts, type AnnotationsDef } from "../service/annotations";
-import { parseFilters, type FilterDefinition } from "../service/filter";
+import { type AnnotationsDef } from "../service/annotations";
+import { type FilterDefinition } from "../service/filter";
+import {
+   extractQueriesFromModelDef,
+   extractSourcesFromModelDef,
+} from "../service/source_extraction";
 import {
    malloyGivenToApi,
    type MalloyGiven,
@@ -475,89 +475,20 @@ function appendLocalSourceInfos(
    }
 }
 
+// Source / query introspection is shared with the in-process path; see
+// service/source_extraction.ts. The worker has no logger, so a filter parse
+// failure is swallowed silently (no `onParseError` callback) — matching the
+// prior worker-local behavior.
 function extractSources(
    modelDef: ModelDef,
    givens: ApiGivenWire[] | undefined,
 ): { sources: ApiSourceWire[]; filterMap: Map<string, FilterDefinition[]> } {
-   const filterMap = new Map<string, FilterDefinition[]>();
-   const sources: ApiSourceWire[] = Object.values(modelDef.contents)
-      .filter((obj) => isSourceDef(obj))
-      .map((sourceObj) => {
-         const sourceName =
-            (sourceObj as StructDef).as || (sourceObj as StructDef).name;
-         const annotations = annotationTexts(
-            (sourceObj as StructDef).annotations,
-         );
-
-         const collected: string[][] = [];
-         let cur = (sourceObj as StructDef).annotations;
-         while (cur) {
-            if (cur.blockNotes) {
-               collected.push(cur.blockNotes.map((note) => note.text));
-            }
-            cur = cur.inherits;
-         }
-         const allAnnotations = collected.reverse().flat();
-         let filters: unknown[] | undefined;
-         if (allAnnotations.length > 0) {
-            try {
-               const parsed = parseFilters(allAnnotations);
-               if (parsed.length > 0) {
-                  filterMap.set(sourceName, parsed);
-                  const fields = (sourceObj as StructDef).fields;
-                  filters = parsed.map((f) => {
-                     const field = fields.find(
-                        (fd) => (fd.as || fd.name) === f.dimension,
-                     );
-                     return {
-                        name: f.name,
-                        dimension: f.dimension,
-                        type: f.type,
-                        implicit: f.implicit,
-                        required: f.required,
-                        dimensionType: field?.type as string | undefined,
-                     };
-                  });
-               }
-            } catch {
-               /* parse errors are warnings; matches in-process */
-            }
-         }
-
-         const views = (sourceObj as StructDef).fields
-            .filter((f) => f.type === "turtle")
-            .filter((turtle) =>
-               (turtle as TurtleDef).pipeline
-                  .map((stage) => stage.type)
-                  .every((type) => type === "reduce"),
-            )
-            .map((turtle) => ({
-               name: turtle.as || turtle.name,
-               annotations: annotationTexts(turtle.annotations),
-            }));
-
-         return {
-            name: sourceName,
-            annotations,
-            views,
-            filters,
-            givens,
-         } as ApiSourceWire;
-      });
-
-   return { sources, filterMap };
+   const { sources, filterMap } = extractSourcesFromModelDef(modelDef, givens);
+   return { sources: sources as unknown as ApiSourceWire[], filterMap };
 }
 
 function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
-   const isNamedQuery = (obj: NamedModelObject): obj is NamedQueryDef =>
-      obj.type === "query";
-   return Object.values(modelDef.contents)
-      .filter(isNamedQuery)
-      .map((q) => ({
-         name: q.as || q.name,
-         sourceName: typeof q.structRef === "string" ? q.structRef : undefined,
-         annotations: annotationTexts(q.annotations),
-      }));
+   return extractQueriesFromModelDef(modelDef) as ApiQueryWire[];
 }
 
 function buildRuntimeForModel(
