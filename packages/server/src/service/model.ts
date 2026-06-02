@@ -660,7 +660,22 @@ export class Model {
       // compilation, and regardless of bypassFilters (authorize is an access
       // gate, not a filter). Kept outside the loadQuery try below so an
       // AccessDeniedError propagates as a 403 instead of being rewrapped 400.
-      const authorizeSource = sourceName ?? this.extractSourceName(query);
+      //
+      // Resolve the gated source the same three ways a request can name one:
+      //  - explicit sourceName (normalize "" → undefined; the query-builder
+      //    treats blank as absent, so a blank here must not skip the gate);
+      //  - a named query (run: <queryName>), whose source we look up so a
+      //    `query: secret is gated -> ...` request can't dodge the gate;
+      //  - an ad-hoc query string.
+      let authorizeSource = sourceName || undefined;
+      if (!authorizeSource && queryName) {
+         authorizeSource = this.queries?.find(
+            (q) => q.name === queryName,
+         )?.sourceName;
+      }
+      if (!authorizeSource) {
+         authorizeSource = this.extractSourceName(query);
+      }
       if (authorizeSource) {
          await this.assertAuthorized(authorizeSource, givens ?? {});
       }

@@ -426,22 +426,25 @@ given:
 source: regional is duckdb.table('customers') extend { measure: c is count() }
 `;
 
-   it("grants when the file-level gate alone is satisfied (disjunction)", async () => {
+   it("grants on the file-level gate even when the OTHER disjunct's given is missing", async () => {
+      // The key OR-semantics case: admin supplies only ROLE; REGION is absent.
+      // A disjunct that can't evaluate (missing given) must not sink the whole
+      // request — the satisfied $ROLE='admin' branch still grants.
       await writeModel("rt_disj.malloy", DISJUNCTION);
       const { result } = await runGated(
          "rt_disj.malloy",
          "run: regional -> { aggregate: c }",
-         { ROLE: "admin", REGION: "nowhere" },
+         { ROLE: "admin" },
       );
       expect(result.data).toBeDefined();
    });
 
-   it("grants when the source-level gate alone is satisfied (disjunction)", async () => {
+   it("grants on the source-level gate even when the file-level disjunct's given is missing", async () => {
       await writeModel("rt_disj.malloy", DISJUNCTION);
       const { result } = await runGated(
          "rt_disj.malloy",
          "run: regional -> { aggregate: c }",
-         { ROLE: "nobody", REGION: "us-west" },
+         { REGION: "us-west" },
       );
       expect(result.data).toBeDefined();
    });
@@ -453,6 +456,73 @@ source: regional is duckdb.table('customers') extend { measure: c is count() }
             ROLE: "nobody",
             REGION: "nowhere",
          }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("gates a named query that targets a gated source (no sourceName supplied)", async () => {
+      await writeModel(
+         "rt_namedq.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+
+query: secret is gated -> { aggregate: c }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "rt_namedq.malloy",
+         getConnections(),
+      );
+      // Named query, no sourceName — must still resolve to `gated` and gate it.
+      await expect(
+         model.getQueryResults(
+            undefined,
+            "secret",
+            undefined,
+            undefined,
+            false,
+            {
+               ROLE: "intern",
+            },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // And it runs when the gate passes.
+      const { result } = await model.getQueryResults(
+         undefined,
+         "secret",
+         undefined,
+         undefined,
+         false,
+         { ROLE: "analyst" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("gates an ad-hoc query even when a blank sourceName is supplied", async () => {
+      await writeModel("rt_single.malloy", SINGLE_GATE);
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "rt_single.malloy",
+         getConnections(),
+      );
+      // Blank sourceName must not skip the gate while the query-builder treats
+      // it as absent and runs the ad-hoc query.
+      await expect(
+         model.getQueryResults(
+            "",
+            undefined,
+            "run: gated -> { aggregate: c }",
+            undefined,
+            false,
+            { ROLE: "intern" },
+         ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 

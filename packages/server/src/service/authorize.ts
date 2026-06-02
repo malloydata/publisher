@@ -75,24 +75,42 @@ interface AuthorizeProbeExecutor {
 }
 
 /**
- * Evaluate a source's authorize disjunction against the supplied givens by
- * running the probe. Returns true if ANY expression evaluates true (OR
- * semantics). A missing row counts as false. Throws if the probe itself fails
- * (e.g. a referenced given has no supplied value and no default) — the caller
- * treats any throw as denial (fail closed), which is how "missing given value"
- * becomes a 403 rather than a server error.
+ * Evaluate a source's authorize disjunction against the supplied givens.
+ * Returns true if ANY expression evaluates true (OR semantics).
+ *
+ * Each expression is probed INDEPENDENTLY rather than batched into one query.
+ * That is what preserves OR semantics: an expression that can't be evaluated —
+ * e.g. it references a given the request didn't supply, so Malloy throws "no
+ * value" — counts as "does not grant" (false), and the next disjunct is still
+ * tried. Batching them would let a missing given in one unused branch throw and
+ * sink the whole request (denying an admin who matched a different branch).
+ *
+ * Per-branch failures are swallowed to false (fail closed at the branch level);
+ * access is granted only if some branch genuinely returns true. Short-circuits
+ * on the first true. Returns false (→ caller denies) if none grant.
  */
 export async function evaluateAuthorize(
    executor: AuthorizeProbeExecutor,
    exprs: string[],
    givens: Record<string, GivenValue>,
 ): Promise<boolean> {
-   const result = await executor
-      .loadQuery(buildAuthorizeProbe(exprs))
-      .run({ rowLimit: 1, givens });
-   const row = result?.data?.value?.[0];
-   if (!row) return false;
-   return exprs.some((_, i) => isProbeTrue(row[`__auth_${i}`]));
+   for (const expr of exprs) {
+      try {
+         const result = await executor
+            .loadQuery(buildAuthorizeProbe([expr]))
+            .run({ rowLimit: 1, givens });
+         const row = result?.data?.value?.[0];
+         if (row && isProbeTrue(row.__auth_0)) {
+            return true;
+         }
+      } catch {
+         // This disjunct can't be evaluated (e.g. a referenced given has no
+         // value) — treat as not-granting and try the next. It does not fail
+         // the whole request, which is what keeps OR semantics intact.
+         continue;
+      }
+   }
+   return false;
 }
 
 /** A source plus its effective authorize expressions. */
