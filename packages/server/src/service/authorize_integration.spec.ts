@@ -191,3 +191,99 @@ source: broken is duckdb.table('customers')
       expect(sourceNamed(model, "open_source")?.authorize).toBeUndefined();
    });
 });
+
+describe("authorize annotation compile-time validation", () => {
+   it("loads a valid expression that references a value-less given", async () => {
+      // The probe is compiled, not run, so a given with no default/value does
+      // NOT cause a false failure (the original getSQL approach would have).
+      await writeModel(
+         "valid_valueless.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "valid_valueless.malloy",
+         getConnections(),
+      );
+
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(model.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+   });
+
+   it("fails model load when an expression references an unknown given", async () => {
+      await writeModel(
+         "unknown_given.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$NOPE = 'x'"
+source: gated is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "unknown_given.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      // Names the source and surfaces the underlying Malloy reason.
+      expect(err?.message).toContain("gated");
+      expect(err?.message).toMatch(/NOPE|not declared/i);
+   });
+
+   it("fails model load when an expression references a source field", async () => {
+      await writeModel(
+         "field_ref.malloy",
+         `#(authorize) "some_field = 1"
+source: gated is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "field_ref.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      expect(err?.message).toContain("gated");
+   });
+
+   it("does not reject a type-mismatched comparison (not a Malloy compile error)", async () => {
+      // Documents the boundary: `$ROLE = 5` is not a compile error; such a gate
+      // simply evaluates per the warehouse at the runtime gate.
+      await writeModel(
+         "type_mismatch.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 5"
+source: gated is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "type_mismatch.malloy",
+         getConnections(),
+      );
+
+      expect(model.getNotebookError()).toBeUndefined();
+   });
+});

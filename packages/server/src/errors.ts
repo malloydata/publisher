@@ -98,7 +98,10 @@ export class ConnectionAuthError extends Error {
 }
 
 export class ModelCompilationError extends Error {
-   constructor(error: MalloyError) {
+   // Accepts a MalloyError or any message-bearing object, so callers that add
+   // context around a compile failure (e.g. naming the source whose authorize
+   // annotation failed) can reuse this 424 mapping without a separate class.
+   constructor(error: { message: string }) {
       super(error.message);
    }
 }

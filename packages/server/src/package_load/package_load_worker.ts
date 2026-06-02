@@ -80,6 +80,7 @@ import {
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { type AnnotationsDef } from "../service/annotations";
+import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
 import {
    extractQueriesFromModelDef,
@@ -551,6 +552,10 @@ async function compileMalloyModel(
 
    const { sources, filterMap } = extractSources(modelDef, givens);
    const queries = extractQueries(modelDef);
+   // Validate #(authorize) at compile time (shared with Model.create). Throws
+   // on an unknown given / source-field reference; compileOneModel's catch
+   // turns it into this model's compilationError.
+   await validateAuthorizeProbes(mm, sources);
 
    return {
       modelPath,
@@ -730,6 +735,8 @@ async function compileNotebookModel(
       finalSources = extracted.sources;
       finalFilterMap = extracted.filterMap;
       finalQueries = extractQueries(finalModelDef);
+      // Validate #(authorize) at compile time (shared with Model.create).
+      await validateAuthorizeProbes(mm, finalSources);
    }
 
    return {
