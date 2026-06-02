@@ -211,11 +211,15 @@ given:
 source: gated is duckdb.sql("select 1 as id")`,
       );
 
+      const { ModelCompilationError } = await import("../errors");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
+         // Must surface as a 424 ModelCompilationError across the worker
+         // boundary, not a generic 500 — the worker serializes it with
+         // isCompilationError so the main thread re-wraps it.
          await expect(
             Package.create("env", "pkg", tempDir, malloyConfig),
-         ).rejects.toBeInstanceOf(Error);
+         ).rejects.toBeInstanceOf(ModelCompilationError);
       } finally {
          await duckdb.close();
       }

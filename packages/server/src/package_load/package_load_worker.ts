@@ -79,6 +79,7 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
+import { ModelCompilationError } from "../errors";
 import { type AnnotationsDef } from "../service/annotations";
 import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
@@ -831,6 +832,18 @@ function serializeError(error: unknown): SerializedError {
          message: error.message,
          stack: error.stack,
          malloyProblems: error.problems as unknown[],
+         isCompilationError: true,
+      };
+   }
+   // ModelCompilationError (e.g. an invalid #(authorize) annotation caught by
+   // validateAuthorizeProbes) carries no Malloy `problems`, but it must keep its
+   // compilation-error classification across the worker boundary so the main
+   // thread re-wraps it as a 424, not a generic 500.
+   if (error instanceof ModelCompilationError) {
+      return {
+         name: error.name,
+         message: error.message,
+         stack: error.stack,
          isCompilationError: true,
       };
    }
