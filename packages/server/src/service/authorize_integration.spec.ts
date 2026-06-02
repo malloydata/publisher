@@ -539,6 +539,42 @@ query: secret is gated -> { aggregate: c }
       expect(result.data).toBeDefined();
    });
 
+   it("gates a notebook cell that runs a NAMED QUERY targeting a gated source", async () => {
+      // `run: secret` has no `->`, so source resolution must come from the
+      // compiled query, not a text regex — otherwise the gate is bypassed.
+      await writeModel(
+         "rt_nb.malloynb",
+         `>>>malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+query: secret is gated -> { aggregate: c }
+
+>>>malloy
+run: secret
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "rt_nb.malloynb",
+         getConnections(),
+      );
+      // Cell 1 is `run: secret` — must be denied without the gate-passing given.
+      await expect(
+         model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // ...and allowed when the gate passes.
+      const ok = await model.executeNotebookCell(1, undefined, false, {
+         ROLE: "analyst",
+      });
+      expect(ok.result).toBeDefined();
+   });
+
    const LOCKED_BASE = `##! experimental.givens
 
 given:

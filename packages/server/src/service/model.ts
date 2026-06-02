@@ -253,6 +253,32 @@ export class Model {
    }
 
    /**
+    * Resolve the source a compiled query reads, from its prepared query's
+    * `structRef`. This is authoritative — it survives named-query indirection
+    * and bare `run: <query>` forms that surface-syntax extraction misses — so
+    * the authorize gate can't be dodged by how a request names the query.
+    * Returns undefined if the source can't be determined.
+    */
+   private async resolveAuthorizeSourceFromRunnable(runnable: {
+      getPreparedQuery(): Promise<unknown>;
+   }): Promise<string | undefined> {
+      try {
+         const prepared = (await runnable.getPreparedQuery()) as {
+            _query?: { structRef?: unknown };
+         };
+         const structRef = prepared._query?.structRef;
+         if (typeof structRef === "string") return structRef;
+         if (structRef && typeof structRef === "object") {
+            const s = structRef as { as?: string; name?: string };
+            return s.as || s.name;
+         }
+      } catch {
+         // Can't resolve — caller simply has no name to gate on here.
+      }
+      return undefined;
+   }
+
+   /**
     * Best-effort extraction of a source name from an ad-hoc Malloy query string.
     * Matches patterns like `run: source_name -> ...` or `source_name -> ...`.
     */
@@ -766,6 +792,20 @@ export class Model {
          throw new BadRequestError(`Invalid query: ${errorMessage}`);
       }
 
+      // Backstop: if surface syntax couldn't name a source above (e.g. a named
+      // query whose source isn't a plain string ref), resolve the gated source
+      // from the COMPILED query — the authoritative source it actually reads —
+      // and gate on that. Only runs when the early gate found nothing, so the
+      // common path keeps its single probe and gate-before-filter ordering.
+      // Outside the loadQuery try so AccessDeniedError stays a 403.
+      if (!authorizeSource) {
+         const compiledSource =
+            await this.resolveAuthorizeSourceFromRunnable(runnable);
+         if (compiledSource) {
+            await this.assertAuthorized(compiledSource, givens ?? {});
+         }
+      }
+
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
       const rowLimit = resolveModelQueryRowLimit(
@@ -964,9 +1004,13 @@ export class Model {
       }
 
       // Authorize gate — before filter injection / execution, regardless of
-      // bypassFilters. Outside the execution try below so AccessDeniedError
-      // propagates as a 403.
-      const authorizeSource = this.extractSourceName(cell.text);
+      // bypassFilters. Resolve the gated source from the COMPILED cell query
+      // (authoritative — survives `run: <named query>` cells the text regex
+      // misses); fall back to text extraction when there's no runnable. Sits
+      // before the execution try below so AccessDeniedError stays a 403.
+      const authorizeSource = cell.runnable
+         ? await this.resolveAuthorizeSourceFromRunnable(cell.runnable)
+         : this.extractSourceName(cell.text);
       if (authorizeSource) {
          await this.assertAuthorized(authorizeSource, givens ?? {});
       }
