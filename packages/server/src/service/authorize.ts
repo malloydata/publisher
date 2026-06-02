@@ -11,17 +11,84 @@
  * so we cannot reuse filter.ts's whitespace tokenizer — we unwrap exactly one
  * layer of double quotes and hand the inner expression back untouched.
  *
- * This module only parses and collects. Evaluating the expression (the actual
- * access gate) and validating it at compile time land in later PRs; both reuse
- * the maps built here. Kept dependency-free so it bundles cleanly into the
- * package-load worker.
+ * This module parses, collects, and (at compile time) validates authorize
+ * annotations. Evaluating the expression — the actual access gate — lands in a
+ * later PR and reuses `buildAuthorizeProbe`. Kept light so it bundles cleanly
+ * into the package-load worker (the only non-type import is the shared
+ * `ModelCompilationError`).
  */
+
+import { ModelCompilationError } from "../errors";
 
 const SOURCE_PREFIX = "#(authorize)";
 const FILE_PREFIX = "##(authorize)";
 
 /** source name → effective authorize expressions (file-level then source-level). */
 export type AuthorizeMap = Map<string, string[]>;
+
+/**
+ * Build the synthetic probe query that evaluates a source's authorize
+ * expressions. Each expression becomes a boolean `select` column over a
+ * one-row, warehouse-independent DuckDB source (the `"duckdb"` sandbox is
+ * registered for every package, so this never touches the model's real
+ * warehouse). Compiling this probe validates the expressions against the
+ * model's `given:` block (unknown givens and source-field references surface as
+ * compile errors); running it evaluates the gate. The reserved dummy column
+ * name is deliberately obscure so a real authorize expression is unlikely to
+ * collide with it — a bare field reference in an expression is meant to fail.
+ */
+export function buildAuthorizeProbe(exprs: string[]): string {
+   const selects = exprs
+      .map((expr, i) => `__auth_${i} is (${expr})`)
+      .join("\n      ");
+   return `run: duckdb.sql("SELECT 1 AS __authorize_probe_row") -> {
+    select:
+      ${selects}
+    limit: 1
+  }`;
+}
+
+/** Minimal materializer surface needed to compile (not run) the probe. */
+interface AuthorizeProbeCompiler {
+   loadQuery(query: string): { getPreparedQuery(): Promise<unknown> };
+}
+
+/** A source plus its effective authorize expressions. */
+interface SourceWithAuthorize {
+   name?: string;
+   authorize?: string[];
+}
+
+/**
+ * Translation-time validation. For each source carrying authorize expressions,
+ * compile the probe (no givens, no DB execution) so unknown givens and
+ * source-field references surface as compile errors at model load instead of
+ * first request. Type mismatches such as `$ROLE = 5` are NOT Malloy compile
+ * errors, so they are not caught here — they fail closed at the runtime gate.
+ *
+ * Throws `ModelCompilationError` naming the source on the first invalid
+ * annotation. Shared by `Model.create` and the package-load worker so both
+ * compile paths validate identically.
+ */
+export async function validateAuthorizeProbes(
+   compiler: AuthorizeProbeCompiler,
+   sources: readonly SourceWithAuthorize[],
+): Promise<void> {
+   for (const source of sources) {
+      const exprs = source.authorize;
+      if (!exprs || exprs.length === 0) continue;
+      try {
+         await compiler
+            .loadQuery(buildAuthorizeProbe(exprs))
+            .getPreparedQuery();
+      } catch (err) {
+         const detail = err instanceof Error ? err.message : String(err);
+         throw new ModelCompilationError({
+            message: `Invalid #(authorize) annotation on source "${source.name ?? "(unnamed)"}" [${exprs.join(" | ")}]: ${detail}`,
+         });
+      }
+   }
+}
 
 /**
  * Parse a single annotation string into its authorize expression.

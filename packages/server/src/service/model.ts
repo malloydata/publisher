@@ -53,6 +53,7 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
+import { validateAuthorizeProbes } from "./authorize";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    extractQueriesFromModelDef,
@@ -271,6 +272,12 @@ export class Model {
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
             queries = Model.getQueries(modelDef);
+
+            // Translation-time validation of #(authorize) annotations (shared
+            // with the package-load worker so both compile paths validate
+            // identically). Compiling the probe surfaces unknown givens and
+            // source-field references at model-load instead of first request.
+            await validateAuthorizeProbes(modelMaterializer, sources ?? []);
 
             // Collect sourceInfos from imported models first
             // This follows the same pattern as notebook imports handling
