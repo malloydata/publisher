@@ -84,6 +84,17 @@ COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
+# Bake the DuckLake extension via the `duckdb` npm binding (NOT the CLI).
+# The CLI in base-deps installs to /root/.duckdb/extensions/v<cli-version>/,
+# which is a different DuckDB version than what `duckdb@1.4.4` (the
+# runtime binding pinned in package.json) inspects at runtime
+# (/root/.duckdb/extensions/v1.4.4/). Baking via the binding here puts
+# the extension at the path the runtime server uses, so its INSTALL
+# ducklake; LOAD ducklake; at startup finds it and skips the network
+# fetch (the actual pin).
+RUN bun -e "const d=require('duckdb');const db=new d.Database(':memory:');await new Promise((r,j)=>db.exec('INSTALL ducklake; LOAD ducklake;',e=>e?j(e):r()));const rows=await new Promise((r,j)=>db.all(\"SELECT extension_version, install_path FROM duckdb_extensions() WHERE extension_name='ducklake'\",(e,x)=>e?j(e):r(x)));console.log('DuckLake baked:',JSON.stringify(rows));" || \
+    echo "DuckLake bake skipped (offline build)"
+
 # Runtime config
 ENV NODE_ENV=production
 ENV PATH="/root/.duckdb/cli/latest:$PATH"
