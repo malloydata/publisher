@@ -3,7 +3,15 @@ import { logAxiosError } from "../utils/logger.js";
 import {
   Configuration,
   ConnectionsApi,
+  CreateMaterializationRequest,
+  DatabasesApi,
   EnvironmentsApi,
+  ManifestActionActionEnum,
+  ManifestsApi,
+  MaterializationActionActionEnum,
+  MaterializationsApi,
+  ModelsApi,
+  NotebooksApi,
   PackagesApi,
 } from "./generated";
 
@@ -11,6 +19,11 @@ export class PublisherClient {
   private environmentsApi: EnvironmentsApi;
   private packagesApi: PackagesApi;
   private connectionsApi: ConnectionsApi;
+  private materializationsApi: MaterializationsApi;
+  private manifestsApi: ManifestsApi;
+  private modelsApi: ModelsApi;
+  private notebooksApi: NotebooksApi;
+  private databasesApi: DatabasesApi;
   private baseURL: string;
 
   constructor(urlOverride?: string) {
@@ -23,6 +36,11 @@ export class PublisherClient {
     this.environmentsApi = new EnvironmentsApi(config);
     this.packagesApi = new PackagesApi(config);
     this.connectionsApi = new ConnectionsApi(config);
+    this.materializationsApi = new MaterializationsApi(config);
+    this.manifestsApi = new ManifestsApi(config);
+    this.modelsApi = new ModelsApi(config);
+    this.notebooksApi = new NotebooksApi(config);
+    this.databasesApi = new DatabasesApi(config);
   }
 
   private resolveServerURL(urlOverride?: string): string {
@@ -228,6 +246,209 @@ export class PublisherClient {
         environmentName,
         connectionName,
       );
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  // Materializations
+  async listMaterializations(
+    environmentName: string,
+    packageName: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<any[]> {
+    try {
+      const response = await this.materializationsApi.listMaterializations(
+        environmentName,
+        packageName,
+        limit,
+        offset,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async getMaterialization(
+    environmentName: string,
+    packageName: string,
+    materializationId: string,
+  ): Promise<any> {
+    try {
+      const response = await this.materializationsApi.getMaterialization(
+        environmentName,
+        packageName,
+        materializationId,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async createMaterialization(
+    environmentName: string,
+    packageName: string,
+    request: CreateMaterializationRequest,
+  ): Promise<any> {
+    try {
+      const response = await this.materializationsApi.createMaterialization(
+        environmentName,
+        packageName,
+        request,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async materializationAction(
+    environmentName: string,
+    packageName: string,
+    materializationId: string,
+    action: "start" | "stop",
+  ): Promise<any> {
+    try {
+      const response = await this.materializationsApi.materializationAction(
+        environmentName,
+        packageName,
+        materializationId,
+        action as MaterializationActionActionEnum,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async deleteMaterialization(
+    environmentName: string,
+    packageName: string,
+    materializationId: string,
+  ): Promise<void> {
+    try {
+      await this.materializationsApi.deleteMaterialization(
+        environmentName,
+        packageName,
+        materializationId,
+      );
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  // Build manifest
+  async getManifest(
+    environmentName: string,
+    packageName: string,
+  ): Promise<any> {
+    try {
+      const response = await this.manifestsApi.getManifest(
+        environmentName,
+        packageName,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async reloadManifest(
+    environmentName: string,
+    packageName: string,
+  ): Promise<any> {
+    try {
+      const response = await this.manifestsApi.manifestAction(
+        environmentName,
+        packageName,
+        ManifestActionActionEnum.Reload,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  // Models (read-only)
+  async listModels(
+    environmentName: string,
+    packageName: string,
+  ): Promise<any[]> {
+    try {
+      const response = await this.modelsApi.listModels(
+        environmentName,
+        packageName,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async getModel(
+    environmentName: string,
+    packageName: string,
+    path: string,
+  ): Promise<any> {
+    try {
+      const response = await this.modelsApi.getModel(
+        environmentName,
+        packageName,
+        path,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  // Notebooks (read-only)
+  async listNotebooks(
+    environmentName: string,
+    packageName: string,
+  ): Promise<any[]> {
+    try {
+      const response = await this.notebooksApi.listNotebooks(
+        environmentName,
+        packageName,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async getNotebook(
+    environmentName: string,
+    packageName: string,
+    path: string,
+  ): Promise<any> {
+    try {
+      const response = await this.notebooksApi.getNotebook(
+        environmentName,
+        packageName,
+        path,
+      );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  // Databases (read-only)
+  async listDatabases(
+    environmentName: string,
+    packageName: string,
+  ): Promise<any[]> {
+    try {
+      const response = await this.databasesApi.listDatabases(
+        environmentName,
+        packageName,
+      );
+      return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }
