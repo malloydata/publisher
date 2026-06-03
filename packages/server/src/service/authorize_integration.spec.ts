@@ -575,33 +575,59 @@ given:
 source: declared is duckdb.table('customers') extend { measure: c is count() }
 `;
 
-   it("applies a file-level gate to an ad-hoc inline duckdb.sql query (no raw-SQL bypass)", async () => {
+   it("applies a file-level gate to an ad-hoc query (no gate bypass)", async () => {
       await writeModel("rt_filelevel.malloy", FILE_LEVEL);
-      // Inline SQL source is not a declared model source; the model-wide
-      // file-level gate must still apply, or it's a raw-warehouse bypass.
+      // The model-wide file-level gate must apply to any ad-hoc query against
+      // the model, denying a non-admin with a 403.
       await expect(
-         runGated(
-            "rt_filelevel.malloy",
-            `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
-            { ROLE: "user" },
-         ),
+         runGated("rt_filelevel.malloy", "run: declared -> { aggregate: c }", {
+            ROLE: "user",
+         }),
       ).rejects.toBeInstanceOf(AccessDeniedError);
       // An admin (file-level gate satisfied) can run it.
       const { result } = await runGated(
          "rt_filelevel.malloy",
-         `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
+         "run: declared -> { aggregate: c }",
          { ROLE: "admin" },
       );
       expect(result.data).toBeDefined();
    });
 
-   it("does not over-gate ad-hoc inline SQL when the model has no file-level gate", async () => {
-      // Control: a per-source gate is NOT model-wide, so an inline ad-hoc query
-      // in a model whose only gate is source-level stays unrestricted.
-      await writeModel("rt_single.malloy", SINGLE_GATE);
+   it("rejects an ad-hoc inline-SQL query (restricted mode closes the raw-warehouse path)", async () => {
+      // Pre-#807 the file-level #(authorize) gate was the only thing between a
+      // caller and raw `duckdb.sql(...)`. #807's restricted mode now rejects
+      // inline raw SQL outright while resolving the compiled source — before the
+      // gate is reached — so the raw-warehouse path is closed at the compile
+      // layer regardless of givens (even for an admin who satisfies the gate).
+      await writeModel("rt_filelevel.malloy", FILE_LEVEL);
+      await expect(
+         runGated(
+            "rt_filelevel.malloy",
+            `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
+            { ROLE: "admin" },
+         ),
+      ).rejects.toThrow(/raw SQL is not permitted/);
+   });
+
+   const MIXED_SOURCE_GATE = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+
+source: open_src is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   it("does not over-gate: a source-level gate is not model-wide", async () => {
+      // Control: a per-source gate applies only to that source, not the whole
+      // model. An ad-hoc query against an ungated declared source in the same
+      // model runs without any given.
+      await writeModel("rt_mixed.malloy", MIXED_SOURCE_GATE);
       const { result } = await runGated(
-         "rt_single.malloy",
-         `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
+         "rt_mixed.malloy",
+         "run: open_src -> { aggregate: c }",
       );
       expect(result.data).toBeDefined();
    });

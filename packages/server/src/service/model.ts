@@ -171,9 +171,10 @@ export class Model {
       this.givens = givens;
       // Model-wide ##(authorize) gates, derived from the file-level annotations
       // on the modelDef (which survives the worker boundary). These apply to
-      // any query in the model, including ad-hoc inline `duckdb.sql(...)`
-      // sources that aren't declared model sources — so a file-level gate
-      // can't be bypassed by querying the warehouse through raw SQL. A
+      // any query that resolves to a model source (or to no nameable source),
+      // model-wide. (Raw-SQL access to the warehouse is closed separately by
+      // restricted mode, which rejects inline `duckdb.sql(...)` on the caller
+      // query path before any gate runs — see getQueryResults.) A
       // successfully-loaded model has already had these validated; guard the
       // parse defensively so the constructor never throws.
       try {
@@ -833,10 +834,14 @@ export class Model {
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
       // Run unless it's the redundant re-probe of the exact named source the
-      // early gate already cleared. When compiledSource is unknown/unresolved
-      // (e.g. an ad-hoc inline `duckdb.sql(...)` source), this still runs and
-      // assertAuthorized applies the model-wide file-level gate via
-      // effectiveAuthorizeFor — closing the inline-SQL bypass of `##(authorize)`.
+      // early gate already cleared. When compiledSource is unknown/unresolved,
+      // this still runs and assertAuthorized applies the model-wide file-level
+      // gate via effectiveAuthorizeFor. Note: on this path an ad-hoc inline
+      // `duckdb.sql(...)` query is rejected by restricted mode (the raw-SQL
+      // ban from loadRestrictedQuery above) before it can run, so the
+      // raw-warehouse bypass is closed by restricted mode — not by this gate.
+      // This fallback's job is to apply the file-level gate to permitted ad-hoc
+      // forms (declared-source references) whose source can't be named.
       if (!(compiledSource && compiledSource === earlySource)) {
          await this.assertAuthorized(compiledSource, givens ?? {});
       }
