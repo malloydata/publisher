@@ -102,7 +102,10 @@ export class WatchModeController {
       // was a no-op for compilation: addEnvironment on an existing env calls
       // Environment.update(), which refreshes metadata/connections only and
       // never touches this.packages, so edits never took effect.
-      const reloadPackage = async (pkgName: string) => {
+      // Returns true if the package recompiled cleanly. A transient compile
+      // error (e.g. a half-typed model saved mid-edit) returns false so we can
+      // avoid bouncing open browser tabs into a compile-error/404 — see onEvent.
+      const reloadPackage = async (pkgName: string): Promise<boolean> => {
          try {
             const environment = await this.environmentStore.getEnvironment(
                watchName,
@@ -112,11 +115,13 @@ export class WatchModeController {
             logger.info(
                `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,
             );
+            return true;
          } catch (error) {
             logger.error(
                `Watch: failed to recompile package "${pkgName}" in environment "${watchName}"`,
                { error },
             );
+            return false;
          }
       };
       const onEvent =
@@ -138,10 +143,13 @@ export class WatchModeController {
 
             // Recompile Malloy state only for model files. Asset edits
             // (HTML/CSS/JS) skip recompile — they just need the live-reload
-            // fanout below.
+            // fanout below. For model edits, only signal a reload once the
+            // recompile succeeds: a transient syntax error shouldn't bounce
+            // open pages into a compile error or 404.
             const ext = path.extname(filePath).toLowerCase();
             if (MODEL_EXTS.has(ext)) {
-               await reloadPackage(pkgName);
+               const recompiled = await reloadPackage(pkgName);
+               if (!recompiled) return;
             }
             // Fan out to SSE clients embedded in the affected package.
             this.events.emit(`${watchName}/${pkgName}`, {
