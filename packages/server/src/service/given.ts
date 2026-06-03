@@ -36,6 +36,12 @@ export interface MalloyGivenApi {
    name: string;
    type: string;
    annotations?: string[];
+   /**
+    * The given's default as a Malloy source literal (`'WN'`, `2003`,
+    * `@2024-01-01`, `f'WN'`), or omitted when the given has no default.
+    * Consumers render/prefill it per `type` (e.g. unquote a string).
+    */
+   default?: string;
 }
 
 /**
@@ -50,10 +56,12 @@ export interface MalloyGivenApi {
  *   location either; matching that floor. A future PR can add a
  *   sanitised package-relative path if a client needs it.
  *
- * - `default` / `defaultText` — Malloy's API only exposes the
- *   parsed `ConstantExpr` AST, not a rendered source string.
- *   Rendering it here would duplicate the Malloy printer. Add
- *   when Malloy surfaces a stringified accessor.
+ * - `default` is surfaced as the rendered source literal
+ *   (`given._internal.defaultText` — e.g. `'WN'`, `2003`,
+ *   `@2024-01-01`). Malloy's public surface still exposes only the
+ *   parsed `.default` AST; `_internal.defaultText` is the
+ *   already-rendered string, so we forward it verbatim rather than
+ *   re-implement the printer. Omitted when the given has no default.
  *
  * `annotations` is restricted to app-route annotations (bracketed,
  * caller-facing, e.g. `#(doc)`), excluding Malloy's reserved routes
@@ -82,5 +90,13 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
          .forRoute(undefined)
          .filter((note) => !isReservedRoute(note.route))
          .map((note) => note.text),
+      // `_internal.defaultText` is the already-rendered source literal of the
+      // given's default. It lives on Malloy's private `_internal` (the public
+      // surface exposes only the parsed `.default` AST node, not a stringified
+      // form), so we reach it through a localized cast rather than widening the
+      // duck-typed `MalloyGiven` — which would collide with the SDK `Given`'s
+      // own private `_internal` at every `as MalloyGiven` cast site.
+      default: (given as { _internal?: { defaultText?: string } })._internal
+         ?.defaultText,
    };
 }
