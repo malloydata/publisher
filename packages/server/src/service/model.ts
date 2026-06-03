@@ -630,9 +630,10 @@ export class Model {
             );
          }
 
-         // Untrusted ad-hoc query text (no sourceName/queryName) is compiled in
-         // restricted mode below; publisher-constructed `run: source->view`
-         // strings are trusted.
+         // Distinguishes free-form query text from the named `source->view`
+         // form. Both are driven by untrusted caller input and compiled in
+         // restricted mode below; this flag only controls how the protected
+         // source is resolved for filter injection.
          const isAdHocQuery = !sourceName && !queryName && !!query;
 
          // Inject source filter predicates unless bypassed. For ad-hoc queries
@@ -660,10 +661,11 @@ export class Model {
          // Restricted mode keeps untrusted query text inside the model's curated
          // surface — it rejects `import`, raw `connection.table(...)` /
          // `connection.sql(...)`, raw-SQL functions, and `##!` flags. The
-         // model's own definitions are unaffected.
-         runnable = isAdHocQuery
-            ? this.modelMaterializer.loadRestrictedQuery(queryString)
-            : this.modelMaterializer.loadQuery(queryString);
+         // model's own definitions are unaffected. Both the ad-hoc `query` text
+         // and the `run: source->view` string built from the caller-supplied
+         // `sourceName`/`queryName` pair are untrusted, so both compile here;
+         // only author-curated notebook cells use the unrestricted `loadQuery`.
+         runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {

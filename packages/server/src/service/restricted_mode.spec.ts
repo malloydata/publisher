@@ -169,6 +169,34 @@ async function expectBlocked(model: Model, query: string): Promise<void> {
    );
 }
 
+/**
+ * Same assertion as `expectBlocked`, but exercised through the named
+ * `sourceName`/`queryName` request shape rather than the free-form `query`
+ * field — those identifiers are concatenated into a `run: …` string and so are
+ * just as caller-controlled.
+ */
+async function expectNamedBlocked(
+   model: Model,
+   sourceName: string | undefined,
+   queryName: string,
+): Promise<void> {
+   let leakedRows: number | undefined;
+   try {
+      const { compactResult } = await model.getQueryResults(
+         sourceName,
+         queryName,
+      );
+      leakedRows = asRows(compactResult).length;
+   } catch (error) {
+      expect(looksRestricted(error)).toBe(true);
+      return;
+   }
+   throw new Error(
+      `Expected the named-path request to be blocked by restricted mode, but ` +
+         `it succeeded and returned ${leakedRows} rows (escaped the curated surface).`,
+   );
+}
+
 // ===========================================================================
 // The published surface stays fully usable — restriction must not break the
 // legitimate path it is wrapped around.
@@ -240,5 +268,32 @@ describe("an untrusted query cannot reach data the model never published", () =>
             "}\n" +
             "run: x -> { group_by: s.ssn }",
       );
+   });
+});
+
+// ===========================================================================
+// The named `sourceName`/`queryName` request shape reaches the same compiler
+// path as ad-hoc text, so it must inherit the same restriction. A real name is
+// a bare identifier; anything that smuggles in a disallowed construct must be
+// blocked, while legitimate published names keep working.
+// ===========================================================================
+
+describe("the named source/view path is restricted too", () => {
+   it("blocks a disallowed construct supplied through the sourceName/queryName fields", async () => {
+      const model = await makeModel("catalog.malloy");
+      await expectNamedBlocked(
+         model,
+         "duckdb.table('secrets')",
+         "{ group_by: ssn }",
+      );
+   });
+
+   it("still runs a legitimate published source and view by name", async () => {
+      const model = await makeModel("catalog.malloy");
+      const { compactResult } = await model.getQueryResults(
+         "widgets",
+         "by_region",
+      );
+      expect(asRows(compactResult).length).toBe(3);
    });
 });
