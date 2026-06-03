@@ -219,4 +219,39 @@ describe("In-package HTML data apps (E2E)", () => {
          `/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/index.html`,
       );
    });
+
+   // ── /events SSE stream ───────────────────────────────────────────
+
+   it("400s an illegal environment/package name on /events", async () => {
+      // A space is outside IdentifierPattern → assertSafePackageName rejects.
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/bad%20name/packages/${PACKAGE_NAME}/events`,
+      );
+      expect(res.status).toBe(400);
+   });
+
+   it("404s an unknown package on /events", async () => {
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/no-such-pkg/events`,
+      );
+      expect(res.status).toBe(404);
+   });
+
+   it("opens an SSE stream announcing hello + mode", async () => {
+      const controller = new AbortController();
+      const res = await fetch(apiUrl("/events"), {
+         signal: controller.signal,
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+      const reader = res.body!.getReader();
+      const { value } = await reader.read();
+      const chunk = new TextDecoder().decode(value);
+      expect(chunk).toContain("event: hello");
+      expect(chunk).toContain("event: mode");
+
+      await reader.cancel();
+      controller.abort();
+   });
 });

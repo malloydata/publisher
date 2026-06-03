@@ -47,6 +47,7 @@ import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
 import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
+import { assertSafePackageName } from "./path_safety";
 
 export { normalizeQueryArray } from "./query_param_utils";
 
@@ -85,6 +86,14 @@ function parseArgs() {
          i++;
       } else if (arg === "--init") {
          process.env.INITIALIZE_STORAGE = "true";
+      } else if (arg === "--watch-env" && args[i + 1]) {
+         // Append (don't overwrite) so multiple --watch-env flags compose
+         // and so an explicit env var pre-set still wins.
+         const existing = process.env.PUBLISHER_WATCH || "";
+         process.env.PUBLISHER_WATCH = existing
+            ? `${existing},${args[i + 1]}`
+            : args[i + 1];
+         i++;
       } else if (arg === "--help" || arg === "-h") {
          console.log("Malloy Publisher Server");
          console.log("");
@@ -114,6 +123,18 @@ function parseArgs() {
          );
          console.log(
             "  --init                 Initialize the storage (default: false)",
+         );
+         console.log(
+            "  --watch-env <name>     Enable dev-mode watch for the named environment.",
+         );
+         console.log(
+            "                         Mounts local-dir packages in-place (symlink, not",
+         );
+         console.log(
+            "                         copy) so source-edit live reload works. Repeat the",
+         );
+         console.log(
+            "                         flag for multiple envs, or set PUBLISHER_WATCH=a,b.",
          );
          console.log("  --help, -h             Show this help message");
          process.exit(0);
@@ -294,6 +315,8 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
 //   - `/sdk/publisher.js`     → Publisher runtime helper
 //   - `/environments/<env>/packages/<pkg>/<file.ext>` → static file from
 //                                                       inside the package dir
+//   - `/api/v0/.../events`    → live-reload SSE (registered in API routes
+//                                below; this comment is the cross-reference)
 
 // Serve the runtime helper that in-package HTML pages load via
 // <script src="/sdk/publisher.js">. Read once at module load for speed.
@@ -656,6 +679,71 @@ app.get(`${API_PREFIX}/status`, async (_req, res) => {
 app.get(`${API_PREFIX}/watch-mode/status`, watchModeController.getWatchStatus);
 app.post(`${API_PREFIX}/watch-mode/start`, watchModeController.startWatching);
 app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
+
+// Live-reload Server-Sent Events stream for in-package HTML dashboards.
+//
+// This endpoint does NOT start watch mode on its own — that's an explicit
+// opt-in (`--watch-env <name>` CLI flag, or `POST /api/v0/watch-mode/start`).
+// Instead it reports whether watch mode is currently active for the requested
+// env via a `mode` event and, if so, fans out file-change events to the
+// browser. This avoids two earlier bugs:
+//   - Auto-starting from the request handler made arbitrary fetches reach
+//     in to mutate global watch-mode state (`event traversal — see below).
+//   - The runtime previously had no way to know "watch mode isn't running,
+//     don't expect reloads"; with the `mode` event it can choose to surface
+//     a small dev indicator (today: silent).
+//
+// Inputs are validated before any state lookup. Names that don't pass the
+// canonical `assertSafePackageName` allowlist get 400 — preventing requests
+// like `/api/v0/environments/%2e%2e/packages/x/events` from reaching the
+// EnvironmentStore at all. We reuse the shared sanitizer rather than a local
+// regex so the rules stay in one place (see path_safety.ts).
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/events`,
+   async (req, res) => {
+      const env = req.params.environmentName;
+      const pkg = req.params.packageName;
+      try {
+         assertSafePackageName(env);
+         assertSafePackageName(pkg);
+         const environment = await environmentStore.getEnvironment(env, false);
+         await environment.getPackage(pkg, false); // 404 if missing
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+         return;
+      }
+
+      res.set({
+         "content-type": "text/event-stream",
+         "cache-control": "no-cache",
+         connection: "keep-alive",
+         // Disable proxy/CDN buffering so events flush immediately.
+         "x-accel-buffering": "no",
+      });
+      res.flushHeaders();
+
+      const watching = watchModeController.isWatching(env);
+      res.write("event: hello\ndata: connected\n\n");
+      res.write(`event: mode\ndata: ${watching ? "enabled" : "disabled"}\n\n`);
+
+      const key = `${env}/${pkg}`;
+      const send = () => {
+         res.write("event: changed\ndata: changed\n\n");
+      };
+      watchModeController.events.on(key, send);
+      // Keep the connection alive through idle proxies (heartbeat every 25s).
+      const heartbeat = setInterval(() => {
+         res.write(": heartbeat\n\n");
+      }, 25000);
+      const cleanup = () => {
+         clearInterval(heartbeat);
+         watchModeController.events.off(key, send);
+      };
+      req.on("close", cleanup);
+      req.on("aborted", cleanup);
+   },
+);
 
 app.get(`${API_PREFIX}/environments`, async (_req, res) => {
    try {
@@ -1779,6 +1867,45 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
       logger.info(
          "Running in development mode - proxying to React dev server at http://localhost:5173",
       );
+   }
+   // If `--watch-env <name>` (or PUBLISHER_WATCH=name1,name2) was passed,
+   // wait for env initialization to settle, then start watch mode for each
+   // named env. Packages in those envs are already mounted in-place via the
+   // EnvironmentStore in-place path (see `loadEnvironmentIntoDisk`), so the
+   // chokidar watcher will see edits to your source repo and fan them out
+   // to any connected SSE clients.
+   const watchEnvList = (process.env.PUBLISHER_WATCH || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+   if (watchEnvList.length > 0) {
+      // The watcher tracks exactly one env at a time (`WatchModeController`
+      // holds a single chokidar instance). Multi-env watch is a follow-up.
+      // Refuse extra envs up front rather than starting each and silently
+      // tearing all but the last back down — an advertised list that quietly
+      // keeps only the final entry is a footgun.
+      if (watchEnvList.length > 1) {
+         logger.error(
+            `Multiple watch environments requested (${watchEnvList.join(
+               ", ",
+            )}), but watch mode supports only one at a time. Watching "${
+               watchEnvList[0]
+            }" and ignoring the rest. Pass a single --watch-env (or one PUBLISHER_WATCH value) to silence this.`,
+         );
+      }
+      const envName = watchEnvList[0];
+      try {
+         await environmentStore.finishedInitialization;
+         await watchModeController.ensureWatching(envName);
+         logger.info(
+            `Watch mode active for environment "${envName}" (in-place mount, source-edit live reload).`,
+         );
+      } catch (error) {
+         logger.error(
+            `Failed to start watch mode for environment "${envName}"`,
+            { error },
+         );
+      }
    }
 });
 const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {

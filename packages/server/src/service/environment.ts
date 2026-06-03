@@ -137,6 +137,11 @@ export class Environment {
    // governor as the single owner of the back-pressure boolean.
    private memoryGovernor: PackageMemoryGovernor | null = null;
 
+   /** Absolute path on disk where this environment's package files live. */
+   public getEnvironmentPath(): string {
+      return this.environmentPath;
+   }
+
    constructor(
       environmentName: string,
       environmentPath: string,

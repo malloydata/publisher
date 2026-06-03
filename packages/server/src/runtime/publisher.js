@@ -10,8 +10,10 @@
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
 //
 // When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...,
-// the runtime posts size updates to the parent window so Publisher.embed() in
-// the host can resize the iframe.
+// the runtime auto-subscribes to a Server-Sent Events live-reload stream
+// (GET .../events) and reloads the page on file changes. It also posts size
+// updates to the parent window so Publisher.embed() in the host can resize
+// the iframe.
 //
 // The "publisher:resize" postMessage protocol below is the SAME contract the
 // SPA host consumes. Its canonical definition lives in
@@ -190,7 +192,7 @@
    }
 
    // --- When this runtime is itself inside an iframe ---------------------
-   // Post size updates upstream so the host can resize this iframe.
+   // Post size updates upstream + listen for live-reload SSE events.
    function setUpEmbeddedSelfBehaviors() {
       var inIframe = (function () {
          try {
@@ -268,6 +270,36 @@
       }
    }
 
+   // --- SSE live reload --------------------------------------------------
+   function setUpLiveReload() {
+      if (!ctx.environment || !ctx.package) return;
+      if (typeof EventSource === "undefined") return;
+      var url =
+         apiBase +
+         "/environments/" +
+         encodeURIComponent(ctx.environment) +
+         "/packages/" +
+         encodeURIComponent(ctx.package) +
+         "/events";
+      try {
+         var es = new EventSource(url, { withCredentials: true });
+         var pending = false;
+         es.addEventListener("changed", function () {
+            if (pending) return;
+            pending = true;
+            // Tiny debounce to coalesce a flurry of saves
+            setTimeout(function () {
+               location.reload();
+            }, 100);
+         });
+         es.onerror = function () {
+            // Browser will auto-reconnect; nothing to do.
+         };
+      } catch (_e) {
+         // SSE may be blocked (e.g. corp proxy) — non-fatal.
+      }
+   }
+
    // --- Public API --------------------------------------------------------
    window.Publisher = {
       query: query,
@@ -279,6 +311,8 @@
       },
    };
 
-   // Auto-init the in-iframe resize behavior. No-op if not in an iframe.
+   // Auto-init the in-iframe behaviors and live-reload subscription.
+   // Both are no-ops if not applicable.
    setUpEmbeddedSelfBehaviors();
+   setUpLiveReload();
 })();

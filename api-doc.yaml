@@ -2085,6 +2085,60 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/events:
+    get:
+      tags:
+        - watch-mode
+      operationId: stream-package-events
+      summary: Stream package change events (SSE)
+      description: |
+        Opens a Server-Sent Events (SSE) stream of file-change events for the
+        package, used by in-package HTML data apps (via the publisher.js
+        runtime) to live-reload when their sources are edited.
+
+        This is a long-lived `text/event-stream` connection, not a JSON
+        endpoint, and is therefore not surfaced through the generated API
+        clients — consume it with an `EventSource`. The stream emits:
+          - `event: hello` (`data: connected`) once on connect.
+          - `event: mode` (`data: enabled|disabled`) reporting whether watch
+            mode is currently active for the environment. When `disabled`, no
+            `changed` events will follow until watch mode is started.
+          - `event: changed` (`data: changed`) each time a watched file in the
+            package changes.
+          - periodic `: heartbeat` comments to keep idle proxies from closing
+            the connection.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: An open Server-Sent Events stream of change events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE event stream (see endpoint description for event types)
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /connections/test:
     post:
       tags:
