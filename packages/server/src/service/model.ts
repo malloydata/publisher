@@ -216,6 +216,38 @@ export class Model {
    }
 
    /**
+    * Resolve the run target of an ad-hoc query to the model-defined source
+    * whose filters apply, following source-derivation declarations so that a
+    * filter-protected source carries its filter requirements when read under a
+    * derived name. The declared filter belongs to the source, not to the name
+    * it is read under. Returns undefined when the run target does not derive
+    * from a protected source.
+    */
+   private resolveFilterSource(query?: string): string | undefined {
+      const target = this.extractSourceName(query);
+      if (!target || !query) return undefined;
+
+      // Map each ad-hoc source name to the base it derives from
+      // (`source: NAME is BASE ...` → NAME → BASE).
+      const aliasOf = new Map<string, string>();
+      const declRe = /source\s*:\s*(\w+)\s+is\s+(\w+)/g;
+      let match: RegExpExecArray | null;
+      while ((match = declRe.exec(query)) !== null) {
+         aliasOf.set(match[1], match[2]);
+      }
+
+      // Walk the derivation chain until we hit a protected source or run out.
+      let current: string | undefined = target;
+      const seen = new Set<string>();
+      while (current && !seen.has(current)) {
+         if (this.filterMap.has(current)) return current;
+         seen.add(current);
+         current = aliasOf.get(current);
+      }
+      return undefined;
+   }
+
+   /**
     * Compile a single model in-process. Kept as a library entry point
     * for test fixtures and any future caller that needs an ad-hoc
     * `Model` from a `.malloy` / `.malloynb` file. Production package
@@ -598,9 +630,19 @@ export class Model {
             );
          }
 
-         // Inject source filter predicates unless bypassed
+         // Distinguishes free-form query text from the named `source->view`
+         // form. Both are driven by untrusted caller input and compiled in
+         // restricted mode below; this flag only controls how the protected
+         // source is resolved for filter injection.
+         const isAdHocQuery = !sourceName && !queryName && !!query;
+
+         // Inject source filter predicates unless bypassed. For ad-hoc queries
+         // resolve the run target through any alias/extend/chain so a protected
+         // source can't be read unfiltered under a different name.
          if (!bypassFilters) {
-            const effectiveSource = sourceName ?? this.extractSourceName(query);
+            const effectiveSource = isAdHocQuery
+               ? this.resolveFilterSource(query)
+               : sourceName;
             if (effectiveSource) {
                const filters = this.getFilters(effectiveSource);
                if (filters.length > 0) {
@@ -616,7 +658,14 @@ export class Model {
             }
          }
 
-         runnable = this.modelMaterializer.loadQuery(queryString);
+         // Restricted mode keeps untrusted query text inside the model's curated
+         // surface — it rejects `import`, raw `connection.table(...)` /
+         // `connection.sql(...)`, raw-SQL functions, and `##!` flags. The
+         // model's own definitions are unaffected. Both the ad-hoc `query` text
+         // and the `run: source->view` string built from the caller-supplied
+         // `sourceName`/`queryName` pair are untrusted, so both compile here;
+         // only author-curated notebook cells use the unrestricted `loadQuery`.
+         runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
