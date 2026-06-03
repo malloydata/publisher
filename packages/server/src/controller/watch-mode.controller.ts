@@ -92,33 +92,62 @@ export class WatchModeController {
          },
          ignoreInitial: true,
       });
-      const reloadEnvironment = async () => {
-         const environment = await this.environmentStore.getEnvironment(
-            watchName,
-            true,
-         );
-         await this.environmentStore.addEnvironment(environment.metadata);
-         logger.info(`Reloaded environment ${watchName}`);
+      // Reload just the package a changed file belongs to: this recompiles
+      // that package's models from disk (Package.create) and replaces the
+      // cached entry, so the next query sees the edit. Scoped to watch mode by
+      // construction — it only runs from this watcher, which is started only
+      // when watch mode is active.
+      //
+      // The previous env-level reload (getEnvironment(reload) + addEnvironment)
+      // was a no-op for compilation: addEnvironment on an existing env calls
+      // Environment.update(), which refreshes metadata/connections only and
+      // never touches this.packages, so edits never took effect.
+      const reloadPackage = async (pkgName: string) => {
+         try {
+            const environment = await this.environmentStore.getEnvironment(
+               watchName,
+               false,
+            );
+            await environment.getPackage(pkgName, true);
+            logger.info(
+               `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,
+            );
+         } catch (error) {
+            logger.error(
+               `Watch: failed to recompile package "${pkgName}" in environment "${watchName}"`,
+               { error },
+            );
+         }
       };
       const onEvent =
          (kind: "add" | "change" | "unlink") => async (filePath: string) => {
             logger.info(`Watch ${kind}: ${filePath}; environment=${watchName}`);
-            const ext = path.extname(filePath).toLowerCase();
-            // Only reload Malloy state for model-relevant files. Asset edits
-            // (HTML/CSS/JS) just need the live-reload fanout below.
-            if (MODEL_EXTS.has(ext)) {
-               await reloadEnvironment();
-            }
-            // Compute the package key from the path so the SSE endpoint can
-            // fan out only to clients embedded in the affected package.
+            // Resolve which package the file belongs to. Packages are
+            // subdirectories of the environment (env/<pkg>/...), so a file must
+            // be nested at least one level to belong to a package; files at the
+            // environment root belong to no package and are ignored.
             const rel = path.relative(this.watchingPath ?? "", filePath);
-            const firstSegment = rel.split(path.sep)[0];
-            if (firstSegment && !firstSegment.startsWith("..")) {
-               this.events.emit(`${watchName}/${firstSegment}`, {
-                  path: filePath,
-                  kind,
-               });
+            const segments = rel.split(path.sep);
+            const pkgName =
+               segments.length > 1 &&
+               segments[0] &&
+               !segments[0].startsWith("..")
+                  ? segments[0]
+                  : null;
+            if (!pkgName) return;
+
+            // Recompile Malloy state only for model files. Asset edits
+            // (HTML/CSS/JS) skip recompile — they just need the live-reload
+            // fanout below.
+            const ext = path.extname(filePath).toLowerCase();
+            if (MODEL_EXTS.has(ext)) {
+               await reloadPackage(pkgName);
             }
+            // Fan out to SSE clients embedded in the affected package.
+            this.events.emit(`${watchName}/${pkgName}`, {
+               path: filePath,
+               kind,
+            });
          };
       this.watcher.on("add", onEvent("add"));
       this.watcher.on("change", onEvent("change"));
