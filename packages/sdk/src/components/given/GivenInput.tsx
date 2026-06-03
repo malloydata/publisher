@@ -63,17 +63,25 @@ function annotationHelperText(given: Given): string | undefined {
  * adornment appears when the field has a value. DatePicker, Checkbox, and
  * multi-Autocomplete have their own native clear affordances.
  *
- * A given's model default (if any) is surfaced as a ghost placeholder on the
- * text-based widgets and as a `Default: …` helper line on the date picker
- * (which has no usable placeholder). The value itself stays empty, so leaving
- * the field blank still means "use the model default". Boolean givens render
- * as a checkbox with no helper slot, so their default isn't surfaced.
+ * A given's model default (if any) is surfaced as an always-visible
+ * `Default: …` helper line (plus a ghost placeholder on the text widgets — a
+ * bonus that MUI only reveals once the field is focused, since the floating
+ * label sits in the placeholder's spot at rest). The value itself stays empty,
+ * so leaving the field blank still means "use the model default". Boolean
+ * givens render as a checkbox with no helper slot, so their default isn't
+ * surfaced.
  */
 export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const label = given.name ?? "";
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
    const defaultDisplay = renderGivenDefault(type, given.default);
+   // Append the default as an always-visible helper line. The ghost placeholder
+   // on text inputs is hidden behind MUI's floating label until focus, so this
+   // caption is what communicates the default at rest.
+   const helperWithDefault = defaultDisplay
+      ? [helperText, `Default: ${defaultDisplay}`].filter(Boolean).join("\n")
+      : helperText;
 
    if (type === "boolean") {
       const checked = value === true;
@@ -103,7 +111,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                onChange(v === "" ? null : Number(v));
             }}
             placeholder={defaultDisplay}
-            helperText={helperText}
+            helperText={helperWithDefault}
             slotProps={{
                input: {
                   endAdornment: num !== "" && (
@@ -119,11 +127,8 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
 
    if (type === "date" || type === "timestamp" || type === "timestamptz") {
       const dateValue = value instanceof Date ? dayjs.utc(value) : null;
-      // The date picker has no usable placeholder (it shows a format mask), so
-      // surface the default as a helper line instead of a ghost value.
-      const dateHelper = defaultDisplay
-         ? [helperText, `Default: ${defaultDisplay}`].filter(Boolean).join("\n")
-         : helperText;
+      // The date picker shows a format mask, not a placeholder, so the default
+      // rides on the shared helper line.
       return (
          <LocalizationProvider dateAdapter={AdapterDayjs}>
             <DatePicker
@@ -134,7 +139,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                   textField: {
                      fullWidth: true,
                      size: "small",
-                     helperText: dateHelper,
+                     helperText: helperWithDefault,
                   },
                   field: { clearable: true, onClear: () => onChange(null) },
                }}
@@ -160,7 +165,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                   label={label}
                   size="small"
                   placeholder={list.length === 0 ? defaultDisplay : undefined}
-                  helperText={helperText}
+                  helperText={helperWithDefault}
                />
             )}
             fullWidth
@@ -181,7 +186,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
          placeholder={
             defaultDisplay ?? (type.startsWith("filter<") ? type : undefined)
          }
-         helperText={helperText}
+         helperText={helperWithDefault}
          slotProps={{
             input: {
                endAdornment: str !== "" && (
