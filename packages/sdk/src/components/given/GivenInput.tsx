@@ -2,7 +2,9 @@ import ClearIcon from "@mui/icons-material/Clear";
 import {
    Autocomplete,
    Checkbox,
+   FormControl,
    FormControlLabel,
+   FormHelperText,
    IconButton,
    InputAdornment,
    TextField,
@@ -64,12 +66,11 @@ function annotationHelperText(given: Given): string | undefined {
  * multi-Autocomplete have their own native clear affordances.
  *
  * A given's model default (if any) is surfaced as an always-visible
- * `Default: …` helper line (plus a ghost placeholder on the text widgets — a
- * bonus that MUI only reveals once the field is focused, since the floating
- * label sits in the placeholder's spot at rest). The value itself stays empty,
- * so leaving the field blank still means "use the model default". Boolean
- * givens render as a checkbox with no helper slot, so their default isn't
- * surfaced.
+ * `Default: …` helper line on every widget — including the boolean checkbox,
+ * which gets a wrapping FormControl for the slot — plus a ghost placeholder on
+ * the text widgets (a bonus MUI only reveals on focus, since the floating label
+ * sits in the placeholder's spot at rest). The value itself stays empty, so
+ * leaving the field blank still means "use the model default".
  */
 export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const label = given.name ?? "";
@@ -78,24 +79,44 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const defaultDisplay = renderGivenDefault(type, given.default);
    // Append the default as an always-visible helper line. The ghost placeholder
    // on text inputs is hidden behind MUI's floating label until focus, so this
-   // caption is what communicates the default at rest.
-   const helperWithDefault = defaultDisplay
-      ? [helperText, `Default: ${defaultDisplay}`].filter(Boolean).join("\n")
-      : helperText;
+   // caption is what communicates the default at rest. Test `=== undefined`,
+   // not truthiness: an explicit empty-string default (`is ''`) renders as ""
+   // and must still show (as `(empty)`), not be mistaken for "no default".
+   const helperWithDefault =
+      defaultDisplay !== undefined
+         ? [
+              helperText,
+              `Default: ${defaultDisplay === "" ? "(empty)" : defaultDisplay}`,
+           ]
+              .filter(Boolean)
+              .join("\n")
+         : helperText;
 
    if (type === "boolean") {
       const checked = value === true;
-      // Checkbox wrapped in FormControlLabel — no helperText slot available.
+      // A checkbox has no helperText slot of its own and no "unset" visual, so
+      // wrap it in a FormControl to carry the annotation + `Default: …` line.
+      // This matters most for a `boolean is true` given: the box reads unchecked
+      // when untouched, but the query runs with the default, so the caption is
+      // what tells the user that. (The deeper "no unset state" checkbox quirk is
+      // a pre-existing givens limitation, not specific to defaults.)
       return (
-         <FormControlLabel
-            control={
-               <Checkbox
-                  checked={checked}
-                  onChange={(e) => onChange(e.target.checked)}
-               />
-            }
-            label={label}
-         />
+         <FormControl>
+            <FormControlLabel
+               control={
+                  <Checkbox
+                     checked={checked}
+                     onChange={(e) => onChange(e.target.checked)}
+                  />
+               }
+               label={label}
+            />
+            {helperWithDefault && (
+               <FormHelperText sx={{ whiteSpace: "pre-line" }}>
+                  {helperWithDefault}
+               </FormHelperText>
+            )}
+         </FormControl>
       );
    }
 

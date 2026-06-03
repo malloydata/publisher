@@ -32,6 +32,12 @@ describe("renderGivenDefault", () => {
       expect(renderGivenDefault("string", "   ")).toBeUndefined();
    });
 
+   it("distinguishes an explicit empty-string default from no default", () => {
+      // `given: x :: string is ''` -> literal "''" -> "" (present, not undefined),
+      // so the caller can show it as "(empty)" rather than suppress it.
+      expect(renderGivenDefault("string", "''")).toBe("");
+   });
+
    it("leaves a non-quoted value untouched", () => {
       // Defensive: a malformed/already-rendered default isn't mangled.
       expect(renderGivenDefault("string", "WN")).toBe("WN");
