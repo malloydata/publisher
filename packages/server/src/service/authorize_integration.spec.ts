@@ -1,15 +1,14 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { Connection } from "@malloydata/malloy";
+import { Connection, GivenValue } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { AccessDeniedError } from "../errors";
 import { Model } from "./model";
 
-// Introspection-level tests for #(authorize) / ##(authorize) collection (PR1).
-// Runtime enforcement is added in a later PR; here we only assert that the
-// effective expression lists are collected correctly and surfaced via
-// getAuthorize() / Source.authorize.
+// Introspection (PR1), compile-time validation (PR2), and the runtime gate
+// (PR3) for #(authorize) / ##(authorize).
 
 const TEST_DIR = path.join(os.tmpdir(), "authorize-integration-tests");
 const TEST_DB_DIR = path.join(TEST_DIR, "db");
@@ -340,5 +339,422 @@ source: gated is duckdb.table('customers')
          "$AGE > 18",
          "$TENANT in $ALLOWED",
       ]);
+   });
+});
+
+describe("authorize runtime gate", () => {
+   // Helper: run an ad-hoc query through the full getQueryResults path (which
+   // is where the gate fires). Returns the result or throws AccessDeniedError.
+   async function runGated(
+      modelFile: string,
+      query: string,
+      givens?: Record<string, GivenValue>,
+      bypassFilters?: boolean,
+   ) {
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         modelFile,
+         getConnections(),
+      );
+      return model.getQueryResults(
+         undefined,
+         undefined,
+         query,
+         undefined,
+         bypassFilters,
+         givens,
+      );
+   }
+
+   const SINGLE_GATE = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   it("allows the query when a given satisfies the gate", async () => {
+      await writeModel("rt_single.malloy", SINGLE_GATE);
+      const { result } = await runGated(
+         "rt_single.malloy",
+         "run: gated -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("denies (403) when no given satisfies the gate", async () => {
+      await writeModel("rt_single.malloy", SINGLE_GATE);
+      await expect(
+         runGated("rt_single.malloy", "run: gated -> { aggregate: c }", {
+            ROLE: "intern",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("denies when the referenced given has no value (fail closed)", async () => {
+      await writeModel("rt_single.malloy", SINGLE_GATE);
+      await expect(
+         runGated("rt_single.malloy", "run: gated -> { aggregate: c }", {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("still enforces the gate when bypassFilters is true (authorize is not a filter)", async () => {
+      await writeModel("rt_single.malloy", SINGLE_GATE);
+      await expect(
+         runGated(
+            "rt_single.malloy",
+            "run: gated -> { aggregate: c }",
+            { ROLE: "intern" },
+            true,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   const DISJUNCTION = `##! experimental.givens
+
+given:
+  ROLE :: string
+  REGION :: string
+
+##(authorize) "$ROLE = 'admin'"
+
+#(authorize) "$REGION = 'us-west'"
+source: regional is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   it("grants on the file-level gate even when the OTHER disjunct's given is missing", async () => {
+      // The key OR-semantics case: admin supplies only ROLE; REGION is absent.
+      // A disjunct that can't evaluate (missing given) must not sink the whole
+      // request — the satisfied $ROLE='admin' branch still grants.
+      await writeModel("rt_disj.malloy", DISJUNCTION);
+      const { result } = await runGated(
+         "rt_disj.malloy",
+         "run: regional -> { aggregate: c }",
+         { ROLE: "admin" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("grants on the source-level gate even when the file-level disjunct's given is missing", async () => {
+      await writeModel("rt_disj.malloy", DISJUNCTION);
+      const { result } = await runGated(
+         "rt_disj.malloy",
+         "run: regional -> { aggregate: c }",
+         { REGION: "us-west" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("denies when neither disjunct is satisfied", async () => {
+      await writeModel("rt_disj.malloy", DISJUNCTION);
+      await expect(
+         runGated("rt_disj.malloy", "run: regional -> { aggregate: c }", {
+            ROLE: "nobody",
+            REGION: "nowhere",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("gates a named query that targets a gated source (no sourceName supplied)", async () => {
+      await writeModel(
+         "rt_namedq.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+
+query: secret is gated -> { aggregate: c }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "rt_namedq.malloy",
+         getConnections(),
+      );
+      // Named query, no sourceName — must still resolve to `gated` and gate it.
+      await expect(
+         model.getQueryResults(
+            undefined,
+            "secret",
+            undefined,
+            undefined,
+            false,
+            {
+               ROLE: "intern",
+            },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // And it runs when the gate passes.
+      const { result } = await model.getQueryResults(
+         undefined,
+         "secret",
+         undefined,
+         undefined,
+         false,
+         { ROLE: "analyst" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("gates an ad-hoc query even when a blank sourceName is supplied", async () => {
+      await writeModel("rt_single.malloy", SINGLE_GATE);
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "rt_single.malloy",
+         getConnections(),
+      );
+      // Blank sourceName must not skip the gate while the query-builder treats
+      // it as absent and runs the ad-hoc query.
+      await expect(
+         model.getQueryResults(
+            "",
+            undefined,
+            "run: gated -> { aggregate: c }",
+            undefined,
+            false,
+            { ROLE: "intern" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("gates the source the query actually RUNS, not a decoy leading statement", async () => {
+      // Malloy runs the LAST `run:`. A multi-statement ad-hoc query that names
+      // an ungated source first and the gated source last must be gated on the
+      // gated source (the one that executes), not fooled by the leading one.
+      await writeModel(
+         "rt_multi.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+source: ungated is duckdb.table('customers') extend { measure: c is count() }
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      await expect(
+         runGated(
+            "rt_multi.malloy",
+            "run: ungated -> { aggregate: c }\nrun: gated -> { aggregate: c }",
+            { ROLE: "intern" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("leaves a source with no authorize annotations unrestricted", async () => {
+      await writeModel(
+         "rt_open.malloy",
+         `source: open_src is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const { result } = await runGated(
+         "rt_open.malloy",
+         "run: open_src -> { aggregate: c }",
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   const FILE_LEVEL = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(authorize) "$ROLE = 'admin'"
+
+source: declared is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   it("applies a file-level gate to an ad-hoc query (no gate bypass)", async () => {
+      await writeModel("rt_filelevel.malloy", FILE_LEVEL);
+      // The model-wide file-level gate must apply to any ad-hoc query against
+      // the model, denying a non-admin with a 403.
+      await expect(
+         runGated("rt_filelevel.malloy", "run: declared -> { aggregate: c }", {
+            ROLE: "user",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // An admin (file-level gate satisfied) can run it.
+      const { result } = await runGated(
+         "rt_filelevel.malloy",
+         "run: declared -> { aggregate: c }",
+         { ROLE: "admin" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("rejects an ad-hoc inline-SQL query (restricted mode closes the raw-warehouse path)", async () => {
+      // Pre-#807 the file-level #(authorize) gate was the only thing between a
+      // caller and raw `duckdb.sql(...)`. #807's restricted mode now rejects
+      // inline raw SQL outright while resolving the compiled source — before the
+      // gate is reached — so the raw-warehouse path is closed at the compile
+      // layer regardless of givens (even for an admin who satisfies the gate).
+      await writeModel("rt_filelevel.malloy", FILE_LEVEL);
+      await expect(
+         runGated(
+            "rt_filelevel.malloy",
+            `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
+            { ROLE: "admin" },
+         ),
+      ).rejects.toThrow(/raw SQL is not permitted/);
+   });
+
+   const MIXED_SOURCE_GATE = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+
+source: open_src is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   it("does not over-gate: a source-level gate is not model-wide", async () => {
+      // Control: a per-source gate applies only to that source, not the whole
+      // model. An ad-hoc query against an ungated declared source in the same
+      // model runs without any given.
+      await writeModel("rt_mixed.malloy", MIXED_SOURCE_GATE);
+      const { result } = await runGated(
+         "rt_mixed.malloy",
+         "run: open_src -> { aggregate: c }",
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("gates a quoted-identifier source BEFORE compilation (no schema oracle)", async () => {
+      // A gated source whose Malloy name must be quoted (here, a hyphen) must be
+      // recognized by the early gate too. Otherwise a denied caller could probe
+      // a non-existent field and learn the schema from a pre-compilation Malloy
+      // field error instead of a clean 403.
+      await writeModel(
+         "rt_quoted.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: \`gated-source\` is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`,
+      );
+      // Probing a field that doesn't exist must deny (403) before compilation,
+      // not surface a Malloy "field not found" error.
+      await expect(
+         runGated(
+            "rt_quoted.malloy",
+            "run: `gated-source` -> { group_by: no_such_field }",
+            { ROLE: "viewer" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("gates a notebook cell that runs a NAMED QUERY targeting a gated source", async () => {
+      // `run: secret` has no `->`, so source resolution must come from the
+      // compiled query, not a text regex — otherwise the gate is bypassed.
+      await writeModel(
+         "rt_nb.malloynb",
+         `>>>malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+query: secret is gated -> { aggregate: c }
+
+>>>malloy
+run: secret
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "rt_nb.malloynb",
+         getConnections(),
+      );
+      // Cell 1 is `run: secret` — must be denied without the gate-passing given.
+      await expect(
+         model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // ...and allowed when the gate passes.
+      const ok = await model.executeNotebookCell(1, undefined, false, {
+         ROLE: "analyst",
+      });
+      expect(ok.result).toBeDefined();
+   });
+
+   const LOCKED_BASE = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "false"
+source: base_locked is duckdb.table('customers') extend { measure: c is count() }
+
+#(authorize) "$ROLE = 'analyst'"
+source: ext_gated is base_locked extend {}
+
+source: ext_nogate is base_locked extend {}
+
+source: joiner is duckdb.table('customers') extend {
+  join_one: base_locked on id = base_locked.id
+  measure: c is count()
+}
+`;
+
+   it('denies a direct query against a base locked with #(authorize) "false"', async () => {
+      await writeModel("rt_locked.malloy", LOCKED_BASE);
+      await expect(
+         runGated("rt_locked.malloy", "run: base_locked -> { aggregate: c }", {
+            ROLE: "analyst",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("allows an extension of a locked base when the extension's own gate passes", async () => {
+      await writeModel("rt_locked.malloy", LOCKED_BASE);
+      const { result } = await runGated(
+         "rt_locked.malloy",
+         "run: ext_gated -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("denies an extension that declares no own gate — it inherits the base lock (safe default)", async () => {
+      // Malloy carries the base's #(authorize) onto an extension UNLESS the
+      // extension declares its own. So a bare `is base_locked extend {}` with
+      // no own gate stays locked by the base's "false". An extension escapes
+      // the base gate only by declaring its own #(authorize) (see ext_gated).
+      await writeModel("rt_locked.malloy", LOCKED_BASE);
+      await expect(
+         runGated("rt_locked.malloy", "run: ext_nogate -> { aggregate: c }", {
+            ROLE: "analyst",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("[documented limitation] a query joining a locked base via an ungated source is allowed (top-level-source only)", async () => {
+      await writeModel("rt_locked.malloy", LOCKED_BASE);
+      const { result } = await runGated(
+         "rt_locked.malloy",
+         "run: joiner -> { aggregate: c }",
+         {},
+      );
+      expect(result.data).toBeDefined();
    });
 });
