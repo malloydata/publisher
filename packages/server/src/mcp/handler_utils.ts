@@ -7,6 +7,7 @@ import {
    ModelNotFoundError,
    ModelCompilationError,
    EnvironmentNotFoundError,
+   ServiceUnavailableError,
 } from "../errors";
 import {
    getNotFoundError,
@@ -132,6 +133,9 @@ export async function getModelForQuery(
          environmentName,
          false,
       );
+      // Shed load before any disk / DB work; mirrors the HTTP query
+      // controllers so MCP traffic obeys the same back-pressure rules.
+      environment.assertCanAdmitQuery();
       const pkg = await environment.getPackage(packageName, false);
       const model = pkg.getModel(modelPath);
       if (!model || model.getModelType() === "notebook") {
@@ -163,6 +167,16 @@ export async function getModelForQuery(
             `${environmentName}/${packageName}/${modelPath}`,
             error,
          );
+      } else if (error instanceof ServiceUnavailableError) {
+         // Back-pressure: don't dress this up as a 404/500. Surface the
+         // server's own message so the MCP caller knows to retry.
+         errorDetails = {
+            message: error.message,
+            suggestions: [
+               "Retry after the publisher's memory usage drops below the configured low-water mark.",
+               "If this happens repeatedly, raise PUBLISHER_MAX_MEMORY_BYTES or scale up the pod.",
+            ],
+         } satisfies ErrorDetails;
       } else {
          // Unexpected error during setup
          errorDetails = getInternalError("executeQuery (Setup)", error);

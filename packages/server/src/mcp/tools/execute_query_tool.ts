@@ -1,7 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { GivenValue } from "@malloydata/malloy";
+import { getQueryTimeoutMs } from "../../config";
 import { logger } from "../../logger";
+import {
+   tryAcquireQuerySlot,
+   type QuerySlotHandle,
+} from "../../query_concurrency";
+import { runWithQueryTimeout } from "../../query_timeout";
 import { EnvironmentStore } from "../../service/environment_store";
 import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, getModelForQuery } from "../handler_utils";
@@ -30,6 +37,12 @@ const executeQueryShape = {
       .describe(
          "Filter parameter values keyed by filter name. Used with sources that declare #(filter) annotations.",
       ),
+   givens: z
+      .record(z.unknown())
+      .optional()
+      .describe(
+         "Per-query given values that override model defaults. Keys are given names declared in the model's given: block.",
+      ),
 };
 
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
@@ -56,6 +69,7 @@ export function registerExecuteQueryTool(
             sourceName,
             queryName,
             filterParams,
+            givens,
          } = params;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
@@ -120,14 +134,30 @@ export function registerExecuteQueryTool(
          logger.info(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
          );
+         // Per-pod concurrency slot. MCP shares the same slot pool
+         // as the HTTP query routes so a hot agent loop can't
+         // bypass PUBLISHER_MAX_CONCURRENT_QUERIES. `mcp:executeQuery`
+         // is a fixed label so the dashboard can separate MCP load
+         // from HTTP route load. Acquisition can throw
+         // ServiceUnavailableError; the existing catch below surfaces
+         // it as the standard MCP error-content payload.
+         let querySlot: QuerySlotHandle | null = null;
          try {
+            querySlot = tryAcquireQuerySlot("mcp:executeQuery");
             // If ad-hoc query is provided, use it directly in the 3rd arg
             if (query) {
-               const { result } = await model.getQueryResults(
-                  undefined,
-                  undefined,
-                  query,
-                  filterParams,
+               const { result } = await runWithQueryTimeout(
+                  (abortSignal) =>
+                     model.getQueryResults(
+                        undefined,
+                        undefined,
+                        query,
+                        filterParams,
+                        undefined,
+                        givens as Record<string, GivenValue> | undefined,
+                        abortSignal,
+                     ),
+                  getQueryTimeoutMs(),
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"
@@ -169,11 +199,18 @@ export function registerExecuteQueryTool(
 
                return { isError: false, content };
             } else if (queryName) {
-               const { result } = await model.getQueryResults(
-                  sourceName,
-                  queryName,
-                  undefined,
-                  filterParams,
+               const { result } = await runWithQueryTimeout(
+                  (abortSignal) =>
+                     model.getQueryResults(
+                        sourceName,
+                        queryName,
+                        undefined,
+                        filterParams,
+                        undefined,
+                        givens as Record<string, GivenValue> | undefined,
+                        abortSignal,
+                     ),
+                  getQueryTimeoutMs(),
                );
                const { validateRenderTags } = await import(
                   "@malloydata/render-validator"
@@ -259,6 +296,11 @@ export function registerExecuteQueryTool(
                   },
                ],
             };
+         } finally {
+            // Release on every exit path — success, error, or
+            // unreachable code-path throw. `release()` is idempotent
+            // so a double-fault during cleanup can't double-decrement.
+            querySlot?.release();
          }
       },
    );

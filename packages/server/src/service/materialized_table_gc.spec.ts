@@ -174,7 +174,7 @@ describe("dropManifestEntries", () => {
       );
    });
 
-   it("skips DROP and records an error when the dialect is unknown", async () => {
+   it("drops regardless of connection dialect — DDL uses table names verbatim", async () => {
       const ctx2 = makeCtx("martian-sql");
       const entry = makeEntry();
 
@@ -184,10 +184,11 @@ describe("dropManifestEntries", () => {
          environmentId: "proj-1",
       });
 
-      expect(result.dropped).toHaveLength(0);
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].error).toMatch(/martian-sql/);
-      expect(ctx2.conn.runSQL.called).toBe(false);
+      // GC no longer needs a per-dialect quoter: table names are used
+      // verbatim, so an unrecognized dialect is no longer a special case.
+      expect(result.dropped).toHaveLength(1);
+      expect(result.errors).toHaveLength(0);
+      expect(ctx2.conn.runSQL.callCount).toBe(2);
    });
 
    it("dryRun lists what would drop without issuing SQL or deleting rows", async () => {

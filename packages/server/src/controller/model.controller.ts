@@ -1,7 +1,10 @@
 import { components } from "../api";
+import { getQueryTimeoutMs } from "../config";
 import { ModelNotFoundError } from "../errors";
+import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
+import type { GivenValue } from "@malloydata/malloy";
 
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
@@ -97,6 +100,7 @@ export class ModelController {
       cellIndex: number,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -108,6 +112,10 @@ export class ModelController {
          environmentName,
          false,
       );
+      // Shed load before any disk / DB work; same rationale as
+      // QueryController.getQuery — already-loaded packages bypass the
+      // package-load admission gate.
+      environment.assertCanAdmitQuery();
       const p = await environment.getPackage(packageName, false);
       const model = p.getModel(notebookPath);
       if (!model) {
@@ -117,6 +125,16 @@ export class ModelController {
          throw new ModelNotFoundError(`${notebookPath} is a model`);
       }
 
-      return model.executeNotebookCell(cellIndex, filterParams, bypassFilters);
+      return runWithQueryTimeout(
+         (abortSignal) =>
+            model.executeNotebookCell(
+               cellIndex,
+               filterParams,
+               bypassFilters,
+               givens,
+               abortSignal,
+            ),
+         getQueryTimeoutMs(),
+      );
    }
 }

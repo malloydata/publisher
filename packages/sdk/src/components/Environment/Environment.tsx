@@ -4,6 +4,7 @@ import { parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
 import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
+import Connections from "./Connections";
 import Packages from "./Packages";
 
 interface EnvironmentProps {
@@ -36,8 +37,8 @@ export default function Environment({
                {environmentName}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-               Manage packages in this environment. Open a package to explore
-               its models, notebooks, and connections.
+               Manage packages and database connections in this environment.
+               Open a package to explore its models and notebooks.
             </Typography>
          </Box>
 
@@ -65,6 +66,10 @@ export default function Environment({
                onSelectPackage={onSelectPackage}
                resourceUri={resourceUri}
             />
+         </Box>
+
+         <Box sx={{ mb: 5 }}>
+            <Connections resourceUri={resourceUri} />
          </Box>
 
          <About resourceUri={resourceUri} />

@@ -12,7 +12,7 @@ mock.module("@google-cloud/bigquery", () => ({
 }));
 
 import { Connection } from "@malloydata/malloy";
-import { normalizeQueryArray } from "../server";
+import { normalizeQueryArray } from "../query_param_utils";
 import {
    extractErrorDataFromError,
    getSchemasForConnection,

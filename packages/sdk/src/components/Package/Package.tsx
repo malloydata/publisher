@@ -27,9 +27,6 @@ import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon from "./ContentTypeIcon";
-// TODO(redesign-followup): port the Connections section into the redesigned
-// flat-row aesthetic (currently rendered with its original card/table styling).
-import Connections from "./Connections";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -213,9 +210,19 @@ export default function Package({
                   {databases.length === 0 && <EmptyRow label="No data files" />}
                </PackageSection>
 
-               <Box sx={{ mb: 4 }}>
-                  <Connections resourceUri={resourceUri} />
-               </Box>
+               <PackageSection title="Materializations">
+                  <PackageItemRow
+                     icon={<ContentTypeIcon type="materialization" />}
+                     tint={MALLOY_BRAND.teal}
+                     label="Materializations & Manifest"
+                     onClick={(event) =>
+                        onClick(
+                           `/${environmentName}/${packageName}/materializations`,
+                           event,
+                        )
+                     }
+                  />
+               </PackageSection>
 
                {hasReadme && (
                   <Box sx={{ mt: 6 }}>
@@ -277,7 +284,7 @@ function PackageSection({
    children,
 }: {
    title: string;
-   count: number;
+   count?: number;
    children: React.ReactNode;
 }) {
    return (
@@ -294,9 +301,11 @@ function PackageSection({
             >
                {title}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-               ({count})
-            </Typography>
+            {count !== undefined && (
+               <Typography variant="caption" color="text.secondary">
+                  ({count})
+               </Typography>
+            )}
          </Stack>
          <Box>{children}</Box>
       </Box>

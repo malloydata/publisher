@@ -5,7 +5,15 @@ fs.rmSync("./dist", { recursive: true, force: true });
 fs.mkdirSync("./dist");
 
 await build({
-   entrypoints: ["./src/server.ts", "./src/instrumentation.ts"],
+   // package_load_worker.ts is bundled as a SEPARATE entrypoint so it
+   // can be loaded by `new Worker(...)` at runtime. It must NOT be
+   // inlined into server.mjs (workers can't share module state with
+   // the parent process — they get their own JS realm).
+   entrypoints: [
+      "./src/server.ts",
+      "./src/instrumentation.ts",
+      "./src/package_load/package_load_worker.ts",
+   ],
    outdir: "./dist",
    target: "node",
    format: "esm",
@@ -48,6 +56,27 @@ fs.copyFileSync(
 // Rename ESM outputs to .mjs so both Node and Bun can execute them
 fs.renameSync("./dist/server.js", "./dist/server.mjs");
 fs.renameSync("./dist/instrumentation.js", "./dist/instrumentation.mjs");
+// Bun emits package_load_worker into its source-relative subdir;
+// flatten so package_load_pool.ts's `resolveWorkerScript()` finds it
+// as a sibling of server.mjs. The path layout match is intentional —
+// keep these two in sync or the worker pool throws at boot (the
+// in-process fallback was removed; missing worker = no service).
+if (fs.existsSync("./dist/package_load/package_load_worker.js")) {
+   fs.renameSync(
+      "./dist/package_load/package_load_worker.js",
+      "./dist/package_load_worker.mjs",
+   );
+   try {
+      fs.rmdirSync("./dist/package_load");
+   } catch {
+      /* directory may be non-empty if Bun produced sourcemaps; leave it */
+   }
+} else if (fs.existsSync("./dist/package_load_worker.js")) {
+   fs.renameSync(
+      "./dist/package_load_worker.js",
+      "./dist/package_load_worker.mjs",
+   );
+}
 
 // Add shebang to server.mjs for npx/bunx compatibility
 const serverJsPath = "./dist/server.mjs";

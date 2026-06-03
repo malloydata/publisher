@@ -1081,3 +1081,330 @@ describe("Config path resolution (--config and bundled default)", () => {
       expect(result.environments).toEqual([]);
    });
 });
+
+describe("getMemoryGovernorConfig", () => {
+   const GOVERNOR_ENV_VARS = [
+      "PUBLISHER_MAX_MEMORY_BYTES",
+      "PUBLISHER_MEMORY_HIGH_WATER_FRACTION",
+      "PUBLISHER_MEMORY_LOW_WATER_FRACTION",
+      "PUBLISHER_MEMORY_CHECK_INTERVAL_MS",
+      "PUBLISHER_MEMORY_BACKPRESSURE",
+   ];
+
+   beforeEach(() => {
+      for (const v of GOVERNOR_ENV_VARS) delete process.env[v];
+   });
+   afterEach(() => {
+      for (const v of GOVERNOR_ENV_VARS) delete process.env[v];
+   });
+
+   it("returns null when PUBLISHER_MAX_MEMORY_BYTES is unset", async () => {
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(getMemoryGovernorConfig()).toBeNull();
+   });
+
+   it("parses defaults when only PUBLISHER_MAX_MEMORY_BYTES is set", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = String(2 * 1024 * 1024 * 1024);
+      const { getMemoryGovernorConfig } = await import("./config");
+      const cfg = getMemoryGovernorConfig();
+      expect(cfg).not.toBeNull();
+      expect(cfg!.maxMemoryBytes).toBe(2 * 1024 * 1024 * 1024);
+      expect(cfg!.backpressureEnabled).toBe(true);
+      expect(cfg!.highWaterFraction).toBeGreaterThan(cfg!.lowWaterFraction);
+   });
+
+   it("honours fraction and interval overrides", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "0.85";
+      process.env.PUBLISHER_MEMORY_LOW_WATER_FRACTION = "0.7";
+      process.env.PUBLISHER_MEMORY_CHECK_INTERVAL_MS = "10000";
+      process.env.PUBLISHER_MEMORY_BACKPRESSURE = "false";
+      const { getMemoryGovernorConfig } = await import("./config");
+      const cfg = getMemoryGovernorConfig();
+      expect(cfg).not.toBeNull();
+      expect(cfg!.highWaterFraction).toBe(0.85);
+      expect(cfg!.lowWaterFraction).toBe(0.7);
+      expect(cfg!.checkIntervalMs).toBe(10000);
+      expect(cfg!.backpressureEnabled).toBe(false);
+   });
+
+   it("treats PUBLISHER_MAX_MEMORY_BYTES=0 as disabled (returns null)", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "0";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(getMemoryGovernorConfig()).toBeNull();
+   });
+
+   it("rejects a negative PUBLISHER_MAX_MEMORY_BYTES", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "-1";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+
+   it("rejects low >= high", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "0.7";
+      process.env.PUBLISHER_MEMORY_LOW_WATER_FRACTION = "0.8";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+
+   it("rejects an out-of-range fraction", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_HIGH_WATER_FRACTION = "1.5";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+
+   it("rejects a check interval below the safety floor", async () => {
+      process.env.PUBLISHER_MAX_MEMORY_BYTES = "1000000000";
+      process.env.PUBLISHER_MEMORY_CHECK_INTERVAL_MS = "10";
+      const { getMemoryGovernorConfig } = await import("./config");
+      expect(() => getMemoryGovernorConfig()).toThrow();
+   });
+});
+
+describe("getMaxQueryRows", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
+   });
+
+   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is unset", async () => {
+      const { getMaxQueryRows } = await import("./config");
+      const { DEFAULT_MAX_QUERY_ROWS } = await import("./constants");
+      expect(getMaxQueryRows()).toBe(DEFAULT_MAX_QUERY_ROWS);
+   });
+
+   it("returns DEFAULT_MAX_QUERY_ROWS when the env var is empty", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "";
+      const { getMaxQueryRows } = await import("./config");
+      const { DEFAULT_MAX_QUERY_ROWS } = await import("./constants");
+      expect(getMaxQueryRows()).toBe(DEFAULT_MAX_QUERY_ROWS);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "5000";
+      const { getMaxQueryRows } = await import("./config");
+      expect(getMaxQueryRows()).toBe(5000);
+   });
+
+   it("accepts 0 (used to opt out of row cap)", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      const { getMaxQueryRows } = await import("./config");
+      expect(getMaxQueryRows()).toBe(0);
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "-1";
+      const { getMaxQueryRows } = await import("./config");
+      expect(() => getMaxQueryRows()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "1.5";
+      const { getMaxQueryRows } = await import("./config");
+      expect(() => getMaxQueryRows()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_MAX_QUERY_ROWS = "lots";
+      const { getMaxQueryRows } = await import("./config");
+      expect(() => getMaxQueryRows()).toThrow();
+   });
+});
+
+describe("getMaxResponseBytes", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
+   });
+
+   it("returns DEFAULT_MAX_RESPONSE_BYTES when the env var is unset", async () => {
+      const { getMaxResponseBytes } = await import("./config");
+      const { DEFAULT_MAX_RESPONSE_BYTES } = await import("./constants");
+      expect(getMaxResponseBytes()).toBe(DEFAULT_MAX_RESPONSE_BYTES);
+   });
+
+   it("returns DEFAULT_MAX_RESPONSE_BYTES when the env var is empty", async () => {
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "";
+      const { getMaxResponseBytes } = await import("./config");
+      const { DEFAULT_MAX_RESPONSE_BYTES } = await import("./constants");
+      expect(getMaxResponseBytes()).toBe(DEFAULT_MAX_RESPONSE_BYTES);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "1048576";
+      const { getMaxResponseBytes } = await import("./config");
+      expect(getMaxResponseBytes()).toBe(1048576);
+   });
+
+   it("accepts 0 (used to opt out of byte cap)", async () => {
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+      const { getMaxResponseBytes } = await import("./config");
+      expect(getMaxResponseBytes()).toBe(0);
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "-1";
+      const { getMaxResponseBytes } = await import("./config");
+      expect(() => getMaxResponseBytes()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "1.5";
+      const { getMaxResponseBytes } = await import("./config");
+      expect(() => getMaxResponseBytes()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "big";
+      const { getMaxResponseBytes } = await import("./config");
+      expect(() => getMaxResponseBytes()).toThrow();
+   });
+});
+
+describe("getDefaultQueryRowLimit", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
+   });
+
+   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is unset", async () => {
+      const { getDefaultQueryRowLimit } = await import("./config");
+      const { DEFAULT_QUERY_ROW_LIMIT } = await import("./constants");
+      expect(getDefaultQueryRowLimit()).toBe(DEFAULT_QUERY_ROW_LIMIT);
+   });
+
+   it("returns DEFAULT_QUERY_ROW_LIMIT when the env var is empty", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      const { DEFAULT_QUERY_ROW_LIMIT } = await import("./constants");
+      expect(getDefaultQueryRowLimit()).toBe(DEFAULT_QUERY_ROW_LIMIT);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "250";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(getDefaultQueryRowLimit()).toBe(250);
+   });
+
+   it("rejects 0 (a default of 'zero rows' is always a misconfiguration)", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "0";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "-1";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "1.5";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "lots";
+      const { getDefaultQueryRowLimit } = await import("./config");
+      expect(() => getDefaultQueryRowLimit()).toThrow();
+   });
+});
+
+describe("getQueryTimeoutMs", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_QUERY_TIMEOUT_MS;
+   });
+
+   it("returns DEFAULT_QUERY_TIMEOUT_MS when the env var is unset", async () => {
+      const { getQueryTimeoutMs } = await import("./config");
+      const { DEFAULT_QUERY_TIMEOUT_MS } = await import("./constants");
+      expect(getQueryTimeoutMs()).toBe(DEFAULT_QUERY_TIMEOUT_MS);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "30000";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(getQueryTimeoutMs()).toBe(30000);
+   });
+
+   it("accepts 0 (used to opt out of the timeout)", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "0";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(getQueryTimeoutMs()).toBe(0);
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "-1";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(() => getQueryTimeoutMs()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "1.5";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(() => getQueryTimeoutMs()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "slow";
+      const { getQueryTimeoutMs } = await import("./config");
+      expect(() => getQueryTimeoutMs()).toThrow();
+   });
+});
+
+describe("getMaxConcurrentQueries", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_MAX_CONCURRENT_QUERIES;
+   });
+
+   it("returns DEFAULT_MAX_CONCURRENT_QUERIES when the env var is unset", async () => {
+      const { getMaxConcurrentQueries } = await import("./config");
+      const { DEFAULT_MAX_CONCURRENT_QUERIES } = await import("./constants");
+      expect(getMaxConcurrentQueries()).toBe(DEFAULT_MAX_CONCURRENT_QUERIES);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "8";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(getMaxConcurrentQueries()).toBe(8);
+   });
+
+   it("accepts 0 (used to opt out of the cap)", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "0";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(getMaxConcurrentQueries()).toBe(0);
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "-1";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(() => getMaxConcurrentQueries()).toThrow();
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1.5";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(() => getMaxConcurrentQueries()).toThrow();
+   });
+
+   it("rejects a non-numeric override", async () => {
+      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "many";
+      const { getMaxConcurrentQueries } = await import("./config");
+      expect(() => getMaxConcurrentQueries()).toThrow();
+   });
+});

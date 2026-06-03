@@ -22,10 +22,14 @@ import {
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
-import path from "path";
 import { components } from "../api";
 import { logAxiosError, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
+import {
+   assertSafeEnvironmentPath,
+   assertSafePackageName,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import {
    assembleEnvironmentConnections,
    CoreConnectionEntry,
@@ -91,7 +95,9 @@ async function isDatabaseAttached(
          ? existingDatabases
          : existingDatabases.rows || [];
 
-      logger.debug(`Existing databases:`, rows);
+      logger.debug("connection.duckdb.databases.queried", {
+         count: rows.length,
+      });
 
       return rows.some((row: Record<string, unknown>) =>
          Object.values(row).some(
@@ -814,7 +820,9 @@ export async function deleteDuckLakeConnectionFile(
    connectionName: string,
    environmentPath: string,
 ): Promise<void> {
-   const ducklakePath = path.join(
+   assertSafePackageName(connectionName);
+   assertSafeEnvironmentPath(environmentPath);
+   const ducklakePath = safeJoinUnderRoot(
       environmentPath,
       `${connectionName}_ducklake.duckdb`,
    );
@@ -1076,7 +1084,7 @@ export function buildEnvironmentMalloyConfig(
             ...azureDuckDBCache.values(),
          ];
          const closeResults = await Promise.allSettled([
-            malloyConfig.releaseConnections(),
+            malloyConfig.shutdown("close"),
             ...wrapperPromises.map(async (promise) => {
                const connection = await promise;
                await connection.close();
@@ -1126,7 +1134,9 @@ export async function createEnvironmentConnections(
 
    for (const connection of environmentConfig.apiConnections) {
       if (!connection.name) continue;
-      logger.info(`Adding connection ${connection.name}`, { connection });
+      logger.info(`Adding connection ${connection.name}`, {
+         type: connection.type,
+      });
       const malloyConnection =
          await environmentConfig.malloyConfig.connections.lookupConnection(
             connection.name,

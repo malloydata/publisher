@@ -1,8 +1,8 @@
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
-import AdmZip from "adm-zip";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
+import extract from "extract-zip";
 import * as fs from "fs";
 import * as path from "path";
 import simpleGit from "simple-git";
@@ -25,16 +25,17 @@ import {
    FrozenConfigError,
    PackageNotFoundError,
 } from "../errors";
-import {
-   getOperationalState,
-   markDegraded,
-   markNotReady,
-   markReady,
-} from "../health";
+import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
+import {
+   assertSafeEnvironmentPath,
+   assertSafePackageName,
+   safeJoinUnderRoot,
+} from "../path_safety";
 import { Connection } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
+import type { PackageMemoryGovernor } from "./package_memory_governor";
 type ApiEnvironment = components["schemas"]["Environment"];
 
 const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
@@ -101,12 +102,15 @@ export class EnvironmentStore {
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
    private isInitialized: boolean = false;
-   private failedEnvironments: Array<{ name: string; error: string }> = [];
    public storageManager: StorageManager;
    private s3Client = new S3({
       followRegionRedirects: true,
    });
    private gcsClient: Storage;
+   // Shared by every Environment so the back-pressure decision is
+   // process-wide. Set once at server start via setMemoryGovernor;
+   // new Environments pick it up at construction.
+   private memoryGovernor: PackageMemoryGovernor | null = null;
 
    constructor(serverRootPath: string) {
       this.serverRootPath = serverRootPath;
@@ -121,6 +125,19 @@ export class EnvironmentStore {
       this.storageManager = new StorageManager(storageConfig);
 
       this.finishedInitialization = this.initialize();
+   }
+
+   /**
+    * Attach (or detach with `null`) the shared {@link PackageMemoryGovernor}.
+    * Propagated to every Environment so the back-pressure decision is
+    * process-wide, and remembered so any Environment created *after*
+    * this call also picks it up at construction.
+    */
+   public setMemoryGovernor(governor: PackageMemoryGovernor | null): void {
+      this.memoryGovernor = governor;
+      for (const env of this.environments.values()) {
+         env.setMemoryGovernor(governor);
+      }
    }
 
    private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
@@ -148,10 +165,6 @@ export class EnvironmentStore {
          `Error initializing environment${label}; skipping environment`,
          this.extractErrorDataFromError(error),
       );
-      this.failedEnvironments.push({
-         name: environmentName ?? "<unknown>",
-         error: error instanceof Error ? error.message : String(error),
-      });
    }
 
    private async initialize() {
@@ -248,6 +261,9 @@ export class EnvironmentStore {
                               ...conn.config,
                            })),
                         );
+                        environmentInstance.setMemoryGovernor(
+                           this.memoryGovernor,
+                        );
 
                         // Get packages from database
                         const packages = await repository.listPackages(
@@ -285,11 +301,7 @@ export class EnvironmentStore {
          }
 
          this.isInitialized = true;
-         if (this.failedEnvironments.length > 0) {
-            markDegraded();
-         } else {
-            markReady();
-         }
+         markReady();
          const initializationDuration = performance.now() - initialTime;
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
@@ -696,18 +708,25 @@ export class EnvironmentStore {
    }
 
    public async getStatus() {
+      // Surface the memory governor's back-pressure as a "throttled"
+      // operational state so the control plane can stop routing new package
+      // loads/queries to a throttled worker. Draining takes precedence: a
+      // shutting-down server should keep reporting "draining". When the
+      // governor is disabled (no PUBLISHER_MAX_MEMORY_BYTES) this never fires.
+      const baseState = getOperationalState();
+      const operationalState = (
+         baseState !== "draining" &&
+         (this.memoryGovernor?.isBackpressured() ?? false)
+            ? "throttled"
+            : baseState
+      ) as components["schemas"]["ServerStatus"]["operationalState"];
+
       const status = {
          timestamp: Date.now(),
          environments: [] as Array<components["schemas"]["Environment"]>,
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
-         operationalState:
-            getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
-         ...(this.failedEnvironments.length > 0 && {
-            failedEnvironments: [
-               ...this.failedEnvironments,
-            ] as components["schemas"]["ServerStatus"]["failedEnvironments"],
-         }),
+         operationalState,
       };
 
       const environments = await this.listEnvironments(true);
@@ -754,6 +773,7 @@ export class EnvironmentStore {
       reload: boolean = false,
    ): Promise<Environment> {
       await this.finishedInitialization;
+      assertSafePackageName(environmentName);
 
       // Check if environment is already loaded first
       const environment = this.environments.get(environmentName);
@@ -814,9 +834,10 @@ export class EnvironmentStore {
       if (!skipInitialization && this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      assertSafePackageName(environment.name);
       const environmentName = environment.name;
-      if (!environmentName) {
-         throw new Error("Environment name is required");
+      for (const _package of environment.packages || []) {
+         assertSafePackageName(_package.name);
       }
       // Check if environment already exists and update it instead of creating a new one
       const existingEnvironment = this.environments.get(environmentName);
@@ -856,6 +877,7 @@ export class EnvironmentStore {
          absoluteEnvironmentPath,
          environment.connections || [],
       );
+      newEnvironment.setMemoryGovernor(this.memoryGovernor);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
@@ -881,6 +903,8 @@ export class EnvironmentStore {
    }
 
    public async unzipEnvironment(absoluteEnvironmentPath: string) {
+      assertSafeEnvironmentPath(absoluteEnvironmentPath);
+      const startedAt = Date.now();
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
       );
@@ -894,8 +918,28 @@ export class EnvironmentStore {
       });
       await fs.promises.mkdir(unzippedEnvironmentPath, { recursive: true });
 
-      const zip = new AdmZip(absoluteEnvironmentPath);
-      zip.extractAllTo(unzippedEnvironmentPath, true);
+      // Stream-extract via yauzl (wrapped by extract-zip). Each entry's
+      // inflate and write are dispatched to the libuv thread pool, so the
+      // main event loop stays responsive even for very large archives.
+      // The previous adm-zip path used fs.readFileSync + zlib.inflateRawSync
+      // on the main thread, which parked the loop long enough on multi-
+      // hundred-MB packages to fail Kubernetes liveness probes mid-extract.
+      let entryCount = 0;
+      let totalUncompressedBytes = 0;
+      await extract(absoluteEnvironmentPath, {
+         dir: path.resolve(unzippedEnvironmentPath),
+         onEntry: (entry) => {
+            entryCount += 1;
+            totalUncompressedBytes += entry.uncompressedSize ?? 0;
+         },
+      });
+
+      const mib = (totalUncompressedBytes / (1024 * 1024)).toFixed(1);
+      logger.info(
+         `Unzipped "${absoluteEnvironmentPath}" -> "${unzippedEnvironmentPath}" ` +
+            `(${entryCount} entries, ${mib} MiB uncompressed) in ` +
+            `${formatDuration(Date.now() - startedAt)}`,
+      );
 
       return unzippedEnvironmentPath;
    }
@@ -906,9 +950,10 @@ export class EnvironmentStore {
          throw new FrozenConfigError();
       }
       validateEnvironmentAzureUrls(environment);
+      assertSafePackageName(environment.name);
       const environmentName = environment.name;
-      if (!environmentName) {
-         throw new Error("Environment name is required");
+      for (const _package of environment.packages || []) {
+         assertSafePackageName(_package.name);
       }
       const existingEnvironment = this.environments.get(environmentName);
       if (!existingEnvironment) {
@@ -929,6 +974,7 @@ export class EnvironmentStore {
       if (this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      assertSafePackageName(environmentName);
       const environment = this.environments.get(environmentName);
       if (!environment) {
          return;
@@ -1003,15 +1049,17 @@ export class EnvironmentStore {
    }
 
    private async scaffoldEnvironment(environment: ApiEnvironment) {
+      assertSafePackageName(environment.name);
       const environmentName = environment.name;
-      if (!environmentName) {
-         throw new Error("Environment name is required");
-      }
-      const absoluteEnvironmentPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
+      const absoluteEnvironmentPath = safeJoinUnderRoot(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         environmentName,
+      );
       await fs.promises.mkdir(absoluteEnvironmentPath, { recursive: true });
       if (environment.readme) {
          await fs.promises.writeFile(
-            path.join(absoluteEnvironmentPath, "README.md"),
+            safeJoinUnderRoot(absoluteEnvironmentPath, "README.md"),
             environment.readme,
          );
       }
@@ -1047,7 +1095,12 @@ export class EnvironmentStore {
       environmentName: string,
       packages: ApiEnvironment["packages"],
    ) {
-      const absoluteTargetPath = `${this.serverRootPath}/${PUBLISHER_DATA_DIR}/${environmentName}`;
+      assertSafePackageName(environmentName);
+      const absoluteTargetPath = safeJoinUnderRoot(
+         this.serverRootPath,
+         PUBLISHER_DATA_DIR,
+         environmentName,
+      );
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
@@ -1102,7 +1155,10 @@ export class EnvironmentStore {
             .update(groupedLocation)
             .digest("hex")
             .substring(0, 16); // Use first 16 chars for shorter paths
-         const tempDownloadPath = `${absoluteTargetPath}/.temp_${locationHash}`;
+         const tempDownloadPath = safeJoinUnderRoot(
+            absoluteTargetPath,
+            `.temp_${locationHash}`,
+         );
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
          try {
@@ -1116,7 +1172,11 @@ export class EnvironmentStore {
             // Extract each package from the downloaded content
             for (const _package of packagesForLocation) {
                const packageDir = _package.name;
-               const absolutePackagePath = `${absoluteTargetPath}/${packageDir}`;
+               assertSafePackageName(packageDir);
+               const absolutePackagePath = safeJoinUnderRoot(
+                  absoluteTargetPath,
+                  packageDir,
+               );
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
@@ -1127,7 +1187,7 @@ export class EnvironmentStore {
                      const subPathMatch =
                         _package.location.match(/\/tree\/[^/]+\/(.+)$/);
                      if (subPathMatch) {
-                        sourcePath = path.join(
+                        sourcePath = safeJoinUnderRoot(
                            tempDownloadPath,
                            subPathMatch[1],
                         );
@@ -1144,7 +1204,10 @@ export class EnvironmentStore {
                   if (this.isLocalPath(_package.location)) {
                      sourcePath = _package.location;
                   } else {
-                     sourcePath = path.join(tempDownloadPath, groupedLocation);
+                     sourcePath = safeJoinUnderRoot(
+                        tempDownloadPath,
+                        groupedLocation,
+                     );
                   }
                }
 
@@ -1323,6 +1386,10 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ) {
+      // `environmentPath` is the operator-supplied mount source and may
+      // legitimately be a relative path that resolves outside the
+      // server root; only the target is asserted.
+      assertSafeEnvironmentPath(absoluteTargetPath);
       if (environmentPath.endsWith(".zip")) {
          environmentPath = await this.unzipEnvironment(environmentPath);
       }
@@ -1350,6 +1417,7 @@ export class EnvironmentStore {
       absoluteDirPath: string,
       isCompressedFile: boolean,
    ) {
+      assertSafeEnvironmentPath(absoluteDirPath);
       const trimmedPath = gcsPath.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
@@ -1372,10 +1440,15 @@ export class EnvironmentStore {
       }
       await Promise.all(
          files.map(async (file) => {
-            const relativeFilePath = file.name.replace(prefix, "");
+            // Strip leading `/` left over from prefix removal when the
+            // GCS prefix lacked a trailing slash — otherwise
+            // `safeJoinUnderRoot` treats it as absolute and rejects.
+            const relativeFilePath = file.name
+               .replace(prefix, "")
+               .replace(/^\/+/, "");
             const absoluteFilePath = isCompressedFile
                ? absoluteDirPath
-               : path.join(absoluteDirPath, relativeFilePath);
+               : safeJoinUnderRoot(absoluteDirPath, relativeFilePath);
             if (file.name.endsWith("/")) {
                return;
             }
@@ -1400,6 +1473,7 @@ export class EnvironmentStore {
       absoluteDirPath: string,
       isCompressedFile: boolean = false,
    ) {
+      assertSafeEnvironmentPath(absoluteDirPath);
       const trimmedPath = s3Path.slice(5);
       const [bucketName, ...prefixParts] = trimmedPath.split("/");
       const prefix = prefixParts.join("/");
@@ -1453,11 +1527,16 @@ export class EnvironmentStore {
             if (!key) {
                return;
             }
-            const relativeFilePath = key.replace(prefix, "");
+            // Strip leading `/` left over from prefix removal when the
+            // S3 prefix lacked a trailing slash — otherwise
+            // `safeJoinUnderRoot` treats it as absolute and rejects.
+            const relativeFilePath = key
+               .replace(prefix, "")
+               .replace(/^\/+/, "");
             if (!relativeFilePath || relativeFilePath.endsWith("/")) {
                return;
             }
-            const absoluteFilePath = path.join(
+            const absoluteFilePath = safeJoinUnderRoot(
                absoluteDirPath,
                relativeFilePath,
             );
@@ -1508,6 +1587,7 @@ export class EnvironmentStore {
    }
 
    async downloadGitHubDirectory(githubUrl: string, absoluteDirPath: string) {
+      assertSafeEnvironmentPath(absoluteDirPath);
       // First we'll clone the repo without the additional path
       // E.g. we're removing `/tree/main/imdb` from https://github.com/credibledata/malloy-samples/tree/main/imdb
       const githubInfo = this.parseGitHubUrl(githubUrl);
@@ -1515,7 +1595,11 @@ export class EnvironmentStore {
          throw new Error(`Invalid GitHub URL: ${githubUrl}`);
       }
       const { owner, repoName, packagePath } = githubInfo;
-      const cleanPackagePath = packagePath?.replace("/tree/main", "") || "";
+      // `packagePath` is captured with a leading `/`; strip it so the
+      // value is a relative segment usable with `safeJoinUnderRoot`.
+      const cleanPackagePath = (
+         packagePath?.replace("/tree/main", "") || ""
+      ).replace(/^\/+/, "");
 
       // We'll make sure whatever was in absoluteDirPath is removed,
       // so we have a nice a clean directory where we can clone the repo
@@ -1555,7 +1639,10 @@ export class EnvironmentStore {
 
       // Remove all contents of absoluteDirPath (/var/publisher/asd123)
       // except for the cleanPackagePath directory (/var/publisher/asd123/imdb)
-      const packageFullPath = path.join(absoluteDirPath, cleanPackagePath);
+      const packageFullPath = safeJoinUnderRoot(
+         absoluteDirPath,
+         cleanPackagePath,
+      );
 
       // Check if the cleanPackagePath (/var/publisher/asd123/imdb) exists
       const packageExists = await fs.promises
@@ -1574,7 +1661,7 @@ export class EnvironmentStore {
       for (const entry of dirContents) {
          // Don't remove the cleanPackagePath directory itself (/var/publisher/asd123/imdb)
          if (entry !== cleanPackagePath.replace(/^\/+/, "").split("/")[0]) {
-            await fs.promises.rm(path.join(absoluteDirPath, entry), {
+            await fs.promises.rm(safeJoinUnderRoot(absoluteDirPath, entry), {
                recursive: true,
                force: true,
             });
@@ -1585,8 +1672,8 @@ export class EnvironmentStore {
       const packageContents = await fs.promises.readdir(packageFullPath);
       for (const entry of packageContents) {
          await fs.promises.rename(
-            path.join(packageFullPath, entry),
-            path.join(absoluteDirPath, entry),
+            safeJoinUnderRoot(packageFullPath, entry),
+            safeJoinUnderRoot(absoluteDirPath, entry),
          );
       }
 

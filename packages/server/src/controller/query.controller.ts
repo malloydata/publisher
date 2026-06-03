@@ -1,9 +1,12 @@
 import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
+import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
+import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
+import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
 
@@ -32,23 +35,36 @@ export class QueryController {
       compactJson: boolean = false,
       filterParams?: FilterParams,
       bypassFilters?: boolean,
+      givens?: Record<string, GivenValue>,
    ): Promise<ApiQuery> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
+      // Shed load before any disk / DB work so the publisher returns 503
+      // immediately under memory pressure instead of starting a query and
+      // crashing partway through. Already-loaded packages bypass the
+      // package-load admission gate, so this is the only thing protecting
+      // query traffic on a hot pod.
+      environment.assertCanAdmitQuery();
       const p = await environment.getPackage(packageName, false);
       const model = p.getModel(modelPath);
 
       if (!model) {
          throw new ModelNotFoundError(`${modelPath} does not exist`);
       } else {
-         const { result, compactResult } = await model.getQueryResults(
-            sourceName,
-            queryName,
-            query,
-            filterParams,
-            bypassFilters,
+         const { result, compactResult } = await runWithQueryTimeout(
+            (abortSignal) =>
+               model.getQueryResults(
+                  sourceName,
+                  queryName,
+                  query,
+                  filterParams,
+                  bypassFilters,
+                  givens,
+                  abortSignal,
+               ),
+            getQueryTimeoutMs(),
          );
          const renderLogs = validateRenderTags(result);
          return {
