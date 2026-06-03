@@ -319,9 +319,17 @@ export class Model {
     */
    private extractSourceName(query?: string): string | undefined {
       if (!query) return undefined;
-      const runMatch = query.match(/run\s*:\s*(\w+)\s*->/);
-      const arrowMatch = query.match(/^\s*(\w+)\s*->/m);
-      return runMatch?.[1] ?? arrowMatch?.[1];
+      // Match a bare `\w+` identifier or a backtick-quoted Malloy identifier
+      // (e.g. `gated-source`, which needs quoting for the hyphen). Quoted names
+      // must be recognized here too, or the early schema-oracle gate would miss
+      // a gated source with a quoted name and let a denied caller probe its
+      // columns via a pre-compilation field error. The quoted capture returns
+      // the inner name (no backticks), matching how sources are keyed.
+      const runMatch = query.match(/run\s*:\s*(?:`([^`]+)`|(\w+))\s*->/);
+      const arrowMatch = query.match(/^\s*(?:`([^`]+)`|(\w+))\s*->/m);
+      return (
+         runMatch?.[1] ?? runMatch?.[2] ?? arrowMatch?.[1] ?? arrowMatch?.[2]
+      );
    }
 
    /**

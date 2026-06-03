@@ -632,6 +632,35 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
       expect(result.data).toBeDefined();
    });
 
+   it("gates a quoted-identifier source BEFORE compilation (no schema oracle)", async () => {
+      // A gated source whose Malloy name must be quoted (here, a hyphen) must be
+      // recognized by the early gate too. Otherwise a denied caller could probe
+      // a non-existent field and learn the schema from a pre-compilation Malloy
+      // field error instead of a clean 403.
+      await writeModel(
+         "rt_quoted.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: \`gated-source\` is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`,
+      );
+      // Probing a field that doesn't exist must deny (403) before compilation,
+      // not surface a Malloy "field not found" error.
+      await expect(
+         runGated(
+            "rt_quoted.malloy",
+            "run: `gated-source` -> { group_by: no_such_field }",
+            { ROLE: "viewer" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
    it("gates a notebook cell that runs a NAMED QUERY targeting a gated source", async () => {
       // `run: secret` has no `->`, so source resolution must come from the
       // compiled query, not a text regex — otherwise the gate is bypassed.
