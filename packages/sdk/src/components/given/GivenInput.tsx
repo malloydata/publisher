@@ -14,6 +14,7 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import { Given } from "../../client";
 import { GivenValue } from "../../hooks/useGivensForm";
+import { renderGivenDefault } from "./utils";
 
 dayjs.extend(utc);
 
@@ -61,11 +62,18 @@ function annotationHelperText(given: Given): string | undefined {
  * For text-based inputs (string, number, filter, default), a clear (×)
  * adornment appears when the field has a value. DatePicker, Checkbox, and
  * multi-Autocomplete have their own native clear affordances.
+ *
+ * A given's model default (if any) is surfaced as a ghost placeholder on the
+ * text-based widgets and as a `Default: …` helper line on the date picker
+ * (which has no usable placeholder). The value itself stays empty, so leaving
+ * the field blank still means "use the model default". Boolean givens render
+ * as a checkbox with no helper slot, so their default isn't surfaced.
  */
 export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const label = given.name ?? "";
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
+   const defaultDisplay = renderGivenDefault(type, given.default);
 
    if (type === "boolean") {
       const checked = value === true;
@@ -94,6 +102,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                const v = e.target.value;
                onChange(v === "" ? null : Number(v));
             }}
+            placeholder={defaultDisplay}
             helperText={helperText}
             slotProps={{
                input: {
@@ -110,6 +119,11 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
 
    if (type === "date" || type === "timestamp" || type === "timestamptz") {
       const dateValue = value instanceof Date ? dayjs.utc(value) : null;
+      // The date picker has no usable placeholder (it shows a format mask), so
+      // surface the default as a helper line instead of a ghost value.
+      const dateHelper = defaultDisplay
+         ? [helperText, `Default: ${defaultDisplay}`].filter(Boolean).join("\n")
+         : helperText;
       return (
          <LocalizationProvider dateAdapter={AdapterDayjs}>
             <DatePicker
@@ -117,7 +131,11 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                value={dateValue}
                onChange={(next) => onChange(next ? next.toDate() : null)}
                slotProps={{
-                  textField: { fullWidth: true, size: "small", helperText },
+                  textField: {
+                     fullWidth: true,
+                     size: "small",
+                     helperText: dateHelper,
+                  },
                   field: { clearable: true, onClear: () => onChange(null) },
                }}
             />
@@ -141,6 +159,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                   {...params}
                   label={label}
                   size="small"
+                  placeholder={list.length === 0 ? defaultDisplay : undefined}
                   helperText={helperText}
                />
             )}
@@ -159,7 +178,9 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
             const v = e.target.value;
             onChange(v === "" ? null : v);
          }}
-         placeholder={type.startsWith("filter<") ? type : undefined}
+         placeholder={
+            defaultDisplay ?? (type.startsWith("filter<") ? type : undefined)
+         }
          helperText={helperText}
          slotProps={{
             input: {
