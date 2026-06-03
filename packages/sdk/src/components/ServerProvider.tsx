@@ -12,6 +12,8 @@ import {
    ConnectionsApi,
    DatabasesApi,
    EnvironmentsApi,
+   ManifestsApi,
+   MaterializationsApi,
    ModelsApi,
    NotebooksApi,
    PackagesApi,
@@ -88,6 +90,12 @@ const getApiClients = (
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),
+      materializations: new MaterializationsApi(
+         config,
+         basePath,
+         axiosInstance,
+      ),
+      manifests: new ManifestsApi(config, basePath, axiosInstance),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
    };
 };

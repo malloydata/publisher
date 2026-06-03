@@ -33,3 +33,25 @@ export async function openPackage(
    await page.getByText(pkg, { exact: true }).first().click();
    await expect(page).toHaveURL(new RegExp(`/${env}/${pkg}/?$`));
 }
+
+export async function openMaterializations(
+   page: Page,
+   env: string,
+   pkg: string,
+): Promise<void> {
+   await gotoHome(page);
+   await openEnvironment(page, env);
+   await openPackage(page, env, pkg);
+   // The package page lists a "Materializations & Manifest" entry row that
+   // links to the dedicated screen. Git-cloned packages can take a while to
+   // appear, so allow a generous timeout before clicking.
+   const entry = page.getByText("Materializations & Manifest", { exact: true });
+   await expect(entry).toBeVisible({ timeout: 60_000 });
+   await entry.click();
+   await expect(page).toHaveURL(
+      new RegExp(`/${env}/${pkg}/materializations/?$`),
+   );
+   await expect(
+      page.getByRole("heading", { name: "Materializations", level: 1 }),
+   ).toBeVisible();
+}
