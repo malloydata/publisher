@@ -1,4 +1,9 @@
-import { encodeResourceUri, Model, Notebook } from "@malloy-publisher/sdk";
+import {
+   encodeResourceUri,
+   Model,
+   Notebook,
+   PageViewer,
+} from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
 import { useParams } from "react-router-dom";
 
@@ -19,13 +24,28 @@ function ModelPage() {
          </div>
       );
    }
+
+   const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
+
+   // In-package HTML page (embedded view). The Pages section in
+   // <Package> routes clicks to `pages/<file>` so this branch picks them
+   // up. <PageViewer> iframes the standalone Publisher URL and resizes
+   // via the publisher.js postMessage protocol.
+   if (modelPath?.startsWith("pages/")) {
+      const pagePath = modelPath.slice("pages/".length);
+      const pageResourceUri = encodeResourceUri({
+         environmentName: params.environmentName,
+         packageName: params.packageName,
+         modelPath: pagePath,
+      });
+      return <PageViewer resourceUri={pageResourceUri} />;
+   }
+
    const resourceUri = encodeResourceUri({
       environmentName: params.environmentName,
       packageName: params.packageName,
       modelPath,
    });
-
-   const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
 
    if (modelPath?.endsWith(".malloy")) {
       return (

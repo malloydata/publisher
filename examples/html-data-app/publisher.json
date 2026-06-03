@@ -1,0 +1,5 @@
+{
+  "name": "html-data-app",
+  "version": "0.0.1",
+  "description": "In-package HTML data app demo. Drop an index.html alongside your .malloy files and Publisher serves them at /environments/<env>/packages/<pkg>/index.html. Live reload, embeddable iframe, no build step."
+}

@@ -50,6 +50,8 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
+  - name: pages
+    description: Static HTML pages (in-package data apps)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -2035,6 +2037,54 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/pages:
+    get:
+      tags:
+        - pages
+      operationId: list-pages
+      summary: List package pages
+      description: |
+        Retrieves a list of all static HTML pages (in-package data apps) within
+        the specified package. Each page entry includes the relative path, the
+        package name, a canonical resource URL, and the page title (extracted
+        from the file's <title> tag, falling back to the path). Used by the
+        Publisher SPA to surface a clickable "Pages" section on the package
+        detail view, and by anyone who wants to discover in-package data apps
+        programmatically without scraping the directory. Recursive depth is
+        capped server-side to keep this cheap on large packages.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: A list of pages in the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Page"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /connections/test:
     post:
       tags:
@@ -2589,6 +2639,26 @@ components:
         error:
           type: string
           description: Error message if the notebook failed to compile or load
+
+    Page:
+      type: object
+      description: Static HTML page (in-package data app) within a Malloy package
+      properties:
+        resource:
+          type: string
+          description: Canonical URL to the served page. Root-relative and does NOT
+            carry the /api/v0 prefix, because pages are static assets served off
+            the server root rather than API resources.
+        packageName:
+          type: string
+          description: Name of the package containing this page
+        path:
+          type: string
+          description: Relative path to the HTML file within its package directory
+        title:
+          type: string
+          description: Title extracted from the file's <title> tag, or the path if
+            not present
 
     RawNotebook:
       type: object

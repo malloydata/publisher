@@ -8,6 +8,7 @@ export * from "./Materializations";
 export * from "./Model";
 export * from "./Notebook";
 export * from "./Package";
+export * from "./PageViewer";
 export * from "./QueryResult";
 export * from "./RenderedResult";
 export { ServerProvider, useServer } from "./ServerProvider";
