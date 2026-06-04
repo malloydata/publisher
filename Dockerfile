@@ -91,13 +91,14 @@ COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
-# Bake the DuckLake extension via @duckdb/node-api -- the same DuckDB engine
-# the runtime server uses. It installs into /root/.duckdb/extensions/v<version>/,
-# the version-specific directory the engine inspects at startup, so the server's
-# INSTALL ducklake; LOAD ducklake; finds it and skips the network fetch. The CLI
-# (base-deps) is pinned to the same version, so all three agree on one dir.
-RUN bun -e "const {DuckDBInstance}=require('@duckdb/node-api');const i=await DuckDBInstance.create(':memory:');const c=await i.connect();await c.run('INSTALL ducklake; LOAD ducklake;');const r=await c.runAndReadAll(\"SELECT extension_version, install_path FROM duckdb_extensions() WHERE extension_name='ducklake'\");console.log('DuckLake baked:',JSON.stringify(r.getRowObjectsJS()));c.closeSync();i.closeSync();" || \
-    echo "DuckLake bake skipped (offline build)"
+# Bake the DuckDB extensions the server loads at runtime into
+# /root/.duckdb/extensions/v<version>/ so its INSTALL/LOAD at startup finds them
+# and skips the network fetch. Uses the same scripts/bake-duckdb-extensions.js
+# that `bun run build` runs locally and in CI -- one mechanism, so the image and
+# a local build bake the same set. The CLI (base-deps) and runtime engine are
+# pinned to the same DuckDB version, so all agree on one extensions dir.
+COPY scripts/bake-duckdb-extensions.js ./scripts/bake-duckdb-extensions.js
+RUN bun run scripts/bake-duckdb-extensions.js
 
 # Runtime config
 ARG DUCKDB_VERSION=1.5.3
