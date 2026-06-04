@@ -183,6 +183,19 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
+   it("blocks the manifest case-insensitively (Publisher.JSON)", async () => {
+      // On case-insensitive filesystems (macOS, Windows) a case-variant name
+      // resolves to the real publisher.json, so the guard must still 404 it;
+      // the manifest can hold connection secrets and must stay private.
+      // NOTE: on case-sensitive Linux this passes trivially (Publisher.JSON is
+      // a 404 miss); the guard is genuinely exercised on the macos-latest and
+      // windows-latest jobs in cross-platform-tests.yml.
+      const root = await fetch(pkgUrl("/Publisher.JSON"));
+      expect(root.status).toBe(404);
+      const nested = await fetch(pkgUrl("/sub/Publisher.JSON"));
+      expect(nested.status).toBe(404);
+   });
+
    it("serves a page from a subdirectory", async () => {
       const res = await fetch(pkgUrl("/sub/page2.html"));
       expect(res.status).toBe(200);
@@ -218,6 +231,15 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(index?.resource).toBe(
          `/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/index.html`,
       );
+   });
+
+   it("400s a malformed environment/package name on /pages", async () => {
+      // getEnvironment runs assertSafePackageName, so a name outside
+      // IdentifierPattern is a 400 (now documented on list-pages in api-doc).
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/bad%20name/packages/${PACKAGE_NAME}/pages`,
+      );
+      expect(res.status).toBe(400);
    });
 
    // ── /events SSE stream ───────────────────────────────────────────

@@ -200,7 +200,14 @@ export class WatchModeController {
          });
          return;
       }
-      await this.ensureWatching(watchName);
+      try {
+         await this.ensureWatching(watchName);
+      } catch (error) {
+         logger.error(error);
+         const { status } = internalErrorToHttpError(error as Error);
+         res.status(status).json({ error: (error as Error).message });
+         return;
+      }
       res.json();
    };
 

@@ -30,8 +30,14 @@ function ModelPage() {
    // In-package HTML page (embedded view). The Pages section in
    // <Package> routes clicks to `pages/<file>` so this branch picks them
    // up. <PageViewer> iframes the standalone Publisher URL and resizes
-   // via the publisher.js postMessage protocol.
-   if (modelPath?.startsWith("pages/")) {
+   // via the publisher.js postMessage protocol. Real models that live under
+   // a `pages/` subdirectory (e.g. `pages/x.malloy`) are excluded so they
+   // still open in the Model/Notebook viewer.
+   if (
+      modelPath?.startsWith("pages/") &&
+      !modelPath.endsWith(".malloy") &&
+      !modelPath.endsWith(".malloynb")
+   ) {
       const pagePath = modelPath.slice("pages/".length);
       const pageResourceUri = encodeResourceUri({
          environmentName: params.environmentName,

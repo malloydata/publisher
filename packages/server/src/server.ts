@@ -131,10 +131,13 @@ function parseArgs() {
             "                         Mounts local-dir packages in-place (symlink, not",
          );
          console.log(
-            "                         copy) so source-edit live reload works. Repeat the",
+            "                         copy) so source-edit live reload works. A comma-",
          );
          console.log(
-            "                         flag for multiple envs, or set PUBLISHER_WATCH=a,b.",
+            "                         separated PUBLISHER_WATCH mounts all listed envs in",
+         );
+         console.log(
+            "                         place, but only the first one auto-reloads.",
          );
          console.log("  --help, -h             Show this help message");
          process.exit(0);
@@ -319,7 +322,7 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
 //                                below; this comment is the cross-reference)
 
 // Serve the runtime helper that in-package HTML pages load via
-// <script src="/sdk/publisher.js">. Read once at module load for speed.
+// <script src="/sdk/publisher.js">. Path resolved once at module load.
 const PUBLISHER_RUNTIME_PATH = path.join(
    path.dirname(__filename_esm),
    "runtime",
@@ -373,9 +376,11 @@ async function serveFromPackage(
 
       // Block manifest fetches by URL name before any filesystem touch.
       // Match by basename so a manifest in any subdirectory is private too,
-      // not just the package-root one.
+      // not just the package-root one, and compare case-insensitively so it
+      // stays private on case-insensitive filesystems (macOS, Windows), where
+      // a request for `Publisher.JSON` would otherwise resolve to the file.
       const urlRel = path.relative(pkgRoot, fullPath);
-      if (path.basename(urlRel) === "publisher.json") {
+      if (path.basename(urlRel).toLowerCase() === "publisher.json") {
          res.status(404).end();
          return;
       }
@@ -740,8 +745,8 @@ app.get(
          clearInterval(heartbeat);
          watchModeController.events.off(key, send);
       };
+      // "close" covers both clean and abrupt disconnects on Node >= 20.
       req.on("close", cleanup);
-      req.on("aborted", cleanup);
    },
 );
 
@@ -1880,17 +1885,16 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
       .filter((s) => s.length > 0);
    if (watchEnvList.length > 0) {
       // The watcher tracks exactly one env at a time (`WatchModeController`
-      // holds a single chokidar instance). Multi-env watch is a follow-up.
-      // Refuse extra envs up front rather than starting each and silently
-      // tearing all but the last back down — an advertised list that quietly
-      // keeps only the final entry is a footgun.
+      // holds a single chokidar instance). Every env in PUBLISHER_WATCH is
+      // still mounted in place (live source) by the EnvironmentStore, but only
+      // the first is watched, so the others do not auto-reload.
       if (watchEnvList.length > 1) {
-         logger.error(
+         logger.warn(
             `Multiple watch environments requested (${watchEnvList.join(
                ", ",
-            )}), but watch mode supports only one at a time. Watching "${
+            )}); watch mode auto-reloads one at a time. Watching "${
                watchEnvList[0]
-            }" and ignoring the rest. Pass a single --watch-env (or one PUBLISHER_WATCH value) to silence this.`,
+            }". The others are mounted in place (their source is live) but will not auto-reload. Pass a single --watch-env (or one PUBLISHER_WATCH value) to silence this.`,
          );
       }
       const envName = watchEnvList[0];
