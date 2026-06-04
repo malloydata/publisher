@@ -233,6 +233,18 @@ export class Model {
    }
 
    /**
+    * Whether the model declares any `#(authorize)` / `##(authorize)` gate at all
+    * (file-level or on any source). Lets callers cheaply skip authorize work for
+    * ungated models without compiling a probe.
+    */
+   public hasAuthorize(): boolean {
+      return (
+         this.fileLevelAuthorize.length > 0 ||
+         (this.sources?.some((s) => (s.authorize?.length ?? 0) > 0) ?? false)
+      );
+   }
+
+   /**
     * Effective authorize expressions for whatever a query runs against:
     *  - a declared model source → its own list (file-level ++ source-level);
     *  - anything else (an ad-hoc inline `duckdb.sql(...)` source, or a source
@@ -305,9 +317,10 @@ export class Model {
 
    /**
     * Gate a compiled query by the source it actually reads, resolved from the
-    * prepared query's `structRef` (authoritative — survives named-query / alias
-    * indirection that surface syntax misses). Used as the `/compile` backstop
-    * once a runnable exists.
+    * prepared query's `structRef` (authoritative — survives named-query and
+    * multi-statement indirection that surface syntax misses, e.g. the executed
+    * `run:` statement isn't the first one). Used as the `/compile` backstop once
+    * a runnable exists.
     */
    public async assertAuthorizedForRunnable(
       runnable: { getPreparedQuery(): Promise<unknown> },

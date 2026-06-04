@@ -8,7 +8,6 @@ import * as path from "path";
 import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
-   AccessDeniedError,
    ConnectionNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
@@ -368,25 +367,42 @@ export class Environment {
             const modelMaterializer = runtime.loadModel(virtualUrl);
             const model = await modelMaterializer.getModel();
 
+            // Resolve the final query's materializer once (if there is one).
+            let queryMaterializer: ReturnType<
+               typeof modelMaterializer.loadFinalQuery
+            > | null = null;
+            try {
+               queryMaterializer = modelMaterializer.loadFinalQuery();
+            } catch {
+               // No runnable query (e.g. only source definitions) — nothing to
+               // gate or extract beyond the early text gate already applied.
+            }
+
+            // Compiled-source backstop — runs REGARDLESS of includeSql. It gates
+            // the source the COMPILED final query actually reads, closing
+            // named-query / multi-statement indirection the early surface-syntax
+            // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
+            // matches the FIRST `run:`, but the LAST statement is what executes).
+            // Compiling a gated source even without SQL is a schema oracle
+            // (field-not-found errors leak its columns), so this must not be
+            // conditional on SQL extraction. (A `source: x is gated` alias makes
+            // a new ungated source — that's the documented "extend doesn't
+            // inherit authorize" footgun, the same as the query path.) Only run
+            // when the model declares gates so ungated compiles don't pay for
+            // the extra final-query compile.
+            if (queryMaterializer && gateModel?.hasAuthorize()) {
+               await gateModel.assertAuthorizedForRunnable(
+                  queryMaterializer,
+                  givens ?? {},
+               );
+            }
+
             // If includeSql is requested and compilation succeeded, attempt to extract SQL
             let sql: string | undefined;
-            if (includeSql) {
+            if (includeSql && queryMaterializer) {
                try {
-                  const queryMaterializer = modelMaterializer.loadFinalQuery();
-                  // Backstop: gate the source the COMPILED final query actually
-                  // reads (closes `source: x is gated; run: x` alias indirection
-                  // the early surface-syntax gate misses) before exposing SQL.
-                  if (gateModel) {
-                     await gateModel.assertAuthorizedForRunnable(
-                        queryMaterializer,
-                        givens ?? {},
-                     );
-                  }
                   sql = await queryMaterializer.getSQL({ givens });
-               } catch (sqlError) {
-                  // A deny must propagate (it maps to 403); only the
-                  // "no runnable query" case is swallowed so we omit `sql`.
-                  if (sqlError instanceof AccessDeniedError) throw sqlError;
+               } catch {
                   // Source may not contain a runnable query (e.g. only source definitions),
                   // in which case we simply omit the sql field.
                }
