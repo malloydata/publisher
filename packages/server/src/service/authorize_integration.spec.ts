@@ -277,6 +277,11 @@ source: gated is duckdb.table('customers')
       // Names the source and surfaces the underlying Malloy reason.
       expect(err?.message).toContain("gated");
       expect(err?.message).toMatch(/NOPE|not declared/i);
+      // Redaction policy (pinned): the model-load 424 is author-facing, so it
+      // KEEPS the full expression text (needed to fix a malformed annotation).
+      // Only the runtime 403 redacts to the source name. If this assertion ever
+      // flips, the redaction split was changed — make it a conscious decision.
+      expect(err?.message).toContain("$NOPE = 'x'");
    });
 
    it("fails model load when an expression references a source field", async () => {
@@ -834,5 +839,94 @@ source: joiner is duckdb.table('customers') extend {
          {},
       );
       expect(result.data).toBeDefined();
+   });
+});
+
+// The /compile path (PR4) gates via Model.assertAuthorizedForText (early,
+// surface-syntax) and Model.assertAuthorizedForRunnable (compiled-source
+// backstop). These are the enforcement primitives environment.compileSource
+// calls; exercise them directly here.
+describe("authorize compile-path gate", () => {
+   const CP_GATE = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+
+source: open_src is duckdb.table('customers') extend { measure: c is count() }
+`;
+   const CP_FILE_LEVEL = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(authorize) "$ROLE = 'admin'"
+
+source: declared is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   async function cpModel(file: string, src: string): Promise<Model> {
+      await writeModel(file, src);
+      return Model.create("test-pkg", TEST_PKG_DIR, file, getConnections());
+   }
+
+   it("assertAuthorizedForText denies/allows a gated named source by its given", async () => {
+      const model = await cpModel("cp_gate.malloy", CP_GATE);
+      await expect(
+         model.assertAuthorizedForText("run: gated -> { aggregate: c }", {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await expect(
+         model.assertAuthorizedForText("run: gated -> { aggregate: c }", {
+            ROLE: "analyst",
+         }),
+      ).resolves.toBeUndefined();
+   });
+
+   it("assertAuthorizedForText leaves an ungated source unrestricted", async () => {
+      const model = await cpModel("cp_gate.malloy", CP_GATE);
+      await expect(
+         model.assertAuthorizedForText("run: open_src -> { aggregate: c }", {}),
+      ).resolves.toBeUndefined();
+   });
+
+   it("assertAuthorizedForText applies the model-wide file-level gate to inline/unnamed text", async () => {
+      const model = await cpModel("cp_file.malloy", CP_FILE_LEVEL);
+      // No named source the regex recognizes -> undefined -> file-level gate.
+      await expect(
+         model.assertAuthorizedForText(
+            `run: duckdb.sql("SELECT 1 AS x") -> { aggregate: n is count() }`,
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await expect(
+         model.assertAuthorizedForText(
+            `run: duckdb.sql("SELECT 1 AS x") -> { aggregate: n is count() }`,
+            { ROLE: "admin" },
+         ),
+      ).resolves.toBeUndefined();
+   });
+
+   it("assertAuthorizedForRunnable gates the compiled-source structRef (alias backstop)", async () => {
+      const model = await cpModel("cp_gate.malloy", CP_GATE);
+      // Stub a runnable whose compiled query reads `gated` (e.g. via an alias
+      // the surface-syntax gate would miss).
+      const gatedRunnable = {
+         getPreparedQuery: async () => ({ _query: { structRef: "gated" } }),
+      };
+      await expect(
+         model.assertAuthorizedForRunnable(gatedRunnable, {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await expect(
+         model.assertAuthorizedForRunnable(gatedRunnable, { ROLE: "analyst" }),
+      ).resolves.toBeUndefined();
+      // Ungated compiled source -> unrestricted.
+      const openRunnable = {
+         getPreparedQuery: async () => ({ _query: { structRef: "open_src" } }),
+      };
+      await expect(
+         model.assertAuthorizedForRunnable(openRunnable, {}),
+      ).resolves.toBeUndefined();
    });
 });

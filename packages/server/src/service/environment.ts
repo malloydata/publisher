@@ -8,6 +8,7 @@ import * as path from "path";
 import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
+   AccessDeniedError,
    ConnectionNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
@@ -339,6 +340,21 @@ export class Environment {
          // Use the locked variant — we already hold the per-package mutex.
          const pkg = await this._loadOrGetPackageLocked(packageName);
 
+         // Authorize gate (PR4): /compile is compile-only, but it can still act
+         // as a schema oracle (a denied caller learns a gated source's columns
+         // from compile errors) and, with includeSql, leak its SQL. Gate the
+         // named source the submitted text targets BEFORE compiling — mirrors
+         // the query path's early surface-syntax gate. Unnamed/inline source
+         // text resolves to undefined, so only the model-wide file-level gate
+         // applies. The gate runs against the package's cached Model (its
+         // `given:` block + authorize annotations), independent of the virtual
+         // compile below. If the model isn't loaded, there's nothing to enforce
+         // and compilation surfaces its own error.
+         const gateModel = pkg.getModel(modelName);
+         if (gateModel) {
+            await gateModel.assertAuthorizedForText(source, givens ?? {});
+         }
+
          // Initialize Runtime with the package's active MalloyConfig so compile
          // checks see the same package-scoped duckdb as execution. This runtime
          // borrows the package config; the package/environment lifecycle owns release.
@@ -357,8 +373,20 @@ export class Environment {
             if (includeSql) {
                try {
                   const queryMaterializer = modelMaterializer.loadFinalQuery();
+                  // Backstop: gate the source the COMPILED final query actually
+                  // reads (closes `source: x is gated; run: x` alias indirection
+                  // the early surface-syntax gate misses) before exposing SQL.
+                  if (gateModel) {
+                     await gateModel.assertAuthorizedForRunnable(
+                        queryMaterializer,
+                        givens ?? {},
+                     );
+                  }
                   sql = await queryMaterializer.getSQL({ givens });
-               } catch {
+               } catch (sqlError) {
+                  // A deny must propagate (it maps to 403); only the
+                  // "no runnable query" case is swallowed so we omit `sql`.
+                  if (sqlError instanceof AccessDeniedError) throw sqlError;
                   // Source may not contain a runnable query (e.g. only source definitions),
                   // in which case we simply omit the sql field.
                }

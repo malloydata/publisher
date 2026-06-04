@@ -289,6 +289,37 @@ export class Model {
    }
 
    /**
+    * Gate ad-hoc compile/query text by the named source it targets. Resolves the
+    * source from surface syntax (`extractSourceName`) and applies the gate. An
+    * unnamed/inline source resolves to `undefined`, so only the model-wide
+    * file-level gate applies — the same top-level-only boundary as the query
+    * path's early gate. Used by the `/compile` path, which has no runnable to
+    * resolve before it decides whether to compile at all.
+    */
+   public async assertAuthorizedForText(
+      text: string,
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      await this.assertAuthorized(this.extractSourceName(text), givens);
+   }
+
+   /**
+    * Gate a compiled query by the source it actually reads, resolved from the
+    * prepared query's `structRef` (authoritative — survives named-query / alias
+    * indirection that surface syntax misses). Used as the `/compile` backstop
+    * once a runnable exists.
+    */
+   public async assertAuthorizedForRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      await this.assertAuthorized(
+         await this.resolveAuthorizeSourceFromRunnable(runnable),
+         givens,
+      );
+   }
+
+   /**
     * Resolve the source a compiled query reads, from its prepared query's
     * `structRef`. This is authoritative — it survives named-query indirection
     * and bare `run: <query>` forms that surface-syntax extraction misses — so
