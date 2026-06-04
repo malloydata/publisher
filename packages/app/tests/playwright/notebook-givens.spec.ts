@@ -113,8 +113,23 @@ test.describe("notebook-givens", () => {
    test("description annotation surfaces as helper text", async ({ page }) => {
       await openGivensNotebook(page);
 
+      // Not exact: the helper line now also carries the `Default: …` caption.
       await expect(
-         page.getByText("Two-letter IATA carrier code", { exact: true }),
+         page.getByText("Two-letter IATA carrier code", { exact: false }),
+      ).toBeVisible();
+   });
+
+   test("model default surfaces as a helper line", async ({ page }) => {
+      await openGivensNotebook(page);
+
+      // target_code defaults to 'WN' (string literal unquoted) and cutoff to
+      // @2024-01-01 (date, @ stripped). Both shown as a Default caption while
+      // the inputs stay empty — the value still comes from the model default.
+      await expect(
+         page.getByText("Default: WN", { exact: false }),
+      ).toBeVisible();
+      await expect(
+         page.getByText("Default: 2024-01-01", { exact: false }),
       ).toBeVisible();
    });
 

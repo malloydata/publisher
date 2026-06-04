@@ -2870,6 +2870,13 @@ components:
           description: Annotations attached to the given declaration
           items:
             type: string
+        default:
+          type: string
+          description: The given's default value as a Malloy source literal
+            (e.g. `'WN'`, `2003`, `@2024-01-01`, `f'WN'`), exactly as written in
+            the model. Omitted when the given declares no default. Consumers
+            render or prefill it per the given's `type` (e.g. unquote a string
+            literal for a text input).
 
     Givens:
       type: object

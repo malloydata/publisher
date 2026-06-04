@@ -18,6 +18,7 @@
  * `ModelCompilationError`).
  */
 
+import { type GivenValue } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
 
 const SOURCE_PREFIX = "#(authorize)";
@@ -48,9 +49,68 @@ export function buildAuthorizeProbe(exprs: string[]): string {
   }`;
 }
 
+/**
+ * Strict, fail-closed truthiness for a probe result cell. DuckDB (the probe's
+ * connection) returns a native boolean, but normalize defensively: only a real
+ * `true` / SQL `1` / `"true"` grants access. null, undefined, `0`, `false`, a
+ * missing cell — anything else — denies.
+ */
+export function isProbeTrue(cell: unknown): boolean {
+   return cell === true || cell === 1 || cell === "true";
+}
+
 /** Minimal materializer surface needed to compile (not run) the probe. */
 interface AuthorizeProbeCompiler {
    loadQuery(query: string): { getPreparedQuery(): Promise<unknown> };
+}
+
+/** Minimal materializer surface needed to run the probe (the runtime gate). */
+interface AuthorizeProbeExecutor {
+   loadQuery(query: string): {
+      run(opts: {
+         rowLimit?: number;
+         givens?: Record<string, GivenValue>;
+      }): Promise<{ data: { value: ReadonlyArray<Record<string, unknown>> } }>;
+   };
+}
+
+/**
+ * Evaluate a source's authorize disjunction against the supplied givens.
+ * Returns true if ANY expression evaluates true (OR semantics).
+ *
+ * Each expression is probed INDEPENDENTLY rather than batched into one query.
+ * That is what preserves OR semantics: an expression that can't be evaluated —
+ * e.g. it references a given the request didn't supply, so Malloy throws "no
+ * value" — counts as "does not grant" (false), and the next disjunct is still
+ * tried. Batching them would let a missing given in one unused branch throw and
+ * sink the whole request (denying an admin who matched a different branch).
+ *
+ * Per-branch failures are swallowed to false (fail closed at the branch level);
+ * access is granted only if some branch genuinely returns true. Short-circuits
+ * on the first true. Returns false (→ caller denies) if none grant.
+ */
+export async function evaluateAuthorize(
+   executor: AuthorizeProbeExecutor,
+   exprs: string[],
+   givens: Record<string, GivenValue>,
+): Promise<boolean> {
+   for (const expr of exprs) {
+      try {
+         const result = await executor
+            .loadQuery(buildAuthorizeProbe([expr]))
+            .run({ rowLimit: 1, givens });
+         const row = result?.data?.value?.[0];
+         if (row && isProbeTrue(row.__auth_0)) {
+            return true;
+         }
+      } catch {
+         // This disjunct can't be evaluated (e.g. a referenced given has no
+         // value) — treat as not-granting and try the next. It does not fail
+         // the whole request, which is what keeps OR semantics intact.
+         continue;
+      }
+   }
+   return false;
 }
 
 /** A source plus its effective authorize expressions. */
