@@ -40,9 +40,18 @@ export function toReleaseVersion(raw) {
 
 /**
  * Resolve the full resolved spec of `@duckdb/node-api` from bun.lock, including
- * any pre-release/build suffix (e.g. "1.5.3-r.2"). This is the exact value an
- * npm dependency pin must carry. bun.lock is JSONC; match the spec directly
- * rather than parsing it.
+ * any pre-release/build suffix (e.g. "1.4.4-r.1"). This is the exact value an
+ * npm dependency pin must carry.
+ *
+ * The source of truth is the version `@malloydata/db-duckdb` (the query engine)
+ * resolves to, NOT a top-level entry -- our own server pin also produces a
+ * top-level `"@duckdb/node-api@..."` key, and pinning to that would just
+ * reflect our pin back at us. bun records a dependency's own resolution under a
+ * nested key like `"@malloydata/db-duckdb/@duckdb/node-api"`; prefer that. Only
+ * when there is no nested entry (engine already deduped to a single copy) do we
+ * fall back to the plain top-level entry.
+ *
+ * bun.lock is JSONC; match the spec strings directly rather than parsing it.
  */
 export function resolveDuckDBSpec(repoRoot = REPO_ROOT) {
   const lockPath = path.join(repoRoot, "bun.lock");
@@ -50,14 +59,27 @@ export function resolveDuckDBSpec(repoRoot = REPO_ROOT) {
     throw new Error(`bun.lock not found at ${lockPath}; run "bun install".`);
   }
   const lock = fs.readFileSync(lockPath, "utf8");
-  const match = lock.match(/"@duckdb\/node-api@(\d+\.\d+\.\d+[^"]*)"/);
-  if (!match) {
-    throw new Error(
-      '@duckdb/node-api not found in bun.lock. Run "bun install" first, or ' +
-        "confirm @malloydata/db-duckdb is a dependency.",
-    );
+
+  // The version Malloy actually runs on (nested under @malloydata/db-duckdb).
+  const malloy = lock.match(
+    /"@malloydata\/db-duckdb\/@duckdb\/node-api":\s*\["@duckdb\/node-api@(\d+\.\d+\.\d+[^"]*)"/,
+  );
+  if (malloy) {
+    return malloy[1];
   }
-  return match[1];
+
+  // Deduped to a single copy: the plain top-level entry is Malloy's version.
+  const plain = lock.match(
+    /"@duckdb\/node-api":\s*\["@duckdb\/node-api@(\d+\.\d+\.\d+[^"]*)"/,
+  );
+  if (plain) {
+    return plain[1];
+  }
+
+  throw new Error(
+    '@duckdb/node-api not found in bun.lock. Run "bun install" first, or ' +
+      "confirm @malloydata/db-duckdb is a dependency.",
+  );
 }
 
 /**
