@@ -423,7 +423,7 @@ describe("service/filter", () => {
          const query = "run: orders -> summary";
          const clause = "`status` = 'active'";
          expect(injectFilterRefinement(query, clause)).toBe(
-            "run: orders -> summary + {where: `status` = 'active'}",
+            "run: orders -> summary\n+ {where: `status` = 'active'}",
          );
       });
 
@@ -432,7 +432,7 @@ describe("service/filter", () => {
             "run: orders -> { group_by: status; aggregate: order_count }";
          const clause = "`region` = 'US'";
          expect(injectFilterRefinement(query, clause)).toBe(
-            "run: orders -> { group_by: status; aggregate: order_count } + {where: `region` = 'US'}",
+            "run: orders -> { group_by: status; aggregate: order_count }\n+ {where: `region` = 'US'}",
          );
       });
 
@@ -440,8 +440,19 @@ describe("service/filter", () => {
          const query = "run: orders -> summary   \n  ";
          const clause = "`status` = 'active'";
          expect(injectFilterRefinement(query, clause)).toBe(
-            "run: orders -> summary + {where: `status` = 'active'}",
+            "run: orders -> summary\n+ {where: `status` = 'active'}",
          );
+      });
+
+      it("places refinement on its own line so a trailing comment cannot swallow it", () => {
+         const clause = "`org_id` = 'acme'";
+         // A trailing line comment must not extend over the injected filter.
+         for (const comment of ["//", "-- sneaky"]) {
+            const query = `run: orders -> { group_by: status } ${comment}`;
+            const refined = injectFilterRefinement(query, clause);
+            const lastLine = refined.split("\n").pop() ?? "";
+            expect(lastLine).toBe(`+ {where: ${clause}}`);
+         }
       });
    });
 });

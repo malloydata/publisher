@@ -4,6 +4,7 @@ export * from "./Environment";
 export * from "./filter";
 export * from "./Home";
 export * from "./Loading";
+export * from "./Materializations";
 export * from "./Model";
 export * from "./Notebook";
 export * from "./Package";

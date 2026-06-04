@@ -64,11 +64,8 @@
  * cheaper than `JSON.stringify` for the multi-MB modelDef payloads.
  */
 
-import type {
-   Annotation,
-   SQLSourceDef,
-   TableSourceDef,
-} from "@malloydata/malloy";
+import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
+import type { AnnotationsDef } from "../service/annotations";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -236,7 +233,7 @@ export interface SchemaForTablesRequest {
    tables: Record<string, string>;
    options: {
       refreshTimestamp?: number;
-      modelAnnotation?: Annotation;
+      modelAnnotation?: AnnotationsDef;
    };
 }
 
@@ -256,7 +253,7 @@ export interface SchemaForSqlRequest {
    sentence: unknown;
    options: {
       refreshTimestamp?: number;
-      modelAnnotation?: Annotation;
+      modelAnnotation?: AnnotationsDef;
    };
 }
 

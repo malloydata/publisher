@@ -1,0 +1,76 @@
+/**
+ * Render a given's `default` (a raw Malloy source literal) for display in the
+ * input as placeholder / helper text. Returns undefined when there is no
+ * default to show.
+ *
+ * The server surfaces `Given.default` exactly as written in the model — one
+ * literal per type, e.g. `'WN'` / `"WN"` (string), `2003` (number), `true`
+ * (boolean), `@2024-01-01` (date), `f'WN'` (filter). For display we unquote
+ * string literals, drop the date `@` sigil, and unwrap single-value filter
+ * literals so the user sees `WN` / `2024-01-01` rather than the raw source form.
+ * Non-string scalars (number, boolean) and anything we don't special-case are
+ * shown verbatim.
+ *
+ * This only affects what the user *sees* — the value stays empty, so leaving
+ * the field blank still means "use the model default" (the server fills it in).
+ */
+export function renderGivenDefault(
+   type: string | undefined,
+   rawDefault: string | undefined,
+): string | undefined {
+   if (!rawDefault) return undefined;
+   const literal = rawDefault.trim();
+   if (!literal) return undefined;
+
+   const givenType = type ?? "string";
+
+   if (
+      givenType === "date" ||
+      givenType === "timestamp" ||
+      givenType === "timestamptz"
+   ) {
+      // `@2024-01-01` -> `2024-01-01`
+      return literal.replace(/^@/, "");
+   }
+
+   if (givenType.startsWith("filter<")) {
+      // Drop the filter-literal `f` prefix. A filter value is an expression, not
+      // a plain string, so only unquote when it's a single simple quoted literal
+      // (`f'WN'` -> `WN`); leave a compound expression (`f'WN','AA'`) verbatim
+      // rather than mangling it by stripping the outermost quotes.
+      const expr = literal.replace(/^f/, "");
+      const single = expr.match(/^'([^'\\]*)'$/) ?? expr.match(/^"([^"\\]*)"$/);
+      return single ? single[1] : expr;
+   }
+
+   if (givenType === "string") {
+      return unquoteStringLiteral(literal);
+   }
+
+   // number, boolean, array, or unknown: show the literal as authored.
+   return literal;
+}
+
+/**
+ * Strip the surrounding quotes from a Malloy string literal — single (`'WN'`)
+ * or double (`"WN"`), both valid Malloy string forms — and decode its escapes.
+ * Malloy strings use JSON-style backslash escapes (`\'`, `\"`, `\\`, `\n`),
+ * not SQL-style doubled quotes (see ParseUtil.parseString in @malloydata).
+ * Leaves a non-quoted input untouched.
+ */
+function unquoteStringLiteral(literal: string): string {
+   const quote = literal[0];
+   if (
+      literal.length >= 2 &&
+      (quote === "'" || quote === '"') &&
+      literal[literal.length - 1] === quote
+   ) {
+      return literal.slice(1, -1).replace(/\\(["'\\ntr])/g, (_match, c) => {
+         if (c === "n") return "\n";
+         if (c === "t") return "\t";
+         if (c === "r") return "\r";
+         return c; // \" \' \\ -> the bare character
+      });
+   }
+   return literal;
+}

@@ -2746,6 +2746,13 @@ components:
           description: Annotations attached to the given declaration
           items:
             type: string
+        default:
+          type: string
+          description: The given's default value as a Malloy source literal
+            (e.g. `'WN'`, `2003`, `@2024-01-01`, `f'WN'`), exactly as written in
+            the model. Omitted when the given declares no default. Consumers
+            render or prefill it per the given's `type` (e.g. unquote a string
+            literal for a text input).
 
     Givens:
       type: object
@@ -2785,6 +2792,16 @@ components:
             without a second lookup.
           items:
             $ref: "#/components/schemas/Given"
+        authorize:
+          type: array
+          description: Effective authorize expressions declared on this source via
+            `#(authorize)` / `##(authorize)` annotations — file-level expressions
+            first, then the source's own. Each is a Malloy boolean expression over
+            declared givens. Surfaced for introspection only; these expressions
+            are NOT yet enforced by the query path (enforcement lands in a later
+            release), so their presence does not currently restrict access.
+          items:
+            type: string
 
     QueryRequest:
       type: object

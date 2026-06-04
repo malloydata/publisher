@@ -1,6 +1,6 @@
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
 
-type ContentType = "report" | "model" | "data";
+type ContentType = "report" | "model" | "data" | "materialization";
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
    type: ContentType;
@@ -39,6 +39,7 @@ export default function ContentTypeIcon({
          {type === "report" && <FileChartPath />}
          {type === "model" && <BoxTopPath />}
          {type === "data" && <TablePath />}
+         {type === "materialization" && <StackPath />}
       </SvgIcon>
    );
 }
@@ -74,6 +75,17 @@ function TablePath() {
          <rect x="3.5" y="3.5" width="17" height="17" rx="2" />
          <path d="M3.5 9.5 H20.5" />
          <path d="M9.5 3.5 V20.5" />
+      </>
+   );
+}
+
+/** Stacked layers icon for materialized output tables. */
+function StackPath() {
+   return (
+      <>
+         <path d="M12 3 L21 7.5 L12 12 L3 7.5 Z" />
+         <path d="M3 12 L12 16.5 L21 12" />
+         <path d="M3 16.5 L12 21 L21 16.5" />
       </>
    );
 }

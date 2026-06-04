@@ -13,14 +13,18 @@
  * deps, so it's safe to bundle into the worker entry).
  */
 
+import type { Annotations } from "@malloydata/malloy";
+import { isReservedRoute } from "./annotations";
+
 /**
  * Duck-typed shape of a Malloy SDK `Given` instance (the value type
- * of `Model.givens`).
+ * of `Model.givens`). `Given` itself isn't re-exported from the
+ * package root, but the `Annotations` view it returns is.
  */
 export interface MalloyGiven {
    readonly name: string;
    readonly type: { type: string; filterType?: string };
-   getTaglines(prefix?: RegExp): string[];
+   readonly annotations: Annotations;
 }
 
 /**
@@ -32,6 +36,14 @@ export interface MalloyGivenApi {
    name: string;
    type: string;
    annotations?: string[];
+   /**
+    * The given's default as a Malloy source literal — one literal per declared
+    * `type`. Examples across the type range: `'WN'` or `"WN"` (string), `2003`
+    * (number), `true` (boolean), `@2024-01-01` (date), `f'WN'` (filter). Omitted
+    * when the given has no default. Consumers render/prefill it per `type` (e.g.
+    * unquote a string).
+    */
+   default?: string;
 }
 
 /**
@@ -46,16 +58,18 @@ export interface MalloyGivenApi {
  *   location either; matching that floor. A future PR can add a
  *   sanitised package-relative path if a client needs it.
  *
- * - `default` / `defaultText` — Malloy's API only exposes the
- *   parsed `ConstantExpr` AST, not a rendered source string.
- *   Rendering it here would duplicate the Malloy printer. Add
- *   when Malloy surfaces a stringified accessor.
+ * - `default` is surfaced as the rendered source literal
+ *   (`given._internal.defaultText` — e.g. a string `'WN'`, number
+ *   `2003`, boolean `true`, date `@2024-01-01`, or filter `f'WN'`).
+ *   Malloy's public surface still exposes only the parsed `.default`
+ *   AST; `_internal.defaultText` is the already-rendered string, so we
+ *   forward it verbatim rather than re-implement the printer. Omitted
+ *   when the given has no default.
  *
- * `annotations` is restricted to `#(...)` declaration annotations
- * (the caller-facing kind, e.g. `#(doc)`). `getTaglines()` with no
- * prefix would also return `##` doc-comment lines and the
- * model-level `##!` pragma, which aren't part of the given's
- * surface contract.
+ * `annotations` is restricted to app-route annotations (bracketed,
+ * caller-facing, e.g. `#(doc)`), excluding Malloy's reserved routes
+ * (plain `#` tags, `#"` doc strings, `##!` pragmas), which aren't part
+ * of the given's surface contract.
  *
  * Type rendering: `GivenTypeDef` is typed as `AtomicTypeDef |
  * FilterExpressionParamTypeDef`, but Malloy's grammar only emits
@@ -75,6 +89,17 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
    return {
       name: given.name,
       type: renderedType,
-      annotations: given.getTaglines(/^#\(/),
+      annotations: given.annotations
+         .forRoute(undefined)
+         .filter((note) => !isReservedRoute(note.route))
+         .map((note) => note.text),
+      // `_internal.defaultText` is the already-rendered source literal of the
+      // given's default. It lives on Malloy's private `_internal` (the public
+      // surface exposes only the parsed `.default` AST node, not a stringified
+      // form), so we reach it through a localized cast rather than widening the
+      // duck-typed `MalloyGiven` — which would collide with the SDK `Given`'s
+      // own private `_internal` at every `as MalloyGiven` cast site.
+      default: (given as { _internal?: { defaultText?: string } })._internal
+         ?.defaultText,
    };
 }

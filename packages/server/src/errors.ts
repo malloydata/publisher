@@ -6,6 +6,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(400, error.message);
    } else if (error instanceof FrozenConfigError) {
       return httpError(403, error.message);
+   } else if (error instanceof AccessDeniedError) {
+      return httpError(403, error.message);
    } else if (error instanceof EnvironmentNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof PackageNotFoundError) {
@@ -98,7 +100,10 @@ export class ConnectionAuthError extends Error {
 }
 
 export class ModelCompilationError extends Error {
-   constructor(error: MalloyError) {
+   // Accepts a MalloyError or any message-bearing object, so callers that add
+   // context around a compile failure (e.g. naming the source whose authorize
+   // annotation failed) can reuse this 424 mapping without a separate class.
+   constructor(error: { message: string }) {
       super(error.message);
    }
 }
@@ -108,6 +113,18 @@ export class FrozenConfigError extends Error {
       message = `Publisher config can't be updated when ${PUBLISHER_CONFIG_NAME} has { "frozenConfig": true }`,
    ) {
       super(message);
+   }
+}
+
+/**
+ * A request was denied by a source's `#(authorize)` gate (HTTP 403). Thrown by
+ * the runtime authorize check when no in-scope expression evaluates true for
+ * the supplied givens (including when a referenced given has no value).
+ */
+export class AccessDeniedError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "AccessDeniedError";
    }
 }
 

@@ -16,7 +16,8 @@
     "lint": "bunx eslint ./src --fix",
     "format": "bunx prettier --write --parser typescript 'src/**/*.{ts,tsx}'",
     "typecheck": "bun run tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test src/tests",
+    "test:integration": "bun test --timeout 200000 tests/integration --max-workers=1"
   },
   "dependencies": {
     "axios": "^1.7.7",

@@ -2,7 +2,9 @@ import ClearIcon from "@mui/icons-material/Clear";
 import {
    Autocomplete,
    Checkbox,
+   FormControl,
    FormControlLabel,
+   FormHelperText,
    IconButton,
    InputAdornment,
    TextField,
@@ -14,6 +16,7 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import { Given } from "../../client";
 import { GivenValue } from "../../hooks/useGivensForm";
+import { renderGivenDefault } from "./utils";
 
 dayjs.extend(utc);
 
@@ -61,25 +64,60 @@ function annotationHelperText(given: Given): string | undefined {
  * For text-based inputs (string, number, filter, default), a clear (×)
  * adornment appears when the field has a value. DatePicker, Checkbox, and
  * multi-Autocomplete have their own native clear affordances.
+ *
+ * A given's model default (if any) is surfaced as an always-visible
+ * `Default: …` helper line on every widget — including the boolean checkbox,
+ * which gets a wrapping FormControl for the slot — plus a ghost placeholder on
+ * the text widgets (a bonus MUI only reveals on focus, since the floating label
+ * sits in the placeholder's spot at rest). The value itself stays empty, so
+ * leaving the field blank still means "use the model default".
  */
 export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const label = given.name ?? "";
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
+   const defaultDisplay = renderGivenDefault(type, given.default);
+   // Always-visible default caption. Test `=== undefined`, not truthiness: an
+   // explicit empty-string default (`is ''`) renders as "" and must still show
+   // (as `(empty)`), not be mistaken for "no default".
+   const defaultLine =
+      defaultDisplay !== undefined
+         ? `Default: ${defaultDisplay === "" ? "(empty)" : defaultDisplay}`
+         : undefined;
+   // Render annotation and default on separate lines via an explicit <br/>
+   // rather than a \n + `white-space: pre-line`: the latter doesn't reach the
+   // TextField nested inside MUI's DatePicker, so the date helper ran together.
+   // A ReactNode helperText works uniformly across every widget.
+   const helperNode =
+      helperText || defaultLine ? (
+         <>
+            {helperText}
+            {helperText && defaultLine ? <br /> : null}
+            {defaultLine}
+         </>
+      ) : undefined;
 
    if (type === "boolean") {
       const checked = value === true;
-      // Checkbox wrapped in FormControlLabel — no helperText slot available.
+      // A checkbox has no helperText slot of its own and no "unset" visual, so
+      // wrap it in a FormControl to carry the annotation + `Default: …` line.
+      // This matters most for a `boolean is true` given: the box reads unchecked
+      // when untouched, but the query runs with the default, so the caption is
+      // what tells the user that. (The deeper "no unset state" checkbox quirk is
+      // a pre-existing givens limitation, not specific to defaults.)
       return (
-         <FormControlLabel
-            control={
-               <Checkbox
-                  checked={checked}
-                  onChange={(e) => onChange(e.target.checked)}
-               />
-            }
-            label={label}
-         />
+         <FormControl>
+            <FormControlLabel
+               control={
+                  <Checkbox
+                     checked={checked}
+                     onChange={(e) => onChange(e.target.checked)}
+                  />
+               }
+               label={label}
+            />
+            {helperNode && <FormHelperText>{helperNode}</FormHelperText>}
+         </FormControl>
       );
    }
 
@@ -94,7 +132,8 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                const v = e.target.value;
                onChange(v === "" ? null : Number(v));
             }}
-            helperText={helperText}
+            placeholder={defaultDisplay}
+            helperText={helperNode}
             slotProps={{
                input: {
                   endAdornment: num !== "" && (
@@ -110,6 +149,8 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
 
    if (type === "date" || type === "timestamp" || type === "timestamptz") {
       const dateValue = value instanceof Date ? dayjs.utc(value) : null;
+      // The date picker shows a format mask, not a placeholder, so the default
+      // rides on the shared helper line.
       return (
          <LocalizationProvider dateAdapter={AdapterDayjs}>
             <DatePicker
@@ -117,7 +158,11 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                value={dateValue}
                onChange={(next) => onChange(next ? next.toDate() : null)}
                slotProps={{
-                  textField: { fullWidth: true, size: "small", helperText },
+                  textField: {
+                     fullWidth: true,
+                     size: "small",
+                     helperText: helperNode,
+                  },
                   field: { clearable: true, onClear: () => onChange(null) },
                }}
             />
@@ -141,7 +186,8 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                   {...params}
                   label={label}
                   size="small"
-                  helperText={helperText}
+                  placeholder={list.length === 0 ? defaultDisplay : undefined}
+                  helperText={helperNode}
                />
             )}
             fullWidth
@@ -159,8 +205,10 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
             const v = e.target.value;
             onChange(v === "" ? null : v);
          }}
-         placeholder={type.startsWith("filter<") ? type : undefined}
-         helperText={helperText}
+         placeholder={
+            defaultDisplay ?? (type.startsWith("filter<") ? type : undefined)
+         }
+         helperText={helperNode}
          slotProps={{
             input: {
                endAdornment: str !== "" && (
