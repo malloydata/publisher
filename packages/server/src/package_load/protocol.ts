@@ -65,7 +65,6 @@
  */
 
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
-import type { AnnotationsDef } from "../service/annotations";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -233,7 +232,6 @@ export interface SchemaForTablesRequest {
    tables: Record<string, string>;
    options: {
       refreshTimestamp?: number;
-      modelAnnotation?: AnnotationsDef;
    };
 }
 
@@ -253,7 +251,6 @@ export interface SchemaForSqlRequest {
    sentence: unknown;
    options: {
       refreshTimestamp?: number;
-      modelAnnotation?: AnnotationsDef;
    };
 }
 

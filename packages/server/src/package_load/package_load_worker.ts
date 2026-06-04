@@ -80,7 +80,6 @@ import {
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
-import { type AnnotationsDef } from "../service/annotations";
 import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
 import {
@@ -273,17 +272,12 @@ class ProxyConnection {
 
 function serializeFetchOptions(options: FetchSchemaOptions): {
    refreshTimestamp?: number;
-   modelAnnotation?: AnnotationsDef;
 } {
    const out: {
       refreshTimestamp?: number;
-      modelAnnotation?: AnnotationsDef;
    } = {};
    if (options.refreshTimestamp !== undefined) {
       out.refreshTimestamp = options.refreshTimestamp;
-   }
-   if (options.modelAnnotations !== undefined) {
-      out.modelAnnotation = options.modelAnnotations;
    }
    return out;
 }
