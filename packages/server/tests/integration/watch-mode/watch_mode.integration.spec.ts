@@ -320,6 +320,42 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
       expect(recompiled).toBe(true);
    });
 
+   it("survives a transient compile error during reload and recovers", async () => {
+      // The most common watch action is saving a model mid-edit with a
+      // transient syntax error. That must not destroy the in-place mount: a
+      // failed-load cleanup that rm'd the mount symlink would brick the package
+      // until a restart. Write an invalid model, confirm the mount survives,
+      // then fix it and confirm the package recompiles and serves the new source.
+      const badPath = path.join(server!.srcDir, "broken.malloy");
+      fs.writeFileSync(badPath, "source: broken is duckdb.sql(\n"); // parse error
+
+      // Over a window long enough for the watcher to fire and fail the reload,
+      // the mounted package path must never disappear.
+      const mountGone = await poll(
+         async () => !fs.existsSync(server!.mountedPkgPath),
+         8_000,
+      );
+      expect(mountGone).toBe(false);
+
+      // Fix the model; the package must recompile (proving the mount, hence the
+      // live source, is still reachable) and serve the recovered source.
+      fs.writeFileSync(
+         badPath,
+         'source: recovered_source is duckdb.sql("SELECT 1 as n")\n',
+      );
+      const recovered = await poll(async () => {
+         const res = await fetch(apiUrl(baseUrl, "/models/broken.malloy"));
+         if (!res.ok) return false;
+         const model = (await res.json()) as {
+            sources?: Array<{ name?: string }>;
+         };
+         return (model.sources ?? []).some(
+            (s) => s.name === "recovered_source",
+         );
+      }, 25_000);
+      expect(recovered).toBe(true);
+   });
+
    // ── stop ──────────────────────────────────────────────────────────
 
    it("stops watching and reports disabled", async () => {

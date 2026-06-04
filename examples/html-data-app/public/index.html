@@ -203,7 +203,7 @@
   // queries that reuse the views defined in carriers.malloy.
   function whereClause(state) {
     const conds = [];
-    if (state.letter) conds.push(`letter = '${state.letter}'`);
+    if (state.letter) conds.push(`letter = '${state.letter.replace(/'/g, "''")}'`);
     if (state.bucket) conds.push(`size_bucket = '${state.bucket.replace(/'/g, "''")}'`);
     return conds.length ? `where: ${conds.join(" and ")}\n` : "";
   }

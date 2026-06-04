@@ -36,7 +36,11 @@ const MODEL_EXTS = new Set([".malloy", ".malloynb", ".md"]);
 export class WatchModeController {
    watchingPath: string | null;
    watchingEnvironmentName: string | null;
-   watcher: FSWatcher;
+   watcher: FSWatcher | null = null;
+   // Serializes ensureWatching so concurrent callers can't both close and
+   // recreate the watcher and orphan one (each chokidar watcher holds OS
+   // handles). See ensureWatching.
+   private setupChain: Promise<void> | null = null;
    /**
     * Per-package change bus. Event name is `<environmentName>/<packageName>`.
     * Used by the SSE live-reload endpoint to push refreshes to embedded HTML
@@ -65,15 +69,31 @@ export class WatchModeController {
       if (this.watchingEnvironmentName === environmentName && this.watcher) {
          return;
       }
-      const env = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const watchPath = env.getEnvironmentPath();
-      if (this.watcher) {
-         await this.watcher.close();
-      }
-      this.startWatcher(environmentName, watchPath);
+      // Serialize setup behind any in-flight one, then re-check the guard, so
+      // concurrent callers don't both close + recreate the watcher (which would
+      // orphan a chokidar instance and leak its OS file handles).
+      const run = (this.setupChain ?? Promise.resolve())
+         .catch(() => {})
+         .then(async () => {
+            if (
+               this.watchingEnvironmentName === environmentName &&
+               this.watcher
+            ) {
+               return;
+            }
+            const env = await this.environmentStore.getEnvironment(
+               environmentName,
+               false,
+            );
+            const watchPath = env.getEnvironmentPath();
+            if (this.watcher) {
+               await this.watcher.close();
+               this.watcher = null;
+            }
+            this.startWatcher(environmentName, watchPath);
+         });
+      this.setupChain = run;
+      await run;
    }
 
    /** Whether watch mode is currently running for the given env. */
@@ -214,6 +234,7 @@ export class WatchModeController {
    public stopWatchMode: Handler = async (_req, res) => {
       if (this.watcher) {
          await this.watcher.close();
+         this.watcher = null;
       }
       this.watchingPath = null;
       this.watchingEnvironmentName = null;

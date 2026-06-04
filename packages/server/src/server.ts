@@ -333,6 +333,7 @@ app.get("/sdk/publisher.js", (_req, res) => {
    // Short cache so live edits during local dev show up quickly. In
    // production this file is content-stable per release.
    res.setHeader("cache-control", "public, max-age=60");
+   res.setHeader("X-Content-Type-Options", "nosniff");
    res.sendFile(PUBLISHER_RUNTIME_PATH, (err) => {
       if (err) {
          logger.error("Failed to send publisher.js runtime", { error: err });
@@ -429,6 +430,8 @@ async function serveFromPackage(
          );
          res.removeHeader("X-Frame-Options");
       }
+      // Never let a served asset be MIME-sniffed into a different content type.
+      res.setHeader("X-Content-Type-Options", "nosniff");
       res.sendFile(realFullPath, (err) => {
          if (err) {
             // Own the 404 instead of letting Express fall through to a
@@ -698,6 +701,11 @@ app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
 // like `/api/v0/environments/%2e%2e/packages/x/events` from reaching the
 // EnvironmentStore at all. We reuse the shared sanitizer rather than a local
 // regex so the rules stay in one place (see path_safety.ts).
+// Cap concurrent live-reload SSE connections so the endpoint can't be used to
+// exhaust server sockets/memory with unbounded long-lived streams. Generous,
+// since legitimate use is one stream per open dashboard tab.
+const MAX_SSE_CONNECTIONS = 1000;
+let sseConnectionCount = 0;
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/events`,
    async (req, res) => {
@@ -713,6 +721,15 @@ app.get(
          res.status(status).json(json);
          return;
       }
+
+      if (sseConnectionCount >= MAX_SSE_CONNECTIONS) {
+         res.status(503).json({
+            code: 503,
+            message: "Too many live-reload connections; try again shortly.",
+         });
+         return;
+      }
+      sseConnectionCount++;
 
       res.set({
          "content-type": "text/event-stream",
@@ -739,6 +756,7 @@ app.get(
       const cleanup = () => {
          clearInterval(heartbeat);
          watchModeController.events.off(key, send);
+         sseConnectionCount--;
       };
       // "close" covers both clean and abrupt disconnects on Node >= 20.
       req.on("close", cleanup);

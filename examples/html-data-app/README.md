@@ -3,9 +3,8 @@
 Put your web files in a `public/` directory next to your `.malloy` files;
 Publisher serves them at `/environments/<env>/packages/<pkg>/<file>`. Only
 `public/` is served, so your models, data, and manifest stay private. Live
-reload, embeddable iframe, no build step. See
-[`docs/embedded-data-apps.md`](../../docs/embedded-data-apps.md) for the
-full design.
+reload, embeddable iframe, no build step. See the "In-package data apps"
+section of the Publisher README for the full reference.
 
 ## Files
 

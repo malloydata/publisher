@@ -95,6 +95,26 @@ function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    }
 }
 
+// Safely clear a prior mount target before (re)mounting at `targetPath`.
+// Distinguishes symlinks from real dirs: fs.rm's recursive mode could otherwise
+// traverse into a symlinked source and damage it, so unlink symlinks and rm real
+// dirs. Both the in-place (symlink) and copy mount paths call this, so toggling
+// watch mode across runs against the same publisher_data can't leave a stale
+// entry that breaks the next mount (mkdir is a no-op on a symlink and fs.cp then
+// throws ERR_FS_CP_DIR_TO_NON_DIR).
+async function clearMountTarget(targetPath: string): Promise<void> {
+   try {
+      const stats = await fs.promises.lstat(targetPath);
+      if (stats.isDirectory() && !stats.isSymbolicLink()) {
+         await fs.promises.rm(targetPath, { recursive: true, force: true });
+      } else {
+         await fs.promises.unlink(targetPath);
+      }
+   } catch {
+      // Nothing there, fine.
+   }
+}
+
 export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
@@ -1276,20 +1296,7 @@ export class EnvironmentStore {
                      this.inPlaceEnvs.has(environmentName) &&
                      this.isLocalPath(_package.location);
                   if (isInPlace) {
-                     try {
-                        const stats =
-                           await fs.promises.lstat(absolutePackagePath);
-                        if (stats.isSymbolicLink()) {
-                           await fs.promises.unlink(absolutePackagePath);
-                        } else if (stats.isDirectory()) {
-                           await fs.promises.rm(absolutePackagePath, {
-                              recursive: true,
-                              force: true,
-                           });
-                        }
-                     } catch (_e) {
-                        // Path doesn't exist — fine.
-                     }
+                     await clearMountTarget(absolutePackagePath);
                      const absoluteSourcePath = path.resolve(sourcePath);
                      // On Windows a "dir" symlink needs elevation
                      // (SeCreateSymbolicLinkPrivilege — admin or Developer
@@ -1319,6 +1326,7 @@ export class EnvironmentStore {
                         logger.warn(
                            `In-place mount failed for package "${packageDir}" (${code}); falling back to a copy. Source-edit live reload is disabled for this package.`,
                         );
+                        await clearMountTarget(absolutePackagePath);
                         await fs.promises.mkdir(absolutePackagePath, {
                            recursive: true,
                         });
@@ -1335,7 +1343,10 @@ export class EnvironmentStore {
                            `Watch mode: package "${packageDir}" has remote location "${_package.location}" — falling back to copy. Source-edit live reload won't work for this package; clone the source locally and use a local-dir location to enable it.`,
                         );
                      }
-                     // Copy the specific directory
+                     // Copy the specific directory. Clear any stale mount target
+                     // first (e.g. a symlink left by a prior --watch-env run), or
+                     // fs.cp would throw ERR_FS_CP_DIR_TO_NON_DIR onto it.
+                     await clearMountTarget(absolutePackagePath);
                      await fs.promises.mkdir(absolutePackagePath, {
                         recursive: true,
                      });
@@ -1348,6 +1359,7 @@ export class EnvironmentStore {
                   }
                } else {
                   // If source doesn't exist, copy the entire download as the package
+                  await clearMountTarget(absolutePackagePath);
                   await fs.promises.mkdir(absolutePackagePath, {
                      recursive: true,
                   });

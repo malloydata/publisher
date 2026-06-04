@@ -189,6 +189,7 @@ describe("In-package HTML data apps (E2E)", () => {
          "frame-ancestors *",
       );
       expect(res.headers.get("x-frame-options")).toBeNull();
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
    });
 
    it("does NOT set the framing CSP on non-HTML assets", async () => {
@@ -196,6 +197,7 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(res.status).toBe(200);
       // CSP framing is only meaningful on documents; assets keep their default.
       expect(res.headers.get("content-security-policy")).toBeNull();
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
    });
 
    it("404s a missing file", async () => {
@@ -244,6 +246,24 @@ describe("In-package HTML data apps (E2E)", () => {
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual([]);
+   });
+
+   it("rejects URL-encoded path traversal out of public/", async () => {
+      // Pre-encoded so the segments aren't normalized away before reaching the
+      // server. Whatever the rejection mode (safeJoinUnderRoot 400, realpath
+      // containment 403, or normalize-then-missing 404), package internals must
+      // never be served (never 200).
+      const encoded = [
+         "..%2f..%2freport.malloy",
+         "%2e%2e%2f%2e%2e%2fpublisher.json",
+         "..%2f..%2fdata.csv",
+      ];
+      for (const p of encoded) {
+         const res = await fetch(
+            `${baseUrl}/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/${p}`,
+         );
+         expect([400, 403, 404]).toContain(res.status);
+      }
    });
 
    itEscape(
