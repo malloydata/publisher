@@ -2,14 +2,14 @@
 
 /**
  * E2E coverage for in-package HTML data apps:
- *   - static-file serving (`serveFromPackage`) with realpath containment,
- *     manifest blocking (root + subdirectory), and HTML-only CSP framing,
+ *   - static-file serving (`serveFromPackage`) from the package's public/
+ *     directory only, with realpath containment and HTML-only CSP framing,
  *   - the `/pages` list endpoint (bare `Page[]`, the house list shape),
  *   - the `/events` SSE stream and its input validation.
  *
  * These routes touch the live filesystem and carry the security-relevant
- * branches (403 containment, 404 manifest block, 400 name validation), so
- * they're exercised against the real Express app rather than smoke-tested.
+ * branches (403 containment, 404 for files outside public/, 400 name
+ * validation), so they're exercised against the real Express app.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -23,22 +23,42 @@ const __dirname = path.dirname(__filename);
 
 const ENV_NAME = "html-pages-test-env";
 const PACKAGE_NAME = "html-pages-test";
+// A second package in the same env that ships NO public/ directory, to pin the
+// "package without public/" behavior (file requests 404, /pages returns []).
+const NOPUBLIC_PACKAGE = "html-pages-nopublic";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/html-pages-test");
-// The "malicious package" escape class: a symlink inside the package that
-// points outside it. We plant it in the *served* copy under publisher_data
-// AFTER the package mounts — never in the source fixture — so it never gets
-// routed through env-creation's `fs.cp`. (Copying an absolute-target symlink
-// is not portable across platforms and was breaking CI on Linux.) The package
-// is served from a copy (no --watch-env), at <SERVER_ROOT>/publisher_data/
-// <env>/<pkg>; SERVER_ROOT defaults to the server package dir under `bun test`.
+const nopublicFixtureDir = path.resolve(
+   __dirname,
+   "../../fixtures/html-pages-nopublic",
+);
+// The "malicious package" escape class: a symlink inside the served public/
+// directory that points outside it. We plant it in the *served* copy under
+// publisher_data AFTER the package mounts — never in the source fixture — so it
+// never gets routed through env-creation's `fs.cp`. (Copying an absolute-target
+// symlink is not portable across platforms and was breaking CI on Linux.) The
+// package is served from a copy (no --watch-env), at <SERVER_ROOT>/
+// publisher_data/<env>/<pkg>/public; SERVER_ROOT defaults to the server package
+// dir under `bun test`.
 const serverPkgRoot = path.resolve(__dirname, "../../..");
 const servedEscapeLink = path.join(
    serverPkgRoot,
    "publisher_data",
    ENV_NAME,
    PACKAGE_NAME,
+   "public",
    "escape.html",
+);
+// A second planted symlink: the realistic "escape public/" vector, a link
+// inside public/ pointing at a package-root sibling (../report.malloy). It must
+// be rejected (403) just like the absolute /etc/hosts escape above.
+const servedSiblingLink = path.join(
+   serverPkgRoot,
+   "publisher_data",
+   ENV_NAME,
+   PACKAGE_NAME,
+   "public",
+   "leak.html",
 );
 
 interface PageItem {
@@ -76,7 +96,10 @@ describe("In-package HTML data apps (E2E)", () => {
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
             name: ENV_NAME,
-            packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
+            packages: [
+               { name: PACKAGE_NAME, location: fixtureDir },
+               { name: NOPUBLIC_PACKAGE, location: nopublicFixtureDir },
+            ],
             connections: [],
          }),
       });
@@ -87,36 +110,41 @@ describe("In-package HTML data apps (E2E)", () => {
          );
       }
 
-      const deadline = Date.now() + 30_000;
-      let pkgReady = false;
-      while (!pkgReady && Date.now() < deadline) {
-         try {
-            const res = await fetch(
-               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
-            );
-            if (res.ok) {
-               pkgReady = true;
-               break;
+      const waitForPackage = async (pkg: string) => {
+         const deadline = Date.now() + 30_000;
+         while (Date.now() < deadline) {
+            try {
+               const res = await fetch(
+                  `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}`,
+               );
+               if (res.ok) return;
+            } catch {
+               // not ready yet
             }
-         } catch {
-            // not ready yet
+            await new Promise((r) => setTimeout(r, 500));
          }
-         await new Promise((r) => setTimeout(r, 500));
-      }
-      if (!pkgReady) {
-         throw new Error("Test package did not become available in time");
-      }
+         throw new Error(`Package ${pkg} did not become available in time`);
+      };
+      await waitForPackage(PACKAGE_NAME);
+      await waitForPackage(NOPUBLIC_PACKAGE);
 
-      // Now that the package is mounted, plant the escape symlink directly in
-      // the served copy (post-fs.cp). Creating a symlink is portable; copying
-      // one is not — see the note on servedEscapeLink. Skipped on Windows,
-      // where the matching test (itEscape) is skipped too.
+      // Now that the package is mounted, plant the escape symlinks directly in
+      // the served public/ copy (post-fs.cp): one pointing fully outside the
+      // package (/etc/hosts) and one at a package-root sibling (../report.malloy),
+      // the realistic "escape public/" vector. Unlink any stale link first, then
+      // create fresh WITHOUT swallowing errors, so a failed plant fails the suite
+      // loudly instead of silently skipping the security-critical assertions.
+      // Skipped on Windows, where the matching tests (itEscape) are skipped too.
       if (!isWindows) {
-         try {
-            fs.symlinkSync("/etc/hosts", servedEscapeLink);
-         } catch {
-            // may already exist from a previous run
+         for (const link of [servedEscapeLink, servedSiblingLink]) {
+            try {
+               fs.unlinkSync(link);
+            } catch {
+               // no stale link to remove
+            }
          }
+         fs.symlinkSync("/etc/hosts", servedEscapeLink);
+         fs.symlinkSync("../report.malloy", servedSiblingLink);
       }
    });
 
@@ -134,10 +162,12 @@ describe("In-package HTML data apps (E2E)", () => {
       }
       // DELETE removes the served dir (and the symlink within it); this is a
       // belt-and-suspenders unlink in case the env was never created.
-      try {
-         fs.unlinkSync(servedEscapeLink);
-      } catch {
-         // best-effort
+      for (const link of [servedEscapeLink, servedSiblingLink]) {
+         try {
+            fs.unlinkSync(link);
+         } catch {
+            // best-effort
+         }
       }
       await env?.stop();
       env = null;
@@ -173,51 +203,19 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
-   it("blocks the root publisher.json manifest", async () => {
-      const res = await fetch(pkgUrl("/publisher.json"));
-      expect(res.status).toBe(404);
-   });
-
-   it("blocks a publisher.json manifest in a subdirectory", async () => {
-      const res = await fetch(pkgUrl("/sub/publisher.json"));
-      expect(res.status).toBe(404);
-   });
-
-   it("blocks the manifest case-insensitively (Publisher.JSON)", async () => {
-      // On case-insensitive filesystems (macOS, Windows) a case-variant name
-      // resolves to the real publisher.json, so the guard must still 404 it;
-      // the manifest can hold connection secrets and must stay private.
-      // NOTE: on case-sensitive Linux this passes trivially (Publisher.JSON is
-      // a 404 miss); the guard is genuinely exercised on the macos-latest and
-      // windows-latest jobs in cross-platform-tests.yml.
-      const root = await fetch(pkgUrl("/Publisher.JSON"));
-      expect(root.status).toBe(404);
-      const nested = await fetch(pkgUrl("/sub/Publisher.JSON"));
-      expect(nested.status).toBe(404);
-   });
-
    it("serves a page from a subdirectory", async () => {
       const res = await fetch(pkgUrl("/sub/page2.html"));
       expect(res.status).toBe(200);
       expect(await res.text()).toContain("A page in a subdirectory");
    });
 
-   it("serves only allowlisted asset types (blocks raw data, source, and secrets)", async () => {
-      // Positive control: an allowlisted asset is served, so the 404s below are
-      // the allowlist denying a present file, not a missing-file 404.
-      expect((await fetch(pkgUrl("/assets/app.css"))).status).toBe(200);
-
-      // Each fixture exists in the package (asserted), so its 404 proves the
-      // deny-by-default allowlist blocked it. Covers raw data (.csv; .parquet
-      // and .duckdb take the same extension path), model source (.malloy), a
-      // JSON-format secret, and an extension-less secret (the empty-extname
-      // deny path that also catches dotfile secrets like .env).
-      const blocked = [
-         "data.csv",
-         "report.malloy",
-         "credentials.json",
-         "secrets",
-      ];
+   it("serves only files under public/; package internals are never served", async () => {
+      // The manifest, models, and data live at the package root, outside
+      // public/. Each exists in the fixture (asserted), so the 404 proves the
+      // public/ boundary blocked it, not a missing file. This is what keeps
+      // raw data, model source, and secrets off the static route and behind
+      // the per-model #(authorize) and query controls.
+      const blocked = ["publisher.json", "report.malloy", "data.csv"];
       for (const name of blocked) {
          expect(fs.existsSync(path.join(fixtureDir, name))).toBe(true);
          const res = await fetch(pkgUrl(`/${name}`));
@@ -225,10 +223,47 @@ describe("In-package HTML data apps (E2E)", () => {
       }
    });
 
+   it("serves any file type placed under public/ (no extension filter)", async () => {
+      // public/ is the boundary, not a file-extension allowlist: a data-typed
+      // file the author deliberately put under public/ is served. (Raw data at
+      // the package root is still never served, per the test above.)
+      const res = await fetch(pkgUrl("/data.json"));
+      expect(res.status).toBe(200);
+   });
+
+   it("404s file requests for a package with no public/ directory", async () => {
+      const res = await fetch(
+         `${baseUrl}/environments/${ENV_NAME}/packages/${NOPUBLIC_PACKAGE}/index.html`,
+      );
+      expect(res.status).toBe(404);
+   });
+
+   it("lists no pages for a package with no public/ directory", async () => {
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${NOPUBLIC_PACKAGE}/pages`,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([]);
+   });
+
    itEscape(
-      "rejects a symlink that escapes the package root with 403",
+      "rejects a symlink in public/ that escapes the package with 403",
       async () => {
+         // Precondition: the plant succeeded, so a 403 means realpath
+         // containment caught the escape, not a missing-file 404.
+         expect(fs.lstatSync(servedEscapeLink).isSymbolicLink()).toBe(true);
          const res = await fetch(pkgUrl("/escape.html"));
+         expect(res.status).toBe(403);
+      },
+   );
+
+   itEscape(
+      "rejects a symlink from public/ to a package-root sibling with 403",
+      async () => {
+         // The realistic escape: public/leak.html -> ../report.malloy reaches a
+         // file at the package root, outside public/. Must be 403, not served.
+         expect(fs.lstatSync(servedSiblingLink).isSymbolicLink()).toBe(true);
+         const res = await fetch(pkgUrl("/leak.html"));
          expect(res.status).toBe(403);
       },
    );
@@ -243,10 +278,9 @@ describe("In-package HTML data apps (E2E)", () => {
 
       const pages = body as PageItem[];
       const paths = pages.map((p) => p.path).sort();
+      // Only HTML files under public/ are listed; the toEqual pins the exact
+      // set, so non-public files (manifest, models, data) can't appear.
       expect(paths).toEqual(["index.html", "sub/page2.html"]);
-      // Manifests (root or nested) are never listed as pages.
-      expect(paths).not.toContain("publisher.json");
-      expect(paths).not.toContain("sub/publisher.json");
 
       const index = pages.find((p) => p.path === "index.html");
       expect(index?.title).toBe("Carrier Dashboard");

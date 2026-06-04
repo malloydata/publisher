@@ -1,20 +1,21 @@
 # html-data-app — example in-package data app
 
-Drop an `index.html` next to your `.malloy` files; Publisher serves it at
-`/environments/<env>/packages/<pkg>/index.html`. Live reload, embeddable
-iframe, no build step. See
+Put your web files in a `public/` directory next to your `.malloy` files;
+Publisher serves them at `/environments/<env>/packages/<pkg>/<file>`. Only
+`public/` is served, so your models, data, and manifest stay private. Live
+reload, embeddable iframe, no build step. See
 [`docs/embedded-data-apps.md`](../../docs/embedded-data-apps.md) for the
 full design.
 
 ## Files
 
-- `publisher.json` — package manifest.
-- `carriers.malloy` — the semantic model.
-- `carriers.parquet` — the data.
-- `index.html` — Chart.js dashboard with KPI tiles, two charts, a data
-  table, and three dropdown filters. Calls `Publisher.query()` to talk to
-  the Publisher API.
-- `embed-test.html` — host page that demonstrates `Publisher.embed()`
+- `publisher.json`: package manifest (stays at the package root, not served).
+- `carriers.malloy`: the semantic model (root, not served).
+- `carriers.parquet`: the data (root, not served).
+- `public/index.html`: Chart.js dashboard with KPI tiles, two charts, a data
+  table, and three dropdown filters. Calls `Publisher.query()` to talk to the
+  Publisher API.
+- `public/embed-test.html`: host page that demonstrates `Publisher.embed()`
   iframing the dashboard.
 
 ## Try it
@@ -50,7 +51,7 @@ SERVER_ROOT=/tmp/publisher-demo \
 Then open <http://localhost:4000/environments/demo/packages/html-data-app/>.
 
 Edit `/tmp/publisher-demo/html-data-app/carriers.malloy` (e.g. tweak a `limit:`)
-or `index.html`, save, and the open browser tab auto-reloads with the change.
+or `public/index.html`, save, and the open browser tab auto-reloads with the change.
 
 The embed demo is at <http://localhost:4000/environments/demo/packages/html-data-app/embed-test.html>.
 

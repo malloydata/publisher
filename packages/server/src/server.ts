@@ -47,7 +47,7 @@ import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
 import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
-import { assertSafePackageName } from "./path_safety";
+import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 
 export { normalizeQueryArray } from "./query_param_utils";
 
@@ -348,32 +348,13 @@ app.get("/sdk/publisher.js", (_req, res) => {
 // missing files, because doing so would mask 404s (and in dev mode the SPA
 // catch-all errors out before it can reply). Behavior:
 //   - `/environments/<env>/packages/<pkg>`      → 302 to `…/<pkg>/`
-//   - `/environments/<env>/packages/<pkg>/`     → serve `<pkgRoot>/index.html`
-//   - `/environments/<env>/packages/<pkg>/foo/` → serve `<pkgRoot>/foo/index.html`
-//   - `/environments/<env>/packages/<pkg>/<file>` → serve that file, or 404
-//   - `…/publisher.json` → 404 (manifest is private)
-// Web-asset types that serveFromPackage may hand out. Deny-by-default: anything
-// not listed (raw data like .parquet/.csv/.duckdb, model source like .malloy/
-// .malloynb, and extension-less files such as dotfile secrets) is 404'd, so
-// package data cannot be downloaded around the per-model #(authorize) and query
-// controls. Excludes .json, since a service-account/credentials JSON is a common
-// secret format and real data belongs behind the query API.
-const SERVABLE_EXTS = new Set([
-   ".html",
-   ".htm",
-   ".css",
-   ".js",
-   ".mjs",
-   ".png",
-   ".jpg",
-   ".jpeg",
-   ".gif",
-   ".svg",
-   ".webp",
-   ".ico",
-   ".woff",
-   ".woff2",
-]);
+//   - `/environments/<env>/packages/<pkg>/`     → serve `<pkgRoot>/public/index.html`
+//   - `/environments/<env>/packages/<pkg>/foo/` → serve `<pkgRoot>/public/foo/index.html`
+//   - `/environments/<env>/packages/<pkg>/<file>` → serve `<pkgRoot>/public/<file>`, or 404
+// Only the package's `public/` directory is web-served. Models, data files, and
+// the publisher.json manifest live outside it and are never reachable here, so
+// nothing can be downloaded around the per-model #(authorize) and query
+// controls. The data stays reachable through the permission-checked query path.
 
 async function serveFromPackage(
    req: express.Request,
@@ -386,7 +367,11 @@ async function serveFromPackage(
          false,
       );
       const pkg = await environment.getPackage(req.params.packageName, false);
-      const pkgRoot = pkg.getPackagePath();
+      // Only the package's public/ directory is web-served. Models, data, and
+      // the publisher.json manifest live outside it and are never reachable
+      // through this route. This single directory boundary is the whole
+      // access-control story for static files.
+      const publicRoot = path.join(pkg.getPackagePath(), "public");
 
       // Directory-style fallback: empty path or trailing slash → look for
       // index.html within that directory.
@@ -395,59 +380,39 @@ async function serveFromPackage(
          subPath = subPath + "index.html";
       }
 
-      const fullPath = path.resolve(pkgRoot, subPath);
+      // Resolve the requested file under public/ and reject anything that
+      // escapes it (`..`, encoded traversal) before touching the disk.
+      // safeJoinUnderRoot is the shared lexical-containment primitive (it throws
+      // BadRequestError on escape, surfaced as 400 by the outer catch); the
+      // realpath check below additionally catches symlinks inside public/ that
+      // point outward (403).
+      const fullPath = safeJoinUnderRoot(publicRoot, subPath);
 
-      // Block manifest fetches by URL name before any filesystem touch.
-      // Match by basename so a manifest in any subdirectory is private too,
-      // not just the package-root one, and compare case-insensitively so it
-      // stays private on case-insensitive filesystems (macOS, Windows), where
-      // a request for `Publisher.JSON` would otherwise resolve to the file.
-      const urlRel = path.relative(pkgRoot, fullPath);
-      if (path.basename(urlRel).toLowerCase() === "publisher.json") {
-         res.status(404).end();
-         return;
-      }
-
-      // Containment check via realpath. This catches three classes of escape:
-      //   1. URL path traversal (../../etc/passwd) — path.resolve normalizes,
-      //      then realpath returns the absolute target.
-      //   2. Symlinks INSIDE the package pointing out (e.g. a malicious package
-      //      shipping `leak -> /etc/passwd`) — realpath follows links, so
-      //      the resolved target is outside realPkgRoot and is rejected.
-      //   3. The package root being itself a symlink (which is exactly how
-      //      watch-mode in-place mount works) — realpath transparently
-      //      resolves it; legitimate accesses inside the symlinked source
-      //      stay within realPkgRoot and pass.
-      // Missing-file handling: realpath throws on ENOENT; we 404 cleanly
-      // instead of leaking via Express's default error handler.
+      // Containment check via realpath against the resolved public/ root.
+      // Catches symlinks inside public/ that point out (e.g. a malicious
+      // package shipping `public/leak -> /etc/passwd`), and tolerates the
+      // package root itself being a symlink (how watch-mode in-place mount
+      // works): realpath resolves it transparently and legitimate accesses
+      // inside public/ stay within realPublicRoot. Missing public/ dir or
+      // missing file: realpath throws ENOENT and we 404 cleanly instead of
+      // leaking via Express's default error handler.
       const fsp = await import("fs/promises");
-      let realPkgRoot: string;
+      let realPublicRoot: string;
       let realFullPath: string;
       try {
-         realPkgRoot = await fsp.realpath(pkgRoot);
+         realPublicRoot = await fsp.realpath(publicRoot);
          realFullPath = await fsp.realpath(fullPath);
       } catch {
          if (!res.headersSent) {
-            res.status(404)
-               .type("text/plain")
-               .send(
-                  `Not found in package ${req.params.packageName}: ${subPath}`,
-               );
+            // Generic 404 with no reflected request input (avoids reflecting
+            // user-controlled path/package name into the response body).
+            res.status(404).end();
          }
          return;
       }
-      const rel = path.relative(realPkgRoot, realFullPath);
+      const rel = path.relative(realPublicRoot, realFullPath);
       if (rel.startsWith("..") || path.isAbsolute(rel)) {
          res.status(403).end();
-         return;
-      }
-
-      // Deny-by-default: only SERVABLE_EXTS are served (see its definition for
-      // the rationale, including the .json exclusion). 404 rather than 403 so we
-      // don't confirm the file exists. publisher.json is already blocked above.
-      const ext = path.extname(realFullPath).toLowerCase();
-      if (!SERVABLE_EXTS.has(ext)) {
-         res.status(404).end();
          return;
       }
 
@@ -455,6 +420,7 @@ async function serveFromPackage(
       // image assets is meaningless and needlessly strips their default
       // SAMEORIGIN protection. Embeddability defaults to "*" so same-tenant
       // embeds work out of the box, and is overridable via PUBLISHER_FRAME_ANCESTORS.
+      const ext = path.extname(realFullPath).toLowerCase();
       if (ext === ".html" || ext === ".htm") {
          const frameAncestors = process.env.PUBLISHER_FRAME_ANCESTORS || "*";
          res.setHeader(
@@ -468,11 +434,8 @@ async function serveFromPackage(
             // Own the 404 instead of letting Express fall through to a
             // catch-all that may error.
             if (!res.headersSent) {
-               res.status(404)
-                  .type("text/plain")
-                  .send(
-                     `Not found in package ${req.params.packageName}: ${subPath}`,
-                  );
+               // Generic 404, no reflected request input (see above).
+               res.status(404).end();
             }
          }
       });
@@ -532,18 +495,19 @@ type PageItem = {
 async function listPackagePages(
    environmentName: string,
    packageName: string,
-   pkgRoot: string,
+   publicRoot: string,
 ): Promise<PageItem[]> {
    const fs = await import("fs/promises");
    const out: PageItem[] = [];
 
-   // Resolve pkgRoot once and reject any entry whose realpath escapes it.
-   // Same containment defense as serveFromPackage — catches symlinks inside
-   // the package pointing outside (e.g. `leak -> /etc/passwd`) before we
-   // open and read the target's first 4KB for title extraction.
-   let realPkgRoot: string;
+   // Resolve the public/ root once and reject any entry whose realpath escapes
+   // it. Same containment defense as serveFromPackage: catches symlinks inside
+   // public/ pointing outside (e.g. `public/leak -> ../report.malloy`) before we
+   // open and read the target's first 4KB for title extraction. A package with
+   // no public/ dir fails realpath here and yields an empty list.
+   let realPublicRoot: string;
    try {
-      realPkgRoot = await fs.realpath(pkgRoot);
+      realPublicRoot = await fs.realpath(publicRoot);
    } catch {
       return out;
    }
@@ -566,7 +530,7 @@ async function listPackagePages(
          } catch {
             continue;
          }
-         const contained = path.relative(realPkgRoot, realFull);
+         const contained = path.relative(realPublicRoot, realFull);
          if (contained.startsWith("..") || path.isAbsolute(contained)) continue;
          if (entry.isDirectory()) {
             await walk(full, depth + 1);
@@ -574,7 +538,7 @@ async function listPackagePages(
             entry.isFile() &&
             (entry.name.endsWith(".html") || entry.name.endsWith(".htm"))
          ) {
-            const rel = path.relative(pkgRoot, full).replace(/\\/g, "/");
+            const rel = path.relative(publicRoot, full).replace(/\\/g, "/");
             // Cheap title extraction: read first 4KB and grep for <title>.
             let title = rel;
             try {
@@ -601,7 +565,7 @@ async function listPackagePages(
       }
    }
 
-   await walk(pkgRoot, 0);
+   await walk(publicRoot, 0);
    out.sort((a, b) => {
       // Surface index.html first, then alphabetical.
       if (a.path === "index.html") return -1;
@@ -690,7 +654,7 @@ app.get(
          const pages = await listPackagePages(
             req.params.environmentName,
             req.params.packageName,
-            pkg.getPackagePath(),
+            path.join(pkg.getPackagePath(), "public"),
          );
          res.json(pages);
       } catch (error) {

@@ -295,7 +295,7 @@ The publisher exports OpenTelemetry metrics (under the `publisher` meter) so the
 
 ## In-package data apps
 
-A package can ship an `index.html` (plus CSS, JS, and other assets) alongside its `.malloy` files. Publisher serves those files at `/environments/<env>/packages/<pkg>/<file>` and lists them at `GET .../packages/<pkg>/pages`. Pages render inside the Publisher app by default and can also be embedded in another page as an auto-resizing iframe. A small runtime at `/sdk/publisher.js` exposes `Publisher.query(...)` and `Publisher.embed(...)` for talking to the REST API from the page, with no build step.
+A package can ship a `public/` directory of web files (an `index.html` plus CSS, JS, and images) next to its `.malloy` files. Publisher serves only that directory at `/environments/<env>/packages/<pkg>/<file>`, so models, data, and the `publisher.json` manifest stay private and are reachable only through the query API. It lists the pages at `GET .../packages/<pkg>/pages`. Pages render inside the Publisher app by default and can also be embedded in another page as an auto-resizing iframe. A small runtime at `/sdk/publisher.js` exposes `Publisher.query(...)` and `Publisher.embed(...)` for talking to the REST API from the page, with no build step.
 
 For local development, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`). Publisher then mounts that environment's local-dir packages in place and watches them: editing a `.malloy` recompiles the package, editing an asset refreshes the page, and open pages live-reload over a server-sent-events stream at `GET .../packages/<pkg>/events`. See `examples/html-data-app/` for a worked example.
 

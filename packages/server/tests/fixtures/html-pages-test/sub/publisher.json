@@ -1,4 +1,0 @@
-{
-  "name": "nested-manifest-should-be-blocked",
-  "secret": "this nested manifest must NOT be served"
-}
