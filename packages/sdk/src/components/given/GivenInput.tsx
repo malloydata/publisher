@@ -77,20 +77,25 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
    const defaultDisplay = renderGivenDefault(type, given.default);
-   // Append the default as an always-visible helper line. The ghost placeholder
-   // on text inputs is hidden behind MUI's floating label until focus, so this
-   // caption is what communicates the default at rest. Test `=== undefined`,
-   // not truthiness: an explicit empty-string default (`is ''`) renders as ""
-   // and must still show (as `(empty)`), not be mistaken for "no default".
-   const helperWithDefault =
+   // Always-visible default caption. Test `=== undefined`, not truthiness: an
+   // explicit empty-string default (`is ''`) renders as "" and must still show
+   // (as `(empty)`), not be mistaken for "no default".
+   const defaultLine =
       defaultDisplay !== undefined
-         ? [
-              helperText,
-              `Default: ${defaultDisplay === "" ? "(empty)" : defaultDisplay}`,
-           ]
-              .filter(Boolean)
-              .join("\n")
-         : helperText;
+         ? `Default: ${defaultDisplay === "" ? "(empty)" : defaultDisplay}`
+         : undefined;
+   // Render annotation and default on separate lines via an explicit <br/>
+   // rather than a \n + `white-space: pre-line`: the latter doesn't reach the
+   // TextField nested inside MUI's DatePicker, so the date helper ran together.
+   // A ReactNode helperText works uniformly across every widget.
+   const helperNode =
+      helperText || defaultLine ? (
+         <>
+            {helperText}
+            {helperText && defaultLine ? <br /> : null}
+            {defaultLine}
+         </>
+      ) : undefined;
 
    if (type === "boolean") {
       const checked = value === true;
@@ -111,11 +116,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                }
                label={label}
             />
-            {helperWithDefault && (
-               <FormHelperText sx={{ whiteSpace: "pre-line" }}>
-                  {helperWithDefault}
-               </FormHelperText>
-            )}
+            {helperNode && <FormHelperText>{helperNode}</FormHelperText>}
          </FormControl>
       );
    }
@@ -132,7 +133,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                onChange(v === "" ? null : Number(v));
             }}
             placeholder={defaultDisplay}
-            helperText={helperWithDefault}
+            helperText={helperNode}
             slotProps={{
                input: {
                   endAdornment: num !== "" && (
@@ -160,7 +161,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                   textField: {
                      fullWidth: true,
                      size: "small",
-                     helperText: helperWithDefault,
+                     helperText: helperNode,
                   },
                   field: { clearable: true, onClear: () => onChange(null) },
                }}
@@ -186,7 +187,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                   label={label}
                   size="small"
                   placeholder={list.length === 0 ? defaultDisplay : undefined}
-                  helperText={helperWithDefault}
+                  helperText={helperNode}
                />
             )}
             fullWidth
@@ -207,7 +208,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
          placeholder={
             defaultDisplay ?? (type.startsWith("filter<") ? type : undefined)
          }
-         helperText={helperWithDefault}
+         helperText={helperNode}
          slotProps={{
             input: {
                endAdornment: str !== "" && (

@@ -24,8 +24,13 @@ describe("renderGivenDefault", () => {
       );
    });
 
-   it("unwraps a filter literal", () => {
+   it("unwraps a single-value filter literal but leaves a compound one verbatim", () => {
       expect(renderGivenDefault("filter<string>", "f'WN'")).toBe("WN");
+      // A compound filter expression is not a plain string — keep it intact
+      // instead of mangling the outer quotes.
+      expect(renderGivenDefault("filter<string>", "f'WN','AA'")).toBe(
+         "'WN','AA'",
+      );
    });
 
    it("shows numbers and booleans verbatim", () => {

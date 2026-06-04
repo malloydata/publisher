@@ -32,8 +32,13 @@ export function renderGivenDefault(
    }
 
    if (givenType.startsWith("filter<")) {
-      // `f'WN'` -> `WN`: drop the filter-literal `f` prefix, then unquote.
-      return unquoteStringLiteral(literal.replace(/^f/, ""));
+      // Drop the filter-literal `f` prefix. A filter value is an expression, not
+      // a plain string, so only unquote when it's a single simple quoted literal
+      // (`f'WN'` -> `WN`); leave a compound expression (`f'WN','AA'`) verbatim
+      // rather than mangling it by stripping the outermost quotes.
+      const expr = literal.replace(/^f/, "");
+      const single = expr.match(/^'([^'\\]*)'$/) ?? expr.match(/^"([^"\\]*)"$/);
+      return single ? single[1] : expr;
    }
 
    if (givenType === "string") {
