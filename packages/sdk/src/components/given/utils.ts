@@ -3,11 +3,13 @@
  * input as placeholder / helper text. Returns undefined when there is no
  * default to show.
  *
- * The server surfaces `Given.default` exactly as written in the model
- * (`'WN'`, `2003`, `@2024-01-01`, `f'WN'`). For display we unquote string
- * literals, drop the date `@` sigil, and unwrap filter literals so the user
- * sees `WN` / `2024-01-01` rather than the raw source form. Non-string scalars
- * (number, boolean) and anything we don't special-case are shown verbatim.
+ * The server surfaces `Given.default` exactly as written in the model — one
+ * literal per type, e.g. `'WN'` / `"WN"` (string), `2003` (number), `true`
+ * (boolean), `@2024-01-01` (date), `f'WN'` (filter). For display we unquote
+ * string literals, drop the date `@` sigil, and unwrap single-value filter
+ * literals so the user sees `WN` / `2024-01-01` rather than the raw source form.
+ * Non-string scalars (number, boolean) and anything we don't special-case are
+ * shown verbatim.
  *
  * This only affects what the user *sees* — the value stays empty, so leaving
  * the field blank still means "use the model default" (the server fills it in).

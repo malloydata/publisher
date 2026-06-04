@@ -37,9 +37,11 @@ export interface MalloyGivenApi {
    type: string;
    annotations?: string[];
    /**
-    * The given's default as a Malloy source literal (`'WN'`, `2003`,
-    * `@2024-01-01`, `f'WN'`), or omitted when the given has no default.
-    * Consumers render/prefill it per `type` (e.g. unquote a string).
+    * The given's default as a Malloy source literal — one literal per declared
+    * `type`. Examples across the type range: `'WN'` or `"WN"` (string), `2003`
+    * (number), `true` (boolean), `@2024-01-01` (date), `f'WN'` (filter). Omitted
+    * when the given has no default. Consumers render/prefill it per `type` (e.g.
+    * unquote a string).
     */
    default?: string;
 }
@@ -57,11 +59,12 @@ export interface MalloyGivenApi {
  *   sanitised package-relative path if a client needs it.
  *
  * - `default` is surfaced as the rendered source literal
- *   (`given._internal.defaultText` — e.g. `'WN'`, `2003`,
- *   `@2024-01-01`). Malloy's public surface still exposes only the
- *   parsed `.default` AST; `_internal.defaultText` is the
- *   already-rendered string, so we forward it verbatim rather than
- *   re-implement the printer. Omitted when the given has no default.
+ *   (`given._internal.defaultText` — e.g. a string `'WN'`, number
+ *   `2003`, boolean `true`, date `@2024-01-01`, or filter `f'WN'`).
+ *   Malloy's public surface still exposes only the parsed `.default`
+ *   AST; `_internal.defaultText` is the already-rendered string, so we
+ *   forward it verbatim rather than re-implement the printer. Omitted
+ *   when the given has no default.
  *
  * `annotations` is restricted to app-route annotations (bracketed,
  * caller-facing, e.g. `#(doc)`), excluding Malloy's reserved routes
