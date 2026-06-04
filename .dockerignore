@@ -36,6 +36,9 @@ examples/
 malloy-samples/
 docs/
 scripts/
+# Except the DuckDB extension baker, which the Dockerfile runs in the final
+# stage (the same script `bun run build` uses locally and in CI).
+!scripts/bake-duckdb-extensions.js
 .github/
 
 # Exclude development files
