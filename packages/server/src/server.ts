@@ -352,6 +352,29 @@ app.get("/sdk/publisher.js", (_req, res) => {
 //   - `/environments/<env>/packages/<pkg>/foo/` → serve `<pkgRoot>/foo/index.html`
 //   - `/environments/<env>/packages/<pkg>/<file>` → serve that file, or 404
 //   - `…/publisher.json` → 404 (manifest is private)
+// Web-asset types that serveFromPackage may hand out. Deny-by-default: anything
+// not listed (raw data like .parquet/.csv/.duckdb, model source like .malloy/
+// .malloynb, and extension-less files such as dotfile secrets) is 404'd, so
+// package data cannot be downloaded around the per-model #(authorize) and query
+// controls. Excludes .json, since a service-account/credentials JSON is a common
+// secret format and real data belongs behind the query API.
+const SERVABLE_EXTS = new Set([
+   ".html",
+   ".htm",
+   ".css",
+   ".js",
+   ".mjs",
+   ".png",
+   ".jpg",
+   ".jpeg",
+   ".gif",
+   ".svg",
+   ".webp",
+   ".ico",
+   ".woff",
+   ".woff2",
+]);
+
 async function serveFromPackage(
    req: express.Request,
    res: express.Response,
@@ -419,11 +442,19 @@ async function serveFromPackage(
          return;
       }
 
+      // Deny-by-default: only SERVABLE_EXTS are served (see its definition for
+      // the rationale, including the .json exclusion). 404 rather than 403 so we
+      // don't confirm the file exists. publisher.json is already blocked above.
+      const ext = path.extname(realFullPath).toLowerCase();
+      if (!SERVABLE_EXTS.has(ext)) {
+         res.status(404).end();
+         return;
+      }
+
       // Framing policy only applies to HTML documents — setting it on CSS/JS/
       // image assets is meaningless and needlessly strips their default
       // SAMEORIGIN protection. Embeddability defaults to "*" so same-tenant
       // embeds work out of the box, and is overridable via PUBLISHER_FRAME_ANCESTORS.
-      const ext = path.extname(realFullPath).toLowerCase();
       if (ext === ".html" || ext === ".htm") {
          const frameAncestors = process.env.PUBLISHER_FRAME_ANCESTORS || "*";
          res.setHeader(

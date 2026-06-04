@@ -202,6 +202,29 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(await res.text()).toContain("A page in a subdirectory");
    });
 
+   it("serves only allowlisted asset types (blocks raw data, source, and secrets)", async () => {
+      // Positive control: an allowlisted asset is served, so the 404s below are
+      // the allowlist denying a present file, not a missing-file 404.
+      expect((await fetch(pkgUrl("/assets/app.css"))).status).toBe(200);
+
+      // Each fixture exists in the package (asserted), so its 404 proves the
+      // deny-by-default allowlist blocked it. Covers raw data (.csv; .parquet
+      // and .duckdb take the same extension path), model source (.malloy), a
+      // JSON-format secret, and an extension-less secret (the empty-extname
+      // deny path that also catches dotfile secrets like .env).
+      const blocked = [
+         "data.csv",
+         "report.malloy",
+         "credentials.json",
+         "secrets",
+      ];
+      for (const name of blocked) {
+         expect(fs.existsSync(path.join(fixtureDir, name))).toBe(true);
+         const res = await fetch(pkgUrl(`/${name}`));
+         expect(res.status).toBe(404);
+      }
+   });
+
    itEscape(
       "rejects a symlink that escapes the package root with 403",
       async () => {
