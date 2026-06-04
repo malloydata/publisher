@@ -11,8 +11,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://install.duckdb.org | bash && \
-    ln -s /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb && \
+# DuckDB CLI version, pinned to @duckdb/node-api (the query engine) so the
+# CLI bakes extensions into the same ~/.duckdb/extensions/v<version>/ dir
+# the runtime reads. CI passes --build-arg DUCKDB_VERSION derived from the
+# lockfile (the source of truth); the default below is a fallback for plain
+# `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
+# by the CI consistency check.
+ARG DUCKDB_VERSION=1.5.3
+RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
+    ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
     ldconfig && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
@@ -84,20 +91,18 @@ COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
-# Bake the DuckLake extension via the `duckdb` npm binding (NOT the CLI).
-# The CLI in base-deps installs to /root/.duckdb/extensions/v<cli-version>/,
-# which is a different DuckDB version than what `duckdb@1.4.4` (the
-# runtime binding pinned in package.json) inspects at runtime
-# (/root/.duckdb/extensions/v1.4.4/). Baking via the binding here puts
-# the extension at the path the runtime server uses, so its INSTALL
-# ducklake; LOAD ducklake; at startup finds it and skips the network
-# fetch (the actual pin).
-RUN bun -e "const d=require('duckdb');const db=new d.Database(':memory:');await new Promise((r,j)=>db.exec('INSTALL ducklake; LOAD ducklake;',e=>e?j(e):r()));const rows=await new Promise((r,j)=>db.all(\"SELECT extension_version, install_path FROM duckdb_extensions() WHERE extension_name='ducklake'\",(e,x)=>e?j(e):r(x)));console.log('DuckLake baked:',JSON.stringify(rows));" || \
+# Bake the DuckLake extension via @duckdb/node-api -- the same DuckDB engine
+# the runtime server uses. It installs into /root/.duckdb/extensions/v<version>/,
+# the version-specific directory the engine inspects at startup, so the server's
+# INSTALL ducklake; LOAD ducklake; finds it and skips the network fetch. The CLI
+# (base-deps) is pinned to the same version, so all three agree on one dir.
+RUN bun -e "const {DuckDBInstance}=require('@duckdb/node-api');const i=await DuckDBInstance.create(':memory:');const c=await i.connect();await c.run('INSTALL ducklake; LOAD ducklake;');const r=await c.runAndReadAll(\"SELECT extension_version, install_path FROM duckdb_extensions() WHERE extension_name='ducklake'\");console.log('DuckLake baked:',JSON.stringify(r.getRowObjectsJS()));c.closeSync();i.closeSync();" || \
     echo "DuckLake bake skipped (offline build)"
 
 # Runtime config
+ARG DUCKDB_VERSION=1.5.3
 ENV NODE_ENV=production
-ENV PATH="/root/.duckdb/cli/latest:$PATH"
+ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 RUN mkdir -p /etc/publisher
 # Declare both runtime ports so `docker run -P` and Docker Desktop's
 # port-preview surface MCP as well as REST. The server already listens

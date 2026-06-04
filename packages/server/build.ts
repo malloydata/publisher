@@ -19,7 +19,13 @@ await build({
    format: "esm",
    external: [
       "@malloydata/db-duckdb",
-      "duckdb",
+      // The DuckDB engine binding (used by the storage layer). Externalized,
+      // not bundled, because its loader require()s platform-specific native
+      // .node files for every OS via a runtime switch; the bundler can't
+      // statically resolve the ones absent on the build host. Left as a
+      // runtime require resolved from node_modules, like the Malloy drivers.
+      "@duckdb/node-api",
+      "@duckdb/node-bindings",
       "@malloydata/malloy",
       "@malloydata/malloy-sql",
       "@malloydata/render",
