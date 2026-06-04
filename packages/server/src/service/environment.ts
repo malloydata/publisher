@@ -5,6 +5,7 @@ import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
@@ -307,10 +308,18 @@ export class Environment {
             packageName,
             modelName,
          );
-         // Place the virtual file in the model's directory so relative imports resolve correctly.
+         // Place the virtual file in the model's directory so relative imports
+         // resolve correctly. Use `pathToFileURL` rather than hand-prefixing
+         // `file://`: on Windows the latter produces a malformed URL
+         // (`file://D:\Temp\…`) that round-trips differently than the URL the
+         // Malloy runtime synthesizes from the same path, breaking the
+         // intercepting reader's string comparison below and falling through
+         // to disk for a virtual file that doesn't exist.
          const modelDir = path.dirname(modelPath);
-         const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
-         const virtualUrl = new URL(virtualUri);
+         const virtualUrl = pathToFileURL(
+            path.join(modelDir, "__compile_check.malloy"),
+         );
+         const virtualUri = virtualUrl.toString();
 
          // Read the full model file so the submitted source inherits the model's
          // complete namespace — imports, source definitions, queries, etc.
