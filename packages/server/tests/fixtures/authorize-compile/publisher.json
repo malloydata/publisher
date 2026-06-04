@@ -1,0 +1,4 @@
+{
+   "name": "authorize-compile",
+   "description": "Fixture: a gated source for the /compile authorize HTTP integration test."
+}
