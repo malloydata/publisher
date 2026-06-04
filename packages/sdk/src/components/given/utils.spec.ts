@@ -2,12 +2,19 @@ import { describe, expect, it } from "bun:test";
 import { renderGivenDefault } from "./utils";
 
 describe("renderGivenDefault", () => {
-   it("unquotes a string literal", () => {
+   it("unquotes a single-quoted string literal", () => {
       expect(renderGivenDefault("string", "'WN'")).toBe("WN");
    });
 
-   it("undoubles escaped quotes in a string literal", () => {
-      expect(renderGivenDefault("string", "'O''Hare'")).toBe("O'Hare");
+   it("unquotes a double-quoted string literal", () => {
+      // Double-quoted strings are valid Malloy (DQ_STRING); the server forwards
+      // the raw source literal, so the UI must strip either quote form.
+      expect(renderGivenDefault("string", '"WN"')).toBe("WN");
+   });
+
+   it("decodes JSON-style backslash escapes (Malloy's form, not doubled quotes)", () => {
+      expect(renderGivenDefault("string", "'O\\'Hare'")).toBe("O'Hare");
+      expect(renderGivenDefault("string", '"say \\"hi\\""')).toBe('say "hi"');
    });
 
    it("drops the @ sigil from a date literal", () => {

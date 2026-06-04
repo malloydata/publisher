@@ -45,16 +45,25 @@ export function renderGivenDefault(
 }
 
 /**
- * Strip the surrounding single quotes from a Malloy string literal and undouble
- * any escaped quotes (`''` -> `'`). Leaves a non-quoted input untouched.
+ * Strip the surrounding quotes from a Malloy string literal — single (`'WN'`)
+ * or double (`"WN"`), both valid Malloy string forms — and decode its escapes.
+ * Malloy strings use JSON-style backslash escapes (`\'`, `\"`, `\\`, `\n`),
+ * not SQL-style doubled quotes (see ParseUtil.parseString in @malloydata).
+ * Leaves a non-quoted input untouched.
  */
 function unquoteStringLiteral(literal: string): string {
+   const quote = literal[0];
    if (
       literal.length >= 2 &&
-      literal.startsWith("'") &&
-      literal.endsWith("'")
+      (quote === "'" || quote === '"') &&
+      literal[literal.length - 1] === quote
    ) {
-      return literal.slice(1, -1).replace(/''/g, "'");
+      return literal.slice(1, -1).replace(/\\(["'\\ntr])/g, (_match, c) => {
+         if (c === "n") return "\n";
+         if (c === "t") return "\t";
+         if (c === "r") return "\r";
+         return c; // \" \' \\ -> the bare character
+      });
    }
    return literal;
 }
