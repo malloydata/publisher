@@ -82,7 +82,6 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
-import type { AnnotationsDef } from "../service/annotations";
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -811,14 +810,10 @@ export class PackageLoadPool {
 
 function buildFetchOptions(options: {
    refreshTimestamp?: number;
-   modelAnnotation?: AnnotationsDef;
 }): FetchSchemaOptions {
    const out: FetchSchemaOptions = {};
    if (options.refreshTimestamp !== undefined) {
       out.refreshTimestamp = options.refreshTimestamp;
-   }
-   if (options.modelAnnotation !== undefined) {
-      out.modelAnnotations = options.modelAnnotation;
    }
    return out;
 }
