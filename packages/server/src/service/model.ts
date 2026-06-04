@@ -59,6 +59,7 @@ import {
    evaluateAuthorize,
    validateAuthorizeProbes,
 } from "./authorize";
+import { modelAnnotations } from "./annotations";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    extractQueriesFromModelDef,
@@ -180,7 +181,7 @@ export class Model {
       try {
          this.fileLevelAuthorize = this.modelDef
             ? collectAuthorizeExprs(
-                 (this.modelDef.annotations?.notes ?? []).map(
+                 (modelAnnotations(this.modelDef).notes ?? []).map(
                     (note) => note.text,
                  ),
               )
@@ -996,9 +997,9 @@ export class Model {
          } as ApiNotebookCell;
       });
 
-      const allAnnotations = new Annotations(
-         this.modelDef?.annotations,
-      ).texts();
+      const allAnnotations = this.modelDef
+         ? new Annotations(modelAnnotations(this.modelDef)).texts()
+         : [];
 
       return {
          type: "notebook",
