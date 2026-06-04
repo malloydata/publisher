@@ -123,8 +123,36 @@ describe("givens introspection", () => {
 
       expect(region).toBeDefined();
       expect(region?.type).toBe("string");
+      expect(region?.default).toBe("'US'");
       expect(cutoff).toBeDefined();
       expect(cutoff?.type).toBe("date");
+      expect(cutoff?.default).toBe("@2024-02-01");
+   });
+
+   it("omits default for a given declared without one", async () => {
+      await fs.writeFile(
+         path.join(TEST_PKG_DIR, "mixed_defaults.malloy"),
+         `##! experimental.givens
+
+given: with_default :: string is 'WN'
+given: no_default :: string
+
+source: orders is duckdb.table('orders') extend {
+   primary_key: order_id
+}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "mixed_defaults.malloy",
+         getConnections(),
+      );
+      const byName = new Map(
+         ((await model.getModel()).givens ?? []).map((g) => [g.name, g]),
+      );
+      expect(byName.get("with_default")?.default).toBe("'WN'");
+      expect(byName.get("no_default")?.default).toBeUndefined();
    });
 
    it("attaches the model-level givens list to every source", async () => {

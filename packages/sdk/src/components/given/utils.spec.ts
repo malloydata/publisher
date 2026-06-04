@@ -1,0 +1,57 @@
+import { describe, expect, it } from "bun:test";
+import { renderGivenDefault } from "./utils";
+
+describe("renderGivenDefault", () => {
+   it("unquotes a single-quoted string literal", () => {
+      expect(renderGivenDefault("string", "'WN'")).toBe("WN");
+   });
+
+   it("unquotes a double-quoted string literal", () => {
+      // Double-quoted strings are valid Malloy (DQ_STRING); the server forwards
+      // the raw source literal, so the UI must strip either quote form.
+      expect(renderGivenDefault("string", '"WN"')).toBe("WN");
+   });
+
+   it("decodes JSON-style backslash escapes (Malloy's form, not doubled quotes)", () => {
+      expect(renderGivenDefault("string", "'O\\'Hare'")).toBe("O'Hare");
+      expect(renderGivenDefault("string", '"say \\"hi\\""')).toBe('say "hi"');
+   });
+
+   it("drops the @ sigil from a date literal", () => {
+      expect(renderGivenDefault("date", "@2024-01-01")).toBe("2024-01-01");
+      expect(renderGivenDefault("timestamp", "@2024-01-01 12:00:00")).toBe(
+         "2024-01-01 12:00:00",
+      );
+   });
+
+   it("unwraps a single-value filter literal but leaves a compound one verbatim", () => {
+      expect(renderGivenDefault("filter<string>", "f'WN'")).toBe("WN");
+      // A compound filter expression is not a plain string — keep it intact
+      // instead of mangling the outer quotes.
+      expect(renderGivenDefault("filter<string>", "f'WN','AA'")).toBe(
+         "'WN','AA'",
+      );
+   });
+
+   it("shows numbers and booleans verbatim", () => {
+      expect(renderGivenDefault("number", "2003")).toBe("2003");
+      expect(renderGivenDefault("boolean", "true")).toBe("true");
+   });
+
+   it("returns undefined when there is no default", () => {
+      expect(renderGivenDefault("string", undefined)).toBeUndefined();
+      expect(renderGivenDefault("string", "")).toBeUndefined();
+      expect(renderGivenDefault("string", "   ")).toBeUndefined();
+   });
+
+   it("distinguishes an explicit empty-string default from no default", () => {
+      // `given: x :: string is ''` -> literal "''" -> "" (present, not undefined),
+      // so the caller can show it as "(empty)" rather than suppress it.
+      expect(renderGivenDefault("string", "''")).toBe("");
+   });
+
+   it("leaves a non-quoted value untouched", () => {
+      // Defensive: a malformed/already-rendered default isn't mangled.
+      expect(renderGivenDefault("string", "WN")).toBe("WN");
+   });
+});
