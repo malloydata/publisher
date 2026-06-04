@@ -5,7 +5,7 @@ import path from "path";
 import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 
-// End-to-end gate on the /compile path (PR4). Exercises environment.compileSource
+// End-to-end gate on the /compile path. Exercises environment.compileSource
 // through a real installed package, not just the Model primitives — pins that
 // the early gate AND the compiled-source backstop fire, the latter REGARDLESS of
 // includeSql (a compile-time schema oracle is closed even with no SQL extraction).

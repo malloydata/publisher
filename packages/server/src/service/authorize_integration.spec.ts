@@ -7,8 +7,8 @@ import path from "path";
 import { AccessDeniedError } from "../errors";
 import { Model } from "./model";
 
-// Introspection (PR1), compile-time validation (PR2), and the runtime gate
-// (PR3) for #(authorize) / ##(authorize).
+// Introspection, compile-time validation, and the runtime gate for
+// #(authorize) / ##(authorize).
 
 const TEST_DIR = path.join(os.tmpdir(), "authorize-integration-tests");
 const TEST_DB_DIR = path.join(TEST_DIR, "db");
@@ -842,7 +842,7 @@ source: joiner is duckdb.table('customers') extend {
    });
 });
 
-// The /compile path (PR4) gates via Model.assertAuthorizedForText (early,
+// The /compile path gates via Model.assertAuthorizedForText (early,
 // surface-syntax) and Model.assertAuthorizedForRunnable (compiled-source
 // backstop). These are the enforcement primitives environment.compileSource
 // calls; exercise them directly here.

@@ -3,7 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { type RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
-// HTTP end-to-end for the /compile authorize gate (PR4): proves AccessDeniedError
+// HTTP end-to-end for the /compile authorize gate: proves AccessDeniedError
 // surfaces as a real 403 body through the express route + internalErrorToHttpError,
 // and that the 403 names only the source (never the gate expression).
 

@@ -339,7 +339,7 @@ export class Environment {
          // Use the locked variant — we already hold the per-package mutex.
          const pkg = await this._loadOrGetPackageLocked(packageName);
 
-         // Authorize gate (PR4): /compile is compile-only, but it can still act
+         // Authorize gate: /compile is compile-only, but it can still act
          // as a schema oracle (a denied caller learns a gated source's columns
          // from compile errors) and, with includeSql, leak its SQL. Gate the
          // named source the submitted text targets BEFORE compiling — mirrors
