@@ -2920,12 +2920,15 @@ components:
             $ref: "#/components/schemas/Given"
         authorize:
           type: array
-          description: Effective authorize expressions declared on this source via
+          description: >-
+            Effective authorize expressions declared on this source via
             `#(authorize)` / `##(authorize)` annotations — file-level expressions
             first, then the source's own. Each is a Malloy boolean expression over
-            declared givens. Surfaced for introspection only; these expressions
-            are NOT yet enforced by the query path (enforcement lands in a later
-            release), so their presence does not currently restrict access.
+            declared givens, evaluated as a disjunction (OR) and enforced at query
+            time. A request that reads this source is denied with HTTP 403 unless
+            at least one expression evaluates true for the supplied givens; an
+            empty or absent list means unrestricted. Givens are caller-asserted, so
+            this is a boundary only behind a trusted tier — see docs/authorize.md.
           items:
             type: string
 

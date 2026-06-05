@@ -6,6 +6,8 @@ Givens replace the older `#(filter)` annotation path. New models should declare 
 
 For the authoritative Malloy reference (semantics, supported types, scoping rules), see [Malloy: Givens](https://docs.malloydata.dev/documentation/experiments/givens).
 
+To gate *access* to a source based on these givens, see [Authorize (source access gates)](authorize.md).
+
 ## Declaring Givens
 
 Givens are an experimental Malloy feature. Enable them once at the top of the model, then declare each given as a top-level statement before the source that uses it:
