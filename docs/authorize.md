@@ -2,7 +2,7 @@
 
 `#(authorize)` annotations gate query access to a Malloy source based on the request's [givens](givens.md). Before Publisher runs any query that reads a gated source, it evaluates the source's in-scope authorize expressions against the supplied givens; if **at least one** returns `true` the request proceeds, otherwise it is rejected with **HTTP 403**. A source with no in-scope annotations is unrestricted.
 
-Authorize is evaluated by Publisher (not core Malloy) using a synthetic 0-row probe query, so the expression language is Malloy's, but the gate runs entirely over `given:` values — it never touches your warehouse data.
+Authorize is evaluated by Publisher (not core Malloy) using a synthetic probe query against bundled DuckDB (a one-row `SELECT 1`), so the expression language is Malloy's, but the gate runs entirely over `given:` values — it never touches your warehouse data.
 
 > ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** Givens are **caller-asserted**: anyone who can reach the query API can claim a favorable given. `#(authorize)` is only a real boundary when the API sits behind a trusted tier that sets givens from its own verified context. It is not, on its own, end-user authentication.
 
@@ -39,7 +39,7 @@ The expression is any Malloy boolean expression over `$given` references and lit
 #(authorize) "$TENANT = 'acme'"
 ```
 
-**No source-field references.** The gate is a 0-row probe — it has no row context, so an expression may reference only givens and literals, never a column of the gated source. A field reference fails at model load (see [Validation](#validation)).
+**No source-field references.** The probe evaluates your expression against its own synthetic one-column row, not against your source, so an expression may reference only givens and literals — a column of the gated source isn't in scope and fails at model load (see [Validation](#validation)).
 
 Embedded quotes follow Malloy string rules: write inner string literals with single quotes inside the double-quoted annotation, e.g. `#(authorize) "$ROLE = 'analyst'"`.
 
@@ -81,9 +81,9 @@ Authorize is checked **only on the source the query directly runs against**. It 
 - **Extend footgun:** a source that extends a locked base is governed *solely by its own* annotations. `source: b is a extend { … }` does **not** inherit `a`'s gate — if `b` declares none, `b` is unrestricted even if `a` is `#(authorize) "false"`.
 - **Joins:** a gate on a source reached only via `join_*` does not fire; the gate applies to the run target, not its joins.
 
-To keep a locked base's data from leaking through an extension or join, pair the gate with Malloy [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) so the extension re-exposes only a curated column surface. See the [recommended pattern](#recommended-pattern-locked-base--curated-extensions).
+To keep a locked base's data from leaking through an extension or join, pair the gate with Malloy [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) so the extension re-exposes only a curated column surface. See the [recommended pattern](#recommended-pattern-locked-base-and-curated-extensions).
 
-## Recommended pattern: locked base + curated extensions
+## Recommended pattern: locked base and curated extensions
 
 Lock sensitive base sources with `#(authorize) "false"` and re-expose curated subsets through extension sources, each with its own gate and access modifiers:
 
@@ -135,7 +135,7 @@ The gate runs, fail-closed, on every query entry point — **before** any filter
 | `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling — so compile errors can't be used as a schema oracle — plus a compiled-source backstop). |
 | MCP `malloy_executeQuery` | Routes through the query path; a denial surfaces as `isError: true` naming the source. |
 
-**Fail-closed:** any probe error, a referenced given with no supplied value, a missing/null result, or a non-`true` result all **deny**.
+**Fail-closed, evaluated as a disjunction.** Each in-scope expression is probed independently; a branch that errors, references an unset given, or returns null / non-`true` is treated as *not granting*, and the next branch is tried. The request is denied only when **no** branch returns `true`. So a single-gate source with an unset given is denied, but a source whose *other* gate is satisfied still grants — the skip keeps OR semantics intact.
 
 ### Validation
 

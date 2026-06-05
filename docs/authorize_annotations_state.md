@@ -27,7 +27,7 @@ Running status + known-gap list for the `#(authorize)` / `##(authorize)` access-
 
 1. **Extend footgun** — an extension of a locked base with no gate of its own is unrestricted. Mitigation: access modifiers (`include { … private: * }`). Pinned by `authorize_integration` ("does NOT inherit … through extend").
 2. **Join bypass** — a gated source reached only via `join_*` is not gated (gate applies to the run target). Documented top-level-only boundary.
-3. **`/compile` raw SQL not gated** — the gate covers named Malloy sources; `/compile` compiles unrestricted, so raw `duckdb.sql(...)` can read a gated table's schema/SQL. **Follow-up:** extend `#807`-style restricted compilation to `/compile`. Bounded by the trusted-tier model; keep `/compile` behind the trusted tier until closed.
+3. **`/compile` raw SQL not gated** — the gate covers named Malloy sources; `/compile` compiles unrestricted, so raw `duckdb.sql(...)` can read a gated table's schema/SQL. **Follow-up:** apply #807's restricted-mode technique (which hardened `/query`) to `/compile`. Bounded by the trusted-tier model; keep `/compile` behind the trusted tier until closed.
 4. **MCP integration test gap** — no full `callTool` integration test against a gated model; the MCP E2E harness (`mcpApp`-only, process-singleton env, no reload) can't seed a gated package per-test without ordering fragility. The transform is covered piecewise (unit + HTTP e2e + `handler_utils` branch). **Follow-up:** make the MCP E2E harness seedable, then add the `callTool` test.
 
 ## Deferred (not started)
