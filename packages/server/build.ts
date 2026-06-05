@@ -37,6 +37,9 @@ await build({
 
 fs.cpSync("../app/dist", "./dist/app", { recursive: true });
 
+// Copy hand-authored vanilla-JS runtime served at /sdk/publisher.js.
+fs.cpSync("./src/runtime", "./dist/runtime", { recursive: true });
+
 // Ship a default publisher.config.json inside the bundle so that
 // `npx @malloy-publisher/server` works with zero args (uses
 // DuckDB-only samples). config.ts looks for this file next to
