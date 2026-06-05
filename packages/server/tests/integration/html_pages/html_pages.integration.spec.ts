@@ -182,6 +182,28 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(body).toContain("Hello from the in-package data app");
    });
 
+   it("308-redirects the package root (no trailing slash) to the canonical path", async () => {
+      // The redirect target is rebuilt from the route params + parsed query
+      // (canonical, same-origin), not the raw request URL.
+      const res = await fetch(
+         `${baseUrl}/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
+         { redirect: "manual" },
+      );
+      expect(res.status).toBe(308);
+      expect(res.headers.get("location")).toBe(
+         `/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/`,
+      );
+      // The query string is preserved, placed before the appended slash.
+      const withQuery = await fetch(
+         `${baseUrl}/environments/${ENV_NAME}/packages/${PACKAGE_NAME}?embed_token=abc`,
+         { redirect: "manual" },
+      );
+      expect(withQuery.status).toBe(308);
+      expect(withQuery.headers.get("location")).toBe(
+         `/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/?embed_token=abc`,
+      );
+   });
+
    it("sets frame-ancestors CSP on HTML responses and clears X-Frame-Options", async () => {
       const res = await fetch(pkgUrl("/index.html"));
       expect(res.status).toBe(200);

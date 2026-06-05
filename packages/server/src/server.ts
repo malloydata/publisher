@@ -454,22 +454,33 @@ async function serveFromPackage(
    }
 }
 
-// `/environments/<env>/packages/<pkg>` (no trailing slash, no path) — redirect
-// so relative URLs in the served HTML resolve as expected. Express's default
-// loose matching also catches the trailing-slash form here, so guard the
-// redirect to only fire on URLs that don't already end with `/`.
+// `/environments/<env>/packages/<pkg>` (no trailing slash, no path) redirect so
+// relative URLs in the served HTML resolve as expected. Express's default loose
+// matching also catches the trailing-slash form here, so only redirect URLs that
+// don't already end with `/`.
 //
-// Insert the slash BEFORE any query string (e.g. ?embed_token=...) so the
-// redirect target is a well-formed URL and not "…/pkg?embed_token=x/".
+// Build the target from the validated route params and the parsed query, not
+// from the raw request URL, so it is always this same canonical, same-origin
+// path with a trailing slash. That removes any open-redirect / header-injection
+// surface from user-controlled input, with the slash placed before any query
+// string (e.g. ?embed_token=...).
 app.get(
    "/environments/:environmentName/packages/:packageName",
    (req, res, next) => {
-      const idx = req.originalUrl.indexOf("?");
-      const pathPart =
-         idx === -1 ? req.originalUrl : req.originalUrl.slice(0, idx);
-      const queryPart = idx === -1 ? "" : req.originalUrl.slice(idx);
-      if (pathPart.endsWith("/")) return next();
-      res.redirect(308, pathPart + "/" + queryPart);
+      if (req.path.endsWith("/")) return next();
+      const canonical =
+         `/environments/${encodeURIComponent(req.params.environmentName)}` +
+         `/packages/${encodeURIComponent(req.params.packageName)}/`;
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(req.query)) {
+         if (Array.isArray(value)) {
+            for (const v of value) query.append(key, String(v));
+         } else if (value !== undefined) {
+            query.append(key, String(value));
+         }
+      }
+      const qs = query.toString();
+      res.redirect(308, qs ? `${canonical}?${qs}` : canonical);
    },
 );
 
