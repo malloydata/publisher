@@ -233,6 +233,18 @@ export class Model {
    }
 
    /**
+    * Whether the model declares any `#(authorize)` / `##(authorize)` gate at all
+    * (file-level or on any source). Lets callers cheaply skip authorize work for
+    * ungated models without compiling a probe.
+    */
+   public hasAuthorize(): boolean {
+      return (
+         this.fileLevelAuthorize.length > 0 ||
+         (this.sources?.some((s) => (s.authorize?.length ?? 0) > 0) ?? false)
+      );
+   }
+
+   /**
     * Effective authorize expressions for whatever a query runs against:
     *  - a declared model source → its own list (file-level ++ source-level);
     *  - anything else (an ad-hoc inline `duckdb.sql(...)` source, or a source
@@ -286,6 +298,38 @@ export class Model {
          deny();
       }
       if (!passed) deny();
+   }
+
+   /**
+    * Gate ad-hoc compile/query text by the named source it targets. Resolves the
+    * source from surface syntax (`extractSourceName`) and applies the gate. An
+    * unnamed/inline source resolves to `undefined`, so only the model-wide
+    * file-level gate applies — the same top-level-only boundary as the query
+    * path's early gate. Used by the `/compile` path, which has no runnable to
+    * resolve before it decides whether to compile at all.
+    */
+   public async assertAuthorizedForText(
+      text: string,
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      await this.assertAuthorized(this.extractSourceName(text), givens);
+   }
+
+   /**
+    * Gate a compiled query by the source it actually reads, resolved from the
+    * prepared query's `structRef` (authoritative — survives named-query and
+    * multi-statement indirection that surface syntax misses, e.g. the executed
+    * `run:` statement isn't the first one). Used as the `/compile` backstop once
+    * a runnable exists.
+    */
+   public async assertAuthorizedForRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      await this.assertAuthorized(
+         await this.resolveAuthorizeSourceFromRunnable(runnable),
+         givens,
+      );
    }
 
    /**

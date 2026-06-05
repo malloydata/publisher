@@ -18,17 +18,17 @@
  * literal) -- carry a literal this script checks and, with --write, rewrites.
  *
  * Usage:
- *   node scripts/sync-duckdb-version.js            # check; exit 1 on drift
- *   node scripts/sync-duckdb-version.js --write    # rewrite the literals to match
- *   node scripts/sync-duckdb-version.js --print    # print the bare version
+ *   bun scripts/sync-duckdb-version.js            # check; exit 1 on drift
+ *   bun scripts/sync-duckdb-version.js --write    # rewrite the literals to match
+ *   bun scripts/sync-duckdb-version.js --print    # print the bare version
  */
 
 import fs from "fs";
 import path from "path";
 import {
-  resolveDuckDBVersion,
-  resolveDuckDBSpec,
   REPO_ROOT,
+  resolveDuckDBSpec,
+  resolveDuckDBVersion,
 } from "./duckdb-version.js";
 
 const WRITE = process.argv.includes("--write");
@@ -233,7 +233,7 @@ function main() {
 
   if (drift) {
     fail(
-      "DuckDB version drift detected. Run `bun run sync-duckdb --write` to " +
+      "DuckDB version drift detected. Run `bun scripts/sync-duckdb-version.js --write` to " +
         "align the CLI/build knobs with the @duckdb/node-api query engine " +
         "(and remove any reintroduced legacy 'duckdb' dependency).",
     );

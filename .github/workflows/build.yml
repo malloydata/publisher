@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
 env:
@@ -71,7 +71,7 @@ jobs:
       # re-fetches them from the network at query time (which fails on runners
       # that cannot reach extensions.duckdb.org).
       - name: Check DuckDB version consistency
-        run: bun run sync-duckdb
+        run: bun run validate-duckdb-sync
   # Smoke-tests the built server under two invocation scenarios.
   #
   # Note on scope: the published `bin` entry uses `#!/usr/bin/env node`, so the

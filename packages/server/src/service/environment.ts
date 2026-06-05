@@ -5,6 +5,7 @@ import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
@@ -136,6 +137,11 @@ export class Environment {
    // EnvironmentStore.setMemoryGovernor at server start so we keep the
    // governor as the single owner of the back-pressure boolean.
    private memoryGovernor: PackageMemoryGovernor | null = null;
+
+   /** Absolute path on disk where this environment's package files live. */
+   public getEnvironmentPath(): string {
+      return this.environmentPath;
+   }
 
    constructor(
       environmentName: string,
@@ -307,10 +313,18 @@ export class Environment {
             packageName,
             modelName,
          );
-         // Place the virtual file in the model's directory so relative imports resolve correctly.
+         // Place the virtual file in the model's directory so relative imports
+         // resolve correctly. Use `pathToFileURL` rather than hand-prefixing
+         // `file://`: on Windows the latter produces a malformed URL
+         // (`file://D:\Temp\…`) that round-trips differently than the URL the
+         // Malloy runtime synthesizes from the same path, breaking the
+         // intercepting reader's string comparison below and falling through
+         // to disk for a virtual file that doesn't exist.
          const modelDir = path.dirname(modelPath);
-         const virtualUri = `file://${path.join(modelDir, "__compile_check.malloy")}`;
-         const virtualUrl = new URL(virtualUri);
+         const virtualUrl = pathToFileURL(
+            path.join(modelDir, "__compile_check.malloy"),
+         );
+         const virtualUri = virtualUrl.toString();
 
          // Read the full model file so the submitted source inherits the model's
          // complete namespace — imports, source definitions, queries, etc.
@@ -339,6 +353,21 @@ export class Environment {
          // Use the locked variant — we already hold the per-package mutex.
          const pkg = await this._loadOrGetPackageLocked(packageName);
 
+         // Authorize gate: /compile is compile-only, but it can still act
+         // as a schema oracle (a denied caller learns a gated source's columns
+         // from compile errors) and, with includeSql, leak its SQL. Gate the
+         // named source the submitted text targets BEFORE compiling — mirrors
+         // the query path's early surface-syntax gate. Unnamed/inline source
+         // text resolves to undefined, so only the model-wide file-level gate
+         // applies. The gate runs against the package's cached Model (its
+         // `given:` block + authorize annotations), independent of the virtual
+         // compile below. If the model isn't loaded, there's nothing to enforce
+         // and compilation surfaces its own error.
+         const gateModel = pkg.getModel(modelName);
+         if (gateModel) {
+            await gateModel.assertAuthorizedForText(source, givens ?? {});
+         }
+
          // Initialize Runtime with the package's active MalloyConfig so compile
          // checks see the same package-scoped duckdb as execution. This runtime
          // borrows the package config; the package/environment lifecycle owns release.
@@ -352,11 +381,40 @@ export class Environment {
             const modelMaterializer = runtime.loadModel(virtualUrl);
             const model = await modelMaterializer.getModel();
 
+            // Resolve the final query's materializer once (if there is one).
+            let queryMaterializer: ReturnType<
+               typeof modelMaterializer.loadFinalQuery
+            > | null = null;
+            try {
+               queryMaterializer = modelMaterializer.loadFinalQuery();
+            } catch {
+               // No runnable query (e.g. only source definitions) — nothing to
+               // gate or extract beyond the early text gate already applied.
+            }
+
+            // Compiled-source backstop — runs REGARDLESS of includeSql. It gates
+            // the source the COMPILED final query actually reads, closing
+            // named-query / multi-statement indirection the early surface-syntax
+            // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
+            // matches the FIRST `run:`, but the LAST statement is what executes).
+            // Compiling a gated source even without SQL is a schema oracle
+            // (field-not-found errors leak its columns), so this must not be
+            // conditional on SQL extraction. (A `source: x is gated` alias makes
+            // a new ungated source — that's the documented "extend doesn't
+            // inherit authorize" footgun, the same as the query path.) Only run
+            // when the model declares gates so ungated compiles don't pay for
+            // the extra final-query compile.
+            if (queryMaterializer && gateModel?.hasAuthorize()) {
+               await gateModel.assertAuthorizedForRunnable(
+                  queryMaterializer,
+                  givens ?? {},
+               );
+            }
+
             // If includeSql is requested and compilation succeeded, attempt to extract SQL
             let sql: string | undefined;
-            if (includeSql) {
+            if (includeSql && queryMaterializer) {
                try {
-                  const queryMaterializer = modelMaterializer.loadFinalQuery();
                   sql = await queryMaterializer.getSQL({ givens });
                } catch {
                   // Source may not contain a runnable query (e.g. only source definitions),

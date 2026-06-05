@@ -126,8 +126,21 @@ export function getMalloyErrorDetails(
       const invalidRequestMatch = error.message.match(
          /Invalid query request\\. Query OR queryName must be defined/i,
       );
+      // `#(authorize)` gate denial. The message names only the source (gate
+      // logic is never leaked), so the suggestion is about satisfying access,
+      // not fixing syntax — otherwise this falls through to generic Malloy
+      // syntax advice that misleads the caller.
+      const accessDeniedMatch = error.message.match(
+         /Access denied for source "([^"]+)"/i,
+      );
 
-      if (viewNotFoundMatch) {
+      if (accessDeniedMatch) {
+         refined = true;
+         const [, sourceName] = accessDeniedMatch;
+         suggestions = [
+            `Suggestion: Access to source '${sourceName}' is restricted by an #(authorize) gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
+         ];
+      } else if (viewNotFoundMatch) {
          refined = true;
          const [, viewName, sourceName] = viewNotFoundMatch;
          suggestions.unshift(

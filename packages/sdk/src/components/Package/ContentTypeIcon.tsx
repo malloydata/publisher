@@ -1,6 +1,6 @@
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
 
-type ContentType = "report" | "model" | "data" | "materialization";
+type ContentType = "report" | "model" | "data" | "materialization" | "page";
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
    type: ContentType;
@@ -11,9 +11,8 @@ interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
 /**
  * Inline SVGs that visually match Central Icons'
  * round-outlined-radius-2-stroke-1 family
- * (IconFileChart, Icon3dBoxTop, IconTable) used by the Credible app.
- * Reimplemented as plain SVG so the open-source SDK does not pick up
- * the paid @central-icons-react dependency.
+ * (IconFileChart, Icon3dBoxTop, IconTable). Reimplemented as plain SVG
+ * so the SDK does not pick up the paid @central-icons-react dependency.
  */
 export default function ContentTypeIcon({
    type,
@@ -40,6 +39,7 @@ export default function ContentTypeIcon({
          {type === "model" && <BoxTopPath />}
          {type === "data" && <TablePath />}
          {type === "materialization" && <StackPath />}
+         {type === "page" && <BrowserWindowPath />}
       </SvgIcon>
    );
 }
@@ -86,6 +86,18 @@ function StackPath() {
          <path d="M12 3 L21 7.5 L12 12 L3 7.5 Z" />
          <path d="M3 12 L12 16.5 L21 12" />
          <path d="M3 16.5 L12 21 L21 16.5" />
+      </>
+   );
+}
+
+/** Browser-window outline with an address-bar separator and content lines. */
+function BrowserWindowPath() {
+   return (
+      <>
+         <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+         <path d="M3.5 9.5 H20.5" />
+         <path d="M7 13.5 H17" />
+         <path d="M7 16.5 H13" />
       </>
    );
 }
