@@ -1,22 +1,18 @@
 import {
-   Annotation,
+   Annotations,
    API,
    Connection,
    FixedConnectionMap,
    GivenValue,
-   isSourceDef,
    MalloyConfig,
    MalloyError,
    ModelDef,
    modelDefToModelInfo,
    ModelMaterializer,
-   NamedModelObject,
    NamedQueryDef,
    QueryData,
    QueryMaterializer,
    Runtime,
-   StructDef,
-   TurtleDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -42,6 +38,7 @@ import {
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import {
+   AccessDeniedError,
    BadRequestError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -54,11 +51,20 @@ import {
    buildFilterClause,
    FilterValidationError,
    injectFilterRefinement,
-   parseFilters,
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
+import {
+   collectAuthorizeExprs,
+   evaluateAuthorize,
+   validateAuthorizeProbes,
+} from "./authorize";
+import { modelAnnotations } from "./annotations";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   extractQueriesFromModelDef,
+   extractSourcesFromModelDef,
+} from "./source_extraction";
 import {
    assertWithinModelResponseLimits,
    resolveModelQueryRowLimit,
@@ -68,9 +74,7 @@ type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 type ApiSource = components["schemas"]["Source"];
-type ApiFilter = components["schemas"]["Filter"];
 type ApiGiven = components["schemas"]["Given"];
-type ApiView = components["schemas"]["View"];
 type ApiQuery = components["schemas"]["Query"];
 export type ApiConnection = components["schemas"]["Connection"];
 export type SnowflakeConnection = components["schemas"]["SnowflakeConnection"];
@@ -116,6 +120,9 @@ export class Model {
     *  `Model.givens` already collapses inheritance; we just stash the list
     *  for surfacing on the compiled-model response. */
    private givens: ApiGiven[] | undefined;
+   /** Model-wide `##(authorize)` expressions; apply to every query in the
+    *  model, including ad-hoc inline sources not declared in the model. */
+   private fileLevelAuthorize: string[] = [];
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -163,6 +170,25 @@ export class Model {
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
       this.givens = givens;
+      // Model-wide ##(authorize) gates, derived from the file-level annotations
+      // on the modelDef (which survives the worker boundary). These apply to
+      // any query that resolves to a model source (or to no nameable source),
+      // model-wide. (Raw-SQL access to the warehouse is closed separately by
+      // restricted mode, which rejects inline `duckdb.sql(...)` on the caller
+      // query path before any gate runs — see getQueryResults.) A
+      // successfully-loaded model has already had these validated; guard the
+      // parse defensively so the constructor never throws.
+      try {
+         this.fileLevelAuthorize = this.modelDef
+            ? collectAuthorizeExprs(
+                 (modelAnnotations(this.modelDef).notes ?? []).map(
+                    (note) => note.text,
+                 ),
+              )
+            : [];
+      } catch {
+         this.fileLevelAuthorize = [];
+      }
       this.modelInfo =
          modelInfo ??
          (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
@@ -192,14 +218,195 @@ export class Model {
    }
 
    /**
+    * Effective authorize expressions gating a source: file-level
+    * `##(authorize)` followed by the source's own `#(authorize)`, evaluated as
+    * one OR disjunction at request time. Empty array means unrestricted. Reads
+    * the per-source list surfaced on `sources` (which rides the worker
+    * serialization boundary), so it works for both freshly-created and
+    * deserialized models.
+    */
+   public getAuthorize(sourceName: string): string[] {
+      return (
+         this.sources?.find((source) => source.name === sourceName)
+            ?.authorize ?? []
+      );
+   }
+
+   /**
+    * Whether the model declares any `#(authorize)` / `##(authorize)` gate at all
+    * (file-level or on any source). Lets callers cheaply skip authorize work for
+    * ungated models without compiling a probe.
+    */
+   public hasAuthorize(): boolean {
+      return (
+         this.fileLevelAuthorize.length > 0 ||
+         (this.sources?.some((s) => (s.authorize?.length ?? 0) > 0) ?? false)
+      );
+   }
+
+   /**
+    * Effective authorize expressions for whatever a query runs against:
+    *  - a declared model source → its own list (file-level ++ source-level);
+    *  - anything else (an ad-hoc inline `duckdb.sql(...)` source, or a source
+    *    we couldn't name) → the model-wide file-level `##(authorize)` gates.
+    * The second case is what stops a file-level gate from being bypassed by
+    * querying the warehouse through raw inline SQL.
+    */
+   private effectiveAuthorizeFor(sourceName: string | undefined): string[] {
+      if (sourceName && this.sources?.some((s) => s.name === sourceName)) {
+         return this.getAuthorize(sourceName);
+      }
+      return this.fileLevelAuthorize;
+   }
+
+   /**
+    * Runtime authorize gate. Throws `AccessDeniedError` (403) unless at least
+    * one in-scope authorize expression evaluates true for the supplied givens.
+    * No in-scope expressions = unrestricted.
+    *
+    * Fail closed: any failure to evaluate the probe — a missing given value, a
+    * transient probe error, a missing/non-true result — denies. (Expression
+    * well-formedness was already validated at model load; see authorize.ts.)
+    * The 403 message names only the source, never the expression, so gate logic
+    * is not leaked to the caller.
+    */
+   public async assertAuthorized(
+      sourceName: string | undefined,
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      const exprs = this.effectiveAuthorizeFor(sourceName);
+      if (exprs.length === 0) return; // unrestricted
+      const label = sourceName ?? "(query)";
+      const deny = () => {
+         throw new AccessDeniedError(`Access denied for source "${label}".`);
+      };
+      if (!this.modelMaterializer) deny();
+      let passed = false;
+      try {
+         passed = await evaluateAuthorize(
+            this.modelMaterializer!,
+            exprs,
+            givens,
+         );
+      } catch (err) {
+         // Fail closed — e.g. a referenced given had no supplied value.
+         logger.debug("Authorize probe failed; denying", {
+            sourceName: label,
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         deny();
+      }
+      if (!passed) deny();
+   }
+
+   /**
+    * Gate ad-hoc compile/query text by the named source it targets. Resolves the
+    * source from surface syntax (`extractSourceName`) and applies the gate. An
+    * unnamed/inline source resolves to `undefined`, so only the model-wide
+    * file-level gate applies — the same top-level-only boundary as the query
+    * path's early gate. Used by the `/compile` path, which has no runnable to
+    * resolve before it decides whether to compile at all.
+    */
+   public async assertAuthorizedForText(
+      text: string,
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      await this.assertAuthorized(this.extractSourceName(text), givens);
+   }
+
+   /**
+    * Gate a compiled query by the source it actually reads, resolved from the
+    * prepared query's `structRef` (authoritative — survives named-query and
+    * multi-statement indirection that surface syntax misses, e.g. the executed
+    * `run:` statement isn't the first one). Used as the `/compile` backstop once
+    * a runnable exists.
+    */
+   public async assertAuthorizedForRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      await this.assertAuthorized(
+         await this.resolveAuthorizeSourceFromRunnable(runnable),
+         givens,
+      );
+   }
+
+   /**
+    * Resolve the source a compiled query reads, from its prepared query's
+    * `structRef`. This is authoritative — it survives named-query indirection
+    * and bare `run: <query>` forms that surface-syntax extraction misses — so
+    * the authorize gate can't be dodged by how a request names the query.
+    * Returns undefined if the source can't be determined.
+    */
+   private async resolveAuthorizeSourceFromRunnable(runnable: {
+      getPreparedQuery(): Promise<unknown>;
+   }): Promise<string | undefined> {
+      try {
+         const prepared = (await runnable.getPreparedQuery()) as {
+            _query?: { structRef?: unknown };
+         };
+         const structRef = prepared._query?.structRef;
+         if (typeof structRef === "string") return structRef;
+         if (structRef && typeof structRef === "object") {
+            const s = structRef as { as?: string; name?: string };
+            return s.as || s.name;
+         }
+      } catch {
+         // Can't resolve — caller simply has no name to gate on here.
+      }
+      return undefined;
+   }
+
+   /**
     * Best-effort extraction of a source name from an ad-hoc Malloy query string.
     * Matches patterns like `run: source_name -> ...` or `source_name -> ...`.
     */
    private extractSourceName(query?: string): string | undefined {
       if (!query) return undefined;
-      const runMatch = query.match(/run\s*:\s*(\w+)\s*->/);
-      const arrowMatch = query.match(/^\s*(\w+)\s*->/m);
-      return runMatch?.[1] ?? arrowMatch?.[1];
+      // Match a bare `\w+` identifier or a backtick-quoted Malloy identifier
+      // (e.g. `gated-source`, which needs quoting for the hyphen). Quoted names
+      // must be recognized here too, or the early schema-oracle gate would miss
+      // a gated source with a quoted name and let a denied caller probe its
+      // columns via a pre-compilation field error. The quoted capture returns
+      // the inner name (no backticks), matching how sources are keyed.
+      const runMatch = query.match(/run\s*:\s*(?:`([^`]+)`|(\w+))\s*->/);
+      const arrowMatch = query.match(/^\s*(?:`([^`]+)`|(\w+))\s*->/m);
+      return (
+         runMatch?.[1] ?? runMatch?.[2] ?? arrowMatch?.[1] ?? arrowMatch?.[2]
+      );
+   }
+
+   /**
+    * Resolve the run target of an ad-hoc query to the model-defined source
+    * whose filters apply, following source-derivation declarations so that a
+    * filter-protected source carries its filter requirements when read under a
+    * derived name. The declared filter belongs to the source, not to the name
+    * it is read under. Returns undefined when the run target does not derive
+    * from a protected source.
+    */
+   private resolveFilterSource(query?: string): string | undefined {
+      const target = this.extractSourceName(query);
+      if (!target || !query) return undefined;
+
+      // Map each ad-hoc source name to the base it derives from
+      // (`source: NAME is BASE ...` → NAME → BASE).
+      const aliasOf = new Map<string, string>();
+      const declRe = /source\s*:\s*(\w+)\s+is\s+(\w+)/g;
+      let match: RegExpExecArray | null;
+      while ((match = declRe.exec(query)) !== null) {
+         aliasOf.set(match[1], match[2]);
+      }
+
+      // Walk the derivation chain until we hit a protected source or run out.
+      let current: string | undefined = target;
+      const seen = new Set<string>();
+      while (current && !seen.has(current)) {
+         if (this.filterMap.has(current)) return current;
+         seen.add(current);
+         current = aliasOf.get(current);
+      }
+      return undefined;
    }
 
    /**
@@ -255,10 +462,16 @@ export class Model {
                malloyGivens.length > 0
                   ? (malloyGivens.map(malloyGivenToApi) as ApiGiven[])
                   : undefined;
-            const sourceResult = Model.getSources(modelPath, modelDef, givens);
+            const sourceResult = Model.getSources(modelDef, givens);
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
-            queries = Model.getQueries(modelPath, modelDef);
+            queries = Model.getQueries(modelDef);
+
+            // Translation-time validation of #(authorize) annotations (shared
+            // with the package-load worker so both compile paths validate
+            // identically). Compiling the probe surfaces unknown givens and
+            // source-field references at model-load instead of first request.
+            await validateAuthorizeProbes(modelMaterializer, sources ?? []);
 
             // Collect sourceInfos from imported models first
             // This follows the same pattern as notebook imports handling
@@ -557,6 +770,24 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
+      // Early fast-path authorize gate (before loadQuery). Resolve the source
+      // from surface syntax; gate if it names one. This runs BEFORE compilation
+      // so the gate can't be used as a schema oracle — without it, a denied
+      // caller probing `run: gated -> { group_by: maybe_field }` would get a
+      // Malloy "field not found" vs a 403 and learn the gated source's columns.
+      // It does NOT replace the authoritative compiled-source gate below (which
+      // always runs and catches named-query / multi-statement forms surface
+      // syntax can't resolve); it only fails fast for the common case.
+      const earlySource =
+         sourceName ||
+         (queryName
+            ? this.queries?.find((q) => q.name === queryName)?.sourceName
+            : undefined) ||
+         this.extractSourceName(query);
+      if (earlySource) {
+         await this.assertAuthorized(earlySource, givens ?? {});
+      }
+
       // Wrap loadQuery calls in try-catch to handle query parsing errors
       try {
          let queryString: string;
@@ -579,9 +810,19 @@ export class Model {
             );
          }
 
-         // Inject source filter predicates unless bypassed
+         // Distinguishes free-form query text from the named `source->view`
+         // form. Both are driven by untrusted caller input and compiled in
+         // restricted mode below; this flag only controls how the protected
+         // source is resolved for filter injection.
+         const isAdHocQuery = !sourceName && !queryName && !!query;
+
+         // Inject source filter predicates unless bypassed. For ad-hoc queries
+         // resolve the run target through any alias/extend/chain so a protected
+         // source can't be read unfiltered under a different name.
          if (!bypassFilters) {
-            const effectiveSource = sourceName ?? this.extractSourceName(query);
+            const effectiveSource = isAdHocQuery
+               ? this.resolveFilterSource(query)
+               : sourceName;
             if (effectiveSource) {
                const filters = this.getFilters(effectiveSource);
                if (filters.length > 0) {
@@ -597,7 +838,14 @@ export class Model {
             }
          }
 
-         runnable = this.modelMaterializer.loadQuery(queryString);
+         // Restricted mode keeps untrusted query text inside the model's curated
+         // surface — it rejects `import`, raw `connection.table(...)` /
+         // `connection.sql(...)`, raw-SQL functions, and `##!` flags. The
+         // model's own definitions are unaffected. Both the ad-hoc `query` text
+         // and the `run: source->view` string built from the caller-supplied
+         // `sourceName`/`queryName` pair are untrusted, so both compile here;
+         // only author-curated notebook cells use the unrestricted `loadQuery`.
+         runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
@@ -624,6 +872,31 @@ export class Model {
             sourceName,
          });
          throw new BadRequestError(`Invalid query: ${errorMessage}`);
+      }
+
+      // Authoritative authorize gate: resolve the gated source from the
+      // COMPILED query — the source Malloy actually runs (the LAST `run:`
+      // statement) — not from surface syntax. Surface-syntax resolution alone
+      // is both bypassable (first-statement regex vs. last-statement execution:
+      // `run: ungated\nrun: gated` would gate `ungated` while running `gated`)
+      // and over-restrictive, so this compiled check always runs and is the
+      // source of truth; it handles named-query / blank-source / multi-statement
+      // forms uniformly. Skip only the redundant re-probe when it's the same
+      // source the early gate already cleared. Outside the loadQuery try so
+      // AccessDeniedError stays a 403; independent of bypassFilters.
+      const compiledSource =
+         await this.resolveAuthorizeSourceFromRunnable(runnable);
+      // Run unless it's the redundant re-probe of the exact named source the
+      // early gate already cleared. When compiledSource is unknown/unresolved,
+      // this still runs and assertAuthorized applies the model-wide file-level
+      // gate via effectiveAuthorizeFor. Note: on this path an ad-hoc inline
+      // `duckdb.sql(...)` query is rejected by restricted mode (the raw-SQL
+      // ban from loadRestrictedQuery above) before it can run, so the
+      // raw-warehouse bypass is closed by restricted mode — not by this gate.
+      // This fallback's job is to apply the file-level gate to permitted ad-hoc
+      // forms (declared-source references) whose source can't be named.
+      if (!(compiledSource && compiledSource === earlySource)) {
+         await this.assertAuthorized(compiledSource, givens ?? {});
       }
 
       const maxRows = getMaxQueryRows();
@@ -727,6 +1000,32 @@ export class Model {
       } as ApiCompiledModel;
    }
 
+   /**
+    * Serialize a notebook cell's `newSources` to the wire shape (an array
+    * of JSON strings), embedding the model-level `givens` on every
+    * SourceInfo so consumers iterating `newSources` can render `given:`
+    * inputs without a second getModel round-trip. Matches `Source.givens`
+    * in the API spec ("Identical to CompiledModel.givens") and how
+    * `getSources` already copies the full list onto each CompiledModel
+    * source. When the model declares no givens, the SourceInfo is emitted
+    * untouched (no empty `givens` key).
+    *
+    * Shared by `getNotebookModel` (the notebook GET endpoint) and
+    * `executeNotebookCell` (the cell-run endpoint) so both surface givens
+    * identically.
+    */
+   private serializeNewSources(
+      newSources: Malloy.SourceInfo[] | undefined,
+   ): string[] | undefined {
+      return newSources?.map((source) =>
+         JSON.stringify(
+            this.givens && this.givens.length > 0
+               ? { ...source, givens: this.givens }
+               : source,
+         ),
+      );
+   }
+
    private async getNotebookModel(): Promise<ApiRawNotebook> {
       // Return raw cell contents without executing them
       const notebookCells: ApiNotebookCell[] = (
@@ -735,33 +1034,16 @@ export class Model {
          return {
             type: cell.type,
             text: cell.text,
-            newSources: cell.newSources?.map((source) =>
-               JSON.stringify(source),
-            ),
+            newSources: this.serializeNewSources(cell.newSources),
             queryInfo: cell.queryInfo
                ? JSON.stringify(cell.queryInfo)
                : undefined,
          } as ApiNotebookCell;
       });
 
-      // Collect all annotations from the inherits chain
-      const allAnnotations: string[] = [];
-      if (this.modelDef) {
-         // Traverse the inherits chain to collect all annotations
-         // Type as Annotation to handle the inherits chain properly
-         let currentAnnotation: Annotation | undefined =
-            this.modelDef.annotation;
-
-         while (currentAnnotation) {
-            if (currentAnnotation.notes) {
-               allAnnotations.push(
-                  ...currentAnnotation.notes.map((note) => note.text),
-               );
-            }
-            // Navigate to the inherited annotation if it exists
-            currentAnnotation = currentAnnotation.inherits;
-         }
-      }
+      const allAnnotations = this.modelDef
+         ? new Annotations(modelAnnotations(this.modelDef)).texts()
+         : [];
 
       return {
          type: "notebook",
@@ -812,6 +1094,20 @@ export class Model {
             type: cell.type,
             text: cell.text,
          };
+      }
+
+      // Authorize gate — only cells that actually run a query touch data, so
+      // gate exactly those (a source-def / import cell has no runnable and
+      // accesses nothing). Resolve the source from the COMPILED cell query
+      // (authoritative — survives `run: <named query>` cells the text regex
+      // misses); assertAuthorized applies the source's gate, or the model-wide
+      // file-level gate for an unknown/inline source. Before the execution try
+      // below so AccessDeniedError stays a 403; independent of bypassFilters.
+      if (cell.runnable) {
+         const authorizeSource = await this.resolveAuthorizeSourceFromRunnable(
+            cell.runnable,
+         );
+         await this.assertAuthorized(authorizeSource, givens ?? {});
       }
 
       // For code cells, execute the runnable if available
@@ -910,7 +1206,7 @@ export class Model {
          text: cell.text,
          queryName: queryName,
          result: queryResult,
-         newSources: cell.newSources?.map((source) => JSON.stringify(source)),
+         newSources: this.serializeNewSources(cell.newSources),
       };
    }
 
@@ -976,132 +1272,30 @@ export class Model {
       return malloyConfig;
    }
 
-   private static getQueries(
-      modelPath: string,
-      modelDef: ModelDef,
-   ): ApiQuery[] {
-      const isNamedQuery = (
-         object: NamedModelObject,
-      ): object is NamedQueryDef => object.type === "query";
-      return Object.values(modelDef.contents)
-         .filter(isNamedQuery)
-         .map((queryObj: NamedQueryDef) => ({
-            name: queryObj.as || queryObj.name,
-            // What to do when the source is not a string?
-            sourceName:
-               typeof queryObj.structRef === "string"
-                  ? queryObj.structRef
-                  : undefined,
-            annotations: queryObj?.annotation?.blockNotes
-               ?.filter((note: { at: { url: string } }) =>
-                  note.at.url.includes(modelPath),
-               )
-               .map((note: { text: string }) => note.text),
-         }));
+   private static getQueries(modelDef: ModelDef): ApiQuery[] {
+      // Shared with the package-load worker — see service/source_extraction.ts.
+      return extractQueriesFromModelDef(modelDef) as ApiQuery[];
    }
 
    private static getSources(
-      modelPath: string,
       modelDef: ModelDef,
       givens?: ApiGiven[],
    ): {
       sources: ApiSource[];
       filterMap: Map<string, FilterDefinition[]>;
    } {
-      const filterMap = new Map<string, FilterDefinition[]>();
-
-      const sources = Object.values(modelDef.contents)
-         .filter((obj) => isSourceDef(obj))
-         .map((sourceObj) => {
-            const sourceName = sourceObj.as || sourceObj.name;
-            const annotations = (sourceObj as StructDef).annotation?.blockNotes
-               ?.filter((note) => note.at.url.includes(modelPath))
-               .map((note) => note.text);
-
-            // Parse #(filter) from ALL annotations, traversing the inherits
-            // chain so that filters on a base source (e.g. `recalls`) are
-            // picked up by an extending source (`manufacturer_recalls is
-            // recalls extend {}`).  The Malloy compiler stores the base
-            // source's annotations in `annotation.inherits`.
-            //
-            // The chain goes child → parent, so we collect child-first.
-            // parseFilters uses "last wins" dedup, so we reverse to put
-            // parent annotations first and child annotations last (winning).
-            const collectedAnnotations: string[][] = [];
-            let curAnnotation: Annotation | undefined = (sourceObj as StructDef)
-               .annotation;
-            while (curAnnotation) {
-               if (curAnnotation.blockNotes) {
-                  collectedAnnotations.push(
-                     curAnnotation.blockNotes.map((note) => note.text),
-                  );
-               }
-               curAnnotation = curAnnotation.inherits;
-            }
-            const allAnnotations = collectedAnnotations.reverse().flat();
-            let filters: ApiFilter[] | undefined;
-            if (allAnnotations.length > 0) {
-               try {
-                  const parsed = parseFilters(allAnnotations);
-                  if (parsed.length > 0) {
-                     filterMap.set(sourceName, parsed);
-                     const structFields = (sourceObj as StructDef).fields;
-                     filters = parsed.map((f) => {
-                        const field = structFields.find(
-                           (fd) => (fd.as || fd.name) === f.dimension,
-                        );
-                        return {
-                           name: f.name,
-                           dimension: f.dimension,
-                           type: f.type,
-                           implicit: f.implicit,
-                           required: f.required,
-                           dimensionType: field?.type as string | undefined,
-                        };
-                     });
-                  }
-               } catch (err) {
-                  logger.warn(
-                     `Failed to parse filter annotations on source "${sourceName}"`,
-                     { error: err },
-                  );
-               }
-            }
-
-            const views = (sourceObj as StructDef).fields
-               .filter((turtleObj) => turtleObj.type === "turtle")
-               .filter((turtleObj) =>
-                  // TODO(kjnesbit): Fix non-reduce views. Filter out
-                  // non-reduce views, i.e., indexes. Need to discuss with Will.
-                  (turtleObj as TurtleDef).pipeline
-                     .map((stage) => stage.type)
-                     .every((type) => type == "reduce"),
-               )
-               .map(
-                  (turtleObj) =>
-                     ({
-                        name: turtleObj.as || turtleObj.name,
-                        annotations: turtleObj?.annotation?.blockNotes
-                           ?.filter((note) => note.at.url.includes(modelPath))
-                           .map((note) => note.text),
-                     }) as ApiView,
-               );
-
-            return {
-               name: sourceName,
-               annotations,
-               views,
-               filters,
-               // Malloy exposes givens at the model level, not per-source.
-               // First pass: surface the full model-level list on every source
-               // — matches how filter introspection already collapses
-               // inheritance into the per-source list. Refine to view-scoped
-               // filtering if a customer asks.
-               givens,
-            } as ApiSource;
-         });
-
-      return { sources, filterMap };
+      // Shared with the package-load worker — see service/source_extraction.ts.
+      // The service path logs filter parse failures; the worker stays silent.
+      const { sources, filterMap } = extractSourcesFromModelDef(
+         modelDef,
+         givens,
+         (sourceName, err) =>
+            logger.warn(
+               `Failed to parse filter annotations on source "${sourceName}"`,
+               { error: err },
+            ),
+      );
+      return { sources: sources as unknown as ApiSource[], filterMap };
    }
 
    static async getModelMaterializer(

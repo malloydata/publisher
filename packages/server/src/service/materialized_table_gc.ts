@@ -1,37 +1,8 @@
 import type { Connection } from "@malloydata/malloy";
-import {
-   DatabricksDialect,
-   DuckDBDialect,
-   MySQLDialect,
-   PostgresDialect,
-   SnowflakeDialect,
-   StandardSQLDialect,
-   TrinoDialect,
-} from "@malloydata/malloy";
 import { logger } from "../logger";
 import { ManifestEntry } from "../storage/DatabaseInterface";
 import { ManifestService } from "./manifest_service";
 import { stagingSuffix } from "./materialization_service";
-import { type Quoter, quoteTablePath } from "./quoting";
-
-/**
- * Registry of built-in dialects keyed by `Connection.dialectName`. Malloy's
- * internal `getDialect` helper isn't part of the package's public exports,
- * so we assemble our own registry from the exported dialect classes.
- *
- * Note: `presto` (extends `TrinoDialect`) is not re-exported publicly and
- * is niche enough to omit; if/when it ships as a publisher connection type,
- * add it here.
- */
-const DIALECTS: Readonly<Record<string, Quoter>> = Object.freeze({
-   duckdb: new DuckDBDialect(),
-   standardsql: new StandardSQLDialect(),
-   trino: new TrinoDialect(),
-   postgres: new PostgresDialect(),
-   snowflake: new SnowflakeDialect(),
-   mysql: new MySQLDialect(),
-   databricks: new DatabricksDialect(),
-});
 
 /** Build a stable key for a `(connectionName, tableName)` tuple. */
 export function liveTableKey(
@@ -154,19 +125,6 @@ async function processOneEntry(
       };
    }
 
-   // ── Unknown dialect ───────────────────────────────────────────
-   const dialect = DIALECTS[connection.dialectName];
-   if (!dialect) {
-      return {
-         error: {
-            buildId: entry.buildId,
-            tableName: entry.tableName,
-            connectionName: entry.connectionName,
-            error: `No dialect registered for '${connection.dialectName}'`,
-         },
-      };
-   }
-
    // ── Dry run ───────────────────────────────────────────────────
    if (ctx.dryRun) {
       return {
@@ -181,8 +139,6 @@ async function processOneEntry(
    }
 
    // ── Live run: delete manifest row first ───────────────────────
-   const quoted = (p: string) => quoteTablePath(p, dialect);
-
    try {
       await ctx.manifestService.deleteEntry(ctx.environmentId, entry.id);
    } catch (err) {
@@ -214,9 +170,7 @@ async function processOneEntry(
       );
    } else {
       try {
-         await connection.runSQL(
-            `DROP TABLE IF EXISTS ${quoted(entry.tableName)}`,
-         );
+         await connection.runSQL(`DROP TABLE IF EXISTS ${entry.tableName}`);
       } catch (err) {
          logger.warn(
             "GC: deleted manifest row but failed to drop materialized table (orphaned)",
@@ -231,9 +185,7 @@ async function processOneEntry(
 
    // ── Best-effort drop staging companion ────────────────────────
    try {
-      await connection.runSQL(
-         `DROP TABLE IF EXISTS ${quoted(stagingTableName)}`,
-      );
+      await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
    } catch (err) {
       logger.warn("GC: failed to drop staging table (best-effort)", {
          stagingTableName,

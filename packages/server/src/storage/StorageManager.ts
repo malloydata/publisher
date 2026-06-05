@@ -1,5 +1,9 @@
 import { Mutex } from "async-mutex";
 import * as crypto from "crypto";
+import {
+   isCatalogVersionSupported,
+   SUPPORTED_CATALOG_VERSIONS,
+} from "../ducklake_version";
 import { ConnectionAuthError } from "../errors";
 import { logger } from "../logger";
 import {
@@ -62,6 +66,53 @@ function catalogNameForConfig(c: DuckLakeManifestConfig): string {
       .digest("hex")
       .slice(0, 8);
    return `manifest_lake_${hash}`;
+}
+
+// Read the catalog's recorded DuckLake format version from its
+// `ducklake_metadata` table via a plain postgres ATTACH (does NOT invoke
+// the DuckLake extension on the catalog). Returns the version string on
+// success, or `undefined` on any failure (missing table, query timeout,
+// connect failure) so the main ATTACH path stays the source of truth for
+// unrelated errors. Only meaningful for postgres-backed catalogs; the
+// caller must guard with `isPostgres`.
+async function readDuckLakeCatalogVersion(
+   connection: DuckDBConnection,
+   catalogUrl: string,
+   catalogName: string,
+): Promise<string | undefined> {
+   if (!catalogUrl.startsWith("postgres:")) {
+      return undefined;
+   }
+   const pgConnString = catalogUrl.slice("postgres:".length);
+   const tempDb = `${catalogName}_preflight`;
+   const escaped = escapeSQL(pgConnString);
+   try {
+      await connection.run(
+         `ATTACH '${escaped}' AS ${tempDb} (TYPE postgres, READ_ONLY);`,
+      );
+      const rows = await connection.all<{ value: string }>(
+         `SELECT value FROM ${tempDb}.ducklake_metadata WHERE key = 'version' LIMIT 1;`,
+      );
+      const value = rows[0]?.value;
+      return typeof value === "string" ? value : undefined;
+   } catch (error) {
+      logger.warn(
+         "DuckLake catalog version preflight failed; falling back to ATTACH",
+         {
+            catalogName,
+            error: redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         },
+      );
+      return undefined;
+   } finally {
+      try {
+         await connection.run(`DETACH ${tempDb};`);
+      } catch {
+         // ATTACH may have failed, so DETACH may have nothing to do.
+      }
+   }
 }
 
 /**
@@ -220,6 +271,28 @@ export class StorageManager {
       // by the caller's mutex.
       if (isCloudStorage) {
          await connection.run("INSTALL httpfs; LOAD httpfs;");
+      }
+
+      // Preflight: read the catalog's recorded format version via the
+      // postgres extension (not DuckLake) and fail fast with a non-retryable
+      // 422 if the baked DuckLake extension can't read it. Without this,
+      // an unsupported catalog would surface as a generic DuckDB error
+      // from the ATTACH below, which retry loops misclassify as transient.
+      if (isPostgres) {
+         const catalogVersion = await readDuckLakeCatalogVersion(
+            connection,
+            catalogUrl,
+            catalogName,
+         );
+         if (catalogVersion && !isCatalogVersionSupported(catalogVersion)) {
+            const supportedMax =
+               SUPPORTED_CATALOG_VERSIONS[
+                  SUPPORTED_CATALOG_VERSIONS.length - 1
+               ];
+            throw new ConnectionAuthError(
+               `DuckLake catalog version ${catalogVersion} is newer than this Publisher's extension supports (max ${supportedMax}). Upgrade the Publisher image or downgrade the catalog.`,
+            );
+         }
       }
 
       let attachCmd = `ATTACH 'ducklake:${escapedCatalogUrl}' AS ${catalogName}`;

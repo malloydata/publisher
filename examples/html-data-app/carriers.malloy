@@ -1,0 +1,45 @@
+// Demo source for the html-data-app example.
+// Uses the carriers.parquet file in this package directory.
+
+source: carriers is duckdb.table('carriers.parquet') extend {
+  primary_key: code
+  measure: carrier_count is count()
+
+  dimension:
+    letter is upper(substr(code, 1, 1))
+    name_chars is length(name)
+    size_bucket is
+      pick 'Short (≤12)' when length(name) <= 12
+      pick 'Medium (13–20)' when length(name) <= 20
+      else 'Long (21+)'
+
+  view: by_letter is {
+    group_by: letter
+    aggregate: n is count()
+    order_by: n desc, letter asc
+  }
+
+  view: by_size_bucket is {
+    group_by: size_bucket
+    aggregate: n is count()
+    order_by: n desc
+  }
+
+  view: by_name_length is {
+    group_by: name_chars
+    aggregate: n is count()
+    order_by: name_chars asc
+  }
+
+  view: kpis is {
+    aggregate:
+      total is count()
+      avg_name_length is round(avg(name_chars::number), 1)
+      distinct_letters is count(letter)
+  }
+
+  view: rows_view is {
+    select: code, name, nickname, letter, name_chars, size_bucket
+    order_by: name asc
+  }
+}

@@ -12,9 +12,12 @@ import {
    ConnectionsApi,
    DatabasesApi,
    EnvironmentsApi,
+   ManifestsApi,
+   MaterializationsApi,
    ModelsApi,
    NotebooksApi,
    PackagesApi,
+   PagesApi,
    PublisherApi,
    WatchModeApi,
 } from "../client";
@@ -85,9 +88,16 @@ const getApiClients = (
       publisher: new PublisherApi(config, basePath, axiosInstance),
       environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
+      pages: new PagesApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),
+      materializations: new MaterializationsApi(
+         config,
+         basePath,
+         axiosInstance,
+      ),
+      manifests: new ManifestsApi(config, basePath, axiosInstance),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
    };
 };

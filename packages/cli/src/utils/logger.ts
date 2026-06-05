@@ -62,6 +62,20 @@ export function formatDuration(durationMs: number): string {
 }
 
 /**
+ * Truncate a string for table display: collapse newlines/whitespace runs to a
+ * single space and cap the length with an ellipsis. Used for error columns,
+ * which can hold long, multi-line compile/build errors that would otherwise
+ * wreck a cli-table3 layout.
+ */
+export function truncate(text: string, max = 60): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= max) {
+    return collapsed;
+  }
+  return `${collapsed.slice(0, max - 1)}…`;
+}
+
+/**
  * Log axios errors with detailed information
  */
 export const logAxiosError = (error: AxiosError) => {

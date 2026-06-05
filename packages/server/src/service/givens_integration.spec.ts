@@ -123,8 +123,36 @@ describe("givens introspection", () => {
 
       expect(region).toBeDefined();
       expect(region?.type).toBe("string");
+      expect(region?.default).toBe("'US'");
       expect(cutoff).toBeDefined();
       expect(cutoff?.type).toBe("date");
+      expect(cutoff?.default).toBe("@2024-02-01");
+   });
+
+   it("omits default for a given declared without one", async () => {
+      await fs.writeFile(
+         path.join(TEST_PKG_DIR, "mixed_defaults.malloy"),
+         `##! experimental.givens
+
+given: with_default :: string is 'WN'
+given: no_default :: string
+
+source: orders is duckdb.table('orders') extend {
+   primary_key: order_id
+}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "mixed_defaults.malloy",
+         getConnections(),
+      );
+      const byName = new Map(
+         ((await model.getModel()).givens ?? []).map((g) => [g.name, g]),
+      );
+      expect(byName.get("with_default")?.default).toBe("'WN'");
+      expect(byName.get("no_default")?.default).toBeUndefined();
    });
 
    it("attaches the model-level givens list to every source", async () => {
@@ -179,14 +207,13 @@ describe("givens introspection", () => {
       const region = compiledModel.givens?.[0];
       expect(region?.name).toBe("region_filter");
 
-      // The model declares two `#(...)` annotations plus a `##!` pragma.
-      // Only the `#(...)` lines should land on the wire.
+      // The given declares two app-route annotations (`#(doc)`, `#(label)`).
+      // Only app routes land on the wire; Malloy-reserved routes — the
+      // model-level `##!` pragma, plain `#` tags, `#"` doc strings — must
+      // not leak onto the given's surface.
       const annotations = region?.annotations ?? [];
       expect(annotations.length).toBeGreaterThanOrEqual(2);
-      for (const line of annotations) {
-         expect(line.startsWith("#(")).toBe(true);
-      }
-      // Negative assertion: no pragma leakage.
-      expect(annotations.some((a) => a.startsWith("##!"))).toBe(false);
+      expect(annotations.some((a) => a.startsWith("##"))).toBe(false);
+      expect(annotations.some((a) => a.startsWith('#"'))).toBe(false);
    });
 });

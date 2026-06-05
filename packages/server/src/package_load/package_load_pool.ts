@@ -67,7 +67,6 @@
  *   it resolves.
  */
 import type {
-   Annotation,
    FetchSchemaOptions,
    InfoConnection,
    LookupConnection,
@@ -811,14 +810,10 @@ export class PackageLoadPool {
 
 function buildFetchOptions(options: {
    refreshTimestamp?: number;
-   modelAnnotation?: Annotation;
 }): FetchSchemaOptions {
    const out: FetchSchemaOptions = {};
    if (options.refreshTimestamp !== undefined) {
       out.refreshTimestamp = options.refreshTimestamp;
-   }
-   if (options.modelAnnotation !== undefined) {
-      out.modelAnnotation = options.modelAnnotation;
    }
    return out;
 }

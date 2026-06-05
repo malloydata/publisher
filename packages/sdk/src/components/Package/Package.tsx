@@ -1,5 +1,6 @@
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CloseIcon from "@mui/icons-material/Close";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
    Box,
    Container,
@@ -14,6 +15,7 @@ import {
    TableCell,
    TableHead,
    TableRow,
+   Tooltip,
    Typography,
 } from "@mui/material";
 import React, { useState } from "react";
@@ -25,6 +27,7 @@ import { Loading } from "../Loading";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
+import { serverBaseUrl } from "../../utils/pageEmbed";
 import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon from "./ContentTypeIcon";
 
@@ -42,7 +45,7 @@ export default function Package({
    resourceUri,
    retrievalFn,
 }: PackageProps) {
-   const { apiClients } = useServer();
+   const { apiClients, server } = useServer();
    const onClick =
       onClickPackageFile ??
       ((to: string) => {
@@ -89,6 +92,41 @@ export default function Package({
             versionId,
          ),
    });
+
+   // List of HTML pages bundled inside the package (in-package data apps).
+   // Goes through the configured API client so consumers using a non-default
+   // baseURL or Bearer auth (via <ServerProvider>) get the same plumbing as
+   // every other endpoint.
+   // No versionId in the key: /pages serves static files, which aren't
+   // versioned (listPages takes only env + package), so keying on
+   // versionId would fragment the cache and prevent PageViewer's identical
+   // query from deduping.
+   const pagesQuery = useQueryWithApiError({
+      queryKey: ["pages", environmentName, packageName],
+      queryFn: async () => {
+         try {
+            return await apiClients.pages.listPages(
+               environmentName,
+               packageName,
+            );
+         } catch (e) {
+            // A 404 or transport-level failure (older Publisher without the
+            // /pages route, network blip) is non-fatal: render the package
+            // page without a Pages section. A genuinely missing package
+            // surfaces its own error via the package query above, so an empty
+            // list here can't hide it.
+            const status = (e as { response?: { status?: number } })?.response
+               ?.status;
+            if (status === 404 || status === undefined) {
+               return { data: [] } as Awaited<
+                  ReturnType<typeof apiClients.pages.listPages>
+               >;
+            }
+            throw e;
+         }
+      },
+   });
+   const pages = pagesQuery.data?.data ?? [];
 
    const notebooks = (notebooksQuery.data?.data ?? [])
       .slice()
@@ -183,6 +221,71 @@ export default function Package({
                   {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
                </PackageSection>
 
+               {pages.length > 0 && (
+                  <PackageSection title="Pages" count={pages.length}>
+                     {pages.map((page) => {
+                        const hasTitle =
+                           !!page.title && page.title !== page.path;
+                        // Standalone (raw) URL: the Publisher static-file route.
+                        // page.resource is the root-relative path; we join it
+                        // with the data origin (the API base minus /api/v0),
+                        // which may differ from the SPA origin when the SDK is
+                        // embedded in a host app on another domain.
+                        const standaloneUrl = `${serverBaseUrl(server)}${
+                           page.resource
+                        }`;
+                        return (
+                           <PackageItemRow
+                              key={page.path}
+                              icon={<ContentTypeIcon type="page" />}
+                              tint={MALLOY_BRAND.teal}
+                              label={hasTitle ? page.title : page.path}
+                              rightLabel={hasTitle ? page.path : undefined}
+                              onClick={(event) => {
+                                 if (onClickPackageFile) {
+                                    // Host app routes within SPA to an embedded
+                                    // <PageViewer> that iframes the standalone URL.
+                                    // The `pages/` prefix lets the router branch
+                                    // off the existing model-path catch-all.
+                                    onClickPackageFile(
+                                       `pages/${page.path}`,
+                                       event,
+                                    );
+                                 } else {
+                                    // No host app — navigate to standalone HTML.
+                                    if (
+                                       event &&
+                                       (event.metaKey || event.ctrlKey)
+                                    ) {
+                                       window.open(standaloneUrl, "_blank");
+                                    } else {
+                                       window.location.href = standaloneUrl;
+                                    }
+                                 }
+                              }}
+                              trailingAction={
+                                 <Tooltip title="Open standalone in new tab">
+                                    <IconButton
+                                       size="small"
+                                       href={standaloneUrl}
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       aria-label="Open standalone in new tab"
+                                       onClick={(event) =>
+                                          event.stopPropagation()
+                                       }
+                                       sx={{ color: "text.secondary" }}
+                                    >
+                                       <OpenInNewIcon fontSize="small" />
+                                    </IconButton>
+                                 </Tooltip>
+                              }
+                           />
+                        );
+                     })}
+                  </PackageSection>
+               )}
+
                <PackageSection title="Semantic Models" count={models.length}>
                   {models.map((model) => (
                      <PackageItemRow
@@ -208,6 +311,20 @@ export default function Package({
                      />
                   ))}
                   {databases.length === 0 && <EmptyRow label="No data files" />}
+               </PackageSection>
+
+               <PackageSection title="Materializations">
+                  <PackageItemRow
+                     icon={<ContentTypeIcon type="materialization" />}
+                     tint={MALLOY_BRAND.teal}
+                     label="Materializations & Manifest"
+                     onClick={(event) =>
+                        onClick(
+                           `/${environmentName}/${packageName}/materializations`,
+                           event,
+                        )
+                     }
+                  />
                </PackageSection>
 
                {hasReadme && (
@@ -270,7 +387,7 @@ function PackageSection({
    children,
 }: {
    title: string;
-   count: number;
+   count?: number;
    children: React.ReactNode;
 }) {
    return (
@@ -287,9 +404,11 @@ function PackageSection({
             >
                {title}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-               ({count})
-            </Typography>
+            {count !== undefined && (
+               <Typography variant="caption" color="text.secondary">
+                  ({count})
+               </Typography>
+            )}
          </Stack>
          <Box>{children}</Box>
       </Box>
@@ -302,12 +421,17 @@ function PackageItemRow({
    label,
    rightLabel,
    onClick,
+   trailingAction,
 }: {
    icon: React.ReactNode;
    tint: string;
    label: string;
    rightLabel?: string;
    onClick?: (event: React.MouseEvent) => void;
+   /** Optional element rendered at the end of the row (e.g. an
+    *  "open in new tab" icon button). Clicks on it should
+    *  `event.stopPropagation()` so the row click doesn't also fire. */
+   trailingAction?: React.ReactNode;
 }) {
    const interactive = !!onClick;
    const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -381,6 +505,11 @@ function PackageItemRow({
             >
                {rightLabel}
             </Typography>
+         )}
+         {trailingAction && (
+            <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+               {trailingAction}
+            </Box>
          )}
       </Box>
    );

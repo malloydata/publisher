@@ -11,8 +11,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://install.duckdb.org | bash && \
-    ln -s /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb && \
+# DuckDB CLI version, pinned to @duckdb/node-api (the query engine) so the
+# CLI bakes extensions into the same ~/.duckdb/extensions/v<version>/ dir
+# the runtime reads. CI passes --build-arg DUCKDB_VERSION derived from the
+# lockfile (the source of truth); the default below is a fallback for plain
+# `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
+# by the CI consistency check.
+ARG DUCKDB_VERSION=1.5.3
+RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
+    ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
     ldconfig && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
@@ -84,9 +91,19 @@ COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
+# Carry over the DuckDB extensions baked during the builder stage's
+# `build:server-only` (packages/server's build runs bake-duckdb-extensions).
+# They live in ~/.duckdb/extensions/v<version>/, which the runtime engine reads
+# at INSTALL/LOAD time -- so the server finds them on disk and skips the network
+# fetch. Copying the baked cache from the builder keeps a single bake mechanism
+# (the server build) instead of re-running it here. The CLI (base-deps) and
+# runtime engine are pinned to the same DuckDB version, so all agree on one dir.
+COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
+
 # Runtime config
+ARG DUCKDB_VERSION=1.5.3
 ENV NODE_ENV=production
-ENV PATH="/root/.duckdb/cli/latest:$PATH"
+ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 RUN mkdir -p /etc/publisher
 # Declare both runtime ports so `docker run -P` and Docker Desktop's
 # port-preview surface MCP as well as REST. The server already listens

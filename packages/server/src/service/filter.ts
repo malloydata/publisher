@@ -272,6 +272,10 @@ export function buildFilterClause(
  * Append a filter refinement to a Malloy query string.
  * Uses Malloy's `+ {where: ...}` refinement syntax.
  *
+ * The refinement is placed on its own line so that a trailing line comment
+ * (`//` or `--`) on the caller's query cannot extend over it and neutralize
+ * the filter.
+ *
  * If `filterClause` is empty, returns the original query unchanged.
  */
 export function injectFilterRefinement(
@@ -281,7 +285,7 @@ export function injectFilterRefinement(
    if (!filterClause) {
       return query;
    }
-   return `${query.trimEnd()} + {where: ${filterClause}}`;
+   return `${query.trimEnd()}\n+ {where: ${filterClause}}`;
 }
 
 // ---------------------------------------------------------------------------

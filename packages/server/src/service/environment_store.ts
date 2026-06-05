@@ -95,6 +95,26 @@ function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    }
 }
 
+// Safely clear a prior mount target before (re)mounting at `targetPath`.
+// Distinguishes symlinks from real dirs: fs.rm's recursive mode could otherwise
+// traverse into a symlinked source and damage it, so unlink symlinks and rm real
+// dirs. Both the in-place (symlink) and copy mount paths call this, so toggling
+// watch mode across runs against the same publisher_data can't leave a stale
+// entry that breaks the next mount (mkdir is a no-op on a symlink and fs.cp then
+// throws ERR_FS_CP_DIR_TO_NON_DIR).
+async function clearMountTarget(targetPath: string): Promise<void> {
+   try {
+      const stats = await fs.promises.lstat(targetPath);
+      if (stats.isDirectory() && !stats.isSymbolicLink()) {
+         await fs.promises.rm(targetPath, { recursive: true, force: true });
+      } else {
+         await fs.promises.unlink(targetPath);
+      }
+   } catch {
+      // Nothing there, fine.
+   }
+}
+
 export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
@@ -112,9 +132,35 @@ export class EnvironmentStore {
    // new Environments pick it up at construction.
    private memoryGovernor: PackageMemoryGovernor | null = null;
 
+   /**
+    * Set of environment names that should be loaded "in place" — i.e. the
+    * package directories under `publisher_data/<envName>/` are symlinks to
+    * the original local source directories instead of recursive copies.
+    *
+    * In-place mode powers the `npm run dev`-style live-reload story: edits
+    * to your source repo are visible to Publisher and trigger watch events
+    * that fan out via SSE to embedded HTML pages. Production mode (the
+    * default) keeps the safe copy semantics so the source repo and the
+    * served package are decoupled.
+    *
+    * Populated from the `PUBLISHER_WATCH` env var (comma-separated env
+    * names) at construction; can also be augmented via `markInPlace()` if
+    * a future feature wants to flip an environment to dev mode at runtime.
+    *
+    * Only LOCAL-DIR package locations are eligible for symlinking; remote
+    * sources (GitHub, GCS, S3) always copy regardless.
+    */
+   private inPlaceEnvs = new Set<string>();
+
    constructor(serverRootPath: string) {
       this.serverRootPath = serverRootPath;
       this.gcsClient = new Storage();
+
+      const watchEnvList = (process.env.PUBLISHER_WATCH || "")
+         .split(",")
+         .map((s) => s.trim())
+         .filter((s) => s.length > 0);
+      for (const envName of watchEnvList) this.inPlaceEnvs.add(envName);
 
       const storageConfig: StorageConfig = {
          type: "duckdb",
@@ -125,6 +171,17 @@ export class EnvironmentStore {
       this.storageManager = new StorageManager(storageConfig);
 
       this.finishedInitialization = this.initialize();
+   }
+
+   /** True if this env should mount package dirs in place (symlinks). */
+   public isInPlace(environmentName: string): boolean {
+      return this.inPlaceEnvs.has(environmentName);
+   }
+
+   /** Add an env to in-place mode at runtime. Caller is responsible for
+    *  triggering a re-mount if the env was already loaded with copies. */
+   public markInPlace(environmentName: string): void {
+      this.inPlaceEnvs.add(environmentName);
    }
 
    /**
@@ -708,13 +765,25 @@ export class EnvironmentStore {
    }
 
    public async getStatus() {
+      // Surface the memory governor's back-pressure as a "throttled"
+      // operational state so the control plane can stop routing new package
+      // loads/queries to a throttled worker. Draining takes precedence: a
+      // shutting-down server should keep reporting "draining". When the
+      // governor is disabled (no PUBLISHER_MAX_MEMORY_BYTES) this never fires.
+      const baseState = getOperationalState();
+      const operationalState = (
+         baseState !== "draining" &&
+         (this.memoryGovernor?.isBackpressured() ?? false)
+            ? "throttled"
+            : baseState
+      ) as components["schemas"]["ServerStatus"]["operationalState"];
+
       const status = {
          timestamp: Date.now(),
          environments: [] as Array<components["schemas"]["Environment"]>,
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
-         operationalState:
-            getOperationalState() as components["schemas"]["ServerStatus"]["operationalState"],
+         operationalState,
       };
 
       const environments = await this.listEnvironments(true);
@@ -1190,7 +1259,15 @@ export class EnvironmentStore {
                } else {
                   // For non-GitHub locations, use package name
                   if (this.isLocalPath(_package.location)) {
-                     sourcePath = _package.location;
+                     // Match the resolution rule used by
+                     // `downloadOrMountLocation` (line ~1352): relative
+                     // paths are anchored at `serverRootPath`. Without this
+                     // step the existing-source check below falls through
+                     // for any relative location, and the in-place mount
+                     // branch is unreachable.
+                     sourcePath = path.isAbsolute(_package.location)
+                        ? _package.location
+                        : path.join(this.serverRootPath, _package.location);
                   } else {
                      sourcePath = safeJoinUnderRoot(
                         tempDownloadPath,
@@ -1205,18 +1282,84 @@ export class EnvironmentStore {
                   .catch(() => false);
 
                if (sourceExists) {
-                  // Copy the specific directory
-                  await fs.promises.mkdir(absolutePackagePath, {
-                     recursive: true,
-                  });
-                  await fs.promises.cp(sourcePath, absolutePackagePath, {
-                     recursive: true,
-                  });
-                  logger.info(
-                     `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"}`,
-                  );
+                  // In-place mount path (watch-mode-only, local-dir packages
+                  // only). Replace the recursive copy with a symlink so that
+                  // edits to the source repo are visible to Publisher and
+                  // can trigger live-reload events.
+                  //
+                  // Carefully: we MUST distinguish symlinks from real dirs
+                  // when removing the prior content, because `fs.rm`'s
+                  // recursive mode could in principle traverse into a
+                  // symlinked source dir and damage it. We lstat first and
+                  // call `unlink` for symlinks, `rm` for real directories.
+                  const isInPlace =
+                     this.inPlaceEnvs.has(environmentName) &&
+                     this.isLocalPath(_package.location);
+                  if (isInPlace) {
+                     await clearMountTarget(absolutePackagePath);
+                     const absoluteSourcePath = path.resolve(sourcePath);
+                     // On Windows a "dir" symlink needs elevation
+                     // (SeCreateSymbolicLinkPrivilege — admin or Developer
+                     // Mode); a junction does not and works for absolute
+                     // directory targets, so prefer it there. chokidar watches
+                     // through both.
+                     const linkType =
+                        process.platform === "win32" ? "junction" : "dir";
+                     try {
+                        await fs.promises.symlink(
+                           absoluteSourcePath,
+                           absolutePackagePath,
+                           linkType,
+                        );
+                        logger.info(
+                           `In-place mount (watch mode): linked package "${packageDir}" -> "${absoluteSourcePath}"`,
+                        );
+                     } catch (linkError) {
+                        // Degrade gracefully instead of failing the env load:
+                        // copy the package so it still serves. Live reload
+                        // won't work for it (source edits aren't seen), but the
+                        // environment comes up. Hit e.g. on locked-down Windows
+                        // where even junction creation is denied.
+                        const code =
+                           (linkError as NodeJS.ErrnoException)?.code ??
+                           String(linkError);
+                        logger.warn(
+                           `In-place mount failed for package "${packageDir}" (${code}); falling back to a copy. Source-edit live reload is disabled for this package.`,
+                        );
+                        await clearMountTarget(absolutePackagePath);
+                        await fs.promises.mkdir(absolutePackagePath, {
+                           recursive: true,
+                        });
+                        await fs.promises.cp(sourcePath, absolutePackagePath, {
+                           recursive: true,
+                        });
+                     }
+                  } else {
+                     if (
+                        this.inPlaceEnvs.has(environmentName) &&
+                        !this.isLocalPath(_package.location)
+                     ) {
+                        logger.warn(
+                           `Watch mode: package "${packageDir}" has remote location "${_package.location}" — falling back to copy. Source-edit live reload won't work for this package; clone the source locally and use a local-dir location to enable it.`,
+                        );
+                     }
+                     // Copy the specific directory. Clear any stale mount target
+                     // first (e.g. a symlink left by a prior --watch-env run), or
+                     // fs.cp would throw ERR_FS_CP_DIR_TO_NON_DIR onto it.
+                     await clearMountTarget(absolutePackagePath);
+                     await fs.promises.mkdir(absolutePackagePath, {
+                        recursive: true,
+                     });
+                     await fs.promises.cp(sourcePath, absolutePackagePath, {
+                        recursive: true,
+                     });
+                     logger.info(
+                        `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"}`,
+                     );
+                  }
                } else {
                   // If source doesn't exist, copy the entire download as the package
+                  await clearMountTarget(absolutePackagePath);
                   await fs.promises.mkdir(absolutePackagePath, {
                      recursive: true,
                   });

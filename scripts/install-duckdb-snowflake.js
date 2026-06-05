@@ -5,11 +5,17 @@ import fs from "fs";
 import https from "https";
 import os from "os";
 import path from "path";
+import { resolveDuckDBVersion } from "./duckdb-version.js";
 
 // Configuration
 const ADBC_VERSION = "apache-arrow-adbc-20";
 const DRIVER_VERSION = "1.8.0";
 const BASE_URL = `https://github.com/apache/arrow-adbc/releases/download/${ADBC_VERSION}`;
+
+// DuckDB CLI version, resolved from @duckdb/node-api (the query engine) in
+// bun.lock so the CLI bakes extensions into the same directory the runtime
+// reads. Single source of truth -- never hardcoded here.
+const DUCKDB_VERSION = resolveDuckDBVersion();
 
 function printInfo(message) {
   console.log(`ℹ ${message}`);
@@ -170,12 +176,15 @@ async function installDuckDB() {
 
   printInfo("Installing DuckDB CLI...");
   try {
-    execSync("curl -L https://install.duckdb.org | bash", {
-      stdio: "inherit",
-      shell: "/bin/bash",
-    });
+    execSync(
+      `DUCKDB_VERSION=${DUCKDB_VERSION} curl -L https://install.duckdb.org | bash`,
+      {
+        stdio: "inherit",
+        shell: "/bin/bash",
+      },
+    );
     const homeDir = os.homedir();
-    process.env.PATH = `${homeDir}/.duckdb/cli/latest:${process.env.PATH}`;
+    process.env.PATH = `${homeDir}/.duckdb/cli/${DUCKDB_VERSION}:${process.env.PATH}`;
     printSuccess("DuckDB CLI installed successfully");
   } catch (error) {
     printWarning(`DuckDB CLI installation failed: ${error.message}`);
