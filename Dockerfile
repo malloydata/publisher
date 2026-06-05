@@ -20,8 +20,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG DUCKDB_VERSION=1.5.3
 RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
     ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
-    curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
-    ldconfig && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -35,6 +33,14 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto
 ENV PATH=$JAVA_HOME/bin:$PATH
 ENV NODE_ENV=production
 WORKDIR /publisher
+
+# CA certificates are required for the DuckDB extension bake (run by
+# packages/server's build): without them @duckdb/node-api can't verify TLS to
+# extensions.duckdb.org and every download fails with an SSL CA cert error.
+# The bun:slim base ships without them.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
@@ -73,10 +79,10 @@ WORKDIR /publisher
 # (some tools truncate at 80–120 chars); the `documentation` URL points
 # at the root README's Docker section for build/run/mount-path details.
 LABEL org.opencontainers.image.title="Malloy Publisher" \
-      org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
-      org.opencontainers.image.source="https://github.com/malloydata/publisher" \
-      org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
-      org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
+    org.opencontainers.image.source="https://github.com/malloydata/publisher" \
+    org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
+    org.opencontainers.image.licenses="MIT"
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
