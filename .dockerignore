@@ -35,12 +35,7 @@ coverage
 examples/
 malloy-samples/
 docs/
-scripts/*
-# Except the DuckDB extension baker, which the Dockerfile runs in the final
-# stage (the same script `bun run build` uses locally and in CI). Exclude the
-# directory contents with scripts/* (not scripts/) so this negation re-includes
-# the one file -- Docker won't re-include from a dir pruned by a bare "scripts/".
-!scripts/bake-duckdb-extensions.js
+scripts/
 .github/
 
 # Exclude development files
