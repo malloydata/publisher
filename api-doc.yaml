@@ -2555,6 +2555,18 @@ components:
           type: string
           description: Package location, can be an absolute path or URI (e.g. github, s3,
             gcs, etc.)
+        entryPoints:
+          type: array
+          items:
+            type: string
+          description: >-
+            Optional list of model file paths (relative to the package root)
+            that form the package's public, discoverable surface. When present,
+            only these models — and the sources they export — are listed; every
+            other .malloy file still compiles for import/join resolution but is
+            hidden from listings. When absent or empty, every model is listed
+            (the default, backward-compatible behavior). Notebooks are always
+            listed regardless of this field.
 
     Model:
       type: object

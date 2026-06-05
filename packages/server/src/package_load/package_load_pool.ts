@@ -228,7 +228,11 @@ export interface LoadPackageJob {
  * don't allocate a Map for models the caller never looks at.
  */
 export interface LoadPackageOutcome {
-   packageMetadata: { name?: string; description?: string };
+   packageMetadata: {
+      name?: string;
+      description?: string;
+      entryPoints?: string[];
+   };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {
          modelDef?: ModelDef;

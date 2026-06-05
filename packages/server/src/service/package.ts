@@ -240,6 +240,7 @@ export class Package {
          name: outcome.packageMetadata.name,
          description: outcome.packageMetadata.description,
          resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
+         entryPoints: outcome.packageMetadata.entryPoints,
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -405,6 +406,11 @@ export class Package {
          }
       }
       this.models = nextModels;
+      // A reload re-reads publisher.json in the worker; pick up any change to
+      // the entry-point set so listModels() reflects edited entryPoints without
+      // a full Package.create. (name/description are owned by the metadata-PATCH
+      // path, so only entryPoints is refreshed here.)
+      this.packageMetadata.entryPoints = outcome.packageMetadata.entryPoints;
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
@@ -416,10 +422,19 @@ export class Package {
    }
 
    public async listModels(): Promise<ApiModel[]> {
+      // When `entryPoints` is declared in publisher.json, only those models
+      // form the public surface; every other .malloy file still compiles for
+      // import/join resolution but is hidden from the listing. Absent/empty →
+      // every model is listed (backward-compatible default). Notebooks are
+      // unaffected (see listNotebooks) — they are always public.
+      const entryPoints = this.packageMetadata.entryPoints;
+      const entryPointSet =
+         entryPoints && entryPoints.length > 0 ? new Set(entryPoints) : null;
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
-               return modelPath.endsWith(MODEL_FILE_SUFFIX);
+               if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+               return entryPointSet ? entryPointSet.has(modelPath) : true;
             })
             .map(async (modelPath) => {
                let error: string | undefined;

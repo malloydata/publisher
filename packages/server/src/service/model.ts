@@ -112,6 +112,16 @@ export class Model {
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
+   /**
+    * True when this .malloy file is a declared `entryPoints` entry. Gates
+    * within-file discovery curation: the discovery accessors (getSources /
+    * getQueries / getModel) list only the export closure (`modelDef.exports`),
+    * while the full `sources`/`queries` remain for authorize/filter enforcement
+    * and join resolution. False (the default) lists everything — today's
+    * behavior — for non-entry models, notebooks, and packages with no
+    * entryPoints declared.
+    */
+   private isEntryPoint: boolean;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
@@ -156,6 +166,7 @@ export class Model {
        * derive it lazily.
        */
       modelInfo?: Malloy.ModelInfo,
+      isEntryPoint?: boolean,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -165,6 +176,7 @@ export class Model {
       this.modelMaterializer = modelMaterializer;
       this.sources = sources;
       this.queries = queries;
+      this.isEntryPoint = isEntryPoint ?? false;
       this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
@@ -577,6 +589,7 @@ export class Model {
             filterMap,
             givens,
             modelInfo,
+            data.isEntryPoint,
          );
       }
 
@@ -602,6 +615,7 @@ export class Model {
          filterMap,
          givens,
          modelInfo,
+         data.isEntryPoint,
       );
    }
 
@@ -644,16 +658,36 @@ export class Model {
       return this.modelType;
    }
 
+   /**
+    * Restrict a list of named objects to the model's re-export closure
+    * (`modelDef.exports`) for discovery. Only applies to entry-point models;
+    * everything else (non-entry models, notebooks, packages with no
+    * entryPoints) is returned unchanged — preserving today's behavior. This
+    * filters the *discovery* view only; `this.sources` stays complete so
+    * authorize/filter enforcement and join resolution are unaffected.
+    */
+   private curateForDiscovery<T extends { name?: string }>(
+      items: T[] | undefined,
+   ): T[] | undefined {
+      if (!items || !this.isEntryPoint) return items;
+      const exports = this.modelDef?.exports;
+      if (!Array.isArray(exports)) return items;
+      const exported = new Set(exports);
+      return items.filter(
+         (item) => item.name !== undefined && exported.has(item.name),
+      );
+   }
+
    public getSources(): ApiSource[] | undefined {
-      return this.sources;
+      return this.curateForDiscovery(this.sources);
    }
 
    public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.sourceInfos;
+      return this.curateForDiscovery(this.sourceInfos);
    }
 
    public getQueries(): ApiQuery[] | undefined {
-      return this.queries;
+      return this.curateForDiscovery(this.queries);
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
@@ -950,8 +984,11 @@ export class Model {
          sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
-         sources: this.sources,
-         queries: this.queries,
+         // Discovery surface: an entry point lists only its export closure
+         // (getSources/getQueries curate); `this.sources` stays complete for
+         // enforcement and resolution.
+         sources: this.getSources(),
+         queries: this.getQueries(),
          givens: this.givens,
       } as ApiCompiledModel;
    }
