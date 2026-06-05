@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
 env:
@@ -64,6 +64,14 @@ jobs:
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
         run: bun run lint
+      # Fail the build if the DuckDB CLI version baked at build time has drifted
+      # from the @duckdb/node-api query engine. Without this, a Malloy bump that
+      # moves the engine to a new DuckDB version silently leaves the CLI behind,
+      # so baked extensions land in a directory the runtime never reads and it
+      # re-fetches them from the network at query time (which fails on runners
+      # that cannot reach extensions.duckdb.org).
+      - name: Check DuckDB version consistency
+        run: bun run validate-duckdb-sync
   # Smoke-tests the built server under two invocation scenarios.
   #
   # Note on scope: the published `bin` entry uses `#!/usr/bin/env node`, so the
@@ -219,12 +227,21 @@ jobs:
           submodules: "true"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      # Derive the DuckDB CLI version from the engine Malloy resolves
+      # (@duckdb/node-api in bun.lock) so the image's baked CLI/extensions
+      # always match the runtime, regardless of the Dockerfile ARG default.
+      - name: Resolve DuckDB version from Malloy
+        id: duckdb
+        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        shell: bash
       - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           load: true
+          build-args: |
+            DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -253,6 +270,47 @@ jobs:
               || { echo "✗ Missing/empty OCI label: org.opencontainers.image.$key"; exit 1; }
           done
           echo "✓ All five OCI image labels present"
+      - name: Verify baked DuckDB extensions
+        run: |
+          # The image bakes the DuckDB extensions the server loads at runtime
+          # (packages/server build runs bake-duckdb-extensions; the builder's
+          # ~/.duckdb/extensions is copied into the final image). This asserts
+          # they are actually present and LOAD *offline* -- with the network cut
+          # off, so a load can only succeed from the baked on-disk cache, never a
+          # fallback download. Catches a broken bake, a version mismatch between
+          # the baked dir and the CLI, or the snowflake bundled-driver regression
+          # (we removed the external ADBC driver install).
+          set -e
+          version="${{ steps.duckdb.outputs.version }}"
+
+          # 1. The CLI version must match the version we baked against, or the
+          #    baked v<version>/ dir is invisible to it.
+          cli_version=$(docker run --rm --entrypoint duckdb \
+            malloy-publisher:smoke-test -noheader -list -c "SELECT version();")
+          echo "CLI version: $cli_version (expected v$version)"
+          echo "$cli_version" | grep -q "v$version" \
+            || { echo "✗ DuckDB CLI version != baked version"; exit 1; }
+
+          # 2. Each core extension must LOAD with no network (--network none).
+          #    INSTALL is a no-op when already baked; LOAD proves it's usable.
+          for ext in httpfs aws azure postgres ducklake; do
+            docker run --rm --network none --entrypoint duckdb \
+              malloy-publisher:smoke-test -c "INSTALL $ext; LOAD $ext;" \
+              || { echo "✗ core extension '$ext' failed to load offline"; exit 1; }
+            echo "✓ $ext loads offline"
+          done
+
+          # 3. The community extensions (bigquery, snowflake) must load offline
+          #    too. snowflake in particular loads via its BUNDLED ADBC driver --
+          #    we removed the external ADBC driver install, so a failure here
+          #    means the extension no longer self-provides the driver.
+          for ext in bigquery snowflake; do
+            docker run --rm --network none --entrypoint duckdb \
+              malloy-publisher:smoke-test -c "LOAD $ext;" \
+              || { echo "✗ community extension '$ext' failed to load offline (bundled driver missing?)"; exit 1; }
+            echo "✓ $ext loads offline"
+          done
+          echo "✓ All baked DuckDB extensions load offline"
       - name: Start container
         run: |
           docker run -d --name malloy-publisher-smoke \

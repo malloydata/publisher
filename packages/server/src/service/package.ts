@@ -138,13 +138,24 @@ export class Package {
             malloy_package_name: packageName,
             status,
          });
-         // Clean up package directory on failure
+         // Clean up the package directory on failure, but NOT when packagePath
+         // is an in-place mount symlink (watch mode). Removing it would unmount
+         // the package, so a transient compile error from a half-typed model
+         // saved mid-edit would brick the package until a restart. The symlink
+         // points at the user's live source, which is left untouched; the next
+         // save recompiles against it.
          try {
-            await fs.rm(packagePath, {
-               recursive: true,
-               force: true,
-            });
-            logger.info(`Cleaned up failed package directory: ${packagePath}`);
+            const stat = await fs.lstat(packagePath).catch(() => null);
+            if (stat?.isSymbolicLink()) {
+               logger.info(
+                  `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
+               );
+            } else {
+               await fs.rm(packagePath, { recursive: true, force: true });
+               logger.info(
+                  `Cleaned up failed package directory: ${packagePath}`,
+               );
+            }
          } catch (cleanupError) {
             logger.warn(`Failed to clean up package directory ${packagePath}`, {
                error: cleanupError,

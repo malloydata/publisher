@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Airline Carriers</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --ink: #11151c;
+      --ink-soft: #5b6472;
+      --line: #e6eaf2;
+      --accent: #4f46e5;
+      --accent-soft: #eef0ff;
+      --good: #10b981;
+      --shadow: 0 1px 2px rgba(17, 21, 28, .04), 0 4px 12px rgba(17, 21, 28, .04);
+      --radius: 12px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      min-height: 100vh;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    main { max-width: 1200px; margin: 0 auto; padding: 28px; }
+
+    header.page {
+      display: flex; align-items: end; gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    header.page h1 { font-size: 26px; margin: 0; letter-spacing: -0.02em; }
+    header.page p { color: var(--ink-soft); margin: 0; font-size: 13px; }
+    header.page .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--accent-soft); color: var(--accent);
+      padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    }
+    header.page .badge::before {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--good); box-shadow: 0 0 0 3px rgba(16,185,129,.2);
+    }
+
+    /* Filter bar */
+    .filters {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+      background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 20px;
+    }
+    .filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); }
+    .filters select, .filters button {
+      font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+      background: var(--card); color: var(--ink); min-width: 160px;
+    }
+    .filters select:focus, .filters button:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    .filters .reset {
+      margin-left: auto; cursor: pointer; background: var(--accent-soft); color: var(--accent);
+      border: none; font-weight: 600; min-width: 0;
+    }
+    .filters .reset:hover { background: #e0e3ff; }
+    .filters .count {
+      margin-left: auto; color: var(--ink-soft); font-variant-numeric: tabular-nums;
+    }
+
+    /* KPI tiles */
+    .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
+    .kpi {
+      background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 18px 20px; box-shadow: var(--shadow);
+    }
+    .kpi .label { color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .kpi .value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-top: 4px; }
+    .kpi .delta { font-size: 12px; color: var(--good); margin-top: 4px; }
+
+    /* Charts grid */
+    .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 20px; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 18px 20px; box-shadow: var(--shadow);
+    }
+    .card h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+    .card .chart-wrap { position: relative; height: 280px; }
+
+    /* Data table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    th {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--ink-soft); font-weight: 600;
+    }
+    tbody tr:hover { background: var(--bg); }
+    .pill {
+      display: inline-block; font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+      font-size: 12px; padding: 2px 8px; background: var(--accent-soft);
+      color: var(--accent); border-radius: 6px; font-weight: 600;
+    }
+
+    .err {
+      background: #fff5f5; color: #b00020; border: 1px solid #fcc;
+      padding: 10px 14px; border-radius: 8px; font-size: 13px; margin: 12px 0;
+      white-space: pre-wrap; font-family: ui-monospace, monospace;
+    }
+
+    @media (max-width: 800px) {
+      .kpis, .grid { grid-template-columns: 1fr; }
+      main { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+
+<main>
+  <header class="page">
+    <div>
+      <h1>Airline Carriers</h1>
+      <p>Live data from <code>carriers.malloy</code> · edits hot-reload automatically</p>
+    </div>
+    <span class="badge">connected</span>
+  </header>
+
+  <div class="filters" id="filters">
+    <label>
+      First letter
+      <select id="f-letter">
+        <option value="">All letters</option>
+      </select>
+    </label>
+    <label>
+      Name length
+      <select id="f-bucket">
+        <option value="">All sizes</option>
+        <option>Short (≤12)</option>
+        <option>Medium (13–20)</option>
+        <option>Long (21+)</option>
+      </select>
+    </label>
+    <label>
+      Sort table
+      <select id="f-sort">
+        <option value="name">Name (A→Z)</option>
+        <option value="code">Code (A→Z)</option>
+        <option value="name_chars">Name length</option>
+      </select>
+    </label>
+    <span class="count" id="row-count">…</span>
+    <button class="reset" id="reset">Reset</button>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="label">Total carriers</div><div class="value" id="kpi-total">…</div></div>
+    <div class="kpi"><div class="label">Avg name length</div><div class="value" id="kpi-avg">…</div></div>
+    <div class="kpi"><div class="label">Distinct first letters</div><div class="value" id="kpi-distinct">…</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Carriers by first letter</h2>
+      <div class="chart-wrap"><canvas id="byLetter"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>By name length</h2>
+      <div class="chart-wrap"><canvas id="byBucket"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>All carriers</h2>
+    <div style="overflow-x: auto">
+      <table id="rows">
+        <thead>
+          <tr><th>Code</th><th>Name</th><th>Nickname</th><th>Letter</th><th style="text-align:right">Length</th><th>Bucket</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="errors"></div>
+</main>
+
+<script src="/sdk/publisher.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+<script type="module">
+  // ---- helpers --------------------------------------------------------
+  function esc(s) {
+    return String(s ?? "").replace(/[<>&"]/g, c =>
+      ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
+  }
+  function showError(where, e) {
+    console.error(where, e);
+    const div = document.createElement("div");
+    div.className = "err";
+    div.textContent = `${where}: ${e?.message ?? e}`;
+    document.getElementById("errors").appendChild(div);
+  }
+
+  // ---- query builder --------------------------------------------------
+  // Compose a `where:` clause from the current filter state, then run Malloy
+  // queries that reuse the views defined in carriers.malloy.
+  function whereClause(state) {
+    const conds = [];
+    if (state.letter) conds.push(`letter = '${state.letter.replace(/'/g, "''")}'`);
+    if (state.bucket) conds.push(`size_bucket = '${state.bucket.replace(/'/g, "''")}'`);
+    return conds.length ? `where: ${conds.join(" and ")}\n` : "";
+  }
+  function runQuery(viewName, state, extra = "") {
+    const base = `run: carriers extend { ${extra} } -> ${viewName} + { ${whereClause(state)} }`;
+    return Publisher.query("carriers.malloy", base);
+  }
+  function runRowsQuery(state, sortKey) {
+    const orderBy = sortKey === "name_chars" ? "name_chars desc" : `${sortKey} asc`;
+    const q = `
+run: carriers -> {
+  ${whereClause(state)}select: code, name, nickname, letter, name_chars, size_bucket
+  order_by: ${orderBy}
+}`;
+    return Publisher.query("carriers.malloy", q);
+  }
+  function runKpis(state) {
+    return Publisher.query("carriers.malloy",
+      `run: carriers -> kpis + { ${whereClause(state)} }`);
+  }
+
+  // ---- chart instances (kept so we can update on filter change) -------
+  let chartLetter = null, chartBucket = null;
+
+  function renderLetterChart(rows) {
+    const labels = rows.map(r => r.letter);
+    const data = rows.map(r => r.n);
+    if (chartLetter) {
+      chartLetter.data.labels = labels;
+      chartLetter.data.datasets[0].data = data;
+      chartLetter.update();
+      return;
+    }
+    chartLetter = new Chart(document.getElementById("byLetter"), {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{
+          label: "Carriers", data,
+          backgroundColor: "#4f46e5",
+          borderRadius: 6,
+          maxBarThickness: 36,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: "#eef0ff" } },
+          x: { grid: { display: false } },
+        },
+      },
+    });
+  }
+
+  function renderBucketChart(rows) {
+    const labels = rows.map(r => r.size_bucket);
+    const data = rows.map(r => r.n);
+    const colors = ["#4f46e5", "#7c3aed", "#ec4899"];
+    if (chartBucket) {
+      chartBucket.data.labels = labels;
+      chartBucket.data.datasets[0].data = data;
+      chartBucket.update();
+      return;
+    }
+    chartBucket = new Chart(document.getElementById("byBucket"), {
+      type: "doughnut",
+      data: {
+        labels,
+        datasets: [{ data, backgroundColor: colors, borderWidth: 0 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: "60%",
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 10, boxHeight: 10, padding: 12 } },
+        },
+      },
+    });
+  }
+
+  function renderTable(rows) {
+    const tbody = document.querySelector("#rows tbody");
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td><span class="pill">${esc(r.code)}</span></td>
+        <td>${esc(r.name)}</td>
+        <td>${esc(r.nickname ?? "")}</td>
+        <td>${esc(r.letter)}</td>
+        <td style="text-align:right; font-variant-numeric: tabular-nums">${r.name_chars}</td>
+        <td>${esc(r.size_bucket)}</td>
+      </tr>`).join("");
+    document.getElementById("row-count").textContent =
+      `${rows.length.toLocaleString()} ${rows.length === 1 ? "carrier" : "carriers"}`;
+  }
+
+  function renderKpis(k) {
+    document.getElementById("kpi-total").textContent = k.total ?? 0;
+    document.getElementById("kpi-avg").textContent =
+      k.avg_name_length != null ? k.avg_name_length.toFixed(1) : "—";
+    document.getElementById("kpi-distinct").textContent = k.distinct_letters ?? 0;
+  }
+
+  // ---- top-level state and refresh -----------------------------------
+  const state = { letter: "", bucket: "", sort: "name" };
+
+  async function populateLetterDropdown() {
+    // Pull the unfiltered set of letters so the dropdown always shows
+    // every option, regardless of current filters.
+    const letters = await Publisher.query("carriers.malloy", "run: carriers -> by_letter");
+    const select = document.getElementById("f-letter");
+    for (const r of letters) {
+      const opt = document.createElement("option");
+      opt.value = r.letter;
+      opt.textContent = `${r.letter}  (${r.n})`;
+      select.appendChild(opt);
+    }
+  }
+
+  async function refresh() {
+    try {
+      const [byLetter, byBucket, rows, kpisArr] = await Promise.all([
+        runQuery("by_letter", state),
+        runQuery("by_size_bucket", state),
+        runRowsQuery(state, state.sort),
+        runKpis(state),
+      ]);
+      renderLetterChart(byLetter);
+      renderBucketChart(byBucket);
+      renderTable(rows);
+      renderKpis(kpisArr[0] ?? {});
+    } catch (e) {
+      showError("Refresh", e);
+    }
+  }
+
+  // ---- wire up UI ----------------------------------------------------
+  document.getElementById("f-letter").addEventListener("change", e => {
+    state.letter = e.target.value; refresh();
+  });
+  document.getElementById("f-bucket").addEventListener("change", e => {
+    state.bucket = e.target.value; refresh();
+  });
+  document.getElementById("f-sort").addEventListener("change", e => {
+    state.sort = e.target.value; refresh();
+  });
+  document.getElementById("reset").addEventListener("click", () => {
+    state.letter = ""; state.bucket = ""; state.sort = "name";
+    document.getElementById("f-letter").value = "";
+    document.getElementById("f-bucket").value = "";
+    document.getElementById("f-sort").value = "name";
+    refresh();
+  });
+
+  populateLetterDropdown().catch(e => showError("Loading filters", e));
+  refresh();
+</script>
+</body>
+</html>

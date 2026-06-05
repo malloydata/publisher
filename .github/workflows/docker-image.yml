@@ -58,12 +58,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Derive the DuckDB CLI version from the engine Malloy resolves
+      # (@duckdb/node-api in bun.lock) so the published image's baked
+      # CLI/extensions match the runtime, regardless of the Dockerfile default.
+      - name: Resolve DuckDB version from Malloy
+        id: duckdb
+        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: Build and push tag
         id: build
         uses: docker/build-push-action@v6
         with:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
           tags: ${{ env.REGISTRY_IMAGE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ env.PLATFORM_PAIR }}

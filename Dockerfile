@@ -11,10 +11,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://install.duckdb.org | bash && \
-    ln -s /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb && \
-    curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
-    ldconfig && \
+# DuckDB CLI version, pinned to @duckdb/node-api (the query engine) so the
+# CLI bakes extensions into the same ~/.duckdb/extensions/v<version>/ dir
+# the runtime reads. CI passes --build-arg DUCKDB_VERSION derived from the
+# lockfile (the source of truth); the default below is a fallback for plain
+# `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
+# by the CI consistency check.
+ARG DUCKDB_VERSION=1.5.3
+RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
+    ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -28,6 +33,14 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto
 ENV PATH=$JAVA_HOME/bin:$PATH
 ENV NODE_ENV=production
 WORKDIR /publisher
+
+# CA certificates are required for the DuckDB extension bake (run by
+# packages/server's build): without them @duckdb/node-api can't verify TLS to
+# extensions.duckdb.org and every download fails with an SSL CA cert error.
+# The bun:slim base ships without them.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
@@ -66,10 +79,10 @@ WORKDIR /publisher
 # (some tools truncate at 80–120 chars); the `documentation` URL points
 # at the root README's Docker section for build/run/mount-path details.
 LABEL org.opencontainers.image.title="Malloy Publisher" \
-      org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
-      org.opencontainers.image.source="https://github.com/malloydata/publisher" \
-      org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
-      org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
+    org.opencontainers.image.source="https://github.com/malloydata/publisher" \
+    org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
+    org.opencontainers.image.licenses="MIT"
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
@@ -84,20 +97,19 @@ COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
-# Bake the DuckLake extension via the `duckdb` npm binding (NOT the CLI).
-# The CLI in base-deps installs to /root/.duckdb/extensions/v<cli-version>/,
-# which is a different DuckDB version than what `duckdb@1.4.4` (the
-# runtime binding pinned in package.json) inspects at runtime
-# (/root/.duckdb/extensions/v1.4.4/). Baking via the binding here puts
-# the extension at the path the runtime server uses, so its INSTALL
-# ducklake; LOAD ducklake; at startup finds it and skips the network
-# fetch (the actual pin).
-RUN bun -e "const d=require('duckdb');const db=new d.Database(':memory:');await new Promise((r,j)=>db.exec('INSTALL ducklake; LOAD ducklake;',e=>e?j(e):r()));const rows=await new Promise((r,j)=>db.all(\"SELECT extension_version, install_path FROM duckdb_extensions() WHERE extension_name='ducklake'\",(e,x)=>e?j(e):r(x)));console.log('DuckLake baked:',JSON.stringify(rows));" || \
-    echo "DuckLake bake skipped (offline build)"
+# Carry over the DuckDB extensions baked during the builder stage's
+# `build:server-only` (packages/server's build runs bake-duckdb-extensions).
+# They live in ~/.duckdb/extensions/v<version>/, which the runtime engine reads
+# at INSTALL/LOAD time -- so the server finds them on disk and skips the network
+# fetch. Copying the baked cache from the builder keeps a single bake mechanism
+# (the server build) instead of re-running it here. The CLI (base-deps) and
+# runtime engine are pinned to the same DuckDB version, so all agree on one dir.
+COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
 
 # Runtime config
+ARG DUCKDB_VERSION=1.5.3
 ENV NODE_ENV=production
-ENV PATH="/root/.duckdb/cli/latest:$PATH"
+ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 RUN mkdir -p /etc/publisher
 # Declare both runtime ports so `docker run -P` and Docker Desktop's
 # port-preview surface MCP as well as REST. The server already listens
