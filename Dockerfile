@@ -79,10 +79,10 @@ WORKDIR /publisher
 # (some tools truncate at 80–120 chars); the `documentation` URL points
 # at the root README's Docker section for build/run/mount-path details.
 LABEL org.opencontainers.image.title="Malloy Publisher" \
-      org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
-      org.opencontainers.image.source="https://github.com/malloydata/publisher" \
-      org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
-      org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
+    org.opencontainers.image.source="https://github.com/malloydata/publisher" \
+    org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
+    org.opencontainers.image.licenses="MIT"
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
