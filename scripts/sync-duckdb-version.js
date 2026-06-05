@@ -233,7 +233,7 @@ function main() {
 
   if (drift) {
     fail(
-      "DuckDB version drift detected. Run `bun run sync-duckdb --write` to " +
+      "DuckDB version drift detected. Run `bun scripts/sync-duckdb-version.js --write` to " +
         "align the CLI/build knobs with the @duckdb/node-api query engine " +
         "(and remove any reintroduced legacy 'duckdb' dependency).",
     );
