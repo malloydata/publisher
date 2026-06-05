@@ -67,6 +67,15 @@ describe("DuckDB Attached Databases", () => {
          expect(result.rows.length).toBeGreaterThan(0);
       });
 
+      it("should load aws extension for cloud storage", async () => {
+         await connection.runSQL("INSTALL aws;");
+         await connection.runSQL("LOAD aws;");
+         const result = await connection.runSQL(
+            "SELECT * FROM duckdb_extensions() WHERE extension_name = 'aws';",
+         );
+         expect(result.rows.length).toBeGreaterThan(0);
+      });
+
       it("should load postgres extension", async () => {
          await connection.runSQL("INSTALL postgres;");
          await connection.runSQL("LOAD postgres;");
@@ -143,6 +152,47 @@ describe("DuckDB Attached Databases", () => {
                console.error(`Error: ${message}\n`);
             }
             throw error;
+         }
+      });
+
+      // The connection/storage layers INSTALL/LOAD these at runtime (cloud
+      // attach, the per-package sandbox, the materialization catalog). This
+      // asserts the DuckDB engine we resolve -- Malloy's @duckdb/node-api or
+      // our own npm pin, whichever this connection uses -- can install AND load
+      // every one of them, so a version bump that drops support for any is
+      // caught here rather than at runtime.
+      it("loads every runtime DuckDB extension (httpfs, aws, postgres, ducklake)", async () => {
+         // INSTALL name -> the name it registers as in duckdb_extensions().
+         const required: Array<{ install: string; registered: string }> = [
+            { install: "httpfs", registered: "httpfs" },
+            { install: "aws", registered: "aws" },
+            { install: "postgres", registered: "postgres_scanner" },
+            { install: "ducklake", registered: "ducklake" },
+         ];
+
+         for (const { install, registered } of required) {
+            await connection.runSQL(`INSTALL ${install};`);
+            await connection.runSQL(`LOAD ${install};`);
+
+            const result = await connection.runSQL(
+               `SELECT loaded, installed FROM duckdb_extensions() WHERE extension_name = '${registered}';`,
+            );
+            const row = result.rows[0] as
+               | { loaded: boolean; installed: boolean }
+               | undefined;
+
+            expect(
+               row,
+               `extension '${install}' (registered '${registered}') not present after INSTALL/LOAD`,
+            ).toBeDefined();
+            expect(
+               row?.installed,
+               `extension '${install}' is not installed`,
+            ).toBe(true);
+            expect(
+               row?.loaded,
+               `extension '${install}' is installed but not loaded`,
+            ).toBe(true);
          }
       });
    });
