@@ -47,8 +47,8 @@
     "prettier:check": "bunx prettier './packages/**/*.{ts,tsx}' --check",
     "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
-    "install-duckdb-snowflake": "node scripts/install-duckdb-snowflake.js",
-    "sync-duckdb": "node scripts/sync-duckdb-version.js"
+    "install-duckdb-snowflake": "bun scripts/install-duckdb-snowflake.js",
+    "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",

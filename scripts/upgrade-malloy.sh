@@ -81,4 +81,4 @@ echo "Pulling new versions with 'bun install'..."
 bun install
 
 echo "Syncing DuckDB build version to Malloy's @duckdb/node-api engine..."
-node scripts/sync-duckdb-version.js --write
+bun scripts/sync-duckdb-version.js --write

@@ -18,17 +18,17 @@
  * literal) -- carry a literal this script checks and, with --write, rewrites.
  *
  * Usage:
- *   node scripts/sync-duckdb-version.js            # check; exit 1 on drift
- *   node scripts/sync-duckdb-version.js --write    # rewrite the literals to match
- *   node scripts/sync-duckdb-version.js --print    # print the bare version
+ *   bun scripts/sync-duckdb-version.js            # check; exit 1 on drift
+ *   bun scripts/sync-duckdb-version.js --write    # rewrite the literals to match
+ *   bun scripts/sync-duckdb-version.js --print    # print the bare version
  */
 
 import fs from "fs";
 import path from "path";
 import {
-  resolveDuckDBVersion,
-  resolveDuckDBSpec,
   REPO_ROOT,
+  resolveDuckDBSpec,
+  resolveDuckDBVersion,
 } from "./duckdb-version.js";
 
 const WRITE = process.argv.includes("--write");
