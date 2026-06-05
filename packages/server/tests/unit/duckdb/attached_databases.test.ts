@@ -161,11 +161,12 @@ describe("DuckDB Attached Databases", () => {
       // our own npm pin, whichever this connection uses -- can install AND load
       // every one of them, so a version bump that drops support for any is
       // caught here rather than at runtime.
-      it("loads every runtime DuckDB extension (httpfs, aws, postgres, ducklake)", async () => {
+      it("loads every core runtime DuckDB extension (httpfs, aws, azure, postgres, ducklake)", async () => {
          // INSTALL name -> the name it registers as in duckdb_extensions().
          const required: Array<{ install: string; registered: string }> = [
             { install: "httpfs", registered: "httpfs" },
             { install: "aws", registered: "aws" },
+            { install: "azure", registered: "azure" },
             { install: "postgres", registered: "postgres_scanner" },
             { install: "ducklake", registered: "ducklake" },
          ];
@@ -192,6 +193,36 @@ describe("DuckDB Attached Databases", () => {
             expect(
                row?.loaded,
                `extension '${install}' is installed but not loaded`,
+            ).toBe(true);
+         }
+      });
+
+      it("loads every community runtime DuckDB extension (bigquery, snowflake)", async () => {
+         // bigquery and snowflake come from the DuckDB community repository and
+         // are installed at runtime with FORCE INSTALL ... FROM community.
+         const community = ["bigquery", "snowflake"];
+
+         for (const ext of community) {
+            await connection.runSQL(`FORCE INSTALL '${ext}' FROM community;`);
+            await connection.runSQL(`LOAD ${ext};`);
+
+            const result = await connection.runSQL(
+               `SELECT loaded, installed FROM duckdb_extensions() WHERE extension_name = '${ext}';`,
+            );
+            const row = result.rows[0] as
+               | { loaded: boolean; installed: boolean }
+               | undefined;
+
+            expect(
+               row,
+               `community extension '${ext}' not present after INSTALL/LOAD`,
+            ).toBeDefined();
+            expect(row?.installed, `extension '${ext}' is not installed`).toBe(
+               true,
+            );
+            expect(
+               row?.loaded,
+               `extension '${ext}' is installed but not loaded`,
             ).toBe(true);
          }
       });

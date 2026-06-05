@@ -20,22 +20,37 @@
 
 import { DuckDBInstance } from "@duckdb/node-api";
 
-// Extensions the connection layer (packages/server/src/service/connection.ts)
-// and storage manager INSTALL/LOAD for cloud attach, the per-package sandbox,
-// and the materialization catalog.
-const EXTENSIONS = ["httpfs", "ducklake", "aws", "postgres"];
+// Every extension the connection layer (packages/server/src/service/connection.ts)
+// and storage manager INSTALL/LOAD at runtime, for cloud attach, the per-package
+// sandbox, federated-database attach, and the materialization catalog. Keep this
+// in sync with the install sites in those files.
+//
+// `community: true` mirrors the runtime's `FORCE INSTALL '<name>' FROM community`
+// (bigquery, snowflake); the rest are core extensions installed by name.
+const EXTENSIONS = [
+  { name: "httpfs", community: false }, // cloud storage (gcs/s3/azure) + per-package sandbox
+  { name: "aws", community: false }, // s3 credential chain
+  { name: "azure", community: false }, // azure blob storage
+  { name: "postgres", community: false }, // postgres attach + ducklake postgres catalog
+  { name: "ducklake", community: false }, // materialization catalog
+  { name: "bigquery", community: true },
+  { name: "snowflake", community: true },
+];
 
 async function main() {
   const instance = await DuckDBInstance.create(":memory:");
   const connection = await instance.connect();
 
-  for (const ext of EXTENSIONS) {
+  for (const { name, community } of EXTENSIONS) {
     try {
-      await connection.run(`INSTALL ${ext}; LOAD ${ext};`);
-      console.log(`baked DuckDB extension: ${ext}`);
+      const install = community
+        ? `FORCE INSTALL '${name}' FROM community;`
+        : `INSTALL ${name};`;
+      await connection.run(`${install} LOAD ${name};`);
+      console.log(`baked DuckDB extension: ${name}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`skipped DuckDB extension "${ext}": ${message}`);
+      console.warn(`skipped DuckDB extension "${name}": ${message}`);
     }
   }
 
