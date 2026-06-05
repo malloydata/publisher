@@ -150,6 +150,42 @@ source: plain is duckdb.table('customers')
       expect(model.getAuthorize("plain")).toEqual(["$ROLE = 'admin'"]);
    });
 
+   it("applies a file-level gate inherited from an imported model", async () => {
+      // Regression for the hand-rolled model-annotation fold (malloy 0.0.405+
+      // removed ModelDef.annotation): a `##(authorize)` declared in an
+      // imported file must flow into the importing file's file-level gate even
+      // when the importer declares no `##` of its own. The fold must match
+      // malloy's getModelAnnotations (skip empty-ownNotes links) or `.notes`
+      // returns [] here and the gate silently drops — fail-open.
+      await writeModel(
+         "auth_base.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(authorize) "$ROLE = 'admin'"
+`,
+      );
+      await writeModel(
+         "auth_importer.malloy",
+         `import "auth_base.malloy"
+
+source: inherited_gate is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "auth_importer.malloy",
+         getConnections(),
+      );
+
+      expect(model.getAuthorize("inherited_gate")).toEqual(["$ROLE = 'admin'"]);
+   });
+
    it("fails model load on a malformed authorize annotation (no silent drop)", async () => {
       await writeModel(
          "malformed.malloy",
@@ -410,6 +446,48 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
             "run: gated -> { aggregate: c }",
             { ROLE: "intern" },
             true,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   // A model that declares no `##` of its own and inherits its file-level gate
+   // entirely from an imported model. Exercises the model-annotation fold end
+   // to end: parse → fold → fileLevelAuthorize → runtime gate.
+   const IMPORT_BASE = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(authorize) "$ROLE = 'admin'"
+`;
+   const IMPORT_GATED = `import "rt_auth_base.malloy"
+
+source: inherited_gate is duckdb.table('customers') extend {
+  measure: c is count()
+}
+`;
+
+   it("enforces a file-level gate inherited from an imported model (allow with role)", async () => {
+      await writeModel("rt_auth_base.malloy", IMPORT_BASE);
+      await writeModel("rt_import.malloy", IMPORT_GATED);
+      const { result } = await runGated(
+         "rt_import.malloy",
+         "run: inherited_gate -> { aggregate: c }",
+         { ROLE: "admin" },
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("enforces a file-level gate inherited from an imported model (deny without role — not fail-open)", async () => {
+      await writeModel("rt_auth_base.malloy", IMPORT_BASE);
+      await writeModel("rt_import.malloy", IMPORT_GATED);
+      await expect(
+         runGated(
+            "rt_import.malloy",
+            "run: inherited_gate -> { aggregate: c }",
+            {
+               ROLE: "intern",
+            },
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });

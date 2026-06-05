@@ -73,9 +73,11 @@
   },
   "resolutions": {
     "duckdb": "1.4.4",
+    "@duckdb/node-api": "1.4.4-r.1",
+    "@duckdb/node-bindings": "1.4.4-r.1",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.403",
+    "@malloydata/malloy-interfaces": "^0.0.405",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.403"
+    "@malloydata/malloy-query-builder": "^0.0.405"
   }
 }

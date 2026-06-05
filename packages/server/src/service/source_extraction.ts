@@ -23,7 +23,7 @@ import {
    StructDef,
    TurtleDef,
 } from "@malloydata/malloy";
-import { annotationTexts } from "./annotations";
+import { annotationTexts, modelAnnotations } from "./annotations";
 import { collectAuthorizeExprs, type AuthorizeMap } from "./authorize";
 import { parseFilters, type FilterDefinition } from "./filter";
 
@@ -117,7 +117,7 @@ export function extractSourcesFromModelDef(
    // truly silent — could leave a source that the author meant to lock looking
    // unrestricted.
    const fileLevelAuthorize = collectAuthorizeExprs(
-      (modelDef.annotations?.notes ?? []).map((note) => note.text),
+      (modelAnnotations(modelDef).notes ?? []).map((note) => note.text),
    );
 
    const sources: ExtractedSource[] = Object.values(modelDef.contents)
