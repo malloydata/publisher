@@ -1,0 +1,9 @@
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+
+source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
