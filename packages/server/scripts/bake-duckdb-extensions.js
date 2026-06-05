@@ -29,11 +29,13 @@ import { DuckDBInstance } from "@duckdb/node-api";
 //
 // `community: true` mirrors the runtime's `FORCE INSTALL '<name>' FROM community`
 // (bigquery, snowflake); the rest are core extensions installed by name.
+// `registered` is the name the extension reports in duckdb_extensions() when it
+// differs from the INSTALL name (only postgres -> postgres_scanner).
 const EXTENSIONS = [
    { name: "httpfs", community: false }, // cloud storage (gcs/s3/azure) + per-package sandbox
    { name: "aws", community: false }, // s3 credential chain
    { name: "azure", community: false }, // azure blob storage
-   { name: "postgres", community: false }, // postgres attach + ducklake postgres catalog
+   { name: "postgres", community: false, registered: "postgres_scanner" }, // postgres attach + ducklake postgres catalog
    { name: "ducklake", community: false }, // materialization catalog
    { name: "bigquery", community: true },
    { name: "snowflake", community: true },
@@ -43,18 +45,50 @@ async function main() {
    const instance = await DuckDBInstance.create(":memory:");
    const connection = await instance.connect();
 
-   for (const { name, community } of EXTENSIONS) {
+   const results = [];
+   for (const { name, community, registered } of EXTENSIONS) {
       try {
          const install = community
             ? `FORCE INSTALL '${name}' FROM community;`
             : `INSTALL ${name};`;
          await connection.run(`${install} LOAD ${name};`);
-         console.log(`baked DuckDB extension: ${name}`);
+
+         // Verify the extension actually reports as loaded, rather than trusting
+         // that INSTALL/LOAD returned without error.
+         const reader = await connection.runAndReadAll(
+            `SELECT loaded, installed FROM duckdb_extensions() WHERE extension_name = '${registered ?? name}';`,
+         );
+         const row = reader.getRowObjectsJS()[0];
+         const loaded = row?.loaded === true;
+         const installed = row?.installed === true;
+
+         results.push({ name, installed, loaded });
+         if (loaded) {
+            console.log(`baked DuckDB extension: ${name} (loaded)`);
+         } else {
+            console.warn(
+               `DuckDB extension "${name}" installed=${installed} but not loaded`,
+            );
+         }
       } catch (err) {
          const message = err instanceof Error ? err.message : String(err);
+         results.push({
+            name,
+            installed: false,
+            loaded: false,
+            error: message,
+         });
          console.warn(`skipped DuckDB extension "${name}": ${message}`);
       }
    }
+
+   const ok = results.filter((r) => r.loaded).map((r) => r.name);
+   const missing = results.filter((r) => !r.loaded).map((r) => r.name);
+   console.log(
+      `DuckDB extensions baked: ${ok.length}/${results.length} loaded` +
+         (ok.length ? ` [${ok.join(", ")}]` : "") +
+         (missing.length ? `; not loaded [${missing.join(", ")}]` : ""),
+   );
 
    connection.closeSync();
    instance.closeSync();
