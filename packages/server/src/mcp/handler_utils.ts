@@ -3,6 +3,7 @@ import type { ResourceMetadata } from "@modelcontextprotocol/sdk/server/mcp";
 import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import { EnvironmentStore } from "../service/environment_store";
 import {
+   AccessDeniedError,
    PackageNotFoundError,
    ModelNotFoundError,
    ModelCompilationError,
@@ -162,6 +163,17 @@ export async function getModelForQuery(
             `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
          );
       } else if (error instanceof ModelCompilationError) {
+         errorDetails = getMalloyErrorDetails(
+            "executeQuery (load model)",
+            `${environmentName}/${packageName}/${modelPath}`,
+            error,
+         );
+      } else if (error instanceof AccessDeniedError) {
+         // An #(authorize) denial during model setup. Funnel through
+         // getMalloyErrorDetails (which recognizes the access-denied message and
+         // gives supply-the-givens guidance) so a 403 never surfaces as an
+         // opaque internal error. Defensive: the gate fires during query
+         // execution today, not setup, but this keeps every error class homed.
          errorDetails = getMalloyErrorDetails(
             "executeQuery (load model)",
             `${environmentName}/${packageName}/${modelPath}`,

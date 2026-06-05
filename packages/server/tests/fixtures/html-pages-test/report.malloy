@@ -1,0 +1,1 @@
+source: report is duckdb.sql("SELECT 1 as n")

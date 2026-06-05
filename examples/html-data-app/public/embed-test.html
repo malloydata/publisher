@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Embed test</title>
+  <style>
+    :root { --ink:#11151c; --ink-soft:#5b6472; --line:#e6eaf2; --accent:#4f46e5; }
+    body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+           color: var(--ink); margin: 0; background: #f5f7fb; }
+    main { max-width: 1200px; margin: 0 auto; padding: 28px; }
+    h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.02em; }
+    p.lead { color: var(--ink-soft); max-width: 720px; }
+    .panel {
+      background: #fff; border: 1px solid var(--line); border-radius: 12px;
+      padding: 18px; box-shadow: 0 1px 2px rgba(17,21,28,.04), 0 4px 12px rgba(17,21,28,.04);
+      margin: 18px 0;
+    }
+    .panel.host {
+      background: linear-gradient(135deg, #f0f4ff 0%, #fce7f3 100%);
+      border: 1px dashed #c7d2fe;
+    }
+    .panel.host::before {
+      content: "Host page"; display: block; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #6366f1; font-weight: 700; margin-bottom: 10px;
+    }
+    pre {
+      background: #11151c; color: #e6eaf2; padding: 16px; border-radius: 8px;
+      font-size: 13px; line-height: 1.55; overflow-x: auto;
+    }
+    code { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0 4px; }
+    .row label { font-size: 12px; color: var(--ink-soft); display: flex; flex-direction: column; gap: 4px; }
+    .row select, .row button {
+      font: inherit; padding: 8px 12px; border-radius: 8px;
+      border: 1px solid var(--line); background: #fff;
+    }
+  </style>
+</head>
+<body>
+
+<main>
+  <h1>Pretend this is your own web app</h1>
+  <p class="lead">
+    Drop four lines into any page and you have a Malloy-backed dashboard.
+    The iframe auto-resizes to fit its content via <code>postMessage</code>.
+    Authentication piggybacks on browser cookies, so no token plumbing for
+    same-tenant embeds.
+  </p>
+
+  <div class="row">
+    <button id="reload">Re-mount iframe</button>
+  </div>
+
+  <div class="panel host">
+    <div id="dashboard"></div>
+  </div>
+
+  <h2 style="font-size: 16px; margin-top: 28px;">The whole snippet</h2>
+  <p>That's it. Two snippets — copy &amp; paste into your own HTML:</p>
+
+  <pre><code>&lt;script src="http://localhost:4000/sdk/publisher.js"&gt;&lt;/script&gt;
+&lt;div id="dashboard"&gt;&lt;/div&gt;
+&lt;script&gt;
+  Publisher.embed("#dashboard", {
+    src: "http://localhost:4000/environments/demo/packages/html-data-app/index.html"
+  });
+&lt;/script&gt;
+</code></pre>
+
+  <p style="color: var(--ink-soft); font-size: 13px; margin-top: 24px">
+    For cross-tenant embeds (your customer's app on a different domain), the
+    next step is signed embed tokens — the Stripe <code>paymentIntent</code> shape.
+    See <code>docs/embedded-data-apps.md</code>.
+  </p>
+</main>
+
+<script src="/sdk/publisher.js"></script>
+<script>
+  let current = null;
+  function mount() {
+    if (current) current.destroy();
+    current = Publisher.embed("#dashboard", { src: "./index.html" });
+  }
+  document.getElementById("reload").addEventListener("click", mount);
+  mount();
+</script>
+</body>
+</html>
