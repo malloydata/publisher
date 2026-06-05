@@ -20,8 +20,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG DUCKDB_VERSION=1.5.3
 RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
     ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
-    curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
-    ldconfig && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
