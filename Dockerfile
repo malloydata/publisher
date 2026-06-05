@@ -91,14 +91,14 @@ COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
-# Bake the DuckDB extensions the server loads at runtime into
-# /root/.duckdb/extensions/v<version>/ so its INSTALL/LOAD at startup finds them
-# and skips the network fetch. Uses the same scripts/bake-duckdb-extensions.js
-# that `bun run build` runs locally and in CI -- one mechanism, so the image and
-# a local build bake the same set. The CLI (base-deps) and runtime engine are
-# pinned to the same DuckDB version, so all agree on one extensions dir.
-COPY scripts/bake-duckdb-extensions.js ./scripts/bake-duckdb-extensions.js
-RUN bun run scripts/bake-duckdb-extensions.js
+# Carry over the DuckDB extensions baked during the builder stage's
+# `build:server-only` (packages/server's build runs bake-duckdb-extensions).
+# They live in ~/.duckdb/extensions/v<version>/, which the runtime engine reads
+# at INSTALL/LOAD time -- so the server finds them on disk and skips the network
+# fetch. Copying the baked cache from the builder keeps a single bake mechanism
+# (the server build) instead of re-running it here. The CLI (base-deps) and
+# runtime engine are pinned to the same DuckDB version, so all agree on one dir.
+COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
 
 # Runtime config
 ARG DUCKDB_VERSION=1.5.3

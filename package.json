@@ -15,7 +15,7 @@
     "build:app": "cd packages/app && bun run build ",
     "build:app:server": "cd packages/app && bun run build:server",
     "build:server": "cd packages/server && bun run build",
-    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server && bun run install-duckdb-snowflake && bun run bake-duckdb-extensions",
+    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server && bun run install-duckdb-snowflake",
     "build:cli": "cd packages/cli && bun run build",
     "build:server-deploy": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:app:server && NODE_ENV=production bun run build:server",
     "start": "cd packages/server && bun run start",
@@ -48,8 +48,7 @@
     "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
     "install-duckdb-snowflake": "node scripts/install-duckdb-snowflake.js",
-    "sync-duckdb": "node scripts/sync-duckdb-version.js",
-    "bake-duckdb-extensions": "node scripts/bake-duckdb-extensions.js"
+    "sync-duckdb": "node scripts/sync-duckdb-version.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",
