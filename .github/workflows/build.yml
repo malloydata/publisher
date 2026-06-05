@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
 env:
@@ -64,6 +64,14 @@ jobs:
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
         run: bun run lint
+      # Fail the build if the DuckDB CLI version baked at build time has drifted
+      # from the @duckdb/node-api query engine. Without this, a Malloy bump that
+      # moves the engine to a new DuckDB version silently leaves the CLI behind,
+      # so baked extensions land in a directory the runtime never reads and it
+      # re-fetches them from the network at query time (which fails on runners
+      # that cannot reach extensions.duckdb.org).
+      - name: Check DuckDB version consistency
+        run: bun run validate-duckdb-sync
   # Smoke-tests the built server under two invocation scenarios.
   #
   # Note on scope: the published `bin` entry uses `#!/usr/bin/env node`, so the
@@ -219,12 +227,21 @@ jobs:
           submodules: "true"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      # Derive the DuckDB CLI version from the engine Malloy resolves
+      # (@duckdb/node-api in bun.lock) so the image's baked CLI/extensions
+      # always match the runtime, regardless of the Dockerfile ARG default.
+      - name: Resolve DuckDB version from Malloy
+        id: duckdb
+        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        shell: bash
       - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           load: true
+          build-args: |
+            DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
