@@ -1,0 +1,5 @@
+{
+  "name": "html-pages-test",
+  "version": "1.0.0",
+  "description": "Fixture for in-package HTML static-file serving + /pages + /events"
+}
