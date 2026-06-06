@@ -415,43 +415,12 @@ function normalizeModelPath(p: string): string {
    return p.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
-// A typo'd entryPoints path would silently hide every model (nothing matches
-// the set), making the package look empty. Fail the load loudly instead, with
-// an actionable message. `entryPoints` are already normalized; `modelPaths`
-// come from listPackageFiles (same normalization). Notebooks are always public,
-// so listing one as an entry point is rejected rather than silently ignored.
-function validateEntryPoints(
-   entryPoints: string[] | undefined,
-   modelPaths: string[],
-): void {
-   if (!entryPoints || entryPoints.length === 0) return;
-   const malloyFiles = new Set(
-      modelPaths.filter((p) => p.endsWith(MODEL_FILE_SUFFIX)),
-   );
-   for (const entry of entryPoints) {
-      if (entry.endsWith(NOTEBOOK_FILE_SUFFIX)) {
-         // ModelCompilationError → 424, the house mapping for a package that
-         // fails to load on bad config (see errors.ts). Its identity survives
-         // the worker boundary, so both Package.create and reloadAllModels
-         // surface this as a 4xx with the message intact (not a 5xx).
-         throw new ModelCompilationError({
-            message:
-               `Invalid entryPoints entry '${entry}' in ${PACKAGE_MANIFEST_NAME}: ` +
-               `notebooks are always public and cannot be entry points. ` +
-               `Fix: remove it, and list a ${MODEL_FILE_SUFFIX} model file instead.`,
-         });
-      }
-      if (!malloyFiles.has(entry)) {
-         throw new ModelCompilationError({
-            message:
-               `Invalid entryPoints entry '${entry}' in ${PACKAGE_MANIFEST_NAME}: ` +
-               `file not found in the package. ` +
-               `Fix: list a ${MODEL_FILE_SUFFIX} file relative to the package ` +
-               `root (e.g. "index.malloy").`,
-         });
-      }
-   }
-}
+// entryPoints validation is intentionally NOT done here. The worker is the
+// shared load path (startup, reload, AND publish), but the policy differs by
+// context — strict-reject at publish, warn-and-fail-safe at load — so it lives
+// on the main thread (see Package.getInvalidEntryPoints / loadViaWorker and the
+// publish path in package.controller). An unmatched entry simply lists nothing
+// (listModels filters by set membership), which is the fail-safe outcome.
 
 // ──────────────────────────────────────────────────────────────────────
 // Model compile (mirrors service/model.ts but produces SerializedModel)
@@ -568,7 +537,6 @@ async function compileMalloyModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
-   isEntryPoint: boolean,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
@@ -609,13 +577,13 @@ async function compileMalloyModel(
    return {
       modelPath,
       modelType: "model",
-      isEntryPoint,
       modelDef,
       modelInfo: modelDefToModelInfo(modelDef),
       sourceInfos,
       // `sources`/`queries` ship complete (authorize + filter enforcement and
-      // join resolution read the full set); the Model filters them down to the
-      // export closure for *discovery* accessors when isEntryPoint is set.
+      // join resolution read the full set); the Model's discovery accessors
+      // filter them down to the export closure (`modelDef.exports`) to match
+      // `modelInfo`/`sourceInfos`.
       sources,
       queries,
       filterMap: Array.from(filterMap.entries()),
@@ -814,19 +782,12 @@ async function compileOneModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
-   isEntryPoint: boolean,
 ): Promise<SerializedModel> {
    try {
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-         return await compileMalloyModel(
-            job,
-            malloyConfig,
-            modelPath,
-            isEntryPoint,
-         );
+         return await compileMalloyModel(job, malloyConfig, modelPath);
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
-         // Notebooks are always public — never curated by exports.
          return await compileNotebookModel(job, malloyConfig, modelPath);
       }
       return {
@@ -866,21 +827,9 @@ async function loadPackage(
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
 
-   validateEntryPoints(packageMetadata.entryPoints, modelPaths);
-
-   // When entryPoints is declared, only those files curate their listed
-   // surface (Layer 2). Absent → empty set → no file curates (today's
-   // behavior). Notebooks are never entry points.
-   const entryPointSet = new Set(packageMetadata.entryPoints ?? []);
-
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
-         compileOneModel(
-            job,
-            malloyConfig,
-            modelPath,
-            entryPointSet.has(modelPath),
-         ),
+         compileOneModel(job, malloyConfig, modelPath),
       ),
    );
 

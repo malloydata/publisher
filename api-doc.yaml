@@ -2673,6 +2673,17 @@ components:
             hidden from listings. When absent or empty, every model is listed
             (the default, backward-compatible behavior). Notebooks are always
             listed regardless of this field.
+        entryPointsWarnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Actionable messages for declared entryPoints that do not resolve to
+            a real model in this package (e.g. a misspelled path, or a notebook
+            listed as an entry point). Present only when there are such problems.
+            Loading is fail-safe — the unresolved entry simply lists nothing
+            rather than exposing everything — so this is the signal that a
+            package is misconfigured; publishing such a package is rejected.
 
     Model:
       type: object

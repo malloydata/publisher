@@ -112,16 +112,6 @@ export class Model {
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
-   /**
-    * True when this .malloy file is a declared `entryPoints` entry. Gates
-    * within-file discovery curation: the discovery accessors (getSources /
-    * getQueries / getModel) list only the export closure (`modelDef.exports`),
-    * while the full `sources`/`queries` remain for authorize/filter enforcement
-    * and join resolution. False (the default) lists everything — today's
-    * behavior — for non-entry models, notebooks, and packages with no
-    * entryPoints declared.
-    */
-   private isEntryPoint: boolean;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
@@ -166,7 +156,6 @@ export class Model {
        * derive it lazily.
        */
       modelInfo?: Malloy.ModelInfo,
-      isEntryPoint?: boolean,
    ) {
       this.packageName = packageName;
       this.modelPath = modelPath;
@@ -176,7 +165,6 @@ export class Model {
       this.modelMaterializer = modelMaterializer;
       this.sources = sources;
       this.queries = queries;
-      this.isEntryPoint = isEntryPoint ?? false;
       this.sourceInfos = sourceInfos;
       this.runnableNotebookCells = runnableNotebookCells;
       this.compilationError = compilationError;
@@ -633,7 +621,6 @@ export class Model {
             filterMap,
             givens,
             modelInfo,
-            data.isEntryPoint,
          );
       }
 
@@ -659,7 +646,6 @@ export class Model {
          filterMap,
          givens,
          modelInfo,
-         data.isEntryPoint,
       );
    }
 
@@ -704,16 +690,19 @@ export class Model {
 
    /**
     * Restrict a list of named objects to the model's re-export closure
-    * (`modelDef.exports`) for discovery. Only applies to entry-point models;
-    * everything else (non-entry models, notebooks, packages with no
-    * entryPoints) is returned unchanged — preserving today's behavior. This
-    * filters the *discovery* view only; `this.sources` stays complete so
-    * authorize/filter enforcement and join resolution are unaffected.
+    * (`modelDef.exports`) for discovery. This mirrors what Malloy's stable
+    * `modelDefToModelInfo` already does for `modelInfo`/`sourceInfos` (and what
+    * the app renders), so the publisher-extracted `sources`/`queries` stay
+    * consistent with `modelInfo` within a single response. A model with no
+    * `export { … }` has `exports` = all top-level names, so this is a no-op
+    * there. Discovery-only: `this.sources`/`this.queries` stay complete so
+    * #(authorize)/filter enforcement and join/extend resolution are unaffected;
+    * non-exported sources remain fully queryable, just unlisted.
     */
    private curateForDiscovery<T extends { name?: string }>(
       items: T[] | undefined,
    ): T[] | undefined {
-      if (!items || !this.isEntryPoint) return items;
+      if (!items) return items;
       const exports = this.modelDef?.exports;
       if (!Array.isArray(exports)) return items;
       const exported = new Set(exports);

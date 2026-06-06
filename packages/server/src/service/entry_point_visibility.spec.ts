@@ -11,7 +11,10 @@
  *   - A query that joins through a hidden module still resolves.
  *   - Notebooks are always listed regardless of `entryPoints`.
  *   - Absent/empty `entryPoints` → every model is listed (backward compatible).
- *   - A bogus `entryPoints` path fails the load loudly with an actionable error.
+ *   - Within-file curation reflects `export {}` for ANY model (consistent with
+ *     Malloy's export-aware modelInfo), independent of entryPoints.
+ *   - A bogus `entryPoints` path is fail-safe at load (warn + hide, no throw);
+ *     the publish path rejects it (covered at the controller layer).
  */
 import {
    afterAll,
@@ -211,15 +214,79 @@ export { customers }`,
       }
    });
 
-   it("fails the load with an actionable error on an unknown entryPoints path", async () => {
+   it("curates sources by export{} even without entryPoints (consistent with modelInfo)", async () => {
+      // No entryPoints declared, but the model has an export{}. Discovery must
+      // reflect the export closure (matching Malloy's modelInfo/sourceInfos that
+      // the app renders), not the publisher-internal full source list.
+      writeManifest(); // no entryPoints
+      fs.writeFileSync(
+         path.join(tempDir, "model.malloy"),
+         `source: public_orders is duckdb.sql("select 1 as id")
+source: internal_scratch is duckdb.sql("select 1 as id")
+export { public_orders }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const api = (await pkg.getModel("model.malloy")!.getModel()) as {
+            sources?: { name?: string }[];
+            modelInfo?: string;
+         };
+         const sourceNames = (api.sources ?? []).map((s) => s.name).sort();
+         expect(sourceNames).toEqual(["public_orders"]); // internal_scratch hidden
+         // sources[] agrees with Malloy's modelInfo (the app's source of truth).
+         const mi = JSON.parse(api.modelInfo ?? "{}");
+         const infoNames = (mi.entries ?? [])
+            .filter((e: { kind: string }) => e.kind === "source")
+            .map((e: { name: string }) => e.name)
+            .sort();
+         expect(sourceNames).toEqual(infoNames);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("load is fail-safe on an unknown entryPoints path: warns, hides, does not throw", async () => {
+      // Policy: strict at publish (rejected in package.controller), fail-safe at
+      // load. An unresolvable entry must NOT fall back to listing everything —
+      // that would expose the sources entryPoints exists to hide. It hides.
       writeManifest({ entryPoints: ["does-not-exist.malloy"] });
       writeLayeredModels();
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
-         await expect(
-            Package.create("env", "pkg", tempDir, malloyConfig),
-         ).rejects.toThrow(/does-not-exist\.malloy.*not found/s);
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // Did not throw; fail-safe → no models listed (not all of them).
+         expect(await listedModelPaths(pkg)).toEqual([]);
+         // The reason is surfaced (logged at load; used to reject at publish).
+         expect(pkg.formatInvalidEntryPoints()).toMatch(
+            /does-not-exist\.malloy.*not found/s,
+         );
+         // …and on the package metadata the API/UI consume.
+         const warnings = pkg.getPackageMetadata().entryPointsWarnings ?? [];
+         expect(warnings.length).toBe(1);
+         expect(warnings[0]).toMatch(/does-not-exist\.malloy.*not found/s);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("flags a notebook listed as an entry point; valid entries still resolve", async () => {
+      writeManifest({ entryPoints: ["index.malloy", "report.malloynb"] });
+      writeLayeredModels();
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // The valid entry still lists; the notebook entry is flagged invalid.
+         expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
+         expect(pkg.getInvalidEntryPoints().map((p) => p.entry)).toEqual([
+            "report.malloynb",
+         ]);
+         expect(pkg.formatInvalidEntryPoints()).toMatch(
+            /report\.malloynb.*notebooks are always public/s,
+         );
       } finally {
          await duckdb.close();
       }

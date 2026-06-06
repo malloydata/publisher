@@ -290,7 +290,7 @@ export class Package {
          duration: formatDuration(executionTime),
       });
 
-      return new Package(
+      const pkg = new Package(
          environmentName,
          packageName,
          packagePath,
@@ -299,6 +299,20 @@ export class Package {
          models,
          malloyConfig,
       );
+
+      // Fail-safe at load: a bad entryPoints entry doesn't fail the package
+      // (its models still load and listModels hides the unmatched entry — it
+      // never falls back to listing everything). Warn so the misconfig is
+      // visible; the publish path rejects it outright (see package.controller).
+      const invalidMsg = pkg.formatInvalidEntryPoints();
+      if (invalidMsg) {
+         logger.warn(`Package ${packageName} has invalid entryPoints`, {
+            packageName,
+            detail: invalidMsg,
+         });
+      }
+
+      return pkg;
    }
 
    public getPackageName(): string {
@@ -306,7 +320,65 @@ export class Package {
    }
 
    public getPackageMetadata(): ApiPackage {
-      return this.packageMetadata;
+      // Surface entryPoints misconfig so consumers/UI can show it (loading is
+      // fail-safe — the package still serves with the bad entry hidden — so this
+      // is the only non-log signal that it's broken). Computed fresh against the
+      // current models; absent when everything resolves. Returns a copy in that
+      // case so the added field never mutates the stored metadata.
+      const warnings = this.entryPointWarnings();
+      if (warnings.length === 0) return this.packageMetadata;
+      return { ...this.packageMetadata, entryPointsWarnings: warnings };
+   }
+
+   /**
+    * Declared `entryPoints` (publisher.json) that don't resolve to a real
+    * `.malloy` model in this package, each with an actionable reason. Empty
+    * when entryPoints is absent/empty or every entry resolves.
+    *
+    * The listing already fails safe — a non-resolving entry matches no model in
+    * `listModels`, so it hides rather than exposes. This surfaces *why*, so the
+    * load path can warn and the publish path can reject (see package.controller).
+    */
+   public getInvalidEntryPoints(): { entry: string; reason: string }[] {
+      const declared = this.packageMetadata.entryPoints;
+      if (!declared || declared.length === 0) return [];
+      const malloyModels = new Set(
+         Array.from(this.models.keys()).filter((p) =>
+            p.endsWith(MODEL_FILE_SUFFIX),
+         ),
+      );
+      const problems: { entry: string; reason: string }[] = [];
+      for (const entry of declared) {
+         if (entry.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            problems.push({
+               entry,
+               reason:
+                  `notebooks are always public and cannot be entry points. ` +
+                  `Fix: remove it, and list a ${MODEL_FILE_SUFFIX} model file instead.`,
+            });
+         } else if (!malloyModels.has(entry)) {
+            problems.push({
+               entry,
+               reason:
+                  `file not found in the package. Fix: list a ${MODEL_FILE_SUFFIX} ` +
+                  `file relative to the package root (e.g. "index.malloy").`,
+            });
+         }
+      }
+      return problems;
+   }
+
+   /** One actionable message per invalid entry (empty when all resolve). */
+   public entryPointWarnings(): string[] {
+      return this.getInvalidEntryPoints().map(
+         (p) =>
+            `Invalid entryPoints entry '${p.entry}' in ${PACKAGE_MANIFEST_NAME}: ${p.reason}`,
+      );
+   }
+
+   /** The {@link entryPointWarnings} joined into one string, or "" if none. */
+   public formatInvalidEntryPoints(): string {
+      return this.entryPointWarnings().join(" ");
    }
 
    public listDatabases(): ApiDatabase[] {

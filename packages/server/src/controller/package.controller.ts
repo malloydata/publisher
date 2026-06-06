@@ -100,6 +100,20 @@ export class PackageController {
       } else {
          result = await environment.addPackage(packageName);
       }
+
+      // Strict at publish: the author is in the loop here, so reject a bad
+      // entryPoints with an actionable error instead of silently serving a
+      // hidden surface. (At startup/reload we fail safe and only warn — see
+      // Package.loadViaWorker.) Roll back the just-installed package so a
+      // rejected publish doesn't leave a half-committed, un-persisted package.
+      const invalidMsg = result?.formatInvalidEntryPoints();
+      if (invalidMsg) {
+         await environment.deletePackage(packageName).catch(() => {
+            /* best-effort rollback; the package is not persisted below */
+         });
+         throw new BadRequestError(invalidMsg);
+      }
+
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,

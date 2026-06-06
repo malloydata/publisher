@@ -120,14 +120,6 @@ export interface SerializedModel {
    /** Path relative to the package root, forward-slash normalized. */
    modelPath: string;
    modelType: "model" | "notebook";
-   /**
-    * True when this .malloy file is a declared `entryPoints` entry. Drives
-    * within-file discovery curation: an entry point lists only the sources /
-    * queries in its re-export closure (`modelDef.exports`); everything else is
-    * still compiled and queryable but hidden from listings. Absent/false →
-    * list everything (today's behavior). Always false for notebooks.
-    */
-   isEntryPoint?: boolean;
    /** Set when the model compiled successfully. Wire-typed as
     *  `unknown` so the protocol module doesn't drag in the full
     *  Malloy type surface; cast to `ModelDef` on receipt. */
