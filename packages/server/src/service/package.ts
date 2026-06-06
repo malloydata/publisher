@@ -376,9 +376,13 @@ export class Package {
       );
    }
 
-   /** The {@link entryPointWarnings} joined into one string, or "" if none. */
+   /**
+    * The {@link entryPointWarnings} joined into one string, or "" if none.
+    * Newline-separated so multiple invalid entries stay one-per-line in the
+    * 400 message rather than running together.
+    */
    public formatInvalidEntryPoints(): string {
-      return this.entryPointWarnings().join(" ");
+      return this.entryPointWarnings().join("\n");
    }
 
    public listDatabases(): ApiDatabase[] {
@@ -494,6 +498,16 @@ export class Package {
       // a full Package.create. (name/description are owned by the metadata-PATCH
       // path, so only entryPoints is refreshed here.)
       this.packageMetadata.entryPoints = outcome.packageMetadata.entryPoints;
+      // Re-run the fail-safe warning against the refreshed model set: an edit
+      // to publisher.json that introduces a bad entry should surface in the
+      // logs on reload too, not only at initial load (loadViaWorker).
+      const invalidMsg = this.formatInvalidEntryPoints();
+      if (invalidMsg) {
+         logger.warn(`Package ${this.packageName} has invalid entryPoints`, {
+            packageName: this.packageName,
+            detail: invalidMsg,
+         });
+      }
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {

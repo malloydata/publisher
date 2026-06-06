@@ -93,10 +93,12 @@ describe("Malloy ModelDef.exports contract (curation depends on this)", () => {
          },
          "user.malloy",
       );
-      // Proves curation can't be applied unconditionally: even with no explicit
-      // export{}, exports omits imported sources, so curating every model would
-      // hide imports that publisher lists today. Hence curation is gated on
-      // entry-point designation (see Model.isEntryPoint).
+      // Even with no explicit export{}, `exports` lists only locally-declared
+      // names — the imported `base_source` is omitted. Curation is applied
+      // unconditionally (Model.curateForDiscovery) precisely so publisher's
+      // listed sources mirror what Malloy's modelDefToModelInfo exposes via
+      // modelInfo/sourceInfos: an imported-but-not-re-exported source is
+      // unlisted, while staying resolvable for joins and fully queryable.
       expect(exports).toEqual(["local_one"]);
    });
 });

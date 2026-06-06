@@ -409,8 +409,11 @@ function filterModelPaths(allRelative: string[]): string[] {
 
 // Normalize a package-relative model path so author-written `entryPoints`
 // entries compare equal to the paths produced by `listPackageFiles`
-// (forward slashes, no leading "./"). Keep in sync with the listing-side
-// normalization in service/package.ts.
+// (forward slashes, no leading "./"). Normalization is one-sided: it runs
+// here at parse time so the keys stored in Package.models are already
+// normalized, and listModels()/getInvalidEntryPoints() compare entryPoints
+// against those keys directly — there is no second normalization to keep in
+// sync on the listing side.
 function normalizeModelPath(p: string): string {
    return p.replace(/\\/g, "/").replace(/^\.\//, "");
 }

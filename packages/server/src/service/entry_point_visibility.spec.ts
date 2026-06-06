@@ -247,6 +247,55 @@ export { public_orders }`,
       }
    });
 
+   it("import-only model lists no sources, still consistent with modelInfo", async () => {
+      // A model that only imports another file and runs a query — no local
+      // source: and no export{} — has modelDef.exports = []. Curation is
+      // unconditional, so it lists zero sources. The invariant under test:
+      // discovery never DIVERGES from Malloy's modelInfo/sourceInfos, even when
+      // the curated result is empty. The imported source stays resolvable — the
+      // query below executes through it.
+      writeManifest(); // no entryPoints
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base_source is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+  view: v is { aggregate: total }
+}`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "consumer.malloy"),
+         `import "base.malloy"
+run: base_source -> v`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const api = (await pkg.getModel("consumer.malloy")!.getModel()) as {
+            sources?: { name?: string }[];
+            modelInfo?: string;
+         };
+         const sourceNames = (api.sources ?? []).map((s) => s.name).sort();
+         expect(sourceNames).toEqual([]); // import-only ⇒ nothing re-exported
+         // The empty listing still equals what modelInfo exposes — curation is
+         // consistent with modelInfo, not a silent divergence.
+         const mi = JSON.parse(api.modelInfo ?? "{}");
+         const infoNames = (mi.entries ?? [])
+            .filter((e: { kind: string }) => e.kind === "source")
+            .map((e: { name: string }) => e.name)
+            .sort();
+         expect(sourceNames).toEqual(infoNames);
+
+         // The imported source remains queryable despite being unlisted.
+         const { result } = await pkg
+            .getModel("base.malloy")!
+            .getQueryResults("base_source", "v", undefined);
+         expect(result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("load is fail-safe on an unknown entryPoints path: warns, hides, does not throw", async () => {
       // Policy: strict at publish (rejected in package.controller), fail-safe at
       // load. An unresolvable entry must NOT fall back to listing everything —
@@ -263,10 +312,17 @@ export { public_orders }`,
          expect(pkg.formatInvalidEntryPoints()).toMatch(
             /does-not-exist\.malloy.*not found/s,
          );
-         // …and on the package metadata the API/UI consume.
+         // …and on the package metadata the API/UI consume. Pin the exact
+         // message: it is observable API surface (entryPointsWarnings), so a
+         // regression to a vaguer/wrong message must fail the test.
          const warnings = pkg.getPackageMetadata().entryPointsWarnings ?? [];
          expect(warnings.length).toBe(1);
-         expect(warnings[0]).toMatch(/does-not-exist\.malloy.*not found/s);
+         expect(warnings[0]).toBe(
+            `Invalid entryPoints entry 'does-not-exist.malloy' in ` +
+               `publisher.json: file not found in the package. Fix: list a ` +
+               `.malloy file relative to the package root ` +
+               `(e.g. "index.malloy").`,
+         );
       } finally {
          await duckdb.close();
       }

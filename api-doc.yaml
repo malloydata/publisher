@@ -1429,6 +1429,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1526,6 +1528,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2675,15 +2679,18 @@ components:
             listed regardless of this field.
         entryPointsWarnings:
           type: array
+          readOnly: true
           items:
             type: string
           description: >-
             Actionable messages for declared entryPoints that do not resolve to
             a real model in this package (e.g. a misspelled path, or a notebook
-            listed as an entry point). Present only when there are such problems.
-            Loading is fail-safe — the unresolved entry simply lists nothing
-            rather than exposing everything — so this is the signal that a
-            package is misconfigured; publishing such a package is rejected.
+            listed as an entry point). Server-computed and read-only: it is
+            ignored on create/update requests and only ever returned in
+            responses. Present only when there are such problems. Loading is
+            fail-safe — the unresolved entry simply lists nothing rather than
+            exposing everything — so this is the signal that a package is
+            misconfigured; publishing such a package is rejected.
 
     Model:
       type: object
