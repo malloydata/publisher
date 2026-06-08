@@ -7,6 +7,7 @@ import {
    FormHelperText,
    IconButton,
    InputAdornment,
+   Stack,
    TextField,
 } from "@mui/material";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
@@ -61,16 +62,21 @@ function annotationHelperText(given: Given): string | undefined {
  * Renders an input widget appropriate for the declared given type.
  * Unknown / unrecognized types fall back to a plain text input.
  *
- * For text-based inputs (string, number, filter, default), a clear (×)
- * adornment appears when the field has a value. DatePicker, Checkbox, and
- * multi-Autocomplete have their own native clear affordances.
+ * Three states, distinguished so a deliberate empty/false override is not
+ * confused with "use the model default":
+ *   - unset (`value === undefined`) → the given is omitted from the request and
+ *     the server applies the model default. Text widgets show the default as a
+ *     ghost placeholder; the boolean checkbox reflects the default's value.
+ *   - explicit override (any concrete value, INCLUDING `""` and `false`) → sent
+ *     verbatim. A clear (×) affordance appears whenever a value is overridden —
+ *     including an empty string — so typing the field empty (a deliberate `""`)
+ *     is distinguishable from unset by the × being present.
+ *   - revert → the × affordance calls `onChange(null)`, which drops the override
+ *     (useGivensForm deletes the key) and returns the widget to its unset state.
  *
- * A given's model default (if any) is surfaced as an always-visible
+ * A given's model default (if any) is also surfaced as an always-visible
  * `Default: …` helper line on every widget — including the boolean checkbox,
- * which gets a wrapping FormControl for the slot — plus a ghost placeholder on
- * the text widgets (a bonus MUI only reveals on focus, since the floating label
- * sits in the placeholder's spot at rest). The value itself stays empty, so
- * leaving the field blank still means "use the model default".
+ * which gets a wrapping FormControl for the slot.
  */
 export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const label = given.name ?? "";
@@ -98,24 +104,36 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
       ) : undefined;
 
    if (type === "boolean") {
-      const checked = value === true;
-      // A checkbox has no helperText slot of its own and no "unset" visual, so
-      // wrap it in a FormControl to carry the annotation + `Default: …` line.
-      // This matters most for a `boolean is true` given: the box reads unchecked
-      // when untouched, but the query runs with the default, so the caption is
-      // what tells the user that. (The deeper "no unset state" checkbox quirk is
-      // a pre-existing givens limitation, not specific to defaults.)
+      // Three states for a boolean. When unset, reflect the model DEFAULT so the
+      // box shows what the query will actually run with (not a misleading
+      // unchecked). A toggle is an explicit true/false override; the revert (×)
+      // — shown only when overridden — drops the override back to the default.
+      const isOverridden = typeof value === "boolean";
+      const defaultChecked = given.default?.trim() === "true";
+      const checked = isOverridden ? value : defaultChecked;
       return (
          <FormControl>
-            <FormControlLabel
-               control={
-                  <Checkbox
-                     checked={checked}
-                     onChange={(e) => onChange(e.target.checked)}
-                  />
-               }
-               label={label}
-            />
+            <Stack direction="row" alignItems="center">
+               <FormControlLabel
+                  control={
+                     <Checkbox
+                        checked={checked}
+                        onChange={(e) => onChange(e.target.checked)}
+                     />
+                  }
+                  label={label}
+               />
+               {isOverridden && (
+                  <IconButton
+                     size="small"
+                     aria-label="clear value"
+                     onClick={() => onChange(null)}
+                     edge="end"
+                  >
+                     <ClearIcon fontSize="small" />
+                  </IconButton>
+               )}
+            </Stack>
             {helperNode && <FormHelperText>{helperNode}</FormHelperText>}
          </FormControl>
       );
@@ -195,23 +213,28 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
       );
    }
 
-   // Default: string, filter<...>, or unknown types — plain text input
+   // Default: string, filter<...>, or unknown types — plain text input.
+   // An empty field is a deliberate `""` override, NOT a revert: typing the
+   // field empty sends "" (so gates like `$region != ''` are expressible). Only
+   // the × reverts to the model default. The default ghost shows just for the
+   // unset state, so an empty override (× present, no ghost) reads differently.
    const str = typeof value === "string" ? value : "";
+   const isOverridden = value !== undefined && value !== null;
    return (
       <TextField
          label={label}
          value={str}
-         onChange={(e) => {
-            const v = e.target.value;
-            onChange(v === "" ? null : v);
-         }}
+         onChange={(e) => onChange(e.target.value)}
          placeholder={
-            defaultDisplay ?? (type.startsWith("filter<") ? type : undefined)
+            isOverridden
+               ? undefined
+               : (defaultDisplay ??
+                 (type.startsWith("filter<") ? type : undefined))
          }
          helperText={helperNode}
          slotProps={{
             input: {
-               endAdornment: str !== "" && (
+               endAdornment: isOverridden && (
                   <ClearAdornment onClear={() => onChange(null)} />
                ),
             },
