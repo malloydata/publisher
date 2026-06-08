@@ -131,4 +131,34 @@ test.describe("notebook-authorize", () => {
       await page.getByLabel("role").fill("analyst");
       await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
    });
+
+   test("UI: a given supplied mid-execution is applied once the run finishes", async ({
+      page,
+   }) => {
+      // Hold the first (denied) cell GET so the notebook stays executing while
+      // we fill `role`. This is the window where a given change used to be
+      // recorded but never re-run. Only the first /cells/0 request is held.
+      let held = false;
+      await page.route(/\/cells\/0/, async (route) => {
+         if (!held) {
+            held = true;
+            await new Promise((r) => setTimeout(r, 5000));
+         }
+         await route.continue();
+      });
+
+      // Wait until the held request is actually in flight (notebook executing),
+      // then fill — a deterministic "mid-execution" signal, no fixed delay.
+      const firstCellRequest = page.waitForRequest(
+         (r) => /\/cells\/0/.test(r.url()),
+         { timeout: 30_000 },
+      );
+      await openNotebook(page);
+      await firstCellRequest;
+      await page.getByLabel("role").fill("analyst");
+
+      // Once the held run finishes, the mid-flight given must be picked up and
+      // re-executed — the result appears without any further interaction.
+      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+   });
 });

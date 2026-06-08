@@ -471,12 +471,18 @@ export default function Notebook({
          return;
       }
 
-      prevInputsRef.current = serialized;
-
-      // Re-execute with current filters and givens (or empty if cleared)
-      if (!isExecuting) {
-         executeCells(activeFilters, givenValues);
+      // Don't consume the change until we can act on it. If a run is already in
+      // flight, leave prevInputsRef stale and bail: this effect re-runs when
+      // isExecuting flips back to false (it's a dependency), and will then pick
+      // up the latest inputs. Updating prevInputsRef here instead would mark the
+      // change "seen" and drop it — a given/filter edited mid-run would never
+      // re-execute.
+      if (isExecuting) {
+         return;
       }
+
+      prevInputsRef.current = serialized;
+      executeCells(activeFilters, givenValues);
    }, [activeFilters, givenValues, isExecuting, executeCells]);
 
    // Handle filter change using composite key
