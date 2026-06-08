@@ -443,7 +443,11 @@ export default function Notebook({
    const prevInputsRef = useRef<string>("");
 
    useEffect(() => {
-      // Serialize activeFilters + givenValues to detect actual value changes
+      // Serialize activeFilters + givenValues to detect actual value changes.
+      // Encode dates to the same YYYY-MM-DD granularity buildGivens sends on the
+      // wire — otherwise JSON.stringify renders Date as a full ISO timestamp, so
+      // two times on the same day would look like a change and trigger a
+      // redundant re-run even though the sent value is identical.
       const serialized = JSON.stringify({
          filters: activeFilters.map((f) => ({
             dim: f.dimensionName,
@@ -451,9 +455,12 @@ export default function Notebook({
             val: f.value,
             val2: f.value2,
          })),
-         givens: Array.from(givenValues.entries()).sort(([a], [b]) =>
-            a.localeCompare(b),
-         ),
+         givens: Array.from(givenValues.entries())
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, v]) => [
+               name,
+               v instanceof Date ? v.toISOString().slice(0, 10) : v,
+            ]),
       });
 
       // Skip if no actual change
