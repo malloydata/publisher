@@ -107,14 +107,27 @@ test.describe("notebook-authorize", () => {
    }
 
    test("UI: result is gated until the given is supplied", async ({ page }) => {
+      // Wait on the actual denied cell response, not a fixed delay: the gated
+      // cell runs on load (role unset) and returns 403. Arm the wait before
+      // opening so we can't miss it. A fixed timeout would either flake on a
+      // slow runner or — worse — let the `role` fill land while the notebook is
+      // still executing, where the change is recorded but not re-run.
+      const deniedResponse = page.waitForResponse(
+         (r) =>
+            /\/notebooks\/.*authz_gate_notebook\.malloynb\/cells\/0/.test(
+               r.url(),
+            ) && r.request().method() === "GET",
+         { timeout: 30_000 },
+      );
       await openNotebook(page);
+      expect((await deniedResponse).status()).toBe(403);
 
-      // Gate denies on load (role unset) — the cell renders no result. Let the
-      // initial execution settle, then confirm the spotlight result is absent.
-      await page.waitForTimeout(2500);
+      // Execution finished (no spinner) and, denied, rendered no result.
+      await expect(page.getByRole("progressbar")).toHaveCount(0);
       await expect(page.getByText("Southwest Airlines")).toHaveCount(0);
 
-      // Supplying the satisfying given re-executes and the result appears.
+      // With the notebook idle, supplying the satisfying given re-executes and
+      // the result appears.
       await page.getByLabel("role").fill("analyst");
       await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
    });
