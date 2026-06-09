@@ -177,6 +177,7 @@ export interface LoadPackageResult {
       name?: string;
       description?: string;
       explores?: string[];
+      queryableSources?: "declared" | "all";
    };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */

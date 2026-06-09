@@ -14,6 +14,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(404, error.message);
    } else if (error instanceof ModelNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof NotQueryableError) {
+      return httpError(404, error.message);
    } else if (error instanceof MalloyError) {
       return httpError(400, error.message);
    } else if (error instanceof ConnectionNotFoundError) {
@@ -125,6 +127,22 @@ export class AccessDeniedError extends Error {
    constructor(message: string) {
       super(message);
       this.name = "AccessDeniedError";
+   }
+}
+
+/**
+ * A query targeted a source/model that is not part of the package's queryable
+ * surface under `queryableSources: "declared"` (a non-`explores` model file, or
+ * a source not in a model's `export {}` closure). Mapped to HTTP **404**, not
+ * 403, and with a deliberately generic message: unlike `#(authorize)` (which is
+ * identity-scoped and answers "who"), the explore boundary is identity-free and
+ * answers "what is queryable" — so a hidden target should be indistinguishable
+ * from a non-existent one (no enumeration / existence oracle).
+ */
+export class NotQueryableError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "NotQueryableError";
    }
 }
 

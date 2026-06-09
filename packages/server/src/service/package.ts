@@ -85,6 +85,7 @@ export class Package {
       this.models = models;
       this.malloyConfig = malloyConfig;
       this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
    }
 
    /**
@@ -93,7 +94,9 @@ export class Package {
     * `PUBLISHER_LEGACY_DISCOVERY` compat flag AND only for packages that do
     * not declare `explores` — declaring `explores` is the explicit opt-in to
     * the curated semantics, so adopters are never served legacy listings.
-    * Re-derived on reload and metadata PATCH (the inputs can change there).
+    * (The query boundary below is unaffected: it is inert without `explores`,
+    * and with `explores` curation is always on, so the boundary never reads
+    * legacy listings.) Re-derived on reload and metadata PATCH.
     */
    private applyDiscoveryPolicyToModels(): void {
       const explores = this.packageMetadata.explores;
@@ -101,6 +104,35 @@ export class Package {
       const curationEnabled = exploresDeclared || !isLegacyDiscovery();
       for (const model of this.models.values()) {
          model.setDiscoveryCuration(curationEnabled);
+      }
+   }
+
+   /**
+    * Push the package-level query-boundary policy down onto each Model so the
+    * single query chokepoint (`Model.getQueryResults`, shared by the HTTP query
+    * route and the MCP tool) can enforce it without a back-reference to the
+    * Package. Derived once here (and on reload) rather than per query: the
+    * policy only changes when the manifest is (re)read.
+    *
+    * Policy: queryable == discoverable. The boundary is inert unless `explores`
+    * is declared (no curated surface ⇒ nothing to restrict) AND
+    * `queryableSources` is "declared" (the default; "all" decouples the axes).
+    * When active, a model file is a query entry point only if it is listed in
+    * `explores`; within-file curation (`export {}`) is read off each Model.
+    */
+   private applyQueryBoundaryToModels(): void {
+      const explores = this.packageMetadata.explores;
+      const exploresDeclared = !!(explores && explores.length > 0);
+      const exploreSet = exploresDeclared ? new Set(explores) : null;
+      // Anything other than an explicit "all" is the fail-safe "declared".
+      const mode =
+         this.packageMetadata.queryableSources === "all" ? "all" : "declared";
+      for (const [modelPath, model] of this.models) {
+         model.setQueryBoundary({
+            mode,
+            exploresDeclared,
+            isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
+         });
       }
    }
 
@@ -271,6 +303,7 @@ export class Package {
          description: outcome.packageMetadata.description,
          resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
          explores: outcome.packageMetadata.explores,
+         queryableSources: outcome.packageMetadata.queryableSources,
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -554,13 +587,17 @@ export class Package {
       }
       this.models = nextModels;
       // A reload re-reads publisher.json in the worker; pick up any change to
-      // the explore set so listModels() reflects edited explores without
-      // a full Package.create. (name/description are owned by the metadata-PATCH
-      // path, so only explores is refreshed here.)
+      // the explore set and query-boundary mode so listModels()/the gate
+      // reflect edited explores without a full Package.create. (name/description
+      // are owned by the metadata-PATCH path, so only these are refreshed here.)
       this.packageMetadata.explores = outcome.packageMetadata.explores;
-      // The fresh Model instances default to curated; re-derive the policy so
-      // a legacy-flag deployment keeps legacy listings across reloads.
+      this.packageMetadata.queryableSources =
+         outcome.packageMetadata.queryableSources;
+      // The fresh Model instances default to curated; re-derive both policies
+      // (legacy-flag deployments keep legacy listings across reloads, and the
+      // boundary picks up edited explores/queryableSources).
       this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
       // Re-run the fail-safe warning against the refreshed model set: an edit
       // to publisher.json that introduces a bad entry should surface in the
       // logs on reload too, not only at initial load (loadViaWorker).
@@ -797,7 +834,10 @@ export class Package {
 
    public setPackageMetadata(packageMetadata: ApiPackage) {
       this.packageMetadata = packageMetadata;
-      // A PATCH can add/remove `explores`, which feeds the curation policy.
+      // A PATCH can add/remove `explores`/`queryableSources`, which feed both
+      // the curation policy and the query boundary (mirrors how listModels()
+      // reads the live metadata).
       this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
    }
 }

@@ -78,6 +78,7 @@ describe("service/package", () => {
                {
                   getPath: () => "model1.malloy",
                   setDiscoveryCuration: () => {},
+                  setQueryBoundary: () => {},
                } as unknown as Model,
             ],
             [
@@ -85,6 +86,7 @@ describe("service/package", () => {
                {
                   getPath: () => "model2.malloynb",
                   setDiscoveryCuration: () => {},
+                  setQueryBoundary: () => {},
                } as unknown as Model,
             ],
          ]),
@@ -301,6 +303,7 @@ describe("service/package", () => {
                         getPath: () => "model1.malloy",
                         getModel: () => "foo",
                         setDiscoveryCuration: () => {},
+                        setQueryBoundary: () => {},
                      } as unknown as Model,
                   ],
                   [
@@ -313,6 +316,7 @@ describe("service/package", () => {
                               message: "This is the error",
                            };
                         },
+                        setQueryBoundary: () => {},
                      } as unknown as Model,
                   ],
                ]),

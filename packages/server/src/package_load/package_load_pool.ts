@@ -232,6 +232,7 @@ export interface LoadPackageOutcome {
       name?: string;
       description?: string;
       explores?: string[];
+      queryableSources?: "declared" | "all";
    };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {

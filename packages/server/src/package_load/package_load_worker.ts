@@ -375,15 +375,19 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 // stays decoupled from the main-thread service module graph)
 // ──────────────────────────────────────────────────────────────────────
 
-async function readPackageMetadata(
-   packagePath: string,
-): Promise<{ name?: string; description?: string; explores?: string[] }> {
+async function readPackageMetadata(packagePath: string): Promise<{
+   name?: string;
+   description?: string;
+   explores?: string[];
+   queryableSources?: "declared" | "all";
+}> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
    const parsed = JSON.parse(contents) as {
       name?: string;
       description?: string;
       explores?: string[];
+      queryableSources?: unknown;
    };
    return {
       name: parsed.name,
@@ -391,6 +395,9 @@ async function readPackageMetadata(
       explores: Array.isArray(parsed.explores)
          ? parsed.explores.map(normalizeModelPath)
          : undefined,
+      // Default + invalid fall back to "declared" (fail-safe: queryable ==
+      // discoverable). Only an explicit "all" opts out of the query boundary.
+      queryableSources: parsed.queryableSources === "all" ? "all" : "declared",
    };
 }
 

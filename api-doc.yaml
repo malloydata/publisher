@@ -2691,6 +2691,24 @@ components:
             fail-safe — the unresolved entry simply lists nothing rather than
             exposing everything — so this is the signal that a package is
             misconfigured; publishing such a package is rejected.
+        queryableSources:
+          type: string
+          enum:
+            - declared
+            - all
+          description: >-
+            Controls whether the discovery surface is also a query boundary.
+            `"declared"` (the default) makes queryable == discoverable: when
+            `explores` is declared, only `explores` model files — and within
+            them only the `export {}` closure — are valid top-level query
+            targets; every other source still compiles, imports, joins, and
+            extends but is not directly queryable (denied with 404). `"all"`
+            decouples them: `explores`/`export {}` gate discovery only and every
+            compiled source stays directly queryable (the prior behavior). When
+            `explores` is absent there is no curated surface, so both modes are
+            equivalent (everything queryable). Invalid values fall back to
+            `"declared"`. Identity-based access is a separate concern — see
+            `#(authorize)`.
 
     Model:
       type: object
