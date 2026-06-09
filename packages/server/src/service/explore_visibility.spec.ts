@@ -1,19 +1,19 @@
 /**
- * Integration test: Entry-Point Visibility.
+ * Integration test: Explore Visibility.
  *
  * Drives `Package.create` through the package-load worker pool (same harness as
  * package_worker_path.spec.ts) and verifies, end-to-end, the listing rule:
  *
- *   - `entryPoints` in publisher.json hides non-entry .malloy models from
+ *   - `explores` in publisher.json hides non-entry .malloy models from
  *     `listModels()` while they still compile for import/join resolution.
- *   - Within an entry point, only the re-export closure (`export { … }`) is
+ *   - Within an explore, only the re-export closure (`export { … }`) is
  *     listed as sources — imported helpers stay out.
  *   - A query that joins through a hidden module still resolves.
- *   - Notebooks are always listed regardless of `entryPoints`.
- *   - Absent/empty `entryPoints` → every model is listed (backward compatible).
+ *   - Notebooks are always listed regardless of `explores`.
+ *   - Absent/empty `explores` → every model is listed (backward compatible).
  *   - Within-file curation reflects `export {}` for ANY model (consistent with
- *     Malloy's export-aware modelInfo), independent of entryPoints.
- *   - A bogus `entryPoints` path is fail-safe at load (warn + hide, no throw);
+ *     Malloy's export-aware modelInfo), independent of explores.
+ *   - A bogus `explores` path is fail-safe at load (warn + hide, no throw);
  *     the publish path rejects it (covered at the controller layer).
  */
 import {
@@ -36,7 +36,7 @@ import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
-describe("Entry-Point Visibility via worker pool", () => {
+describe("Explore Visibility via worker pool", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
 
@@ -53,9 +53,7 @@ describe("Entry-Point Visibility via worker pool", () => {
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(
-         path.join(os.tmpdir(), "publisher-entrypoints-"),
-      );
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-explores-"));
    });
 
    afterEach(() => {
@@ -94,7 +92,7 @@ describe("Entry-Point Visibility via worker pool", () => {
       );
    }
 
-   // A base module (never an entry point) plus a curated index that imports it,
+   // A base module (never an explore) plus a curated index that imports it,
    // joins through it, and re-exports only `customers`. `helper` is a second
    // local source the index does NOT export — used to prove within-file curation.
    function writeLayeredModels(): void {
@@ -124,14 +122,14 @@ export { customers }`,
    }
 
    it("hides non-entry models, curates exports, keeps join-through, lists notebooks", async () => {
-      writeManifest({ entryPoints: ["index.malloy"] });
+      writeManifest({ explores: ["index.malloy"] });
       writeLayeredModels();
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
 
-         // Listing surface: only the entry point, not base.malloy.
+         // Listing surface: only the explore, not base.malloy.
          expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
 
          // Within-file curation: only the re-exported `customers`, not the
@@ -150,7 +148,7 @@ export { customers }`,
             .getQueryResults("customers", "v", undefined);
          expect(result.data).toBeDefined();
 
-         // Notebooks are always public regardless of entryPoints.
+         // Notebooks are always public regardless of explores.
          expect((await pkg.listNotebooks()).map((n) => n.path)).toEqual([
             "report.malloynb",
          ]);
@@ -163,7 +161,7 @@ export { customers }`,
       // base_source is hidden from index.malloy's listing (not re-exported),
       // but it carries its own #(authorize) gate. Curation must not drop that
       // gate: getAuthorize reads the COMPLETE source list, not the curated view.
-      writeManifest({ entryPoints: ["index.malloy"] });
+      writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
          `#(authorize) "1 = 1"
@@ -198,7 +196,7 @@ export { customers }`,
       }
    });
 
-   it("lists every model when entryPoints is absent (backward compatible)", async () => {
+   it("lists every model when explores is absent (backward compatible)", async () => {
       writeManifest();
       writeLayeredModels();
 
@@ -214,11 +212,11 @@ export { customers }`,
       }
    });
 
-   it("curates sources by export{} even without entryPoints (consistent with modelInfo)", async () => {
-      // No entryPoints declared, but the model has an export{}. Discovery must
+   it("curates sources by export{} even without explores (consistent with modelInfo)", async () => {
+      // No explores declared, but the model has an export{}. Discovery must
       // reflect the export closure (matching Malloy's modelInfo/sourceInfos that
       // the app renders), not the publisher-internal full source list.
-      writeManifest(); // no entryPoints
+      writeManifest(); // no explores
       fs.writeFileSync(
          path.join(tempDir, "model.malloy"),
          `source: public_orders is duckdb.sql("select 1 as id")
@@ -254,7 +252,7 @@ export { public_orders }`,
       // discovery never DIVERGES from Malloy's modelInfo/sourceInfos, even when
       // the curated result is empty. The imported source stays resolvable — the
       // query below executes through it.
-      writeManifest(); // no entryPoints
+      writeManifest(); // no explores
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
          `source: base_source is duckdb.sql("select 1 as id, 100 as amt") extend {
@@ -296,11 +294,11 @@ run: base_source -> v`,
       }
    });
 
-   it("load is fail-safe on an unknown entryPoints path: warns, hides, does not throw", async () => {
+   it("load is fail-safe on an unknown explores path: warns, hides, does not throw", async () => {
       // Policy: strict at publish (rejected in package.controller), fail-safe at
       // load. An unresolvable entry must NOT fall back to listing everything —
-      // that would expose the sources entryPoints exists to hide. It hides.
-      writeManifest({ entryPoints: ["does-not-exist.malloy"] });
+      // that would expose the sources explores exists to hide. It hides.
+      writeManifest({ explores: ["does-not-exist.malloy"] });
       writeLayeredModels();
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -309,16 +307,16 @@ run: base_source -> v`,
          // Did not throw; fail-safe → no models listed (not all of them).
          expect(await listedModelPaths(pkg)).toEqual([]);
          // The reason is surfaced (logged at load; used to reject at publish).
-         expect(pkg.formatInvalidEntryPoints()).toMatch(
+         expect(pkg.formatInvalidExplores()).toMatch(
             /does-not-exist\.malloy.*not found/s,
          );
          // …and on the package metadata the API/UI consume. Pin the exact
-         // message: it is observable API surface (entryPointsWarnings), so a
+         // message: it is observable API surface (exploresWarnings), so a
          // regression to a vaguer/wrong message must fail the test.
-         const warnings = pkg.getPackageMetadata().entryPointsWarnings ?? [];
+         const warnings = pkg.getPackageMetadata().exploresWarnings ?? [];
          expect(warnings.length).toBe(1);
          expect(warnings[0]).toBe(
-            `Invalid entryPoints entry 'does-not-exist.malloy' in ` +
+            `Invalid explores entry 'does-not-exist.malloy' in ` +
                `publisher.json: file not found in the package. Fix: list a ` +
                `.malloy file relative to the package root ` +
                `(e.g. "index.malloy").`,
@@ -328,8 +326,8 @@ run: base_source -> v`,
       }
    });
 
-   it("flags a notebook listed as an entry point; valid entries still resolve", async () => {
-      writeManifest({ entryPoints: ["index.malloy", "report.malloynb"] });
+   it("flags a notebook listed as an explore; valid entries still resolve", async () => {
+      writeManifest({ explores: ["index.malloy", "report.malloynb"] });
       writeLayeredModels();
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -337,10 +335,10 @@ run: base_source -> v`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          // The valid entry still lists; the notebook entry is flagged invalid.
          expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
-         expect(pkg.getInvalidEntryPoints().map((p) => p.entry)).toEqual([
+         expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
             "report.malloynb",
          ]);
-         expect(pkg.formatInvalidEntryPoints()).toMatch(
+         expect(pkg.formatInvalidExplores()).toMatch(
             /report\.malloynb.*notebooks are always public/s,
          );
       } finally {

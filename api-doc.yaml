@@ -2665,7 +2665,7 @@ components:
           type: string
           description: Package location, can be an absolute path or URI (e.g. github, s3,
             gcs, etc.)
-        entryPoints:
+        explores:
           type: array
           items:
             type: string
@@ -2677,15 +2677,15 @@ components:
             hidden from listings. When absent or empty, every model is listed
             (the default, backward-compatible behavior). Notebooks are always
             listed regardless of this field.
-        entryPointsWarnings:
+        exploresWarnings:
           type: array
           readOnly: true
           items:
             type: string
           description: >-
-            Actionable messages for declared entryPoints that do not resolve to
+            Actionable messages for declared explores that do not resolve to
             a real model in this package (e.g. a misspelled path, or a notebook
-            listed as an entry point). Server-computed and read-only: it is
+            listed as an explore). Server-computed and read-only: it is
             ignored on create/update requests and only ever returned in
             responses. Present only when there are such problems. Loading is
             fail-safe — the unresolved entry simply lists nothing rather than

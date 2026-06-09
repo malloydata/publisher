@@ -13,5 +13,5 @@ export class PackageDto implements ApiPackage {
    @IsOptional()
    @IsArray()
    @IsString({ each: true })
-   entryPoints?: string[];
+   explores?: string[];
 }

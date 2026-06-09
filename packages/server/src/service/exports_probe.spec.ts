@@ -1,8 +1,8 @@
-// Contract test for the Malloy property entry-point visibility relies on:
+// Contract test for the Malloy property explore visibility relies on:
 // `ModelDef.exports`. The within-file curation in service/model.ts lists only
 // the names in `exports`, so if a Malloy upgrade changes this behavior the
 // curation silently breaks — pin it here against the real compiler (not a
-// re-implementation). See entry_point_visibility.spec.ts for the end-to-end
+// re-implementation). See explore_visibility.spec.ts for the end-to-end
 // wiring through Package/Model.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {

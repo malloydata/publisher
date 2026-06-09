@@ -1087,7 +1087,7 @@ export class Environment {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: { name: string; description?: string; entryPoints?: string[] },
+      metadata: { name: string; description?: string; explores?: string[] },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
@@ -1102,15 +1102,15 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
-         // Update with new metadata. `entryPoints` is only overwritten when the
+         // Update with new metadata. `explores` is only overwritten when the
          // caller explicitly provides it; otherwise the existing on-disk value
          // is preserved via the spread (an undefined here must not erase it).
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
-            ...(metadata.entryPoints !== undefined
-               ? { entryPoints: metadata.entryPoints }
+            ...(metadata.explores !== undefined
+               ? { explores: metadata.explores }
                : {}),
          };
 
@@ -1138,31 +1138,29 @@ export class Environment {
          if (body.name) {
             _package.setName(body.name);
          }
-         // Preserve `entryPoints` across a metadata PATCH. `setPackageMetadata`
+         // Preserve `explores` across a metadata PATCH. `setPackageMetadata`
          // replaces the whole object, so a name/description-only update must
          // carry the existing discovery surface through — otherwise the
-         // in-memory `entryPoints` is wiped and `listModels()` silently starts
+         // in-memory `explores` is wiped and `listModels()` silently starts
          // serving every model until the next reload. When the body explicitly
-         // carries `entryPoints`, honor the new set instead.
+         // carries `explores`, honor the new set instead.
          const existing = _package.getPackageMetadata();
-         const entryPoints =
-            body.entryPoints !== undefined
-               ? body.entryPoints
-               : existing.entryPoints;
+         const explores =
+            body.explores !== undefined ? body.explores : existing.explores;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
             resource: body.resource,
             location: body.location,
-            entryPoints,
+            explores,
          });
 
          // Strict-reject, symmetric with the publish path
-         // (package.controller.addPackage): validate the resulting entryPoints
+         // (package.controller.addPackage): validate the resulting explores
          // against the live model set and restore the prior metadata before
          // rejecting, so a bad update neither persists nor mutates the served
          // surface.
-         const invalidMsg = _package.formatInvalidEntryPoints();
+         const invalidMsg = _package.formatInvalidExplores();
          if (invalidMsg) {
             _package.setPackageMetadata(existing);
             throw new BadRequestError(invalidMsg);
@@ -1171,7 +1169,7 @@ export class Environment {
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
-            entryPoints: body.entryPoints,
+            explores: body.explores,
          });
 
          return _package.getPackageMetadata();

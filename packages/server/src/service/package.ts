@@ -251,7 +251,7 @@ export class Package {
          name: outcome.packageMetadata.name,
          description: outcome.packageMetadata.description,
          resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
-         entryPoints: outcome.packageMetadata.entryPoints,
+         explores: outcome.packageMetadata.explores,
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -300,13 +300,13 @@ export class Package {
          malloyConfig,
       );
 
-      // Fail-safe at load: a bad entryPoints entry doesn't fail the package
+      // Fail-safe at load: a bad explores entry doesn't fail the package
       // (its models still load and listModels hides the unmatched entry — it
       // never falls back to listing everything). Warn so the misconfig is
       // visible; the publish path rejects it outright (see package.controller).
-      const invalidMsg = pkg.formatInvalidEntryPoints();
+      const invalidMsg = pkg.formatInvalidExplores();
       if (invalidMsg) {
-         logger.warn(`Package ${packageName} has invalid entryPoints`, {
+         logger.warn(`Package ${packageName} has invalid explores`, {
             packageName,
             detail: invalidMsg,
          });
@@ -320,27 +320,27 @@ export class Package {
    }
 
    public getPackageMetadata(): ApiPackage {
-      // Surface entryPoints misconfig so consumers/UI can show it (loading is
+      // Surface explores misconfig so consumers/UI can show it (loading is
       // fail-safe — the package still serves with the bad entry hidden — so this
       // is the only non-log signal that it's broken). Computed fresh against the
       // current models; absent when everything resolves. Returns a copy in that
       // case so the added field never mutates the stored metadata.
-      const warnings = this.entryPointWarnings();
+      const warnings = this.exploreWarnings();
       if (warnings.length === 0) return this.packageMetadata;
-      return { ...this.packageMetadata, entryPointsWarnings: warnings };
+      return { ...this.packageMetadata, exploresWarnings: warnings };
    }
 
    /**
-    * Declared `entryPoints` (publisher.json) that don't resolve to a real
+    * Declared `explores` (publisher.json) that don't resolve to a real
     * `.malloy` model in this package, each with an actionable reason. Empty
-    * when entryPoints is absent/empty or every entry resolves.
+    * when explores is absent/empty or every entry resolves.
     *
     * The listing already fails safe — a non-resolving entry matches no model in
     * `listModels`, so it hides rather than exposes. This surfaces *why*, so the
     * load path can warn and the publish path can reject (see package.controller).
     */
-   public getInvalidEntryPoints(): { entry: string; reason: string }[] {
-      const declared = this.packageMetadata.entryPoints;
+   public getInvalidExplores(): { entry: string; reason: string }[] {
+      const declared = this.packageMetadata.explores;
       if (!declared || declared.length === 0) return [];
       const malloyModels = new Set(
          Array.from(this.models.keys()).filter((p) =>
@@ -353,7 +353,7 @@ export class Package {
             problems.push({
                entry,
                reason:
-                  `notebooks are always public and cannot be entry points. ` +
+                  `notebooks are always public and cannot be explores. ` +
                   `Fix: remove it, and list a ${MODEL_FILE_SUFFIX} model file instead.`,
             });
          } else if (!malloyModels.has(entry)) {
@@ -369,20 +369,20 @@ export class Package {
    }
 
    /** One actionable message per invalid entry (empty when all resolve). */
-   public entryPointWarnings(): string[] {
-      return this.getInvalidEntryPoints().map(
+   public exploreWarnings(): string[] {
+      return this.getInvalidExplores().map(
          (p) =>
-            `Invalid entryPoints entry '${p.entry}' in ${PACKAGE_MANIFEST_NAME}: ${p.reason}`,
+            `Invalid explores entry '${p.entry}' in ${PACKAGE_MANIFEST_NAME}: ${p.reason}`,
       );
    }
 
    /**
-    * The {@link entryPointWarnings} joined into one string, or "" if none.
+    * The {@link exploreWarnings} joined into one string, or "" if none.
     * Newline-separated so multiple invalid entries stay one-per-line in the
     * 400 message rather than running together.
     */
-   public formatInvalidEntryPoints(): string {
-      return this.entryPointWarnings().join("\n");
+   public formatInvalidExplores(): string {
+      return this.exploreWarnings().join("\n");
    }
 
    public listDatabases(): ApiDatabase[] {
@@ -494,16 +494,16 @@ export class Package {
       }
       this.models = nextModels;
       // A reload re-reads publisher.json in the worker; pick up any change to
-      // the entry-point set so listModels() reflects edited entryPoints without
+      // the explore set so listModels() reflects edited explores without
       // a full Package.create. (name/description are owned by the metadata-PATCH
-      // path, so only entryPoints is refreshed here.)
-      this.packageMetadata.entryPoints = outcome.packageMetadata.entryPoints;
+      // path, so only explores is refreshed here.)
+      this.packageMetadata.explores = outcome.packageMetadata.explores;
       // Re-run the fail-safe warning against the refreshed model set: an edit
       // to publisher.json that introduces a bad entry should surface in the
       // logs on reload too, not only at initial load (loadViaWorker).
-      const invalidMsg = this.formatInvalidEntryPoints();
+      const invalidMsg = this.formatInvalidExplores();
       if (invalidMsg) {
-         logger.warn(`Package ${this.packageName} has invalid entryPoints`, {
+         logger.warn(`Package ${this.packageName} has invalid explores`, {
             packageName: this.packageName,
             detail: invalidMsg,
          });
@@ -519,19 +519,19 @@ export class Package {
    }
 
    public async listModels(): Promise<ApiModel[]> {
-      // When `entryPoints` is declared in publisher.json, only those models
+      // When `explores` is declared in publisher.json, only those models
       // form the public surface; every other .malloy file still compiles for
       // import/join resolution but is hidden from the listing. Absent/empty →
       // every model is listed (backward-compatible default). Notebooks are
       // unaffected (see listNotebooks) — they are always public.
-      const entryPoints = this.packageMetadata.entryPoints;
-      const entryPointSet =
-         entryPoints && entryPoints.length > 0 ? new Set(entryPoints) : null;
+      const explores = this.packageMetadata.explores;
+      const exploreSet =
+         explores && explores.length > 0 ? new Set(explores) : null;
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
                if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-               return entryPointSet ? entryPointSet.has(modelPath) : true;
+               return exploreSet ? exploreSet.has(modelPath) : true;
             })
             .map(async (modelPath) => {
                let error: string | undefined;

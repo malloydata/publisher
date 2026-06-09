@@ -1017,7 +1017,7 @@ export class Model {
          sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
-         // Discovery surface: an entry point lists only its export closure
+         // Discovery surface: an explore lists only its export closure
          // (getSources/getQueries curate); `this.sources` stays complete for
          // enforcement and resolution.
          sources: this.getSources(),
@@ -1077,6 +1077,10 @@ export class Model {
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
          modelInfo: JSON.stringify(this.modelInfo ?? {}),
+         // Raw-notebook view is uncurated (complete `this.sources`/`this.queries`,
+         // not the export-filtered `getSources`/`getQueries`): notebooks can't be
+         // imported, so their in-file sources have no internal/import-only role to
+         // hide — they're always public. Model files curate; notebooks don't.
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,

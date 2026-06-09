@@ -176,7 +176,7 @@ export interface LoadPackageResult {
    packageMetadata: {
       name?: string;
       description?: string;
-      entryPoints?: string[];
+      explores?: string[];
    };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */

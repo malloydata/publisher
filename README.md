@@ -301,23 +301,23 @@ A package can ship a `public/` directory of web files (an `index.html` plus CSS,
 
 A package's `publisher.json` manifest can scope which models and sources appear in listings (the surface that drives discovery and chat), at two granularities:
 
-- **File level — `entryPoints`.** An optional `string[]` of `.malloy` file paths (relative to the package root) that form the package's public surface. When present, only those models are returned by `listModels()`; every other `.malloy` file still compiles for import/join resolution and stays queryable, but is hidden from listings. When absent or empty, every model is listed — the default, backward-compatible behavior. Notebooks are always listed regardless of this field (they can't be imported, so they have nothing to hide behind).
+- **File level — `explores`.** An optional `string[]` of `.malloy` file paths (relative to the package root) that form the package's public surface. When present, only those models are returned by `listModels()`; every other `.malloy` file still compiles for import/join resolution and stays queryable, but is hidden from listings. When absent or empty, every model is listed — the default, backward-compatible behavior. Notebooks are always listed regardless of this field (they can't be imported, so they have nothing to hide behind).
 
   ```json
   {
     "name": "sales",
     "description": "Sales models",
-    "entryPoints": ["index.malloy"]
+    "explores": ["index.malloy"]
   }
   ```
 
-- **Within a file — `export { … }`.** Inside a model, the discovery accessors list only the model's re-export closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` already expose. A model with no `export { … }` exports all of its locally-declared top-level sources; declaring `export { customers }` lists only `customers` and keeps imported/internal helpers out. This applies to every model, with or without `entryPoints`.
+- **Within a file — `export { … }`.** Inside a model, the discovery accessors list only the model's re-export closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` already expose. A model with no `export { … }` exports all of its locally-declared top-level sources; declaring `export { customers }` lists only `customers` and keeps imported/internal helpers out. This applies to every model, with or without `explores`.
 
-The two compose: `entryPoints` decides which files are listed, and `export { … }` decides which sources within a listed file are shown.
+The two compose: `explores` decides which files are listed, and `export { … }` decides which sources within a listed file are shown.
 
 > **Discovery filter, not access control.** Hiding a model or source only removes it from listings — it stays fully queryable by anyone who knows its name, and join/extend resolution is unaffected. To *restrict access*, gate the source with `#(authorize)` (see [docs/authorize.md](docs/authorize.md)); those gates are enforced against the complete source set and are never weakened by this listing filter.
 
-Validation is asymmetric by design: **publishing** a package with an `entryPoints` entry that doesn't resolve to a real model is rejected with a `400`, while at **startup/reload** the package still serves but hides the unresolved entry (it never falls back to listing everything) and surfaces the reason in the package's `entryPointsWarnings` field.
+Validation is asymmetric by design: **publishing** a package with an `explores` entry that doesn't resolve to a real model is rejected with a `400`, while at **startup/reload** the package still serves but hides the unresolved entry (it never falls back to listing everything) and surfaces the reason in the package's `exploresWarnings` field.
 
 For local development, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`). Publisher then mounts that environment's local-dir packages in place and watches them: editing a `.malloy` recompiles the package, editing an asset refreshes the page, and open pages live-reload over a server-sent-events stream at `GET .../packages/<pkg>/events`. See `examples/html-data-app/` for a worked example.
 

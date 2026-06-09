@@ -103,17 +103,17 @@ export class PackageController {
 
       // `addPackage` is typed `Package | undefined`; a missing result here is a
       // should-never-happen internal fault. Fail loudly rather than letting
-      // optional chaining silently skip the entryPoints validation below.
+      // optional chaining silently skip the explores validation below.
       if (!result) {
          throw new Error(`Failed to create package ${packageName}`);
       }
 
       // Strict at publish: the author is in the loop here, so reject a bad
-      // entryPoints with an actionable error instead of silently serving a
+      // explores with an actionable error instead of silently serving a
       // hidden surface. (At startup/reload we fail safe and only warn — see
       // Package.loadViaWorker.) Roll back the just-installed package so a
       // rejected publish doesn't leave a half-committed, un-persisted package.
-      const invalidMsg = result.formatInvalidEntryPoints();
+      const invalidMsg = result.formatInvalidExplores();
       if (invalidMsg) {
          await environment.deletePackage(packageName).catch(() => {
             /* best-effort rollback; the package is not persisted below */

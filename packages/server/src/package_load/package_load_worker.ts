@@ -377,19 +377,19 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 
 async function readPackageMetadata(
    packagePath: string,
-): Promise<{ name?: string; description?: string; entryPoints?: string[] }> {
+): Promise<{ name?: string; description?: string; explores?: string[] }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
    const parsed = JSON.parse(contents) as {
       name?: string;
       description?: string;
-      entryPoints?: string[];
+      explores?: string[];
    };
    return {
       name: parsed.name,
       description: parsed.description,
-      entryPoints: Array.isArray(parsed.entryPoints)
-         ? parsed.entryPoints.map(normalizeModelPath)
+      explores: Array.isArray(parsed.explores)
+         ? parsed.explores.map(normalizeModelPath)
          : undefined,
    };
 }
@@ -407,21 +407,21 @@ function filterModelPaths(allRelative: string[]): string[] {
    );
 }
 
-// Normalize a package-relative model path so author-written `entryPoints`
+// Normalize a package-relative model path so author-written `explores`
 // entries compare equal to the paths produced by `listPackageFiles`
 // (forward slashes, no leading "./"). Normalization is one-sided: it runs
 // here at parse time so the keys stored in Package.models are already
-// normalized, and listModels()/getInvalidEntryPoints() compare entryPoints
+// normalized, and listModels()/getInvalidExplores() compare explores
 // against those keys directly — there is no second normalization to keep in
 // sync on the listing side.
 function normalizeModelPath(p: string): string {
    return p.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
-// entryPoints validation is intentionally NOT done here. The worker is the
+// explores validation is intentionally NOT done here. The worker is the
 // shared load path (startup, reload, AND publish), but the policy differs by
 // context — strict-reject at publish, warn-and-fail-safe at load — so it lives
-// on the main thread (see Package.getInvalidEntryPoints / loadViaWorker and the
+// on the main thread (see Package.getInvalidExplores / loadViaWorker and the
 // publish path in package.controller). An unmatched entry simply lists nothing
 // (listModels filters by set membership), which is the fail-safe outcome.
 
