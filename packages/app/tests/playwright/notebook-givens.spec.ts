@@ -26,6 +26,7 @@ const MODEL_SOURCE = `##! experimental.givens
 #(description="Two-letter IATA carrier code")
 given: target_code :: string is 'WN'
 given: cutoff :: date is @2024-01-01
+given: include_x :: boolean is true
 
 source: carriers_with_given is duckdb.table('data/carriers.parquet') extend {
   primary_key: code
@@ -96,6 +97,7 @@ test.describe("notebook-givens", () => {
       const names = givens.map((g) => g.name);
       expect(names).toContain("target_code");
       expect(names).toContain("cutoff");
+      expect(names).toContain("include_x");
    });
 
    test("Parameters panel renders one input per declared given", async ({
@@ -108,6 +110,7 @@ test.describe("notebook-givens", () => {
       ).toBeVisible();
       await expect(page.getByLabel("target_code")).toBeVisible();
       await expect(page.getByLabel("cutoff")).toBeVisible();
+      await expect(page.getByLabel("include_x")).toBeVisible();
    });
 
    test("description annotation surfaces as helper text", async ({ page }) => {
@@ -172,5 +175,55 @@ test.describe("notebook-givens", () => {
       await expect(input).toHaveValue("");
       await expect(resetBtn).toBeHidden();
       await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+   });
+
+   test("empty string is a deliberate override, distinct from revert-to-default", async ({
+      page,
+   }) => {
+      await openGivensNotebook(page);
+      const input = page.getByLabel("target_code");
+
+      // Default WN → Southwest.
+      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+
+      // Explicit AA → American.
+      await input.fill("AA");
+      await expect(page.getByText("American Airlines").first()).toBeVisible();
+
+      // Typing the field empty is an explicit "" override, NOT a revert: the
+      // cell re-runs with "" (no carrier matches), so American disappears and
+      // the default (WN/Southwest) does not come back.
+      await input.fill("");
+      await expect(page.getByText("American Airlines")).toHaveCount(0);
+      await expect(page.getByText("Southwest Airlines")).toHaveCount(0);
+
+      // The × is present even though the field is empty — an override is active,
+      // distinct from unset. Clicking it reverts to the model default.
+      const clearBtn = page.getByRole("button", { name: "clear value" });
+      await expect(clearBtn).toBeVisible();
+      await clearBtn.click();
+      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+   });
+
+   test("boolean reflects the default when unset, and toggles/reverts as an explicit override", async ({
+      page,
+   }) => {
+      await openGivensNotebook(page);
+      const box = page.getByLabel("include_x");
+
+      // Unset → reflects the model default (`is true`), so the box shows what
+      // the query actually runs with. No override yet, so no Reset.
+      await expect(box).toBeChecked();
+      await expect(page.getByRole("button", { name: "Reset" })).toBeHidden();
+
+      // Toggle → explicit `false` override (a real value, not "unset").
+      await box.uncheck();
+      await expect(box).not.toBeChecked();
+      await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
+
+      // Revert (×) → drop the override, back to the default (checked).
+      await page.getByRole("button", { name: "clear value" }).click();
+      await expect(box).toBeChecked();
+      await expect(page.getByRole("button", { name: "Reset" })).toBeHidden();
    });
 });
