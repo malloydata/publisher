@@ -60,24 +60,38 @@ export interface ServerProviderProps {
     * @default true
     */
    mutable?: boolean;
+   /** Send cookies on cross-origin API requests (XHR `withCredentials`).
+    * Enable only when the server authenticates the SDK via an ambient session
+    * cookie instead of `getAccessToken`; credentialed requests require the
+    * server to answer CORS preflights with `Access-Control-Allow-Credentials:
+    * true`. Same-origin requests always carry cookies regardless of this flag.
+    * @default false
+    */
+   withCredentials?: boolean;
 }
 
 const getApiClients = (
    baseURL?: string,
    accessToken?: () => Promise<string>,
+   withCredentials?: boolean,
 ) => {
    const basePath = `${window.location.protocol}//${window.location.host}/api/v0`;
 
    // Create a custom axios instance with proper configuration
    const axiosInstance = axios.create({
       baseURL: baseURL || basePath,
-      withCredentials: true,
+      withCredentials: withCredentials ?? false,
       timeout: 600000,
    });
 
    axiosInstance.interceptors.request.use(async (config) => {
       const token = await accessToken?.();
-      config.headers.Authorization = token || "";
+      // Omit the header entirely when there is no token: an empty-string
+      // Authorization header still counts as "header present" to servers that
+      // fall back to cookie auth only when no Authorization header is set.
+      if (token) {
+         config.headers.Authorization = token;
+      }
       return config;
    });
 
@@ -109,10 +123,11 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({
    getAccessToken,
    baseURL,
    mutable: mutableProp,
+   withCredentials,
 }) => {
    const apiClients = useMemo(
-      () => getApiClients(baseURL, getAccessToken),
-      [baseURL, getAccessToken],
+      () => getApiClients(baseURL, getAccessToken, withCredentials),
+      [baseURL, getAccessToken, withCredentials],
    );
 
    const server =
