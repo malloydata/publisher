@@ -723,6 +723,21 @@ export class Model {
       return this.curateForDiscovery(this.queries);
    }
 
+   /**
+    * True when this is an import-only model: it imports other files but
+    * declares and re-exports nothing of its own, so `modelDef.exports` is
+    * empty and its discovery surface lists no sources or queries. Legitimate
+    * as plumbing, but confusing when the model is *listed* — the page renders
+    * blank. Used by the load-time warning (Package.emptyDiscoveryWarnings);
+    * the fix is to re-export what should be visible (`export { name }`).
+    */
+   public hasEmptyDiscoverySurface(): boolean {
+      if (this.modelType !== "model" || !this.modelDef) return false;
+      const exports = this.modelDef.exports;
+      if (!Array.isArray(exports) || exports.length > 0) return false;
+      return (this.modelDef.imports?.length ?? 0) > 0;
+   }
+
    public async getModel(): Promise<ApiCompiledModel> {
       if (this.compilationError) {
          throw this.compilationError;

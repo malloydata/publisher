@@ -294,6 +294,59 @@ run: base_source -> v`,
       }
    });
 
+   it("warns for a LISTED import-only model (blank page), not for a hidden one", async () => {
+      // An import-only model (imports, no local source:, no export{}) lists
+      // nothing — legitimate plumbing, but it renders a blank page when
+      // listed, which reads as broken. Pin the log-only warning surface: it
+      // fires exactly for listed import-only models, is silenced by a
+      // re-export, and never fires for models hidden by explores (nobody
+      // browses them). It must NOT ride exploreWarnings — that surface is
+      // strict-at-publish and import-only files are not a publish error.
+      writeManifest(); // no explores → consumer.malloy is listed
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base_source is duckdb.sql("select 1 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "consumer.malloy"),
+         `import "base.malloy"\nrun: base_source -> { group_by: id }`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const warnings = pkg.emptyDiscoveryWarnings();
+         expect(warnings.length).toBe(1);
+         expect(warnings[0]).toBe(
+            `Model "consumer.malloy" is listed but exposes nothing: it only ` +
+               `imports other files and re-exports none of their sources. ` +
+               `Add e.g. 'export { source_name }' to surface sources on ` +
+               `this model.`,
+         );
+         // Not a publish blocker: the strict-at-publish surface stays clean.
+         expect(pkg.formatInvalidExplores()).toBe("");
+
+         // Re-exporting silences it…
+         fs.writeFileSync(
+            path.join(tempDir, "consumer.malloy"),
+            `import "base.malloy"\nexport { base_source }`,
+         );
+         await pkg.reloadAllModels({});
+         expect(pkg.emptyDiscoveryWarnings()).toEqual([]);
+
+         // …and so does hiding the import-only model behind explores.
+         fs.writeFileSync(
+            path.join(tempDir, "consumer.malloy"),
+            `import "base.malloy"\nrun: base_source -> { group_by: id }`,
+         );
+         writeManifest({ explores: ["base.malloy"] });
+         await pkg.reloadAllModels({});
+         expect(pkg.emptyDiscoveryWarnings()).toEqual([]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("load is fail-safe on an unknown explores path: warns, hides, does not throw", async () => {
       // Policy: strict at publish (rejected in package.controller), fail-safe at
       // load. An unresolvable entry must NOT fall back to listing everything —

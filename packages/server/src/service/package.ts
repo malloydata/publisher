@@ -311,6 +311,7 @@ export class Package {
             detail: invalidMsg,
          });
       }
+      pkg.logEmptyDiscoveryWarnings();
 
       return pkg;
    }
@@ -383,6 +384,46 @@ export class Package {
     */
    public formatInvalidExplores(): string {
       return this.exploreWarnings().join("\n");
+   }
+
+   /**
+    * One message per LISTED model whose discovery surface is empty because it
+    * is import-only (imports other files, declares/re-exports nothing). Such a
+    * model renders a blank page, which reads as broken; the fix is an explicit
+    * re-export. Log-only (see loadViaWorker/reloadAllModels) — deliberately
+    * NOT part of exploreWarnings, which is strict-at-publish: import-only
+    * files are a legitimate pattern and must not block a publish. Hidden
+    * (non-listed) models are skipped — nobody browses them, so an empty
+    * surface there is just normal plumbing.
+    */
+   public emptyDiscoveryWarnings(): string[] {
+      const explores = this.packageMetadata.explores;
+      const exploreSet =
+         explores && explores.length > 0 ? new Set(explores) : null;
+      const warnings: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         if (exploreSet && !exploreSet.has(modelPath)) continue;
+         if (model.hasEmptyDiscoverySurface()) {
+            warnings.push(
+               `Model "${modelPath}" is listed but exposes nothing: it only ` +
+                  `imports other files and re-exports none of their sources. ` +
+                  `Add e.g. 'export { source_name }' to surface sources on ` +
+                  `this model.`,
+            );
+         }
+      }
+      return warnings;
+   }
+
+   /** Log {@link emptyDiscoveryWarnings}; shared by load and reload. */
+   private logEmptyDiscoveryWarnings(): void {
+      for (const warning of this.emptyDiscoveryWarnings()) {
+         logger.warn(`Package ${this.packageName} has a blank-looking model`, {
+            packageName: this.packageName,
+            detail: warning,
+         });
+      }
    }
 
    public listDatabases(): ApiDatabase[] {
@@ -508,6 +549,7 @@ export class Package {
             detail: invalidMsg,
          });
       }
+      this.logEmptyDiscoveryWarnings();
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
