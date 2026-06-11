@@ -443,7 +443,11 @@ export default function Notebook({
    const prevInputsRef = useRef<string>("");
 
    useEffect(() => {
-      // Serialize activeFilters + givenValues to detect actual value changes
+      // Serialize activeFilters + givenValues to detect actual value changes.
+      // Encode dates to the same YYYY-MM-DD granularity buildGivens sends on the
+      // wire — otherwise JSON.stringify renders Date as a full ISO timestamp, so
+      // two times on the same day would look like a change and trigger a
+      // redundant re-run even though the sent value is identical.
       const serialized = JSON.stringify({
          filters: activeFilters.map((f) => ({
             dim: f.dimensionName,
@@ -451,9 +455,12 @@ export default function Notebook({
             val: f.value,
             val2: f.value2,
          })),
-         givens: Array.from(givenValues.entries()).sort(([a], [b]) =>
-            a.localeCompare(b),
-         ),
+         givens: Array.from(givenValues.entries())
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, v]) => [
+               name,
+               v instanceof Date ? v.toISOString().slice(0, 10) : v,
+            ]),
       });
 
       // Skip if no actual change
@@ -471,12 +478,18 @@ export default function Notebook({
          return;
       }
 
-      prevInputsRef.current = serialized;
-
-      // Re-execute with current filters and givens (or empty if cleared)
-      if (!isExecuting) {
-         executeCells(activeFilters, givenValues);
+      // Don't consume the change until we can act on it. If a run is already in
+      // flight, leave prevInputsRef stale and bail: this effect re-runs when
+      // isExecuting flips back to false (it's a dependency), and will then pick
+      // up the latest inputs. Updating prevInputsRef here instead would mark the
+      // change "seen" and drop it — a given/filter edited mid-run would never
+      // re-execute.
+      if (isExecuting) {
+         return;
       }
+
+      prevInputsRef.current = serialized;
+      executeCells(activeFilters, givenValues);
    }, [activeFilters, givenValues, isExecuting, executeCells]);
 
    // Handle filter change using composite key

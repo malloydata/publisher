@@ -22,8 +22,6 @@ export interface UseGivensFormResult {
    givenValues: Map<string, GivenValue>;
    /** Update a given's value. Pass `null` to revert to model default. */
    updateGiven: (name: string, value: GivenValue) => void;
-   /** Remove a single given override. */
-   clearGiven: (name: string) => void;
    /** Remove all overrides. */
    clearAll: () => void;
    /** Map of just the givens that have a user-supplied (non-null) override. */
@@ -74,15 +72,6 @@ export function useGivensForm(givens: Given[]): UseGivensFormResult {
       });
    }, []);
 
-   const clearGiven = useCallback((name: string) => {
-      setGivenValues((prev) => {
-         if (!prev.has(name)) return prev;
-         const next = new Map(prev);
-         next.delete(name);
-         return next;
-      });
-   }, []);
-
    const clearAll = useCallback(() => {
       setGivenValues((prev) => (prev.size === 0 ? prev : new Map()));
    }, []);
@@ -103,7 +92,6 @@ export function useGivensForm(givens: Given[]): UseGivensFormResult {
    return {
       givenValues,
       updateGiven,
-      clearGiven,
       clearAll,
       getActiveGivens,
    };
