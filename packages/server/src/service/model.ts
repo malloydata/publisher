@@ -123,6 +123,12 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
+   /** Whether discovery accessors curate to the `export {}` closure. Pushed
+    *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
+    *  false only under the TEMPORARY `PUBLISHER_LEGACY_DISCOVERY` compat flag
+    *  for packages with no `explores` declared. Defaults to true (curated) so
+    *  a Model created outside a Package behaves like the modern default. */
+   private discoveryCurationEnabled = true;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -703,12 +709,21 @@ export class Model {
       items: T[] | undefined,
    ): T[] | undefined {
       if (!items) return items;
+      // TEMPORARY compat: under PUBLISHER_LEGACY_DISCOVERY (and only for
+      // packages with no `explores` — the Package pushes this down), serve
+      // the complete pre-curation listings while fleets migrate.
+      if (!this.discoveryCurationEnabled) return items;
       const exports = this.modelDef?.exports;
       if (!Array.isArray(exports)) return items;
       const exported = new Set(exports);
       return items.filter(
          (item) => item.name !== undefined && exported.has(item.name),
       );
+   }
+
+   /** Set by the owning Package; see {@link curateForDiscovery}. */
+   public setDiscoveryCuration(enabled: boolean): void {
+      this.discoveryCurationEnabled = enabled;
    }
 
    public getSources(): ApiSource[] | undefined {
@@ -732,6 +747,9 @@ export class Model {
     * the fix is to re-export what should be visible (`export { name }`).
     */
    public hasEmptyDiscoverySurface(): boolean {
+      // No curation ⇒ the legacy listings include imported sources, so an
+      // import-only model isn't blank and the warning would be wrong.
+      if (!this.discoveryCurationEnabled) return false;
       if (this.modelType !== "model" || !this.modelDef) return false;
       const exports = this.modelDef.exports;
       if (!Array.isArray(exports) || exports.length > 0) return false;

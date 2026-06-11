@@ -294,6 +294,68 @@ run: base_source -> v`,
       }
    });
 
+   it("PUBLISHER_LEGACY_DISCOVERY: legacy listings for non-explores packages only (temporary compat)", async () => {
+      // Rollout escape hatch: with the flag set, a package with NO `explores`
+      // serves the pre-curation listings (imported sources included, no
+      // blank-model warning) so a fleet can upgrade without listing changes.
+      // A package that DOES declare `explores` opted in explicitly and gets
+      // the curated semantics regardless — the flag must not weaken it.
+      const prior = process.env.PUBLISHER_LEGACY_DISCOVERY;
+      process.env.PUBLISHER_LEGACY_DISCOVERY = "true";
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         // Non-explores package: import-only consumer + export{}-curated model.
+         writeManifest(); // no explores
+         fs.writeFileSync(
+            path.join(tempDir, "base.malloy"),
+            `source: base_source is duckdb.sql("select 1 as id")`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "consumer.malloy"),
+            `import "base.malloy"\nrun: base_source -> { group_by: id }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "curated.malloy"),
+            `source: pub is duckdb.sql("select 1 as id")
+source: hidden is duckdb.sql("select 2 as id")
+export { pub }`,
+         );
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+
+         // Legacy: the importer lists the imported source again…
+         const consumer = (await pkg
+            .getModel("consumer.malloy")!
+            .getModel()) as { sources?: { name?: string }[] };
+         expect((consumer.sources ?? []).map((s) => s.name)).toEqual([
+            "base_source",
+         ]);
+         // …an export{} file lists everything (curation off)…
+         const curated = (await pkg.getModel("curated.malloy")!.getModel()) as {
+            sources?: { name?: string }[];
+         };
+         expect((curated.sources ?? []).map((s) => s.name).sort()).toEqual([
+            "hidden",
+            "pub",
+         ]);
+         // …and the blank-model warning is suppressed (nothing is blank).
+         expect(pkg.emptyDiscoveryWarnings()).toEqual([]);
+
+         // Explores-declared package: flag does NOT weaken curation.
+         writeManifest({ explores: ["curated.malloy"] });
+         await pkg.reloadAllModels({});
+         const curatedOptIn = (await pkg
+            .getModel("curated.malloy")!
+            .getModel()) as { sources?: { name?: string }[] };
+         expect((curatedOptIn.sources ?? []).map((s) => s.name)).toEqual([
+            "pub",
+         ]);
+      } finally {
+         if (prior === undefined) delete process.env.PUBLISHER_LEGACY_DISCOVERY;
+         else process.env.PUBLISHER_LEGACY_DISCOVERY = prior;
+         await duckdb.close();
+      }
+   });
+
    it("warns for a LISTED import-only model (blank page), not for a hidden one", async () => {
       // An import-only model (imports, no local source:, no export{}) lists
       // nothing — legitimate plumbing, but it renders a blank page when

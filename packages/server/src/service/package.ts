@@ -15,6 +15,7 @@ import {
 import { metrics } from "@opentelemetry/api";
 import recursive from "recursive-readdir";
 import { components } from "../api";
+import { isLegacyDiscovery } from "../config";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
    API_PREFIX,
@@ -83,6 +84,24 @@ export class Package {
       this.databases = databases;
       this.models = models;
       this.malloyConfig = malloyConfig;
+      this.applyDiscoveryPolicyToModels();
+   }
+
+   /**
+    * Push the discovery-curation policy down onto each Model. Curation is on
+    * by default; it is disabled only under the TEMPORARY
+    * `PUBLISHER_LEGACY_DISCOVERY` compat flag AND only for packages that do
+    * not declare `explores` — declaring `explores` is the explicit opt-in to
+    * the curated semantics, so adopters are never served legacy listings.
+    * Re-derived on reload and metadata PATCH (the inputs can change there).
+    */
+   private applyDiscoveryPolicyToModels(): void {
+      const explores = this.packageMetadata.explores;
+      const exploresDeclared = !!(explores && explores.length > 0);
+      const curationEnabled = exploresDeclared || !isLegacyDiscovery();
+      for (const model of this.models.values()) {
+         model.setDiscoveryCuration(curationEnabled);
+      }
    }
 
    static async create(
@@ -539,6 +558,9 @@ export class Package {
       // a full Package.create. (name/description are owned by the metadata-PATCH
       // path, so only explores is refreshed here.)
       this.packageMetadata.explores = outcome.packageMetadata.explores;
+      // The fresh Model instances default to curated; re-derive the policy so
+      // a legacy-flag deployment keeps legacy listings across reloads.
+      this.applyDiscoveryPolicyToModels();
       // Re-run the fail-safe warning against the refreshed model set: an edit
       // to publisher.json that introduces a bad entry should surface in the
       // logs on reload too, not only at initial load (loadViaWorker).
@@ -775,5 +797,7 @@ export class Package {
 
    public setPackageMetadata(packageMetadata: ApiPackage) {
       this.packageMetadata = packageMetadata;
+      // A PATCH can add/remove `explores`, which feeds the curation policy.
+      this.applyDiscoveryPolicyToModels();
    }
 }
