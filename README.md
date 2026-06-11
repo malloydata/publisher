@@ -297,6 +297,38 @@ The publisher exports OpenTelemetry metrics (under the `publisher` meter) so the
 
 A package can ship a `public/` directory of web files (an `index.html` plus CSS, JS, and images) next to its `.malloy` files. Publisher serves only that directory at `/environments/<env>/packages/<pkg>/<file>`, so models, data, and the `publisher.json` manifest stay private and are reachable only through the query API. It lists the pages at `GET .../packages/<pkg>/pages`. Pages render inside the Publisher app by default and can also be embedded in another page as an auto-resizing iframe. A small runtime at `/sdk/publisher.js` exposes `Publisher.query(...)` and `Publisher.embed(...)` for talking to the REST API from the page, with no build step.
 
+## Controlling the discovery surface
+
+A package's `publisher.json` manifest can scope which models and sources appear in listings (the surface that drives discovery and chat), at two granularities:
+
+- **File level — `explores`.** An optional `string[]` of `.malloy` file paths (relative to the package root) that form the package's public surface. When present, only those models are returned by `listModels()`; every other `.malloy` file still compiles for import/join resolution and stays queryable, but is hidden from listings. When absent or empty, every model is listed — the default, backward-compatible behavior. Notebooks are always listed regardless of this field (they can't be imported, so they have nothing to hide behind).
+
+  ```json
+  {
+    "name": "sales",
+    "description": "Sales models",
+    "explores": ["index.malloy"]
+  }
+  ```
+
+- **Within a file — `export { … }`.** Inside a model, the discovery accessors list only the model's re-export closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` already expose. A model with no `export { … }` exports all of its locally-declared top-level sources; declaring `export { customers }` lists only `customers` and keeps imported/internal helpers out. This applies to every model, with or without `explores`.
+
+The two compose: `explores` decides which files are listed, and `export { … }` decides which sources within a listed file are shown.
+
+- **Query boundary — `queryableSources`.** Controls whether that discovery surface is *also* a query boundary. `"declared"` (the default) makes **queryable == discoverable**: when `explores` is declared, only `explores` files — and within them only the `export {}` closure — are valid top-level query targets; every other source still compiles, imports, joins, and extends, but a direct query against it is denied with a `404` (indistinguishable from a non-existent target). `"all"` decouples the axes — `explores`/`export {}` gate discovery only and every compiled source stays directly queryable (the prior behavior). When `explores` is absent there is no curated surface, so both modes are equivalent (everything queryable).
+
+  ```json
+  { "name": "sales", "explores": ["index.malloy"], "queryableSources": "all" }
+  ```
+
+  Put a building block that other files import but that should not be directly queryable in its **own non-`explores` file** (an `export`ed source in an `explores` file is queryable). The boundary is the *what* axis (identity-free) and is enforced against the run target the **compiled** query actually executes (read off the prepared query — compilation itself is never altered), so multi-statement and named-query indirection can't dodge it. Ad-hoc text that *extends* a queryable source (`source: x is my_explore extend { … }` then `run: x`) is itself queryable; an exported named query stays runnable by name even when the source it reads is hidden (exporting it is the author's deliberate exposure); a run target that can't be resolved fails closed. For data that must never leak via composition, also gate the source with `#(authorize)`.
+
+> **`explores`/`export {}` are a discovery filter; `queryableSources` decides if they also gate queries; `#(authorize)` is the identity gate.** With `queryableSources: "all"`, hiding a source only removes it from listings — it stays queryable by name. To restrict *who* can query (as opposed to *what* is queryable), gate the source with `#(authorize)` (see [docs/authorize.md](docs/authorize.md)); those gates are enforced against the complete source set and are never weakened by listing or boundary curation.
+
+**Temporary rollout flag.** Because `export { … }` curation applies even without `explores`, packages that relied on imported sources being listed on the importing model (e.g. an import-only "barrel" file with no `export {}`) will see their listings change. For fleet rollouts, set `PUBLISHER_LEGACY_DISCOVERY=true` to keep the pre-curation listings **for packages that do not declare `explores`** (declaring `explores` always opts a package into the curated semantics). This flag is deliberately env-only and **will be removed** once deployments have migrated — treat it as a bridge, not a destination.
+
+Validation is asymmetric by design: **publishing** a package with an `explores` entry that doesn't resolve to a real model is rejected with a `400`, while at **startup/reload** the package still serves but hides the unresolved entry (it never falls back to listing everything) and surfaces the reason in the package's `exploresWarnings` field.
+
 For local development, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`). Publisher then mounts that environment's local-dir packages in place and watches them: editing a `.malloy` recompiles the package, editing an asset refreshes the page, and open pages live-reload over a server-sent-events stream at `GET .../packages/<pkg>/events`. See `examples/html-data-app/` for a worked example.
 
 ## Community

@@ -9,6 +9,7 @@ import { pathToFileURL } from "url";
 import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
+   BadRequestError,
    ConnectionNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
@@ -365,6 +366,14 @@ export class Environment {
          // and compilation surfaces its own error.
          const gateModel = pkg.getModel(modelName);
          if (gateModel) {
+            // Query boundary first (the *what* axis): /compile compiles ad-hoc
+            // text against a model, so gate it like an ad-hoc query — a
+            // non-`explores` model file, or text whose surface-resolved target
+            // is a non-curated model source (under queryableSources:
+            // "declared"), is rejected with a generic 404 before compilation
+            // can leak schema/SQL. Text the early gate can't pin is settled by
+            // the compiled backstop below.
+            gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
             await gateModel.assertAuthorizedForText(source, givens ?? {});
          }
 
@@ -404,6 +413,20 @@ export class Environment {
             // inherit authorize" footgun, the same as the query path.) Only run
             // when the model declares gates so ungated compiles don't pay for
             // the extra final-query compile.
+            // Boundary backstop (the *what* axis, 404) before the authorize
+            // one (the *who* axis, 403). /compile text is always ad-hoc — the
+            // early gate can only positively deny, never fully clear — so the
+            // compiled final query's run target is the authority. No-ops when
+            // the boundary is inert ("all" / no explores). Text that compiles
+            // only source definitions (no final query) has no run target and
+            // nothing to gate.
+            if (queryMaterializer && gateModel) {
+               await gateModel.assertQueryBoundaryForRunnable(
+                  queryMaterializer,
+                  source,
+               );
+            }
+
             if (queryMaterializer && gateModel?.hasAuthorize()) {
                await gateModel.assertAuthorizedForRunnable(
                   queryMaterializer,
@@ -1086,7 +1109,12 @@ export class Environment {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: { name: string; description?: string },
+      metadata: {
+         name: string;
+         description?: string;
+         explores?: string[];
+         queryableSources?: "declared" | "all";
+      },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
@@ -1101,11 +1129,20 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
-         // Update with new metadata
+         // Update with new metadata. `explores`/`queryableSources` are only
+         // overwritten when the caller explicitly provides them; otherwise the
+         // existing on-disk value is preserved via the spread (an undefined here
+         // must not erase it).
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
+            ...(metadata.explores !== undefined
+               ? { explores: metadata.explores }
+               : {}),
+            ...(metadata.queryableSources !== undefined
+               ? { queryableSources: metadata.queryableSources }
+               : {}),
          };
 
          // Write back to file
@@ -1132,16 +1169,44 @@ export class Environment {
          if (body.name) {
             _package.setName(body.name);
          }
+         // Preserve `explores` across a metadata PATCH. `setPackageMetadata`
+         // replaces the whole object, so a name/description-only update must
+         // carry the existing discovery surface through — otherwise the
+         // in-memory `explores` is wiped and `listModels()` silently starts
+         // serving every model until the next reload. When the body explicitly
+         // carries `explores`, honor the new set instead.
+         const existing = _package.getPackageMetadata();
+         const explores =
+            body.explores !== undefined ? body.explores : existing.explores;
+         const queryableSources =
+            body.queryableSources !== undefined
+               ? body.queryableSources
+               : existing.queryableSources;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
             resource: body.resource,
             location: body.location,
+            explores,
+            queryableSources,
          });
+
+         // Strict-reject, symmetric with the publish path
+         // (package.controller.addPackage): validate the resulting explores
+         // against the live model set and restore the prior metadata before
+         // rejecting, so a bad update neither persists nor mutates the served
+         // surface.
+         const invalidMsg = _package.formatInvalidExplores();
+         if (invalidMsg) {
+            _package.setPackageMetadata(existing);
+            throw new BadRequestError(invalidMsg);
+         }
 
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
+            explores: body.explores,
+            queryableSources: body.queryableSources,
          });
 
          return _package.getPackageMetadata();

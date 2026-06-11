@@ -246,6 +246,37 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
  * Step 2's byte budget is the only thing you want enforcing the
  * bound).
  */
+/**
+ * TEMPORARY rollout escape hatch — slated for removal once existing
+ * deployments have migrated their packages to `explores` / `export {}`.
+ *
+ * When `PUBLISHER_LEGACY_DISCOVERY=true`, packages that do NOT declare
+ * `explores` keep the pre-curation discovery listings: a model lists its
+ * complete extracted source set (including imported sources) instead of its
+ * `export {}` closure, and the import-only "blank model" warning is
+ * suppressed. Packages that DO declare `explores` always get the curated
+ * semantics regardless of this flag — declaring `explores` is the explicit
+ * opt-in, and the query boundary depends on curation being authoritative.
+ *
+ * Server-wide and env-only on purpose: it is an operational compat switch
+ * for fleet rollout, not package API surface, so deleting it later breaks
+ * no manifests. Warns once at first read so its presence is visible in logs.
+ */
+let warnedLegacyDiscovery = false;
+export const isLegacyDiscovery = (): boolean => {
+   const enabled = process.env.PUBLISHER_LEGACY_DISCOVERY === "true";
+   if (enabled && !warnedLegacyDiscovery) {
+      warnedLegacyDiscovery = true;
+      logger.warn(
+         "PUBLISHER_LEGACY_DISCOVERY=true: packages without `explores` use " +
+            "legacy (uncurated) discovery listings. This compat flag is " +
+            "TEMPORARY and will be removed; migrate packages to " +
+            "`explores`/`export {}` and unset it.",
+      );
+   }
+   return enabled;
+};
+
 export const getMaxQueryRows = (): number => {
    const raw = parseIntEnv("PUBLISHER_MAX_QUERY_ROWS");
    if (raw === undefined) return DEFAULT_MAX_QUERY_ROWS;

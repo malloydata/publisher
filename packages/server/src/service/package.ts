@@ -15,6 +15,7 @@ import {
 import { metrics } from "@opentelemetry/api";
 import recursive from "recursive-readdir";
 import { components } from "../api";
+import { isLegacyDiscovery } from "../config";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
    API_PREFIX,
@@ -83,6 +84,56 @@ export class Package {
       this.databases = databases;
       this.models = models;
       this.malloyConfig = malloyConfig;
+      this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
+   }
+
+   /**
+    * Push the discovery-curation policy down onto each Model. Curation is on
+    * by default; it is disabled only under the TEMPORARY
+    * `PUBLISHER_LEGACY_DISCOVERY` compat flag AND only for packages that do
+    * not declare `explores` — declaring `explores` is the explicit opt-in to
+    * the curated semantics, so adopters are never served legacy listings.
+    * (The query boundary below is unaffected: it is inert without `explores`,
+    * and with `explores` curation is always on, so the boundary never reads
+    * legacy listings.) Re-derived on reload and metadata PATCH.
+    */
+   private applyDiscoveryPolicyToModels(): void {
+      const explores = this.packageMetadata.explores;
+      const exploresDeclared = !!(explores && explores.length > 0);
+      const curationEnabled = exploresDeclared || !isLegacyDiscovery();
+      for (const model of this.models.values()) {
+         model.setDiscoveryCuration(curationEnabled);
+      }
+   }
+
+   /**
+    * Push the package-level query-boundary policy down onto each Model so the
+    * single query chokepoint (`Model.getQueryResults`, shared by the HTTP query
+    * route and the MCP tool) can enforce it without a back-reference to the
+    * Package. Derived once here (and on reload) rather than per query: the
+    * policy only changes when the manifest is (re)read.
+    *
+    * Policy: queryable == discoverable. The boundary is inert unless `explores`
+    * is declared (no curated surface ⇒ nothing to restrict) AND
+    * `queryableSources` is "declared" (the default; "all" decouples the axes).
+    * When active, a model file is a query entry point only if it is listed in
+    * `explores`; within-file curation (`export {}`) is read off each Model.
+    */
+   private applyQueryBoundaryToModels(): void {
+      const explores = this.packageMetadata.explores;
+      const exploresDeclared = !!(explores && explores.length > 0);
+      const exploreSet = exploresDeclared ? new Set(explores) : null;
+      // Anything other than an explicit "all" is the fail-safe "declared".
+      const mode =
+         this.packageMetadata.queryableSources === "all" ? "all" : "declared";
+      for (const [modelPath, model] of this.models) {
+         model.setQueryBoundary({
+            mode,
+            exploresDeclared,
+            isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
+         });
+      }
    }
 
    static async create(
@@ -251,6 +302,8 @@ export class Package {
          name: outcome.packageMetadata.name,
          description: outcome.packageMetadata.description,
          resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
+         explores: outcome.packageMetadata.explores,
+         queryableSources: outcome.packageMetadata.queryableSources,
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -289,7 +342,7 @@ export class Package {
          duration: formatDuration(executionTime),
       });
 
-      return new Package(
+      const pkg = new Package(
          environmentName,
          packageName,
          packagePath,
@@ -298,6 +351,21 @@ export class Package {
          models,
          malloyConfig,
       );
+
+      // Fail-safe at load: a bad explores entry doesn't fail the package
+      // (its models still load and listModels hides the unmatched entry — it
+      // never falls back to listing everything). Warn so the misconfig is
+      // visible; the publish path rejects it outright (see package.controller).
+      const invalidMsg = pkg.formatInvalidExplores();
+      if (invalidMsg) {
+         logger.warn(`Package ${packageName} has invalid explores`, {
+            packageName,
+            detail: invalidMsg,
+         });
+      }
+      pkg.logEmptyDiscoveryWarnings();
+
+      return pkg;
    }
 
    public getPackageName(): string {
@@ -305,7 +373,109 @@ export class Package {
    }
 
    public getPackageMetadata(): ApiPackage {
-      return this.packageMetadata;
+      // Surface explores misconfig so consumers/UI can show it (loading is
+      // fail-safe — the package still serves with the bad entry hidden — so this
+      // is the only non-log signal that it's broken). Computed fresh against the
+      // current models; absent when everything resolves. Returns a copy in that
+      // case so the added field never mutates the stored metadata.
+      const warnings = this.exploreWarnings();
+      if (warnings.length === 0) return this.packageMetadata;
+      return { ...this.packageMetadata, exploresWarnings: warnings };
+   }
+
+   /**
+    * Declared `explores` (publisher.json) that don't resolve to a real
+    * `.malloy` model in this package, each with an actionable reason. Empty
+    * when explores is absent/empty or every entry resolves.
+    *
+    * The listing already fails safe — a non-resolving entry matches no model in
+    * `listModels`, so it hides rather than exposes. This surfaces *why*, so the
+    * load path can warn and the publish path can reject (see package.controller).
+    */
+   public getInvalidExplores(): { entry: string; reason: string }[] {
+      const declared = this.packageMetadata.explores;
+      if (!declared || declared.length === 0) return [];
+      const malloyModels = new Set(
+         Array.from(this.models.keys()).filter((p) =>
+            p.endsWith(MODEL_FILE_SUFFIX),
+         ),
+      );
+      const problems: { entry: string; reason: string }[] = [];
+      for (const entry of declared) {
+         if (entry.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            problems.push({
+               entry,
+               reason:
+                  `notebooks are always public and cannot be explores. ` +
+                  `Fix: remove it, and list a ${MODEL_FILE_SUFFIX} model file instead.`,
+            });
+         } else if (!malloyModels.has(entry)) {
+            problems.push({
+               entry,
+               reason:
+                  `file not found in the package. Fix: list a ${MODEL_FILE_SUFFIX} ` +
+                  `file relative to the package root (e.g. "index.malloy").`,
+            });
+         }
+      }
+      return problems;
+   }
+
+   /** One actionable message per invalid entry (empty when all resolve). */
+   public exploreWarnings(): string[] {
+      return this.getInvalidExplores().map(
+         (p) =>
+            `Invalid explores entry '${p.entry}' in ${PACKAGE_MANIFEST_NAME}: ${p.reason}`,
+      );
+   }
+
+   /**
+    * The {@link exploreWarnings} joined into one string, or "" if none.
+    * Newline-separated so multiple invalid entries stay one-per-line in the
+    * 400 message rather than running together.
+    */
+   public formatInvalidExplores(): string {
+      return this.exploreWarnings().join("\n");
+   }
+
+   /**
+    * One message per LISTED model whose discovery surface is empty because it
+    * is import-only (imports other files, declares/re-exports nothing). Such a
+    * model renders a blank page, which reads as broken; the fix is an explicit
+    * re-export. Log-only (see loadViaWorker/reloadAllModels) — deliberately
+    * NOT part of exploreWarnings, which is strict-at-publish: import-only
+    * files are a legitimate pattern and must not block a publish. Hidden
+    * (non-listed) models are skipped — nobody browses them, so an empty
+    * surface there is just normal plumbing.
+    */
+   public emptyDiscoveryWarnings(): string[] {
+      const explores = this.packageMetadata.explores;
+      const exploreSet =
+         explores && explores.length > 0 ? new Set(explores) : null;
+      const warnings: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         if (exploreSet && !exploreSet.has(modelPath)) continue;
+         if (model.hasEmptyDiscoverySurface()) {
+            warnings.push(
+               `Model "${modelPath}" is listed but exposes nothing: it only ` +
+                  `imports other files and re-exports none of their sources. ` +
+                  `Add e.g. 'export { source_name }' to surface sources on ` +
+                  `this model.`,
+            );
+         }
+      }
+      return warnings;
+   }
+
+   /** Log {@link emptyDiscoveryWarnings}; shared by load and reload. */
+   private logEmptyDiscoveryWarnings(): void {
+      for (const warning of this.emptyDiscoveryWarnings()) {
+         logger.warn(`Package ${this.packageName} has a blank-looking model`, {
+            packageName: this.packageName,
+            detail: warning,
+         });
+      }
    }
 
    public listDatabases(): ApiDatabase[] {
@@ -416,6 +586,29 @@ export class Package {
          }
       }
       this.models = nextModels;
+      // A reload re-reads publisher.json in the worker; pick up any change to
+      // the explore set and query-boundary mode so listModels()/the gate
+      // reflect edited explores without a full Package.create. (name/description
+      // are owned by the metadata-PATCH path, so only these are refreshed here.)
+      this.packageMetadata.explores = outcome.packageMetadata.explores;
+      this.packageMetadata.queryableSources =
+         outcome.packageMetadata.queryableSources;
+      // The fresh Model instances default to curated; re-derive both policies
+      // (legacy-flag deployments keep legacy listings across reloads, and the
+      // boundary picks up edited explores/queryableSources).
+      this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
+      // Re-run the fail-safe warning against the refreshed model set: an edit
+      // to publisher.json that introduces a bad entry should surface in the
+      // logs on reload too, not only at initial load (loadViaWorker).
+      const invalidMsg = this.formatInvalidExplores();
+      if (invalidMsg) {
+         logger.warn(`Package ${this.packageName} has invalid explores`, {
+            packageName: this.packageName,
+            detail: invalidMsg,
+         });
+      }
+      this.logEmptyDiscoveryWarnings();
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
@@ -427,10 +620,19 @@ export class Package {
    }
 
    public async listModels(): Promise<ApiModel[]> {
+      // When `explores` is declared in publisher.json, only those models
+      // form the public surface; every other .malloy file still compiles for
+      // import/join resolution but is hidden from the listing. Absent/empty →
+      // every model is listed (backward-compatible default). Notebooks are
+      // unaffected (see listNotebooks) — they are always public.
+      const explores = this.packageMetadata.explores;
+      const exploreSet =
+         explores && explores.length > 0 ? new Set(explores) : null;
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
-               return modelPath.endsWith(MODEL_FILE_SUFFIX);
+               if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+               return exploreSet ? exploreSet.has(modelPath) : true;
             })
             .map(async (modelPath) => {
                let error: string | undefined;
@@ -632,5 +834,10 @@ export class Package {
 
    public setPackageMetadata(packageMetadata: ApiPackage) {
       this.packageMetadata = packageMetadata;
+      // A PATCH can add/remove `explores`/`queryableSources`, which feed both
+      // the curation policy and the query boundary (mirrors how listModels()
+      // reads the live metadata).
+      this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
    }
 }

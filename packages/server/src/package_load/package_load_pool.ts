@@ -228,7 +228,12 @@ export interface LoadPackageJob {
  * don't allocate a Map for models the caller never looks at.
  */
 export interface LoadPackageOutcome {
-   packageMetadata: { name?: string; description?: string };
+   packageMetadata: {
+      name?: string;
+      description?: string;
+      explores?: string[];
+      queryableSources?: "declared" | "all";
+   };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {
          modelDef?: ModelDef;
@@ -243,7 +248,7 @@ export interface LoadPackageOutcome {
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Locate the worker entrypoint. In production builds it's bundled to
+ * Locate the worker explore. In production builds it's bundled to
  * `dist/package_load_worker.mjs` next to `server.mjs`. In dev
  * (bun --watch) the source `.ts` next to this file loads directly —
  * Bun supports `new Worker(<ts-url>)`. The .ts fallback also keeps
