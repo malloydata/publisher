@@ -41,7 +41,6 @@ import { queryConcurrency } from "./query_concurrency";
 import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
-import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
@@ -1145,8 +1144,6 @@ app.post(
 // must now use the POST `…/sqlQuery` endpoints below, which take the
 // SQL in the request body so the row/byte caps and query-timeout
 // signals introduced in the OOM-mitigation work apply uniformly.
-// The legacy `GET /projects/…/queryData` twins under `server-old.ts`
-// remain in place for now.
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlQuery`,
    queryConcurrency(),
@@ -1812,21 +1809,6 @@ app.post(
       }
    },
 );
-
-// Register legacy `/projects/...` routes for backwards compatibility with
-// clients that haven't migrated to `/environments/...` yet. Must be added
-// before the SPA catch-all below.
-registerLegacyRoutes(app, {
-   environmentStore,
-   connectionController,
-   modelController,
-   packageController,
-   databaseController,
-   queryController,
-   compileController,
-   materializationController,
-   manifestController,
-});
 
 // Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
