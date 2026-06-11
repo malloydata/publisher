@@ -700,6 +700,83 @@ export class Model {
       return this.queries;
    }
 
+   /**
+    * Compile-time renderer-tag validation, run on the main thread.
+    *
+    * The renderer (`@malloydata/render`) is a large solid-js bundle that mutates
+    * DOM globals at import; loading it inside the package-load worker isolate
+    * destabilizes that thread (it is deliberately kept pure-CPU). So validation
+    * runs here, after the worker has hydrated this Model, where the renderer is
+    * already used at query time (see query.controller.ts / execute_query_tool.ts).
+    *
+    * Prepares each top-level named query (`run: <name>`) and each source view
+    * (`run: <source> -> <view>`) compile-only -- no execution -- to get a stable
+    * result schema, then runs the renderer's headless `validateRenderTags`. Any
+    * error-severity finding throws a `ModelCompilationError` (HTTP 424) so a
+    * misconfigured tag (e.g. a child-only `# big_value { sparkline=... }` placed
+    * on a view with no activating big_value) fails the package load with a clear
+    * message instead of rendering as "[object Object]" at query time. Warnings
+    * (e.g. unread tags) are left for the query-time `renderLogs` surface so a
+    * benign render lint never blocks a load.
+    */
+   public async validateRenderTags(): Promise<void> {
+      const mm = this.modelMaterializer;
+      if (!mm) {
+         return;
+      }
+      // Dynamic import (like execute_query_tool.ts): the renderer is heavy and
+      // mutates DOM globals on load, so only pull it in when there's a model to
+      // validate.
+      const { validateRenderTags } = await import(
+         "@malloydata/render-validator"
+      );
+
+      // Renderable targets: top-level named queries and every view declared on a
+      // source. Source views are where render tags like `# big_value` usually
+      // live, and they are NOT in `this.queries`.
+      const targets: { label: string; queryString: string }[] = [];
+      for (const query of this.queries ?? []) {
+         if (query.name) {
+            targets.push({
+               label: query.name,
+               queryString: `run: ${query.name}`,
+            });
+         }
+      }
+      for (const source of this.sources ?? []) {
+         for (const view of source.views ?? []) {
+            targets.push({
+               label: `${source.name} -> ${view.name}`,
+               queryString: `run: ${source.name} -> ${view.name}`,
+            });
+         }
+      }
+
+      for (const target of targets) {
+         let result: Malloy.Result;
+         try {
+            const prepared = await mm
+               .loadQuery(target.queryString)
+               .getPreparedResult();
+            result = prepared.toStableResult();
+         } catch {
+            // A view/query that fails to prepare is reported by the normal
+            // compile path; don't mask that with a render-tag error.
+            continue;
+         }
+         const errors = validateRenderTags(result).filter(
+            (log) => log.severity === "error",
+         );
+         if (errors.length > 0) {
+            throw new ModelCompilationError({
+               message: `Invalid renderer configuration on '${target.label}': ${errors
+                  .map((e) => e.message)
+                  .join("; ")}`,
+            });
+         }
+      }
+   }
+
    public async getModel(): Promise<ApiCompiledModel> {
       if (this.compilationError) {
          throw this.compilationError;
