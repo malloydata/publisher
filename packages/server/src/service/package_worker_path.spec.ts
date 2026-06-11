@@ -280,6 +280,140 @@ source: gated is duckdb.sql("select 1 as id")`,
       }
    });
 
+   it("rejects a package whose view carries an invalid renderer tag", async () => {
+      writeManifest();
+      // `# big_value { sparkline=... }` is a child-only renderer config placed on
+      // the view itself, with no activating big_value. The renderer declines to
+      // match it; without compile-time validation it renders as "[object Object]"
+      // at query time. Render-tag validation runs on the main thread after the
+      // worker hydrates the model, so the load must reject with a 424
+      // ModelCompilationError naming the offending view.
+      fs.writeFileSync(
+         path.join(tempDir, "bad_render.malloy"),
+         `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+      );
+
+      const { ModelCompilationError } = await import("../errors");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         let caught: unknown;
+         try {
+            await Package.create("env", "pkg", tempDir, malloyConfig);
+         } catch (err) {
+            caught = err;
+         }
+         expect(caught).toBeInstanceOf(ModelCompilationError);
+         expect((caught as Error).message).toContain(
+            "Invalid renderer configuration",
+         );
+         expect((caught as Error).message).toContain("nums -> card");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("loads a package whose view renderer tags are valid", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "good_render.malloy"),
+         `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # bar_chart
+  view: chart is { group_by: a; aggregate: total }
+}`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getModelPaths()).toEqual(["good_render.malloy"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("rejects a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "bad_render.malloynb"),
+         `>>>malloy
+source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+      );
+
+      const { ModelCompilationError } = await import("../errors");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         await expect(
+            Package.create("env", "pkg", tempDir, malloyConfig),
+         ).rejects.toBeInstanceOf(ModelCompilationError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("re-validates renderer tags on reload, recording a model that develops a bad tag as a per-model error", async () => {
+      writeManifest();
+      // Start valid so Package.create succeeds.
+      fs.writeFileSync(
+         path.join(tempDir, "m.malloy"),
+         `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # bar_chart
+  view: chart is { group_by: a; aggregate: total }
+}`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getModel("m.malloy")).toBeDefined();
+
+         // The model now develops a misconfigured render tag. Reload must catch
+         // it (not just Package.create) and surface it as the model's error,
+         // without aborting the whole reload.
+         fs.writeFileSync(
+            path.join(tempDir, "m.malloy"),
+            `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+         );
+         await pkg.reloadAllModels({});
+
+         const reloaded = pkg.getModel("m.malloy");
+         expect(reloaded).toBeDefined();
+         await expect(reloaded!.getModel()).rejects.toThrow(
+            "Invalid renderer configuration",
+         );
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    // NB: kept last in this describe — swapping the singleton for a
    // pre-shutdown pool also tears down the shared `pool` (the swap
    // implementation shuts down the outgoing singleton). Subsequent
@@ -304,6 +438,14 @@ source: gated is duckdb.sql("select 1 as id")`,
          ).rejects.toBeInstanceOf(ServiceUnavailableError);
       } finally {
          await duckdb.close();
+         // Replace the singleton with a fresh, live pool immediately. The
+         // outer afterAll also resets to null, but restoring here ensures the
+         // shut-down pool never outlives this test -- otherwise, under serial
+         // execution, a later spec file that lazily reuses the singleton via
+         // getPackageLoadPool() could observe the dead pool before afterAll
+         // runs and fail with "PackageLoadPool is shutting down".
+         pool = new PackageLoadPool(1);
+         await __setPackageLoadPoolForTests(pool);
       }
    });
 });
