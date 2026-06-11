@@ -1429,6 +1429,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1526,6 +1528,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2661,6 +2665,32 @@ components:
           type: string
           description: Package location, can be an absolute path or URI (e.g. github, s3,
             gcs, etc.)
+        explores:
+          type: array
+          items:
+            type: string
+          description: >-
+            Optional list of model file paths (relative to the package root)
+            that form the package's public, discoverable surface. When present,
+            only these models — and the sources they export — are listed; every
+            other .malloy file still compiles for import/join resolution but is
+            hidden from listings. When absent or empty, every model is listed
+            (the default, backward-compatible behavior). Notebooks are always
+            listed regardless of this field.
+        exploresWarnings:
+          type: array
+          readOnly: true
+          items:
+            type: string
+          description: >-
+            Actionable messages for declared explores that do not resolve to
+            a real model in this package (e.g. a misspelled path, or a notebook
+            listed as an explore). Server-computed and read-only: it is
+            ignored on create/update requests and only ever returned in
+            responses. Present only when there are such problems. Loading is
+            fail-safe — the unresolved entry simply lists nothing rather than
+            exposing everything — so this is the signal that a package is
+            misconfigured; publishing such a package is rejected.
 
     Model:
       type: object

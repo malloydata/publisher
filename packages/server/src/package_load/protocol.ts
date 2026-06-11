@@ -173,7 +173,11 @@ export interface SerializedNotebookCell {
 export interface LoadPackageResult {
    type: "load-package-result";
    requestId: string;
-   packageMetadata: { name?: string; description?: string };
+   packageMetadata: {
+      name?: string;
+      description?: string;
+      explores?: string[];
+   };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;

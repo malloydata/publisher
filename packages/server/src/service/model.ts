@@ -123,6 +123,12 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
+   /** Whether discovery accessors curate to the `export {}` closure. Pushed
+    *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
+    *  false only under the TEMPORARY `PUBLISHER_LEGACY_DISCOVERY` compat flag
+    *  for packages with no `explores` declared. Defaults to true (curated) so
+    *  a Model created outside a Package behaves like the modern default. */
+   private discoveryCurationEnabled = true;
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -688,16 +694,66 @@ export class Model {
       return this.modelType;
    }
 
+   /**
+    * Restrict a list of named objects to the model's re-export closure
+    * (`modelDef.exports`) for discovery. This mirrors what Malloy's stable
+    * `modelDefToModelInfo` already does for `modelInfo`/`sourceInfos` (and what
+    * the app renders), so the publisher-extracted `sources`/`queries` stay
+    * consistent with `modelInfo` within a single response. A model with no
+    * `export { … }` has `exports` = all top-level names, so this is a no-op
+    * there. Discovery-only: `this.sources`/`this.queries` stay complete so
+    * #(authorize)/filter enforcement and join/extend resolution are unaffected;
+    * non-exported sources remain fully queryable, just unlisted.
+    */
+   private curateForDiscovery<T extends { name?: string }>(
+      items: T[] | undefined,
+   ): T[] | undefined {
+      if (!items) return items;
+      // TEMPORARY compat: under PUBLISHER_LEGACY_DISCOVERY (and only for
+      // packages with no `explores` — the Package pushes this down), serve
+      // the complete pre-curation listings while fleets migrate.
+      if (!this.discoveryCurationEnabled) return items;
+      const exports = this.modelDef?.exports;
+      if (!Array.isArray(exports)) return items;
+      const exported = new Set(exports);
+      return items.filter(
+         (item) => item.name !== undefined && exported.has(item.name),
+      );
+   }
+
+   /** Set by the owning Package; see {@link curateForDiscovery}. */
+   public setDiscoveryCuration(enabled: boolean): void {
+      this.discoveryCurationEnabled = enabled;
+   }
+
    public getSources(): ApiSource[] | undefined {
-      return this.sources;
+      return this.curateForDiscovery(this.sources);
    }
 
    public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.sourceInfos;
+      return this.curateForDiscovery(this.sourceInfos);
    }
 
    public getQueries(): ApiQuery[] | undefined {
-      return this.queries;
+      return this.curateForDiscovery(this.queries);
+   }
+
+   /**
+    * True when this is an import-only model: it imports other files but
+    * declares and re-exports nothing of its own, so `modelDef.exports` is
+    * empty and its discovery surface lists no sources or queries. Legitimate
+    * as plumbing, but confusing when the model is *listed* — the page renders
+    * blank. Used by the load-time warning (Package.emptyDiscoveryWarnings);
+    * the fix is to re-export what should be visible (`export { name }`).
+    */
+   public hasEmptyDiscoverySurface(): boolean {
+      // No curation ⇒ the legacy listings include imported sources, so an
+      // import-only model isn't blank and the warning would be wrong.
+      if (!this.discoveryCurationEnabled) return false;
+      if (this.modelType !== "model" || !this.modelDef) return false;
+      const exports = this.modelDef.exports;
+      if (!Array.isArray(exports) || exports.length > 0) return false;
+      return (this.modelDef.imports?.length ?? 0) > 0;
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
@@ -994,8 +1050,11 @@ export class Model {
          sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
-         sources: this.sources,
-         queries: this.queries,
+         // Discovery surface: an explore lists only its export closure
+         // (getSources/getQueries curate); `this.sources` stays complete for
+         // enforcement and resolution.
+         sources: this.getSources(),
+         queries: this.getQueries(),
          givens: this.givens,
       } as ApiCompiledModel;
    }
@@ -1051,6 +1110,10 @@ export class Model {
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
          modelInfo: JSON.stringify(this.modelInfo ?? {}),
+         // Raw-notebook view is uncurated (complete `this.sources`/`this.queries`,
+         // not the export-filtered `getSources`/`getQueries`): notebooks can't be
+         // imported, so their in-file sources have no internal/import-only role to
+         // hide — they're always public. Model files curate; notebooks don't.
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,

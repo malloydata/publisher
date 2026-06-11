@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty } from "class-validator";
+import { IsString, IsNotEmpty, IsOptional, IsArray } from "class-validator";
 import { ApiPackage } from "../service/package";
 
 export class PackageDto implements ApiPackage {
@@ -9,4 +9,9 @@ export class PackageDto implements ApiPackage {
    @IsString()
    @IsNotEmpty()
    description: string;
+
+   @IsOptional()
+   @IsArray()
+   @IsString({ each: true })
+   explores?: string[];
 }

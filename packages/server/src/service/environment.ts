@@ -9,6 +9,7 @@ import { pathToFileURL } from "url";
 import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
+   BadRequestError,
    ConnectionNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
@@ -1086,7 +1087,7 @@ export class Environment {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: { name: string; description?: string },
+      metadata: { name: string; description?: string; explores?: string[] },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
@@ -1101,11 +1102,16 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
-         // Update with new metadata
+         // Update with new metadata. `explores` is only overwritten when the
+         // caller explicitly provides it; otherwise the existing on-disk value
+         // is preserved via the spread (an undefined here must not erase it).
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
+            ...(metadata.explores !== undefined
+               ? { explores: metadata.explores }
+               : {}),
          };
 
          // Write back to file
@@ -1132,16 +1138,38 @@ export class Environment {
          if (body.name) {
             _package.setName(body.name);
          }
+         // Preserve `explores` across a metadata PATCH. `setPackageMetadata`
+         // replaces the whole object, so a name/description-only update must
+         // carry the existing discovery surface through — otherwise the
+         // in-memory `explores` is wiped and `listModels()` silently starts
+         // serving every model until the next reload. When the body explicitly
+         // carries `explores`, honor the new set instead.
+         const existing = _package.getPackageMetadata();
+         const explores =
+            body.explores !== undefined ? body.explores : existing.explores;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
             resource: body.resource,
             location: body.location,
+            explores,
          });
+
+         // Strict-reject, symmetric with the publish path
+         // (package.controller.addPackage): validate the resulting explores
+         // against the live model set and restore the prior metadata before
+         // rejecting, so a bad update neither persists nor mutates the served
+         // surface.
+         const invalidMsg = _package.formatInvalidExplores();
+         if (invalidMsg) {
+            _package.setPackageMetadata(existing);
+            throw new BadRequestError(invalidMsg);
+         }
 
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
+            explores: body.explores,
          });
 
          return _package.getPackageMetadata();
