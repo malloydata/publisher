@@ -79,6 +79,7 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
+import { validateRenderTags } from "@malloydata/render-validator";
 import { ModelCompilationError } from "../errors";
 import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
@@ -511,6 +512,67 @@ function buildRuntimeForModel(
    return { runtime, urlReader };
 }
 
+/**
+ * Validate renderer tags (e.g. `# big_value`, `# line_chart`) on every named
+ * query/view in a model at compile time, so a misconfigured tag fails the
+ * package load with a `ModelCompilationError` (424) instead of rendering as
+ * "[object Object]" or an inline error only when the view is queried.
+ *
+ * Each view is prepared (compiled, NOT executed) to obtain its stable result
+ * schema; `validateRenderTags` then runs the renderer's tag validation against
+ * that schema headlessly. Only error-severity findings are fatal -- warnings
+ * (e.g. unread tags) are left for the query-time `renderLogs` surface so a
+ * benign lint never blocks a package load.
+ */
+async function validateModelRenderTags(
+   mm: ModelMaterializer,
+   sources: ApiSourceWire[],
+   queries: ApiQueryWire[],
+): Promise<void> {
+   // Build the runnable query string for each renderable target: top-level
+   // named queries (`run: <name>`) and every view declared on a source
+   // (`run: <source> -> <view>`). Source views are where render tags like
+   // `# big_value` usually live, and they are NOT in `queries`.
+   const targets: { label: string; queryString: string }[] = [];
+   for (const query of queries) {
+      if (query.name) {
+         targets.push({ label: query.name, queryString: `run: ${query.name}` });
+      }
+   }
+   for (const source of sources) {
+      for (const view of source.views ?? []) {
+         targets.push({
+            label: `${source.name} -> ${view.name}`,
+            queryString: `run: ${source.name} -> ${view.name}`,
+         });
+      }
+   }
+
+   for (const target of targets) {
+      let result: Malloy.Result;
+      try {
+         const prepared = await mm
+            .loadQuery(target.queryString)
+            .getPreparedResult();
+         result = prepared.toStableResult();
+      } catch {
+         // A view/query that fails to prepare is reported by the normal compile
+         // path; don't mask that with a render-tag error.
+         continue;
+      }
+      const errors = validateRenderTags(result).filter(
+         (log) => log.severity === "error",
+      );
+      if (errors.length > 0) {
+         throw new ModelCompilationError({
+            message: `Invalid renderer configuration on '${target.label}': ${errors
+               .map((e) => e.message)
+               .join("; ")}`,
+         });
+      }
+   }
+}
+
 async function compileMalloyModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
@@ -551,6 +613,9 @@ async function compileMalloyModel(
    // on an unknown given / source-field reference; compileOneModel's catch
    // turns it into this model's compilationError.
    await validateAuthorizeProbes(mm, sources);
+   // Validate renderer tags at compile time so a misconfigured render tag fails
+   // the load instead of producing garbage at render time.
+   await validateModelRenderTags(mm, sources, queries);
 
    return {
       modelPath,
@@ -732,6 +797,9 @@ async function compileNotebookModel(
       finalQueries = extractQueries(finalModelDef);
       // Validate #(authorize) at compile time (shared with Model.create).
       await validateAuthorizeProbes(mm, finalSources);
+      // Validate renderer tags at compile time so a misconfigured render tag
+      // fails the load instead of producing garbage at render time.
+      await validateModelRenderTags(mm, finalSources, finalQueries);
    }
 
    return {

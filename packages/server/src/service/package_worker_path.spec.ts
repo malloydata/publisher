@@ -304,6 +304,14 @@ source: gated is duckdb.sql("select 1 as id")`,
          ).rejects.toBeInstanceOf(ServiceUnavailableError);
       } finally {
          await duckdb.close();
+         // Replace the singleton with a fresh, live pool immediately. The
+         // outer afterAll also resets to null, but restoring here ensures the
+         // shut-down pool never outlives this test -- otherwise, under serial
+         // execution, a later spec file that lazily reuses the singleton via
+         // getPackageLoadPool() could observe the dead pool before afterAll
+         // runs and fail with "PackageLoadPool is shutting down".
+         pool = new PackageLoadPool(1);
+         await __setPackageLoadPoolForTests(pool);
       }
    });
 });
