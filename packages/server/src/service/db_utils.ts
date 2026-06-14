@@ -594,18 +594,52 @@ async function getSchemasForDuckLake(
    }
 }
 
+/** Abort introspection requests that hang instead of holding the slot open. */
+const PUBLISHER_INTROSPECTION_TIMEOUT_MS = 60_000;
+
+/**
+ * Strip any userinfo (`user:pass@`) from a URL before it reaches a log or error
+ * message. `connectionUri` comes from a config file and may legitimately carry
+ * embedded credentials; the bearer token always travels in the header, never
+ * the URL, but this keeps any URL-embedded secret out of thrown messages too.
+ */
+function redactUrlCredentials(url: string): string {
+   try {
+      const parsed = new URL(url);
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString();
+   } catch {
+      // Non-absolute / unparseable: nothing to redact, return as-is.
+      return url;
+   }
+}
+
 /**
  * Publisher proxy connections introspect against the remote dataplane, which
  * exposes the same connection API as this server. Schema/table discovery is a
  * GET passthrough — the remote owns the dialect-specific introspection and
  * returns the same Schema/Table shapes, so we forward the response verbatim
  * (no Malloy connection involved).
+ *
+ * URL contract: the request is the configured `connectionUri` with the
+ * introspection `pathSuffix` appended verbatim. `connectionUri` must point at
+ * the connection resource itself (`.../connections/<name>`), so this path and
+ * the data path (db-publisher's `PublisherConnection`) resolve against the same
+ * remote connection. Note the two halves derive their URL differently: the
+ * db-publisher client re-parses `connectionUri` and rebuilds it through its
+ * generated client, while this introspection path appends to it verbatim — the
+ * remote must serve both forms for a given `connectionUri`. Keep them pointed at
+ * the same connection resource so they stay in agreement.
  */
 async function fetchFromPublisherDataplane<T>(
    connection: ApiConnection,
    pathSuffix: string,
 ): Promise<T> {
    const publisher = connection.publisherConnection;
+   // Type-narrowing guard only — the user-facing validation (with the
+   // actionable `Fix:` message) lives in validateConnectionShape, which every
+   // connection passes before it can be assembled and introspected here.
    if (!publisher?.connectionUri) {
       throw new Error(
          `Publisher connection "${connection.name}" is missing connectionUri`,
@@ -616,11 +650,32 @@ async function fetchFromPublisherDataplane<T>(
    if (publisher.accessToken) {
       headers["Authorization"] = `Bearer ${publisher.accessToken}`;
    }
-   const response = await fetch(url, { headers });
+
+   let response: Response;
+   try {
+      response = await fetch(url, {
+         headers,
+         signal: AbortSignal.timeout(PUBLISHER_INTROSPECTION_TIMEOUT_MS),
+      });
+   } catch (error) {
+      // Network-level failure (DNS, connection refused, timeout) — no HTTP
+      // status. Surface it with the connection name, like the other
+      // introspectors, and never echo the token-bearing header.
+      const reason =
+         (error as Error)?.name === "TimeoutError"
+            ? `timed out after ${PUBLISHER_INTROSPECTION_TIMEOUT_MS}ms`
+            : (error as Error).message;
+      throw new Error(
+         `Publisher dataplane request to ${redactUrlCredentials(url)} failed ` +
+            `for connection "${connection.name}": ${reason}`,
+      );
+   }
+
    if (!response.ok) {
       const body = await response.text().catch(() => "");
       throw new Error(
-         `Publisher dataplane request to ${url} failed (${response.status}): ${body.slice(0, 200)}`,
+         `Publisher dataplane request to ${redactUrlCredentials(url)} failed ` +
+            `(${response.status}): ${body.slice(0, 200)}`,
       );
    }
    return (await response.json()) as T;
@@ -644,16 +699,25 @@ async function listTablesForPublisher(
    if (!tableNames) {
       return tables;
    }
-   // tableNames is a bare-table-name filter (see listTablesForBigQuery); the
-   // remote returns `resource` as "<schema>.<table>", so strip the prefix.
+   // `tableNames` is a bare-table-name filter (see listTablesForBigQuery). The
+   // remote's `resource` is dotted and its qualification depends on the remote
+   // dialect ("<schema>.<table>" or "<catalog>.<schema>.<table>"), so match the
+   // bare name (last segment) as well as the schema-stripped and full forms. An
+   // unrecognized shape still matches on the full resource rather than being
+   // silently dropped.
    const allowed = new Set(tableNames);
    const prefix = `${schemaName}.`;
    return tables.filter((table) => {
       const resource = table.resource ?? "";
-      const tableName = resource.startsWith(prefix)
+      const schemaStripped = resource.startsWith(prefix)
          ? resource.slice(prefix.length)
          : resource;
-      return allowed.has(tableName) || allowed.has(resource);
+      const bareName = resource.slice(resource.lastIndexOf(".") + 1);
+      return (
+         allowed.has(bareName) ||
+         allowed.has(schemaStripped) ||
+         allowed.has(resource)
+      );
    });
 }
 
