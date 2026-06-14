@@ -30,6 +30,7 @@ import {
    gcsAttachedDatabaseFields,
    getAttachedDatabaseFields,
    s3AttachedDatabaseFields,
+   uiCreatableConnectionTypes,
 } from "./common";
 
 type EditConnectionDialogProps = {
@@ -506,7 +507,7 @@ export default function EditConnectionDialog({
                         setType(event.target.value as ConnectionTypeEnum)
                      }
                   >
-                     {Object.values(ConnectionTypeEnum).map((type) => (
+                     {uiCreatableConnectionTypes.map((type) => (
                         <MenuItem key={type} value={type}>
                            {type}
                         </MenuItem>

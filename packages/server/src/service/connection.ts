@@ -7,6 +7,10 @@ import "@malloydata/db-mysql";
 import type { MySQLConnection } from "@malloydata/db-mysql";
 import "@malloydata/db-postgres";
 import type { PostgresConnection } from "@malloydata/db-postgres";
+// Registers the "publisher" connection type (proxies SQL to a remote Publisher
+// dataplane). No live-class branch is needed in lookupConnection — the default
+// path resolves it through the registry like any other registered type.
+import "@malloydata/db-publisher";
 import {
    buildPoolOptions,
    SnowflakeConnection,

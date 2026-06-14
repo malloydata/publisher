@@ -35,6 +35,45 @@ Use any other name for an environment-level DuckDB connection.
 
 Connection names must be unique within a single environment. Duplicate names after the first are silently ignored (later definitions don't override earlier ones), so prefer distinct, descriptive names.
 
+## Publisher proxy connections (`type: "publisher"`)
+
+A `publisher` connection does not talk to a warehouse directly. Instead it
+**proxies SQL to a remote Publisher dataplane** (e.g. a hosted Credible
+environment), which runs the query against its own connection and returns the
+rows. This is the local-dev authoring loop: run a local Publisher with
+`--watch-env` to serve a package's `public/` app with live-reload, while queries
+proxy to your real remote connection — no need to replicate warehouse
+credentials locally.
+
+It is the same connection type the Malloy CLI and the VS Code extensions use. To
+use it from the server, add a `publisher` connection block to the environment's
+`connections` in `publisher.config.json`:
+
+```json
+{
+  "name": "analytics",
+  "type": "publisher",
+  "publisherConnection": {
+    "connectionUri": "https://org.data.credibledata.com/api/v0/environments/proj/connections/analytics",
+    "accessToken": "<jwt>"
+  }
+}
+```
+
+- `connectionUri` (**required**) — the full URI of the remote connection.
+- `accessToken` (optional) — Bearer token for the remote dataplane.
+
+The remote dataplane owns authentication, access control, and read-only
+enforcement; the proxy itself does not reject writes. A missing `connectionUri`
+fails at startup with an actionable error rather than a generic
+`Unsupported connection type`.
+
+**Known limitation:** the `accessToken` is user-scoped and short-lived. The
+server uses the token as configured and does not refresh it, so a long-running
+`--watch` session can outlive the token. Token refresh/expiry is owned by the
+CLI/extension today; re-issue the token and restart if queries start failing
+auth.
+
 ## Example: mixed connections
 
 ```json

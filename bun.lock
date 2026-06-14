@@ -148,6 +148,7 @@
         "@malloydata/db-duckdb": "^0.0.405",
         "@malloydata/db-mysql": "^0.0.405",
         "@malloydata/db-postgres": "^0.0.405",
+        "@malloydata/db-publisher": "^0.0.405",
         "@malloydata/db-snowflake": "^0.0.405",
         "@malloydata/db-trino": "^0.0.405",
         "@malloydata/malloy": "^0.0.405",
@@ -621,6 +622,8 @@
     "@malloydata/db-mysql": ["@malloydata/db-mysql@0.0.405", "", { "dependencies": { "@malloydata/malloy": "0.0.405", "@types/node": "^22.7.4", "fastestsmallesttextencoderdecoder": "^1.0.22", "luxon": "^3.5.0", "mysql2": "^3.11.3" } }, "sha512-77ePZL9+vrJSksVsXXS0JpzD590B1NMnDbwIMWMjf4NsFiZS8k6NZG0Qsold9kAgq8diCHwvwl8sHCxZZToGIA=="],
 
     "@malloydata/db-postgres": ["@malloydata/db-postgres@0.0.405", "", { "dependencies": { "@malloydata/malloy": "0.0.405", "@types/pg": "^8.6.1", "pg": "^8.7.1", "pg-query-stream": "4.2.3" } }, "sha512-XZa/iskaqkEXIQHdDTSFc0Dxrras/mZQj5QVYu147UGfxDnH9P3pDMx3/iigPE9bscTKOkbuHb6JUpGNr2zjAA=="],
+
+    "@malloydata/db-publisher": ["@malloydata/db-publisher@0.0.405", "", { "dependencies": { "@malloydata/malloy": "0.0.405", "axios": "^1.6.7" } }, "sha512-nCk4z4KJ0b5L8t5ox079scsXPoe6uzlEDFsTcTiSdrFrlHoYiRAbE8N5u8sClDNFL53ElJlVV266IBIr9HHOuw=="],
 
     "@malloydata/db-snowflake": ["@malloydata/db-snowflake@0.0.405", "", { "dependencies": { "@malloydata/malloy": "0.0.405", "generic-pool": "^3.9.0", "snowflake-sdk": "2.3.1", "toml": "^3.0.0" } }, "sha512-EySqsnpLu2LZNZx45vJt+HIV/p3nwujIwRMsRmyGTHkDckiP7sKUnD78IdnFIonwyMQmoAGBpsvNrLGHGTxpSw=="],
 
