@@ -884,7 +884,9 @@ describe("extractErrorDataFromError", () => {
 // ---------------------------------------------------------------------------
 describe("publisher proxy introspection", () => {
    const realFetch = globalThis.fetch;
-   let lastRequest: { url: string; headers: Record<string, string> } | undefined;
+   let lastRequest:
+      | { url: string; headers: Record<string, string> }
+      | undefined;
 
    function stubFetch(
       payload: unknown,
@@ -965,7 +967,9 @@ describe("publisher proxy introspection", () => {
    it("URL-encodes the schema name in the tables path", async () => {
       stubFetch([]);
       await listTablesForSchema(conn, "weird schema/name", noConn);
-      expect(lastRequest?.url).toContain("/schemas/weird%20schema%2Fname/tables");
+      expect(lastRequest?.url).toContain(
+         "/schemas/weird%20schema%2Fname/tables",
+      );
    });
 
    it("filters by bare table name across schema- and catalog-qualified resources", async () => {
@@ -1010,14 +1014,12 @@ describe("publisher proxy introspection", () => {
          },
       };
       stubFetch(null, { ok: false, status: 500, body: "boom" });
-      await expect(
-         getSchemasForConnection(withCreds, noConn),
-      ).rejects.toThrow(
+      await expect(getSchemasForConnection(withCreds, noConn)).rejects.toThrow(
          /Publisher dataplane request to https:\/\/org\.data\.example\.com.*failed \(500\)/,
       );
-      await expect(getSchemasForConnection(withCreds, noConn)).rejects.not.toThrow(
-         /secret/,
-      );
+      await expect(
+         getSchemasForConnection(withCreds, noConn),
+      ).rejects.not.toThrow(/secret/);
    });
 
    it("surfaces a network-level failure with the connection name and no token", async () => {
