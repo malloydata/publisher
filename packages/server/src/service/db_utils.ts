@@ -594,6 +594,69 @@ async function getSchemasForDuckLake(
    }
 }
 
+/**
+ * Publisher proxy connections introspect against the remote dataplane, which
+ * exposes the same connection API as this server. Schema/table discovery is a
+ * GET passthrough — the remote owns the dialect-specific introspection and
+ * returns the same Schema/Table shapes, so we forward the response verbatim
+ * (no Malloy connection involved).
+ */
+async function fetchFromPublisherDataplane<T>(
+   connection: ApiConnection,
+   pathSuffix: string,
+): Promise<T> {
+   const publisher = connection.publisherConnection;
+   if (!publisher?.connectionUri) {
+      throw new Error(
+         `Publisher connection "${connection.name}" is missing connectionUri`,
+      );
+   }
+   const url = `${publisher.connectionUri.replace(/\/+$/, "")}${pathSuffix}`;
+   const headers: Record<string, string> = {};
+   if (publisher.accessToken) {
+      headers["Authorization"] = `Bearer ${publisher.accessToken}`;
+   }
+   const response = await fetch(url, { headers });
+   if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(
+         `Publisher dataplane request to ${url} failed (${response.status}): ${body.slice(0, 200)}`,
+      );
+   }
+   return (await response.json()) as T;
+}
+
+async function getSchemasForPublisher(
+   connection: ApiConnection,
+): Promise<ApiSchema[]> {
+   return fetchFromPublisherDataplane<ApiSchema[]>(connection, "/schemas");
+}
+
+async function listTablesForPublisher(
+   connection: ApiConnection,
+   schemaName: string,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   const tables = await fetchFromPublisherDataplane<ApiTable[]>(
+      connection,
+      `/schemas/${encodeURIComponent(schemaName)}/tables`,
+   );
+   if (!tableNames) {
+      return tables;
+   }
+   // tableNames is a bare-table-name filter (see listTablesForBigQuery); the
+   // remote returns `resource` as "<schema>.<table>", so strip the prefix.
+   const allowed = new Set(tableNames);
+   const prefix = `${schemaName}.`;
+   return tables.filter((table) => {
+      const resource = table.resource ?? "";
+      const tableName = resource.startsWith(prefix)
+         ? resource.slice(prefix.length)
+         : resource;
+      return allowed.has(tableName) || allowed.has(resource);
+   });
+}
+
 export async function getSchemasForConnection(
    connection: ApiConnection,
    malloyConnection: Connection,
@@ -617,6 +680,8 @@ export async function getSchemasForConnection(
          return getSchemasForMotherDuck(connection, malloyConnection);
       case "ducklake":
          return getSchemasForDuckLake(connection, malloyConnection);
+      case "publisher":
+         return getSchemasForPublisher(connection);
       default:
          throw new Error(`Unsupported connection type: ${connection.type}`);
    }
@@ -929,6 +994,8 @@ export async function listTablesForSchema(
             malloyConnection,
             tableNames,
          );
+      case "publisher":
+         return listTablesForPublisher(connection, schemaName, tableNames);
       default:
          throw new Error(`Unsupported connection type: ${connection.type}`);
    }

@@ -168,3 +168,90 @@ describe("normalizeSnowflakePrivateKey", () => {
       expect(result.endsWith("-----END PRIVATE KEY-----\n")).toBe(true);
    });
 });
+
+describe("assembleEnvironmentConnections — publisher", () => {
+   const validBase: ApiConnection = {
+      name: "analytics",
+      type: "publisher",
+      publisherConnection: {
+         connectionUri:
+            "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+         accessToken: "jwt-token",
+      },
+   };
+
+   it("emits a publisher core entry proxying to the remote dataplane", () => {
+      const { pojo } = assembleEnvironmentConnections([validBase]);
+
+      const entry = pojo.connections["analytics"];
+      expect(entry.is).toBe("publisher");
+      expect(entry.connectionUri).toBe(
+         "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+      );
+      expect(entry.accessToken).toBe("jwt-token");
+   });
+
+   it("does not populate static connection attributes (dialect is resolved at runtime)", () => {
+      const { apiConnections } = assembleEnvironmentConnections([validBase]);
+      expect(apiConnections).toHaveLength(1);
+      expect(apiConnections[0].attributes).toBeUndefined();
+   });
+
+   it("assembles without an accessToken (optional)", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: {
+            connectionUri:
+               "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+         },
+      };
+      const { pojo } = assembleEnvironmentConnections([conn]);
+      const entry = pojo.connections["analytics"];
+      expect(entry.is).toBe("publisher");
+      expect(entry.accessToken).toBeUndefined();
+   });
+
+   it("rejects a publisher connection missing connectionUri with an actionable error", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection:
+            {} as components["schemas"]["PublisherConnection"],
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid publisher connection 'analytics': missing connectionUri.",
+      );
+   });
+
+   it("rejects a publisher connection missing the publisherConnection block", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid publisher connection 'analytics': missing connectionUri.",
+      );
+   });
+
+   it("still rejects the reserved 'duckdb' name for a publisher connection", () => {
+      const conn: ApiConnection = {
+         name: "duckdb",
+         type: "publisher",
+         publisherConnection: { connectionUri: "https://x/connections/duckdb" },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Connection name 'duckdb' is reserved",
+      );
+   });
+
+   it("still rejects a publisher connection with no name", () => {
+      const conn = {
+         type: "publisher",
+         publisherConnection: { connectionUri: "https://x/connections/y" },
+      } as ApiConnection;
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid connection configuration. No name.",
+      );
+   });
+});

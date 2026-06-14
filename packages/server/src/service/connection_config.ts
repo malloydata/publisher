@@ -336,6 +336,17 @@ function validateConnectionShape(connection: ApiConnection): void {
          }
          break;
       }
+      case "publisher": {
+         const publisher = connection.publisherConnection;
+         if (!publisher?.connectionUri) {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': missing connectionUri. ` +
+                  `Fix: { "name": "${connection.name}", "type": "publisher", ` +
+                  `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
+            );
+         }
+         break;
+      }
    }
 }
 
@@ -543,6 +554,22 @@ export function assembleEnvironmentConnections(
                environmentPath,
                `${connection.name}_ducklake.duckdb`,
             );
+            break;
+         }
+
+         case "publisher": {
+            // connectionUri presence is validated by validateConnectionShape
+            // above. The proxied dataplane owns auth and read-only enforcement;
+            // PublisherConnection itself does not reject writes. The real
+            // dialect is the remote connection's and is resolved at runtime by
+            // the live connection, so getStaticConnectionAttributes returns
+            // undefined for publisher (falls through to its default).
+            const publisher = connection.publisherConnection!;
+            pojo.connections[connection.name] = {
+               is: "publisher",
+               connectionUri: publisher.connectionUri,
+               accessToken: publisher.accessToken,
+            };
             break;
          }
 
