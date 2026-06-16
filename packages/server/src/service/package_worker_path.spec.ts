@@ -341,6 +341,87 @@ source: gated is duckdb.sql("select 1 as id")`,
       }
    });
 
+   it("rejects a package whose backtick-quoted (hyphenated) source has a bad view render tag", async () => {
+      writeManifest();
+      // A source whose name needs Malloy backtick-quoting (here, a hyphen). The
+      // validation target must quote the identifier; otherwise `run: bad-source
+      // -> card` fails to lex, loadQuery throws, the catch swallows it, and the
+      // misconfigured view is silently skipped -- which would defeat the feature
+      // for any quote-needing name (the repo already has such a source,
+      // `gated-source`, in authorize_integration.spec.ts).
+      fs.writeFileSync(
+         path.join(tempDir, "hyphen_render.malloy"),
+         `source: \`bad-source\` is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+      );
+
+      const { ModelCompilationError } = await import("../errors");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         let caught: unknown;
+         try {
+            await Package.create("env", "pkg", tempDir, malloyConfig);
+         } catch (err) {
+            caught = err;
+         }
+         expect(caught).toBeInstanceOf(ModelCompilationError);
+         expect((caught as Error).message).toContain(
+            "Invalid renderer configuration",
+         );
+         expect((caught as Error).message).toContain("bad-source -> card");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("rejects a package whose source name contains an escaped backtick with a bad view render tag", async () => {
+      writeManifest();
+      // Source name with a literal backtick (written escaped in Malloy as
+      // `wei\`rd`). The validation target must re-escape it; a bare wrap would
+      // produce `run: `wei`rd` -> ...`, where the embedded backtick closes the
+      // quote early, fails to lex, and the bad view is silently skipped. Mirrors
+      // malloy's own identifierCode escaping.
+      fs.writeFileSync(
+         path.join(tempDir, "backtick_render.malloy"),
+         `source: \`wei\\\`rd\` is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+      );
+
+      const { ModelCompilationError } = await import("../errors");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         let caught: unknown;
+         try {
+            await Package.create("env", "pkg", tempDir, malloyConfig);
+         } catch (err) {
+            caught = err;
+         }
+         expect(caught).toBeInstanceOf(ModelCompilationError);
+         expect((caught as Error).message).toContain(
+            "Invalid renderer configuration",
+         );
+         expect((caught as Error).message).toContain("card");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("rejects a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
       writeManifest();
       fs.writeFileSync(

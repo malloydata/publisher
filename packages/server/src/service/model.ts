@@ -101,6 +101,18 @@ interface RunnableNotebookCell {
    queryInfo?: Malloy.QueryInfo;
 }
 
+/**
+ * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
+ * query string. Escapes backslashes and backticks (in that order) so a name
+ * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
+ * contains an embedded backtick cannot break out of the quotes. Mirrors
+ * malloy's internal `identifierCode` / `escapeIdentifier` (to_stable.ts), which
+ * is not exported.
+ */
+function quoteMalloyIdentifier(name: string | undefined): string {
+   return "`" + (name ?? "").replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
+}
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -709,9 +721,11 @@ export class Model {
     * runs here, after the worker has hydrated this Model, where the renderer is
     * already used at query time (see query.controller.ts / execute_query_tool.ts).
     *
-    * Prepares each top-level named query (`run: <name>`) and each source view
-    * (`run: <source> -> <view>`) compile-only -- no execution -- to get a stable
-    * result schema, then runs the renderer's headless `validateRenderTags`. Any
+    * Prepares each annotated top-level named query (`run: <name>`) and each
+    * annotated source view (`run: <source> -> <view>`) compile-only -- no
+    * execution -- to get a stable result schema, then runs the renderer's
+    * headless `validateRenderTags`. Targets with no annotations carry no render
+    * tags, so they are skipped without compiling. Any
     * error-severity finding throws a `ModelCompilationError` (HTTP 424) so a
     * misconfigured tag (e.g. a child-only `# big_value { sparkline=... }` placed
     * on a view with no activating big_value) fails the package load with a clear
@@ -736,18 +750,34 @@ export class Model {
       // live, and they are NOT in `this.queries`.
       const targets: { label: string; queryString: string }[] = [];
       for (const query of this.queries ?? []) {
-         if (query.name) {
-            targets.push({
-               label: query.name,
-               queryString: `run: ${query.name}`,
-            });
+         // Only an annotated, named query can carry a render tag to validate;
+         // skip the rest rather than compiling every query in the package.
+         if (!query.name || !query.annotations?.length) {
+            continue;
          }
+         // Quote the identifier (see quoteMalloyIdentifier) so a name needing
+         // Malloy quoting still lexes and cannot break out of the quotes.
+         targets.push({
+            label: query.name,
+            queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
+         });
       }
       for (const source of this.sources ?? []) {
          for (const view of source.views ?? []) {
+            // Render tags live on the view's own or inherited annotations, not
+            // via source-to-view inheritance, so an unannotated view has
+            // nothing to validate and need not be compiled. (A model-level
+            // `##` tag is the one case this gate doesn't reach, but those are
+            // theme/config, not the child-only chart tags this guards against.)
+            if (!view.annotations?.length) {
+               continue;
+            }
+            // Quote both identifiers (see quoteMalloyIdentifier): an unquoted
+            // name like `gated-source` fails to lex, and the catch below would
+            // then silently skip the very view this is meant to validate.
             targets.push({
                label: `${source.name} -> ${view.name}`,
-               queryString: `run: ${source.name} -> ${view.name}`,
+               queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,
             });
          }
       }
