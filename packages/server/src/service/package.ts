@@ -94,10 +94,22 @@ export class Package {
     * `explores` preserves legacy listings. Re-derived on reload and metadata
     * PATCH (the inputs can change there).
     */
-   private applyDiscoveryPolicyToModels(): void {
+   /** True when the package opts into curated discovery via a non-empty
+    *  `explores`. Single source of truth so the curation/boundary/listing
+    *  derivations can't drift out of sync. */
+   private exploresDeclared(): boolean {
       const explores = this.packageMetadata.explores;
-      const exploresDeclared = !!(explores && explores.length > 0);
-      const curationEnabled = exploresDeclared;
+      return !!(explores && explores.length > 0);
+   }
+
+   /** The declared explore set, or null when discovery is uncurated. */
+   private exploreSet(): Set<string> | null {
+      const explores = this.packageMetadata.explores;
+      return explores && explores.length > 0 ? new Set(explores) : null;
+   }
+
+   private applyDiscoveryPolicyToModels(): void {
+      const curationEnabled = this.exploresDeclared();
       for (const model of this.models.values()) {
          model.setDiscoveryCuration(curationEnabled);
       }
@@ -118,9 +130,8 @@ export class Package {
     * `explores`; within-file curation (`export {}`) is read off each Model.
     */
    private applyQueryBoundaryToModels(): void {
-      const explores = this.packageMetadata.explores;
-      const exploresDeclared = !!(explores && explores.length > 0);
-      const exploreSet = exploresDeclared ? new Set(explores) : null;
+      const exploresDeclared = this.exploresDeclared();
+      const exploreSet = this.exploreSet();
       const mode =
          this.packageMetadata.queryableSources === "all" ? "all" : "declared";
       for (const [modelPath, model] of this.models) {
@@ -455,9 +466,7 @@ export class Package {
     * surface there is just normal plumbing.
     */
    public emptyDiscoveryWarnings(): string[] {
-      const explores = this.packageMetadata.explores;
-      const exploreSet =
-         explores && explores.length > 0 ? new Set(explores) : null;
+      const exploreSet = this.exploreSet();
       const warnings: string[] = [];
       for (const [modelPath, model] of this.models) {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
@@ -651,9 +660,7 @@ export class Package {
       // import/join resolution but is hidden from the listing. Absent/empty →
       // every model is listed (backward-compatible default). Notebooks are
       // unaffected (see listNotebooks) — they are always public.
-      const explores = this.packageMetadata.explores;
-      const exploreSet =
-         explores && explores.length > 0 ? new Set(explores) : null;
+      const exploreSet = this.exploreSet();
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {

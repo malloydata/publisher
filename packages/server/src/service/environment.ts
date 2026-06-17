@@ -7,7 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { components } from "../api";
-import { API_PREFIX, README_NAME } from "../constants";
+import { API_PREFIX, normalizeModelPath, README_NAME } from "../constants";
 import {
    BadRequestError,
    ConnectionNotFoundError,
@@ -1189,8 +1189,15 @@ export class Environment {
          // serving every model until the next reload. When the body explicitly
          // carries `explores`, honor the new set instead.
          const existing = _package.getPackageMetadata();
+         // Normalize API-body explores through the same helper the worker uses
+         // for on-disk explores, so `["./index.malloy"]` / backslash paths
+         // validate and persist identically regardless of input channel (no
+         // misleading publish-time 400, no publish-vs-reload divergence).
+         const normalizedExplores = body.explores?.map(normalizeModelPath);
          const explores =
-            body.explores !== undefined ? body.explores : existing.explores;
+            normalizedExplores !== undefined
+               ? normalizedExplores
+               : existing.explores;
          const queryableSources =
             body.queryableSources !== undefined
                ? body.queryableSources
@@ -1218,7 +1225,7 @@ export class Environment {
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
-            explores: body.explores,
+            explores: normalizedExplores,
             queryableSources: body.queryableSources,
          });
 

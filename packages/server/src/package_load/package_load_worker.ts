@@ -75,6 +75,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import {
    MODEL_FILE_SUFFIX,
+   normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
@@ -414,16 +415,10 @@ function filterModelPaths(allRelative: string[]): string[] {
    );
 }
 
-// Normalize a package-relative model path so author-written `explores`
-// entries compare equal to the paths produced by `listPackageFiles`
-// (forward slashes, no leading "./"). Normalization is one-sided: it runs
-// here at parse time so the keys stored in Package.models are already
-// normalized, and listModels()/getInvalidExplores() compare explores
-// against those keys directly — there is no second normalization to keep in
-// sync on the listing side.
-function normalizeModelPath(p: string): string {
-   return p.replace(/\\/g, "/").replace(/^\.\//, "");
-}
+// `normalizeModelPath` (shared, from ../constants) runs here at parse time so
+// the keys stored in Package.models are already normalized, and the API
+// publish/update path normalizes its `explores` input through the same helper —
+// so on-disk and API-written manifests share one representation.
 
 // explores validation is intentionally NOT done here. The worker is the
 // shared load path (startup, reload, AND publish), but the policy differs by

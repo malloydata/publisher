@@ -396,6 +396,29 @@ export { \`customer-orders\` }`,
       }
    });
 
+   it("declared: a notebook is exempt from the boundary (always public)", async () => {
+      // The /compile path runs assertQueryBoundaryEarly against the target
+      // model; a notebook is never in `explores`, so without an explicit
+      // exemption it would 404 — contradicting "notebooks are always public".
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const notebook = pkg.getModel("report.malloynb");
+         expect(notebook).toBeDefined();
+         // Boundary is inert for notebooks even though it's not an explore.
+         expect(
+            notebook!.assertQueryBoundaryEarly(undefined, undefined, "run: x"),
+         ).toBe("cleared");
+         expect(() =>
+            notebook!.assertQueryBoundaryCompiled("anything", "run: x"),
+         ).not.toThrow();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    // -- "all" mode (decoupled) --------------------------------------------
 
    it("all: explores gates discovery only — hidden file/source stay queryable", async () => {

@@ -804,6 +804,9 @@ export class Model {
       queryName?: string,
       query?: string,
    ): "cleared" | "deferred" {
+      // Notebooks are always public — they can't be explores and are never
+      // gated by the boundary, even when reached via the /compile path.
+      if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return "cleared";
       const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
       // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
       // boundary is discovery-only; everything compiled stays queryable.
@@ -882,6 +885,8 @@ export class Model {
       compiledSource: string | undefined,
       query?: string,
    ): void {
+      // Notebooks are always public (mirrors assertQueryBoundaryEarly).
+      if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return;
       const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
       if (!isQueryEntryPoint) {

@@ -1,4 +1,5 @@
 import { components } from "../api";
+import { normalizeModelPath } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
@@ -231,7 +232,10 @@ export class PackageController {
                   bodyLocation,
                   stagingPath,
                ),
-            (pkg) => pkg.formatInvalidExplores(body.explores),
+            (pkg) =>
+               pkg.formatInvalidExplores(
+                  body.explores?.map(normalizeModelPath),
+               ),
          );
       }
       // Apply metadata changes (publisher.json) under the same per-package

@@ -138,4 +138,27 @@ describe("explores-validation rollback (real Environment)", () => {
       );
       expect(await env.getModelFileText("pkg", "model.malloy")).toBe(BAD_MODEL);
    });
+
+   it("updatePackage normalizes a ./-prefixed body explores (no false 400, persists normalized)", async () => {
+      // API-body explores must go through the same normalization the worker
+      // applies to on-disk explores, so `./model.malloy` validates and persists
+      // as `model.malloy` rather than being rejected with a misleading 404.
+      const env = await Environment.create("testEnv", envPath, []);
+      const pkgDir = path.join(envPath, "pkg");
+      await writePackageDir(pkgDir, {}, GOOD_MODEL);
+      await env.addPackage("pkg");
+
+      const updated = await env.updatePackage("pkg", {
+         name: "pkg",
+         explores: ["./model.malloy"],
+      });
+
+      // Accepted (no BadRequestError) and stored in normalized form...
+      expect(updated.explores).toEqual(["model.malloy"]);
+      // ...both in memory and on disk.
+      const manifest = JSON.parse(
+         await fs.readFile(path.join(pkgDir, "publisher.json"), "utf-8"),
+      );
+      expect(manifest.explores).toEqual(["model.malloy"]);
+   });
 });

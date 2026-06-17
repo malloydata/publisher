@@ -328,6 +328,8 @@ The two compose: `explores` decides which files are listed, and `export { … }`
   For gradual migration, use `explores` with `queryableSources: "all"` to curate listings while keeping every source queryable by name; switch to `"declared"` when ready to enforce the boundary.
 
 > **`explores`/`export {}` are a discovery filter; `queryableSources` decides if they also gate queries; `#(authorize)` is the identity gate.** With `queryableSources: "all"`, hiding a source only removes it from listings — it stays queryable by name. To restrict *who* can query (as opposed to *what* is queryable), gate the source with `#(authorize)` (see [docs/authorize.md](docs/authorize.md)); those gates are enforced against the complete source set and are never weakened by listing or boundary curation.
+>
+> The `queryableSources` boundary applies to the *query* surface (`getQueryResults`, the MCP query tool, and `/compile`). It does **not** cover raw retrieval by exact path — a hidden model's file text and its compiled metadata are still fetchable by path — by design; use `#(authorize)` when the contents themselves must be protected, not just removed from discovery.
 
 Validation is asymmetric by design: **publishing** a package with an `explores` entry that doesn't resolve to a real model is rejected with a `400`, while at **startup/reload** the package still serves but hides the unresolved entry (it never falls back to listing everything) and surfaces the reason in the package's `exploresWarnings` field.
 
