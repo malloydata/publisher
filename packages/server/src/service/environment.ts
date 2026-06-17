@@ -7,7 +7,12 @@ import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { components } from "../api";
-import { API_PREFIX, normalizeModelPath, README_NAME } from "../constants";
+import {
+   API_PREFIX,
+   normalizeModelPath,
+   NOTEBOOK_FILE_SUFFIX,
+   README_NAME,
+} from "../constants";
 import {
    BadRequestError,
    ConnectionNotFoundError,
@@ -297,6 +302,17 @@ export class Environment {
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelName);
+      // /compile appends the submitted source to the TARGET MODEL's content for
+      // namespace context. A notebook (.malloynb) is markdown + cells, not a
+      // model, so compiling against it only yields a confusing parse error —
+      // reject it up front with an actionable message. (Notebooks remain public
+      // for discovery/query; this is specific to the compile context.)
+      if (modelName.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         throw new BadRequestError(
+            `Cannot compile against a notebook ("${modelName}"). ` +
+               `/compile takes a .malloy model path for namespace context.`,
+         );
+      }
       // Hold the per-package mutex for the duration of every disk read —
       // both the explicit `fs.readFile(modelPath)` below and the implicit
       // import resolution that `runtime.loadModel` does through the URL

@@ -161,4 +161,30 @@ describe("explores-validation rollback (real Environment)", () => {
       );
       expect(manifest.explores).toEqual(["model.malloy"]);
    });
+
+   it("compileSource rejects a notebook path; a model path still compiles", async () => {
+      // /compile appends source to the target MODEL's content for context; a
+      // notebook isn't a valid target and must be rejected up front (not left to
+      // a confusing downstream parse error).
+      const env = await Environment.create("testEnv", envPath, []);
+      const pkgDir = path.join(envPath, "pkg");
+      await writePackageDir(pkgDir, {}, GOOD_MODEL);
+      await fs.writeFile(
+         path.join(pkgDir, "report.malloynb"),
+         `>>>markdown\n# Report\n`,
+      );
+      await env.addPackage("pkg");
+
+      await expect(
+         env.compileSource("pkg", "report.malloynb", "run: ones"),
+      ).rejects.toBeInstanceOf(BadRequestError);
+
+      // The .malloy model still compiles ad-hoc source (no regression).
+      const { problems } = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         "run: ones -> { select: x }",
+      );
+      expect(problems.some((p) => p.severity === "error")).toBe(false);
+   });
 });
