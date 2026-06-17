@@ -42,6 +42,7 @@ import {
    BadRequestError,
    ModelCompilationError,
    ModelNotFoundError,
+   NotQueryableError,
    PayloadTooLargeError,
 } from "../errors";
 import { logger } from "../logger";
@@ -135,6 +136,21 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
+   /** Whether discovery accessors curate to the `export {}` closure. Pushed
+    *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
+    *  true only when the package declares `explores` in publisher.json.
+    *  Defaults to false (legacy listings) so a Model created outside a
+    *  Package matches pre-opt-in behavior. */
+   private discoveryCurationEnabled = false;
+   /** Per-package query-boundary policy, pushed down by the owning Package
+    *  (see `Package.applyQueryBoundaryToModels`). Defaults are inert (mode
+    *  "all" / not declared) so a Model created outside a Package — or before
+    *  the policy is applied — never spuriously denies. */
+   private queryBoundary: {
+      mode: "declared" | "all";
+      exploresDeclared: boolean;
+      isQueryEntryPoint: boolean;
+   } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    private meter = metrics.getMeter("publisher");
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -401,14 +417,7 @@ export class Model {
       const target = this.extractSourceName(query);
       if (!target || !query) return undefined;
 
-      // Map each ad-hoc source name to the base it derives from
-      // (`source: NAME is BASE ...` → NAME → BASE).
-      const aliasOf = new Map<string, string>();
-      const declRe = /source\s*:\s*(\w+)\s+is\s+(\w+)/g;
-      let match: RegExpExecArray | null;
-      while ((match = declRe.exec(query)) !== null) {
-         aliasOf.set(match[1], match[2]);
-      }
+      const aliasOf = Model.buildAliasMap(query);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;
@@ -700,16 +709,253 @@ export class Model {
       return this.modelType;
    }
 
+   /**
+    * Restrict a list of named objects to the model's re-export closure
+    * (`modelDef.exports`) for discovery. This mirrors what Malloy's stable
+    * `modelDefToModelInfo` already does for `modelInfo`/`sourceInfos` (and what
+    * the app renders), so the publisher-extracted `sources`/`queries` stay
+    * consistent with `modelInfo` within a single response. A model with no
+    * `export { … }` has `exports` = all top-level names, so this is a no-op
+    * there. Only active when the package declares `explores` (see
+    * `discoveryCurationEnabled`). `this.sources`/`this.queries` stay complete so
+    * #(authorize)/filter enforcement and join/extend resolution are unaffected.
+    * Whether a non-exported source is also non-*queryable* depends on the
+    * package's `queryableSources` policy — see {@link assertQueryBoundaryEarly}.
+    */
+   private curateForDiscovery<T extends { name?: string }>(
+      items: T[] | undefined,
+   ): T[] | undefined {
+      if (!items) return items;
+      if (!this.discoveryCurationEnabled) return items;
+      const exports = this.modelDef?.exports;
+      if (!Array.isArray(exports)) return items;
+      const exported = new Set(exports);
+      return items.filter(
+         (item) => item.name !== undefined && exported.has(item.name),
+      );
+   }
+
+   /** Set by the owning Package; see {@link curateForDiscovery}. */
+   public setDiscoveryCuration(enabled: boolean): void {
+      this.discoveryCurationEnabled = enabled;
+   }
+
    public getSources(): ApiSource[] | undefined {
-      return this.sources;
+      return this.curateForDiscovery(this.sources);
    }
 
    public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.sourceInfos;
+      return this.curateForDiscovery(this.sourceInfos);
    }
 
    public getQueries(): ApiQuery[] | undefined {
-      return this.queries;
+      return this.curateForDiscovery(this.queries);
+   }
+
+   /**
+    * True when this is an import-only model: it imports other files but
+    * declares and re-exports nothing of its own, so `modelDef.exports` is
+    * empty and its discovery surface lists no sources or queries. Legitimate
+    * as plumbing, but confusing when the model is *listed* — the page renders
+    * blank. Used by the load-time warning (Package.emptyDiscoveryWarnings);
+    * the fix is to re-export what should be visible (`export { name }`).
+    */
+   public hasEmptyDiscoverySurface(): boolean {
+      // No curation (no `explores`) ⇒ legacy listings include imported sources.
+      if (!this.discoveryCurationEnabled) return false;
+      if (this.modelType !== "model" || !this.modelDef) return false;
+      const exports = this.modelDef.exports;
+      if (!Array.isArray(exports) || exports.length > 0) return false;
+      return (this.modelDef.imports?.length ?? 0) > 0;
+   }
+
+   /** Set by the owning Package; see {@link assertQueryBoundaryEarly}. */
+   public setQueryBoundary(policy: {
+      mode: "declared" | "all";
+      exploresDeclared: boolean;
+      isQueryEntryPoint: boolean;
+   }): void {
+      this.queryBoundary = policy;
+   }
+
+   /**
+    * Query boundary, step 1 of 2 — the PRE-compilation gate. Enforces the rule
+    * "queryable == discoverable": a source is a valid top-level query target
+    * only if it is in the package's discovery surface (`explores` files +
+    * their `export {}` closure). This is the *what* axis (identity-free);
+    * `#(authorize)` is the orthogonal *who* axis, and both must pass. Denials
+    * are a generic 404 ({@link NotQueryableError}) so a hidden target is
+    * indistinguishable from a non-existent one. Inert unless `explores` is
+    * declared AND mode is "declared" (the default). Notebooks are exempt
+    * (always public) and never call this.
+    *
+    * This step runs before compilation so a denied target can't be probed via
+    * compile errors (schema oracle), and it only POSITIVELY denies — explicit
+    * names it can check, and ad-hoc text whose surface-resolved target is a
+    * model-declared non-curated source. Anything it can't pin returns
+    * "deferred" for {@link assertQueryBoundaryCompiled} to settle against the
+    * compiled run target. "cleared" admissions (explicit curated names) skip
+    * the backstop: an exported named query may read hidden sources internally —
+    * that is the author's deliberate exposure, and re-deriving its source from
+    * the compiled query must not re-deny it.
+    */
+   public assertQueryBoundaryEarly(
+      sourceName?: string,
+      queryName?: string,
+      query?: string,
+   ): "cleared" | "deferred" {
+      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
+      // boundary is discovery-only; everything compiled stays queryable.
+      if (mode === "all" || !exploresDeclared) return "cleared";
+
+      // File-level: a non-`explores` model file is not a query entry point.
+      // This is the robust line — the file is named by the request URL, so
+      // there is nothing to resolve and nothing to evade.
+      if (!isQueryEntryPoint) {
+         throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
+      }
+
+      const curatedSources = this.curatedSourceNames();
+      const curatedQueries = new Set(
+         (this.getQueries() ?? []).map((q) => q.name).filter(Boolean),
+      );
+
+      // A named query/view is an author-exported entry point (the author chose
+      // to expose it, even if it reads hidden sources internally) — admit it on
+      // its own name, or on the explicitly-named curated source it runs against.
+      if (queryName && !query) {
+         // The exported-query fast-path admits a *pure* named query (`run: q`)
+         // on its own name. It must NOT fire when a source is also named: a
+         // request is `run: <sourceName>-><queryName>`, so a hidden source
+         // could otherwise be reached via a view whose name happens to collide
+         // with an exported top-level query (and clearing skips the compiled
+         // backstop). With a source prefix, only the named source's curation
+         // gates the request.
+         if (!sourceName && curatedQueries.has(queryName)) return "cleared";
+         if (sourceName && curatedSources.has(sourceName)) return "cleared";
+         throw new NotQueryableError(`No queryable query "${queryName}".`);
+      }
+
+      // An explicitly-named source: admit iff curated.
+      if (sourceName) {
+         if (curatedSources.has(sourceName)) return "cleared";
+         throw new NotQueryableError(`No queryable source "${sourceName}".`);
+      }
+
+      // Ad-hoc text: positively deny only a surface-resolved target that is a
+      // model-declared source outside the curated surface (and doesn't derive
+      // from a curated one) — pre-compile, so its compile errors can't leak
+      // schema. Everything else (inline derivations, multi-statement, forms
+      // the regex can't read) defers to the compiled backstop.
+      if (query) {
+         const target = this.extractSourceName(query);
+         if (
+            target &&
+            !curatedSources.has(target) &&
+            !this.derivesFromCurated(target, query) &&
+            this.sources?.some((s) => s.name === target)
+         ) {
+            throw new NotQueryableError(`No queryable source "${target}".`);
+         }
+      }
+      return "deferred";
+   }
+
+   /**
+    * Query boundary, step 2 of 2 — the POST-compilation backstop for
+    * "deferred" admissions. `compiledSource` is the run target read off the
+    * compiled query's `structRef` (see
+    * {@link resolveAuthorizeSourceFromRunnable}) — the source Malloy actually
+    * executes, surviving named-query indirection, multi-statement forms (the
+    * LAST `run:` wins), and derivation. This inspects compiler *output* only;
+    * compilation itself is never altered or restricted.
+    *
+    * Admit iff the compiled target is curated, or is an ad-hoc alias that
+    * derives from a curated source (`source: x is customers extend { … }` →
+    * `run: x` — composing over a queryable source is itself queryable). FAIL
+    * CLOSED otherwise, including when the target can't be resolved at all.
+    * (Raw inline `conn.sql(...)` never reaches here on the query path —
+    * restricted-mode compilation rejects it first.)
+    */
+   public assertQueryBoundaryCompiled(
+      compiledSource: string | undefined,
+      query?: string,
+   ): void {
+      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      if (!isQueryEntryPoint) {
+         throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
+      }
+      if (compiledSource) {
+         if (this.curatedSourceNames().has(compiledSource)) return;
+         if (query && this.derivesFromCurated(compiledSource, query)) return;
+      }
+      throw new NotQueryableError("Query target is not queryable.");
+   }
+
+   /**
+    * The /compile-path wrapper: resolve the compiled run target from the
+    * materializer and apply the boundary backstop. No-ops when the boundary is
+    * inert, so the resolution work is skipped for unaffected packages.
+    */
+   public async assertQueryBoundaryForRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      query?: string,
+   ): Promise<void> {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      this.assertQueryBoundaryCompiled(
+         await this.resolveAuthorizeSourceFromRunnable(runnable),
+         query,
+      );
+   }
+
+   /** Source names in the export-curated discovery surface (= the directly
+    *  queryable set under the "declared" boundary). */
+   private curatedSourceNames(): Set<string> {
+      return new Set(
+         (this.getSources() ?? [])
+            .map((s) => s.name)
+            .filter((n): n is string => n !== undefined),
+      );
+   }
+
+   /** True if `name` reaches a curated source by walking the ad-hoc text's
+    *  `source: NAME is BASE` derivation declarations — composition over a
+    *  queryable source is itself queryable. */
+   private derivesFromCurated(name: string, query: string): boolean {
+      const curated = this.curatedSourceNames();
+      const aliasOf = Model.buildAliasMap(query);
+      let current: string | undefined = name;
+      const seen = new Set<string>();
+      while (current && !seen.has(current)) {
+         if (curated.has(current)) return true;
+         seen.add(current);
+         current = aliasOf.get(current);
+      }
+      return false;
+   }
+
+   /** Map each ad-hoc source alias to the base it derives from
+    *  (`source: NAME is BASE …` → NAME → BASE). Shared by filter inheritance
+    *  ({@link resolveFilterSource}) and the query boundary, which both walk
+    *  derivation chains in caller-authored query text. */
+   private static buildAliasMap(query: string): Map<string, string> {
+      const aliasOf = new Map<string, string>();
+      // Match a bare `\w+` or a backtick-quoted Malloy identifier on BOTH sides
+      // (a hyphenated source like `customer-orders` needs quoting), same pattern
+      // as `extractSourceName`. The quoted capture returns the inner name (no
+      // backticks), keeping aliases keyed the way `curatedSourceNames()` and the
+      // compiled run target are — otherwise a derivation over a quoted source
+      // wouldn't walk back to the curated set and would be falsely denied.
+      const declRe =
+         /source\s*:\s*(?:`([^`]+)`|(\w+))\s+is\s+(?:`([^`]+)`|(\w+))/g;
+      let match: RegExpExecArray | null;
+      while ((match = declRe.exec(query)) !== null) {
+         aliasOf.set(match[1] ?? match[2], match[3] ?? match[4]);
+      }
+      return aliasOf;
    }
 
    /**
@@ -877,6 +1123,18 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
+      // Query boundary FIRST (the *what* axis): reject a target that isn't in
+      // the package's queryable surface with a generic 404, before authorize
+      // (the *who* axis) and before compilation — so a non-queryable source is
+      // indistinguishable from a non-existent one and can't be probed.
+      // "deferred" means the early gate couldn't pin the target; the compiled
+      // backstop below settles it against the source the query actually runs.
+      const boundary = this.assertQueryBoundaryEarly(
+         sourceName,
+         queryName,
+         query,
+      );
+
       // Early fast-path authorize gate (before loadQuery). Resolve the source
       // from surface syntax; gate if it names one. This runs BEFORE compilation
       // so the gate can't be used as a schema oracle — without it, a denied
@@ -993,6 +1251,16 @@ export class Model {
       // AccessDeniedError stays a 403; independent of bypassFilters.
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
+
+      // Boundary backstop (the *what* axis, 404) BEFORE the authorize gate
+      // (the *who* axis, 403): settle "deferred" early-gate admissions against
+      // the compiled run target. Skipped for "cleared" admissions — an
+      // explicitly-named exported query may read hidden sources internally
+      // (the author's deliberate exposure), and must not be re-denied here.
+      if (boundary === "deferred") {
+         this.assertQueryBoundaryCompiled(compiledSource, query);
+      }
+
       // Run unless it's the redundant re-probe of the exact named source the
       // early gate already cleared. When compiledSource is unknown/unresolved,
       // this still runs and assertAuthorized applies the model-wide file-level
@@ -1101,8 +1369,11 @@ export class Model {
          sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
-         sources: this.sources,
-         queries: this.queries,
+         // Discovery surface: an explore lists only its export closure
+         // (getSources/getQueries curate); `this.sources` stays complete for
+         // enforcement and resolution.
+         sources: this.getSources(),
+         queries: this.getQueries(),
          givens: this.givens,
       } as ApiCompiledModel;
    }
@@ -1158,6 +1429,10 @@ export class Model {
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
          modelInfo: JSON.stringify(this.modelInfo ?? {}),
+         // Raw-notebook view is uncurated (complete `this.sources`/`this.queries`,
+         // not the export-filtered `getSources`/`getQueries`): notebooks can't be
+         // imported, so their in-file sources have no internal/import-only role to
+         // hide — they're always public. Model files curate; notebooks don't.
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,

@@ -86,20 +86,53 @@ export class PackageController {
          environmentName,
          false,
       );
+      // Strict at publish: the author is in the loop here, so reject a bad
+      // explores with an actionable 400 instead of silently serving a hidden
+      // surface. (At startup/reload we fail safe and only warn — see
+      // Package.loadViaWorker.) The rollback differs by path so a rejected
+      // publish never destroys user content:
+      //   - location: the tree was just downloaded into a fresh canonical, so
+      //     validation runs inside installPackage's swap window and a failure
+      //     wipes that download (the existing rollback) — nothing pre-existing
+      //     to lose.
+      //   - no-location: addPackage registered a *pre-existing* user directory,
+      //     so we validate after the fact and `unloadPackage` (evict from
+      //     memory, keep the files) rather than delete it.
       let result;
       if (body.location) {
          const bodyLocation = body.location;
-         result = await environment.installPackage(packageName, (stagingPath) =>
-            this.downloadInto(
-               environmentName,
-               packageName,
-               bodyLocation,
-               stagingPath,
-            ),
+         result = await environment.installPackage(
+            packageName,
+            (stagingPath) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  bodyLocation,
+                  stagingPath,
+               ),
+            (pkg) => pkg.formatInvalidExplores(),
          );
       } else {
          result = await environment.addPackage(packageName);
       }
+
+      // `addPackage`/`installPackage` are typed `Package | undefined`; a missing
+      // result here is a should-never-happen internal fault. Fail loudly rather
+      // than letting optional chaining silently skip the validation below.
+      if (!result) {
+         throw new Error(`Failed to create package ${packageName}`);
+      }
+
+      if (!body.location) {
+         const invalidMsg = result.formatInvalidExplores();
+         if (invalidMsg) {
+            await environment.unloadPackage(packageName).catch(() => {
+               /* best-effort; the package is not persisted below */
+            });
+            throw new BadRequestError(invalidMsg);
+         }
+      }
+
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
@@ -184,15 +217,21 @@ export class PackageController {
       );
       if (body.location) {
          // Re-install: stream the new content into a staging dir (no lock)
-         // and atomically swap it in (under the lock).
+         // and atomically swap it in (under the lock). Validate the effective
+         // explores (the body override, else the new tree's own manifest)
+         // INSIDE the swap window, so a rejected update rolls back to the
+         // previous tree instead of swapping the bad one in and 400-ing after.
          const bodyLocation = body.location;
-         await environment.installPackage(packageName, (stagingPath) =>
-            this.downloadInto(
-               environmentName,
-               packageName,
-               bodyLocation,
-               stagingPath,
-            ),
+         await environment.installPackage(
+            packageName,
+            (stagingPath) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  bodyLocation,
+                  stagingPath,
+               ),
+            (pkg) => pkg.formatInvalidExplores(body.explores),
          );
       }
       // Apply metadata changes (publisher.json) under the same per-package

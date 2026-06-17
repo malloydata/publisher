@@ -9,6 +9,7 @@ import { pathToFileURL } from "url";
 import { components } from "../api";
 import { API_PREFIX, README_NAME } from "../constants";
 import {
+   BadRequestError,
    ConnectionNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
@@ -365,6 +366,14 @@ export class Environment {
          // and compilation surfaces its own error.
          const gateModel = pkg.getModel(modelName);
          if (gateModel) {
+            // Query boundary first (the *what* axis): /compile compiles ad-hoc
+            // text against a model, so gate it like an ad-hoc query — a
+            // non-`explores` model file, or text whose surface-resolved target
+            // is a non-curated model source (under queryableSources:
+            // "declared"), is rejected with a generic 404 before compilation
+            // can leak schema/SQL. Text the early gate can't pin is settled by
+            // the compiled backstop below.
+            gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
             await gateModel.assertAuthorizedForText(source, givens ?? {});
          }
 
@@ -392,8 +401,8 @@ export class Environment {
                // gate or extract beyond the early text gate already applied.
             }
 
-            // Compiled-source backstop — runs REGARDLESS of includeSql. It gates
-            // the source the COMPILED final query actually reads, closing
+            // Compiled-source backstops — run REGARDLESS of includeSql. They
+            // gate the source the COMPILED final query actually reads, closing
             // named-query / multi-statement indirection the early surface-syntax
             // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
             // matches the FIRST `run:`, but the LAST statement is what executes).
@@ -401,9 +410,26 @@ export class Environment {
             // (field-not-found errors leak its columns), so this must not be
             // conditional on SQL extraction. (A `source: x is gated` alias makes
             // a new ungated source — that's the documented "extend doesn't
-            // inherit authorize" footgun, the same as the query path.) Only run
-            // when the model declares gates so ungated compiles don't pay for
-            // the extra final-query compile.
+            // inherit authorize" footgun, the same as the query path.)
+
+            // Boundary backstop (the *what* axis, 404) before the authorize
+            // one (the *who* axis, 403). /compile text is always ad-hoc — the
+            // early gate can only positively deny, never fully clear — so the
+            // compiled final query's run target is the authority. Self-gates
+            // internally (no-ops when the boundary is inert: "all" / no
+            // explores), so it is deliberately NOT guarded by hasAuthorize().
+            // Text that compiles only source definitions (no final query) has
+            // no run target and nothing to gate.
+            if (queryMaterializer && gateModel) {
+               await gateModel.assertQueryBoundaryForRunnable(
+                  queryMaterializer,
+                  source,
+               );
+            }
+
+            // Authorize backstop (the *who* axis, 403). Only run when the model
+            // declares gates so ungated compiles don't pay for the extra
+            // final-query compile.
             if (queryMaterializer && gateModel?.hasAuthorize()) {
                await gateModel.assertAuthorizedForRunnable(
                   queryMaterializer,
@@ -897,6 +923,7 @@ export class Environment {
    public async installPackage(
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
+      validate?: (pkg: Package) => string | undefined,
    ): Promise<Package> {
       assertSafePackageName(packageName);
       const stagingPath = this.allocateStagingPath(packageName);
@@ -963,6 +990,15 @@ export class Environment {
                canonicalPath,
                () => this.malloyConfig.malloyConfig,
             );
+            // Strict-reject hook (publish/update only — reload passes no
+            // validator and stays fail-safe). Throw INSIDE the try so the
+            // catch below rolls the swap back: the just-installed tree is
+            // wiped and the retired tree (if any) is restored, so a rejected
+            // publish/update never leaves the bad tree served on disk.
+            const validationMsg = validate?.(newPackage);
+            if (validationMsg) {
+               throw new BadRequestError(validationMsg);
+            }
             logger.debug("install.phase2.committed", {
                environmentName: this.environmentName,
                packageName,
@@ -1086,7 +1122,12 @@ export class Environment {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: { name: string; description?: string },
+      metadata: {
+         name: string;
+         description?: string;
+         explores?: string[];
+         queryableSources?: "declared" | "all";
+      },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
@@ -1101,11 +1142,20 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
-         // Update with new metadata
+         // Update with new metadata. `explores`/`queryableSources` are only
+         // overwritten when the caller explicitly provides them; otherwise the
+         // existing on-disk value is preserved via the spread (an undefined here
+         // must not erase it).
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
+            ...(metadata.explores !== undefined
+               ? { explores: metadata.explores }
+               : {}),
+            ...(metadata.queryableSources !== undefined
+               ? { queryableSources: metadata.queryableSources }
+               : {}),
          };
 
          // Write back to file
@@ -1132,16 +1182,44 @@ export class Environment {
          if (body.name) {
             _package.setName(body.name);
          }
+         // Preserve `explores` across a metadata PATCH. `setPackageMetadata`
+         // replaces the whole object, so a name/description-only update must
+         // carry the existing discovery surface through — otherwise the
+         // in-memory `explores` is wiped and `listModels()` silently starts
+         // serving every model until the next reload. When the body explicitly
+         // carries `explores`, honor the new set instead.
+         const existing = _package.getPackageMetadata();
+         const explores =
+            body.explores !== undefined ? body.explores : existing.explores;
+         const queryableSources =
+            body.queryableSources !== undefined
+               ? body.queryableSources
+               : existing.queryableSources;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
             resource: body.resource,
             location: body.location,
+            explores,
+            queryableSources,
          });
+
+         // Strict-reject, symmetric with the publish path
+         // (package.controller.addPackage): validate the resulting explores
+         // against the live model set and restore the prior metadata before
+         // rejecting, so a bad update neither persists nor mutates the served
+         // surface.
+         const invalidMsg = _package.formatInvalidExplores();
+         if (invalidMsg) {
+            _package.setPackageMetadata(existing);
+            throw new BadRequestError(invalidMsg);
+         }
 
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
+            explores: body.explores,
+            queryableSources: body.queryableSources,
          });
 
          return _package.getPackageMetadata();
@@ -1242,6 +1320,38 @@ export class Environment {
                   });
             });
          }
+      });
+   }
+
+   /**
+    * Evict a package from the in-memory caches WITHOUT touching its on-disk
+    * directory — the non-destructive counterpart to {@link deletePackage}.
+    *
+    * Used to roll back a no-location `addPackage` (which registers a
+    * *pre-existing*, user-owned directory) when post-load validation rejects
+    * it: deleting the tree there would destroy content the publisher never
+    * created. This still drains and closes the connections the just-created
+    * `Package` opened, so the duckdb handle isn't leaked.
+    */
+   public async unloadPackage(packageName: string): Promise<void> {
+      assertSafePackageName(packageName);
+      return this.withPackageLock(packageName, async () => {
+         const _package = this.packages.get(packageName);
+         if (!_package) {
+            return;
+         }
+         if (
+            this.packageStatuses.get(packageName)?.status ===
+            PackageStatus.SERVING
+         ) {
+            this.setPackageStatus(packageName, PackageStatus.UNLOADING);
+         }
+         // Same 30s connection drain as deletePackage — just no fs rename/rm.
+         this.retireConnectionGeneration(`package ${packageName}`, () =>
+            _package.getMalloyConfig().shutdown("close"),
+         );
+         this.packages.delete(packageName);
+         this.packageStatuses.delete(packageName);
       });
    }
 
