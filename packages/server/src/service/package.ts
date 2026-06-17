@@ -272,10 +272,18 @@ export class Package {
             // cleans the package directory.
             throw err;
          }
-         models.set(
-            sm.modelPath,
-            Model.fromSerialized(packageName, packagePath, malloyConfig, sm),
+         const model = Model.fromSerialized(
+            packageName,
+            packagePath,
+            malloyConfig,
+            sm,
          );
+         // Validate renderer tags on the main thread (the renderer is too heavy
+         // to load inside the pure-CPU package-load worker). A misconfigured tag
+         // throws a ModelCompilationError (424), aborting the whole load like any
+         // other per-model compile error above.
+         await model.validateRenderTags();
+         models.set(sm.modelPath, model);
       }
 
       const endTime = performance.now();
@@ -404,15 +412,39 @@ export class Package {
                ),
             );
          } else {
-            nextModels.set(
-               sm.modelPath,
-               Model.fromSerialized(
-                  this.packageName,
-                  this.packagePath,
-                  this.malloyConfig,
-                  sm,
-               ),
+            const model = Model.fromSerialized(
+               this.packageName,
+               this.packagePath,
+               this.malloyConfig,
+               sm,
             );
+            // Validate renderer tags here too (loadViaWorker does it for the
+            // create path). Reload keeps per-model placeholders rather than
+            // aborting the whole package, so a render-tag error is recorded as
+            // this model's compilationError instead of thrown.
+            try {
+               await model.validateRenderTags();
+               nextModels.set(sm.modelPath, model);
+            } catch (renderErr) {
+               const err =
+                  renderErr instanceof Error
+                     ? renderErr
+                     : new Error(String(renderErr));
+               logger.warn("Render-tag validation failed during reload", {
+                  packageName: this.packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+               nextModels.set(
+                  sm.modelPath,
+                  Model.fromCompilationError(
+                     this.packageName,
+                     sm.modelPath,
+                     sm.modelType,
+                     err,
+                  ),
+               );
+            }
          }
       }
       this.models = nextModels;

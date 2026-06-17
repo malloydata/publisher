@@ -101,6 +101,18 @@ interface RunnableNotebookCell {
    queryInfo?: Malloy.QueryInfo;
 }
 
+/**
+ * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
+ * query string. Escapes backslashes and backticks (in that order) so a name
+ * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
+ * contains an embedded backtick cannot break out of the quotes. Mirrors
+ * malloy's internal `identifierCode` / `escapeIdentifier` (to_stable.ts), which
+ * is not exported.
+ */
+function quoteMalloyIdentifier(name: string | undefined): string {
+   return "`" + (name ?? "").replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
+}
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -698,6 +710,101 @@ export class Model {
 
    public getQueries(): ApiQuery[] | undefined {
       return this.queries;
+   }
+
+   /**
+    * Compile-time renderer-tag validation, run on the main thread.
+    *
+    * The renderer (`@malloydata/render`) is a large solid-js bundle that mutates
+    * DOM globals at import; loading it inside the package-load worker isolate
+    * destabilizes that thread (it is deliberately kept pure-CPU). So validation
+    * runs here, after the worker has hydrated this Model, where the renderer is
+    * already used at query time (see query.controller.ts / execute_query_tool.ts).
+    *
+    * Prepares each annotated top-level named query (`run: <name>`) and each
+    * annotated source view (`run: <source> -> <view>`) compile-only -- no
+    * execution -- to get a stable result schema, then runs the renderer's
+    * headless `validateRenderTags`. Targets with no annotations carry no render
+    * tags, so they are skipped without compiling. Any
+    * error-severity finding throws a `ModelCompilationError` (HTTP 424) so a
+    * misconfigured tag (e.g. a child-only `# big_value { sparkline=... }` placed
+    * on a view with no activating big_value) fails the package load with a clear
+    * message instead of rendering as "[object Object]" at query time. Warnings
+    * (e.g. unread tags) are left for the query-time `renderLogs` surface so a
+    * benign render lint never blocks a load.
+    */
+   public async validateRenderTags(): Promise<void> {
+      const mm = this.modelMaterializer;
+      if (!mm) {
+         return;
+      }
+      // Dynamic import (like execute_query_tool.ts): the renderer is heavy and
+      // mutates DOM globals on load, so only pull it in when there's a model to
+      // validate.
+      const { validateRenderTags } = await import(
+         "@malloydata/render-validator"
+      );
+
+      // Renderable targets: top-level named queries and every view declared on a
+      // source. Source views are where render tags like `# big_value` usually
+      // live, and they are NOT in `this.queries`.
+      const targets: { label: string; queryString: string }[] = [];
+      for (const query of this.queries ?? []) {
+         // Only an annotated, named query can carry a render tag to validate;
+         // skip the rest rather than compiling every query in the package.
+         if (!query.name || !query.annotations?.length) {
+            continue;
+         }
+         // Quote the identifier (see quoteMalloyIdentifier) so a name needing
+         // Malloy quoting still lexes and cannot break out of the quotes.
+         targets.push({
+            label: query.name,
+            queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
+         });
+      }
+      for (const source of this.sources ?? []) {
+         for (const view of source.views ?? []) {
+            // Render tags live on the view's own or inherited annotations, not
+            // via source-to-view inheritance, so an unannotated view has
+            // nothing to validate and need not be compiled. (A model-level
+            // `##` tag is the one case this gate doesn't reach, but those are
+            // theme/config, not the child-only chart tags this guards against.)
+            if (!view.annotations?.length) {
+               continue;
+            }
+            // Quote both identifiers (see quoteMalloyIdentifier): an unquoted
+            // name like `gated-source` fails to lex, and the catch below would
+            // then silently skip the very view this is meant to validate.
+            targets.push({
+               label: `${source.name} -> ${view.name}`,
+               queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,
+            });
+         }
+      }
+
+      for (const target of targets) {
+         let result: Malloy.Result;
+         try {
+            const prepared = await mm
+               .loadQuery(target.queryString)
+               .getPreparedResult();
+            result = prepared.toStableResult();
+         } catch {
+            // A view/query that fails to prepare is reported by the normal
+            // compile path; don't mask that with a render-tag error.
+            continue;
+         }
+         const errors = validateRenderTags(result).filter(
+            (log) => log.severity === "error",
+         );
+         if (errors.length > 0) {
+            throw new ModelCompilationError({
+               message: `Invalid renderer configuration on '${target.label}': ${errors
+                  .map((e) => e.message)
+                  .join("; ")}`,
+            });
+         }
+      }
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
