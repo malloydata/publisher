@@ -709,7 +709,7 @@ function buildTemporaryTableController(
  * the same three OOM guards as `getConnectionQueryData` must apply:
  * sqlStatement shape, admission, and wall-clock timeout. The
  * per-pod concurrency cap is wired at the route layer in `server.ts`
- * / `server-old.ts` and exercised by `oom_guards.integration.spec.ts`.
+ * and exercised by `oom_guards.integration.spec.ts`.
  */
 describe("ConnectionController.getConnectionTemporaryTable guards", () => {
    const originalTimeout = process.env.PUBLISHER_QUERY_TIMEOUT_MS;
