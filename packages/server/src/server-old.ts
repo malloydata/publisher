@@ -376,26 +376,7 @@ export function registerLegacyRoutes(
       },
    );
 
-   // sqlSource (deprecated GET + supported POST), per-project + per-package
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionSqlSource(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.query.sqlStatement as string,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
+   // sqlSource (POST), per-project + per-package
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
       async (req, res) => {
@@ -405,26 +386,6 @@ export function registerLegacyRoutes(
                   req.params.projectName,
                   req.params.connectionName,
                   req.body.sqlStatement as string,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/sqlSource`,
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionSqlSource(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.query.sqlStatement as string,
-                  req.params.packageName,
                ),
             );
          } catch (error) {
@@ -564,48 +525,7 @@ export function registerLegacyRoutes(
       },
    );
 
-   // temporaryTable (deprecated GET) + sqlTemporaryTable (supported POST)
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/temporaryTable`,
-      queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionTemporaryTable(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.query.sqlStatement as string,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/connections/:connectionName/temporaryTable`,
-      queryConcurrency(),
-      async (req, res) => {
-         try {
-            res.status(200).json(
-               await connectionController.getConnectionTemporaryTable(
-                  req.params.projectName,
-                  req.params.connectionName,
-                  req.query.sqlStatement as string,
-                  req.params.packageName,
-               ),
-            );
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
+   // sqlTemporaryTable (POST), per-project + per-package
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlTemporaryTable`,
       queryConcurrency(),

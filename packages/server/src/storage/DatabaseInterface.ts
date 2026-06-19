@@ -122,6 +122,11 @@ export interface Materialization {
    id: string;
    environmentId: string;
    packageName: string;
+   /**
+    * Echoes the create-time flag (read from metadata). False (default) =
+    * auto-run all phases; true = pause at BUILD_PLAN_READY for Round 2.
+    */
+   pauseBetweenPhases: boolean;
    status: MaterializationStatus;
    /** Round 1 output. Null until status >= BUILD_PLAN_READY. */
    buildPlan: BuildPlan | null;

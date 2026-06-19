@@ -22,6 +22,29 @@ export function isTerminalStatus(status?: MaterializationStatus): boolean {
    );
 }
 
+/**
+ * Human-friendly status label. The publisher drives every phase automatically,
+ * so the intermediate protocol states (PENDING / BUILD_PLAN_READY /
+ * MANIFEST_ROWS_READY) all read as "Pending" and the terminal success state
+ * reads as "Done". Failures and cancellations keep their own labels.
+ */
+export function statusLabel(status?: MaterializationStatus): string {
+   switch (status) {
+      case MaterializationStatus.ManifestFileReady:
+         return "Done";
+      case MaterializationStatus.Failed:
+         return "Failed";
+      case MaterializationStatus.Cancelled:
+         return "Cancelled";
+      case MaterializationStatus.Pending:
+      case MaterializationStatus.BuildPlanReady:
+      case MaterializationStatus.ManifestRowsReady:
+         return "Pending";
+      default:
+         return "Unknown";
+   }
+}
+
 type ChipColor = "default" | "info" | "success" | "error" | "warning";
 
 export function statusColor(status?: MaterializationStatus): ChipColor {
@@ -77,6 +100,20 @@ export function formatDuration(
    const hours = Math.floor(minutes / 60);
    const remMinutes = minutes % 60;
    return `${hours}h ${remMinutes}m`;
+}
+
+/** Absolute, locale-formatted timestamp (e.g. "Jun 19, 2026, 3:33 PM"). */
+export function formatTimestamp(iso?: string | null): string {
+   if (!iso) return "—";
+   const date = new Date(iso);
+   if (Number.isNaN(date.getTime())) return "—";
+   return date.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+   });
 }
 
 /** Compact relative timestamp, e.g. "just now", "5m ago", "2h ago", "3d ago". */

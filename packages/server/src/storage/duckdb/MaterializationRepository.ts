@@ -232,14 +232,16 @@ export class MaterializationRepository {
    }
 
    private mapRow(row: Record<string, unknown>): Materialization {
+      const metadata = parseJsonColumn<Record<string, unknown>>(row.metadata);
       return {
          id: row.id as string,
          environmentId: row.environment_id as string,
          packageName: row.package_name as string,
+         pauseBetweenPhases: metadata?.pauseBetweenPhases === true,
          status: row.status as MaterializationStatus,
          buildPlan: parseJsonColumn<BuildPlan>(row.build_plan),
          manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
-         metadata: parseJsonColumn<Record<string, unknown>>(row.metadata),
+         metadata,
          startedAt: row.started_at ? new Date(row.started_at as string) : null,
          completedAt: row.completed_at
             ? new Date(row.completed_at as string)

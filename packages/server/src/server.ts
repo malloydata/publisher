@@ -8,7 +8,6 @@ import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
-import { ParsedQs } from "qs";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -1043,28 +1042,6 @@ app.get(
    },
 );
 
-/**
- * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlSource POST method instead
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
    async (req, res) => {
@@ -1085,26 +1062,6 @@ app.post(
 );
 
 // Per-package versions
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
    async (req, res) => {
@@ -1139,21 +1096,12 @@ app.post(
    queryConcurrency(),
    async (req, res) => {
       try {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-
-         // Support both body and query parameters for options for backwards compatibility
-         // TODO: To be removed in the future
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               options as string,
+               req.body?.options as string,
             ),
          );
       } catch (error) {
@@ -1169,65 +1117,12 @@ app.post(
    queryConcurrency(),
    async (req, res) => {
       try {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               options as string,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * @deprecated Use environments/:environmentName/connections/:connectionName/sqlTemporaryTable POST method instead
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/temporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/temporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
+               req.body?.options as string,
                req.params.packageName,
             ),
          );

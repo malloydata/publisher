@@ -75,18 +75,19 @@ export default function Materializations({
          queryKey: ["materializations", environmentName, packageName],
       });
 
-   // Round 1 only: ask the publisher to compile and produce a build plan. The
-   // control plane drives Round 2 (the build) from that plan, so there is no
-   // "start" call here.
+   // Auto-run: the publisher compiles, builds every persist source, and loads
+   // the resulting manifest in a single pass.
    const createMaterialization = useMutationWithApiError({
       mutationFn: (opts: { forceRefresh: boolean }) =>
          apiClients.materializations.createMaterialization(
             environmentName,
             packageName,
-            { forceRefresh: opts.forceRefresh },
+            {
+               forceRefresh: opts.forceRefresh,
+            },
          ),
       onSuccess() {
-         setNotificationMessage("Build plan requested");
+         setNotificationMessage("Materialization requested");
          invalidateList();
       },
       onError(error) {
@@ -180,8 +181,8 @@ export default function Materializations({
                      Materializations
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                     Plan persist sources for {packageName}; the control plane
-                     drives the build and produces the manifest
+                     Materialize the persist sources in {packageName} into
+                     tables and serve queries from them
                   </Typography>
                </Box>
                {mutable && (

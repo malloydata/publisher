@@ -435,11 +435,17 @@ program
 // the build from the resulting plan)
 program
   .command("materialize")
-  .description("Create a materialization build plan (Round 1) for a package")
+  .description(
+    "Materialize a package: by default run all phases (build + load); use --pause-between-phases for the control-plane two-round flow",
+  )
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
   .option("--force-refresh", "Rebuild all sources, ignoring existing build IDs")
-  .option("--wait", "Poll until the build plan is ready or the run settles")
+  .option(
+    "--pause-between-phases",
+    "Pause at BUILD_PLAN_READY for the control plane to drive Round 2 (default: run all phases)",
+  )
+  .option("--wait", "Poll until the run settles (build complete, or paused)")
   .option(
     "--timeout <seconds>",
     "With --wait, seconds to wait before giving up (default 120)",
@@ -462,6 +468,7 @@ program
         options.package,
         {
           forceRefresh: options.forceRefresh,
+          pauseBetweenPhases: options.pauseBetweenPhases,
           wait: options.wait,
           timeoutMs: timeoutSec !== undefined ? timeoutSec * 1000 : undefined,
           pollIntervalMs: pollSec !== undefined ? pollSec * 1000 : undefined,

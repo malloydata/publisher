@@ -75,9 +75,9 @@ export default function CreateMaterializationDialog({
             </DialogTitle>
             <DialogContent>
                <DialogContentText sx={{ mb: 2 }}>
-                  Compile this package and produce a build plan for every
-                  persist source. The control plane assigns table identities and
-                  drives the build from the plan.
+                  Materialize every persist source in this package: compile,
+                  build the tables, and load them so queries serve from the
+                  materialized tables.
                </DialogContentText>
                <FormGroup>
                   <FormControlLabel
@@ -100,7 +100,7 @@ export default function CreateMaterializationDialog({
                   loading={isSubmitting}
                   onClick={handleRun}
                >
-                  Create plan
+                  Materialize
                </Button>
             </DialogActions>
          </Dialog>

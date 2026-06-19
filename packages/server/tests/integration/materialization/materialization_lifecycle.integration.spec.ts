@@ -21,7 +21,7 @@ const SETTLED_STATUSES = [
 ];
 const TERMINAL_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
-describe("Materialization two-round REST API (E2E)", () => {
+describe("Materialization REST API: auto-run + two-round (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 
@@ -91,13 +91,16 @@ describe("Materialization two-round REST API (E2E)", () => {
       return `${baseUrl}${API}${p}`;
    }
 
+   // Most tests here exercise the control-plane two-round flow, so default to
+   // pauseBetweenPhases=true (pause at BUILD_PLAN_READY). The auto-run group
+   // overrides this with pauseBetweenPhases=false.
    async function createMaterialization(
       body: Record<string, unknown> = {},
    ): Promise<Response> {
       return fetch(url("/materializations"), {
          method: "POST",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(body),
+         body: JSON.stringify({ pauseBetweenPhases: true, ...body }),
       });
    }
 
@@ -161,6 +164,95 @@ describe("Materialization two-round REST API (E2E)", () => {
       expect(values.length).toBeGreaterThan(0);
       return values[0];
    }
+
+   // ── Group A0: Auto-run lifecycle (default) ───────────────────────
+
+   describe("auto-run lifecycle (default)", () => {
+      it(
+         "runs all phases on create, self-assigns names, and auto-loads",
+         async () => {
+            // pauseBetweenPhases=false (default): the publisher runs compile +
+            // plan + build + load in one pass with no Round 2.
+            const createRes = await createMaterialization({
+               pauseBetweenPhases: false,
+            });
+            expect(createRes.status).toBe(201);
+            const created = (await createRes.json()) as Record<string, unknown>;
+            expect(created.status).toBe("PENDING");
+            expect(created.pauseBetweenPhases).toBe(false);
+            const id = created.id as string;
+
+            // It settles at MANIFEST_FILE_READY without any build instruction.
+            const built = await pollUntil(
+               id,
+               (s) => TERMINAL_STATUSES.includes(s),
+               90_000,
+            );
+            expect(built.status).toBe("MANIFEST_FILE_READY");
+
+            // The manifest carries the self-assigned physical table name (from
+            // `#@ persist name="order_summary"`).
+            const manifest = built.manifest as Record<string, unknown>;
+            expect(manifest).toBeDefined();
+            const entries = manifest.entries as Record<
+               string,
+               Record<string, unknown>
+            >;
+            const values = Object.values(entries);
+            expect(values.length).toBe(1);
+            expect(values[0].physicalTableName).toBe("order_summary");
+            expect(values[0].sourceName).toBe("order_summary");
+            expect(values[0].realization).toBe("COPY");
+
+            // Cleanup: delete the record and drop the self-built table.
+            const deleteRes = await fetch(
+               url(`/materializations/${id}?dropTables=true`),
+               { method: "DELETE" },
+            );
+            expect(deleteRes.status).toBe(204);
+         },
+         { timeout: 120_000 },
+      );
+
+      it("rejects action=build on an auto-run materialization (409)", async () => {
+         // Force a pause so we can observe a BUILD_PLAN_READY record, but mark it
+         // auto-run via metadata by creating a real auto-run and racing build is
+         // flaky; instead assert the guard on a freshly created auto-run that we
+         // immediately try to build. Auto-run never needs Round 2.
+         const createRes = await createMaterialization({
+            pauseBetweenPhases: false,
+         });
+         expect(createRes.status).toBe(201);
+         const { id } = (await createRes.json()) as { id: string };
+
+         // Drive to terminal so there is no in-flight round, then assert build
+         // is rejected (auto-run records never accept action=build).
+         await pollUntil(id, (s) => TERMINAL_STATUSES.includes(s), 90_000);
+
+         const buildRes = await fetch(
+            url(`/materializations/${id}?action=build`),
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  sources: [
+                     {
+                        buildId: "x",
+                        materializedTableId: "mt",
+                        physicalTableName: "t",
+                        realization: "COPY",
+                     },
+                  ],
+               }),
+            },
+         );
+         expect(buildRes.status).toBe(409);
+
+         await fetch(url(`/materializations/${id}?dropTables=true`), {
+            method: "DELETE",
+         });
+      });
+   });
 
    // ── Group A: Full two-round lifecycle (happy path) ────────────────
 

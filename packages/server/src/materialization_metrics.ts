@@ -15,7 +15,7 @@
 
 import { metrics, type Counter, type Histogram } from "@opentelemetry/api";
 
-export type MaterializationRound = "round1" | "round2";
+export type MaterializationRound = "round1" | "round2" | "auto";
 export type MaterializationOutcome = "success" | "failed" | "cancelled";
 
 let roundCounter: Counter | null = null;
@@ -31,7 +31,7 @@ function ensureTelemetry(): { counter: Counter; duration: Histogram } {
          "publisher_materialization_rounds_total",
          {
             description:
-               "Materialization rounds completed. Labels: round ('round1'|'round2'), outcome ('success'|'failed'|'cancelled').",
+               "Materialization rounds completed. Labels: round ('round1'|'round2'|'auto'), outcome ('success'|'failed'|'cancelled').",
          },
       );
    }
@@ -40,7 +40,7 @@ function ensureTelemetry(): { counter: Counter; duration: Histogram } {
          "publisher_materialization_round_duration_ms",
          {
             description:
-               "Wall-clock duration of a materialization round. Label: round ('round1'|'round2').",
+               "Wall-clock duration of a materialization round. Label: round ('round1'|'round2'|'auto').",
             unit: "ms",
          },
       );

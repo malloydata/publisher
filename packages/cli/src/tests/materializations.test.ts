@@ -68,7 +68,7 @@ describe("Materialization Commands", () => {
     );
   });
 
-  test("materialize creates Round 1 plan, no poll without wait", async () => {
+  test("materialize creates a run, no poll without wait", async () => {
     const mockClient = {
       createMaterialization: mock(() =>
         Promise.resolve({ id: "m1", status: "PENDING" }),
@@ -86,6 +86,7 @@ describe("Materialization Commands", () => {
       "pkg",
       {
         forceRefresh: true,
+        pauseBetweenPhases: undefined,
       },
     );
     // Round 2 (build) is control-plane driven; the CLI never starts a build.
@@ -93,7 +94,54 @@ describe("Materialization Commands", () => {
     expect(mockClient.getMaterialization).not.toHaveBeenCalled();
   });
 
-  test("materialize with wait polls until the build plan is ready", async () => {
+  test("materialize forwards pauseBetweenPhases for the two-round flow", async () => {
+    const mockClient = {
+      createMaterialization: mock(() =>
+        Promise.resolve({ id: "m1", status: "PENDING" }),
+      ),
+    } as unknown as PublisherClient;
+
+    await materializationCommands.materialize(mockClient, "env", "pkg", {
+      pauseBetweenPhases: true,
+    });
+
+    expect(mockClient.createMaterialization).toHaveBeenCalledWith(
+      "env",
+      "pkg",
+      {
+        forceRefresh: undefined,
+        pauseBetweenPhases: true,
+      },
+    );
+  });
+
+  test("materialize (auto-run) with wait polls past BUILD_PLAN_READY to MANIFEST_FILE_READY", async () => {
+    let calls = 0;
+    const mockClient = {
+      createMaterialization: mock(() =>
+        Promise.resolve({ id: "m1", status: "PENDING" }),
+      ),
+      getMaterialization: mock(() => {
+        calls += 1;
+        // Auto-run does not settle at BUILD_PLAN_READY; it must keep polling
+        // until MANIFEST_FILE_READY.
+        return Promise.resolve({
+          id: "m1",
+          status: calls >= 3 ? "MANIFEST_FILE_READY" : "BUILD_PLAN_READY",
+        });
+      }),
+    } as unknown as PublisherClient;
+
+    await materializationCommands.materialize(mockClient, "env", "pkg", {
+      wait: true,
+      pollIntervalMs: 1,
+      timeoutMs: 1000,
+    });
+
+    expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
+  test("materialize (pause) with wait settles at BUILD_PLAN_READY", async () => {
     let calls = 0;
     const mockClient = {
       createMaterialization: mock(() =>
@@ -109,6 +157,7 @@ describe("Materialization Commands", () => {
     } as unknown as PublisherClient;
 
     await materializationCommands.materialize(mockClient, "env", "pkg", {
+      pauseBetweenPhases: true,
       wait: true,
       pollIntervalMs: 1,
       timeoutMs: 1000,

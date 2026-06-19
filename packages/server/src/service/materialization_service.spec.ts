@@ -27,6 +27,7 @@ function makeMaterialization(
       id: "mat-1",
       environmentId: "env-1",
       packageName: "pkg",
+      pauseBetweenPhases: false,
       status: "PENDING",
       buildPlan: null,
       manifest: null,
@@ -178,7 +179,11 @@ describe("MaterializationService", () => {
          const result = await ctx.service.createMaterialization(
             "my-env",
             "pkg",
-            { forceRefresh: true, sourceNames: ["orders"] },
+            {
+               forceRefresh: true,
+               sourceNames: ["orders"],
+               pauseBetweenPhases: true,
+            },
          );
 
          expect(result.status).toBe("PENDING");
@@ -186,8 +191,29 @@ describe("MaterializationService", () => {
             "env-1",
             "pkg",
             "PENDING",
-            { forceRefresh: true, sourceNames: ["orders"] },
+            {
+               forceRefresh: true,
+               sourceNames: ["orders"],
+               pauseBetweenPhases: true,
+            },
          ]);
+      });
+
+      it("defaults pauseBetweenPhases to false (auto-run) in metadata", async () => {
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({ status: "PENDING" }),
+         );
+
+         await ctx.service.createMaterialization("my-env", "pkg", {});
+
+         expect(ctx.repository.createMaterialization.firstCall.args[3]).toEqual(
+            {
+               forceRefresh: false,
+               sourceNames: null,
+               pauseBetweenPhases: false,
+            },
+         );
       });
 
       it("rejects when an active materialization already exists", async () => {
@@ -215,9 +241,27 @@ describe("MaterializationService", () => {
    });
 
    describe("buildMaterialization (Round 2)", () => {
+      it("rejects action=build on an auto-run materialization", async () => {
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "BUILD_PLAN_READY",
+               pauseBetweenPhases: false,
+               buildPlan: makeBuildPlan(),
+            }),
+         );
+         await expect(
+            ctx.service.buildMaterialization("my-env", "pkg", "mat-1", [
+               makeInstruction(),
+            ]),
+         ).rejects.toThrow(InvalidStateTransitionError);
+      });
+
       it("rejects when not at BUILD_PLAN_READY", async () => {
          ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({ status: "PENDING" }),
+            makeMaterialization({
+               status: "PENDING",
+               pauseBetweenPhases: true,
+            }),
          );
          await expect(
             ctx.service.buildMaterialization("my-env", "pkg", "mat-1", [
@@ -230,6 +274,7 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "BUILD_PLAN_READY",
+               pauseBetweenPhases: true,
                buildPlan: makeBuildPlan(),
             }),
          );
@@ -244,6 +289,7 @@ describe("MaterializationService", () => {
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
                status: "BUILD_PLAN_READY",
+               pauseBetweenPhases: true,
                buildPlan: makeBuildPlan(),
             }),
          );
@@ -257,6 +303,7 @@ describe("MaterializationService", () => {
       it("accepts a valid build and returns the record (202)", async () => {
          const m = makeMaterialization({
             status: "BUILD_PLAN_READY",
+            pauseBetweenPhases: true,
             buildPlan: makeBuildPlan(),
          });
          ctx.repository.getMaterializationById.resolves(m);
