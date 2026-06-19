@@ -2383,6 +2383,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - materializations
+      operationId: delete-materialization
+      summary: Delete a materialization
+      description: Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
+        materialization record.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+        - $ref: "#/components/parameters/materializationId"
+      responses:
+        "204":
+          description: Materialization deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Materialization cannot be deleted while it is active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   responses:
