@@ -74,6 +74,7 @@ export function registerSignalHandlers(
    mcpServer: Server,
    shutdownDrainDurationSeconds: number = 0,
    shutdownGracefulCloseTimeoutSeconds: number = 0,
+   agentMcpServer?: Server,
 ): void {
    // Keep the process alive on SIGTERM — do not close the server.
    // K8s will SIGKILL after terminationGracePeriodSeconds (which cannot be caught).
@@ -96,6 +97,7 @@ export function registerSignalHandlers(
          server,
          mcpServer,
          shutdownGracefulCloseTimeoutSeconds,
+         agentMcpServer,
       );
    });
 }
@@ -114,6 +116,7 @@ export async function performGracefulShutdownAfterDrain(
    server: Server,
    mcpServer: Server,
    shutdownGracefulCloseTimeoutSeconds: number,
+   agentMcpServer?: Server,
 ): Promise<void> {
    const closeServer = (server: Server, name: string) =>
       new Promise<void>((resolve) => {
@@ -134,6 +137,9 @@ export async function performGracefulShutdownAfterDrain(
    await Promise.all([
       closeServer(server, "Main server"),
       closeServer(mcpServer, "MCP server"),
+      ...(agentMcpServer
+         ? [closeServer(agentMcpServer, "Agent MCP server")]
+         : []),
    ]);
 
    try {
