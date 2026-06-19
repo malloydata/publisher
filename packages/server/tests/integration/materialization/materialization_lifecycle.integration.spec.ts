@@ -234,10 +234,12 @@ describe("Materialization two-round REST API (E2E)", () => {
             expect(entry.physicalTableName).toBe(physicalTableName);
             expect(entry.sourceName).toBe("order_summary");
 
-            // A terminal materialization can be deleted (record-only on the publisher).
-            const deleteRes = await fetch(url(`/materializations/${id}`), {
-               method: "DELETE",
-            });
+            // A terminal materialization can be deleted; dropTables=true also
+            // drops the physical table this run produced in Round 2.
+            const deleteRes = await fetch(
+               url(`/materializations/${id}?dropTables=true`),
+               { method: "DELETE" },
+            );
             expect(deleteRes.status).toBe(204);
 
             // It's gone.

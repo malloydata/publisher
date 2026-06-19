@@ -35,6 +35,7 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
+import { fetchManifestEntries } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -830,6 +831,7 @@ export class Environment {
             packagePath,
             () => this.malloyConfig.malloyConfig,
          );
+         await this.bindManifestIfConfigured(_package);
          if (existingPackage !== undefined && reload) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
                existingPackage.getMalloyConfig().shutdown("close"),
@@ -1056,6 +1058,11 @@ export class Environment {
             throw err;
          }
 
+         // Best-effort manifest bind happens after the swap commits, outside the
+         // rollback window: a manifest that can't be fetched must not undo an
+         // otherwise-successful install (the package serves live instead).
+         await this.bindManifestIfConfigured(newPackage);
+
          this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
 
@@ -1111,6 +1118,47 @@ export class Environment {
    }
 
    /**
+    * If the freshly-loaded package declares a `manifestLocation`, fetch the
+    * control-plane-computed build manifest and rebind its models so persist
+    * references resolve to the materialized tables. Best-effort: a fetch/bind
+    * failure logs a warning and leaves the package serving live (the models are
+    * already loaded without a manifest). Callers must hold the package lock —
+    * this rebinds `pkg` in place rather than re-entering {@link withPackageLock}.
+    */
+   private async bindManifestIfConfigured(pkg: Package): Promise<void> {
+      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+      if (!manifestLocation) {
+         return;
+      }
+      await this.bindManifest(pkg, manifestLocation);
+   }
+
+   /** Fetch + bind a specific manifest URI onto an already-loaded package. */
+   private async bindManifest(
+      pkg: Package,
+      manifestLocation: string,
+   ): Promise<void> {
+      const packageName = pkg.getPackageName();
+      try {
+         const entries = await fetchManifestEntries(manifestLocation);
+         await pkg.reloadAllModels(entries);
+         logger.info("Bound build manifest to package", {
+            environmentName: this.environmentName,
+            packageName,
+            manifestLocation,
+            entryCount: Object.keys(entries).length,
+         });
+      } catch (err) {
+         logger.warn("Failed to bind build manifest; serving live", {
+            environmentName: this.environmentName,
+            packageName,
+            manifestLocation,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+
+   /**
     * Read a model's source text from disk, holding the per-package mutex
     * so the read is serialized against {@link installPackage} /
     * {@link deletePackage} / {@link updatePackage}.
@@ -1139,6 +1187,7 @@ export class Environment {
          description?: string;
          explores?: string[];
          queryableSources?: "declared" | "all";
+         manifestLocation?: string | null;
       },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
@@ -1167,6 +1216,9 @@ export class Environment {
                : {}),
             ...(metadata.queryableSources !== undefined
                ? { queryableSources: metadata.queryableSources }
+               : {}),
+            ...(metadata.manifestLocation !== undefined
+               ? { manifestLocation: metadata.manifestLocation }
                : {}),
          };
 
@@ -1214,6 +1266,12 @@ export class Environment {
             body.queryableSources !== undefined
                ? body.queryableSources
                : existing.queryableSources;
+         // Preserve the existing manifestLocation unless the body explicitly
+         // sets it (including to null, which clears it and reverts to live).
+         const manifestLocation =
+            body.manifestLocation !== undefined
+               ? body.manifestLocation
+               : existing.manifestLocation;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
@@ -1221,6 +1279,7 @@ export class Environment {
             location: body.location,
             explores,
             queryableSources,
+            manifestLocation,
          });
 
          // Strict-reject, symmetric with the publish path
@@ -1239,7 +1298,19 @@ export class Environment {
             description: body.description,
             explores: normalizedExplores,
             queryableSources: body.queryableSources,
+            manifestLocation: body.manifestLocation,
          });
+
+         // When the body changes manifestLocation, apply it now so the new
+         // binding takes effect without a separate reload: a URI rebinds models
+         // to the materialized tables; null/empty reverts the package to live.
+         if (body.manifestLocation !== undefined) {
+            if (body.manifestLocation) {
+               await this.bindManifest(_package, body.manifestLocation);
+            } else {
+               await _package.reloadAllModels({});
+            }
+         }
 
          return _package.getPackageMetadata();
       });

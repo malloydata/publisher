@@ -337,6 +337,112 @@ describe("MaterializationService", () => {
             expect(ctx.repository.deleteMaterialization.called).toBe(false);
          });
       }
+
+      it("does not drop tables by default (record-only delete)", async () => {
+         const runSQL = sinon.stub().resolves();
+         const getMalloyConnection = sinon.stub().resolves({ runSQL });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves({ getMalloyConnection }),
+            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+               fn(),
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  builtAt: new Date().toISOString(),
+                  strict: false,
+                  entries: {
+                     b1: {
+                        buildId: "b1",
+                        physicalTableName: "orders_mz",
+                        connectionName: "duckdb",
+                     },
+                  },
+               },
+            }),
+         );
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+
+         expect(getMalloyConnection.called).toBe(false);
+         expect(runSQL.called).toBe(false);
+         expect(
+            ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
+         ).toBe(true);
+      });
+
+      it("drops manifest tables (and staging) when dropTables is set", async () => {
+         const runSQL = sinon.stub().resolves();
+         const getMalloyConnection = sinon.stub().resolves({ runSQL });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves({ getMalloyConnection }),
+            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+               fn(),
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  builtAt: new Date().toISOString(),
+                  strict: false,
+                  entries: {
+                     b1: {
+                        buildId: "b1",
+                        physicalTableName: "orders_mz",
+                        connectionName: "duckdb",
+                     },
+                  },
+               },
+            }),
+         );
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+            dropTables: true,
+         });
+
+         expect(getMalloyConnection.calledOnceWith("duckdb")).toBe(true);
+         const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
+         expect(dropped).toContain("DROP TABLE IF EXISTS orders_mz");
+         expect(dropped.some((s) => s.includes("orders_mz_"))).toBe(true);
+         expect(
+            ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
+         ).toBe(true);
+      });
+
+      it("still deletes the record when a table drop fails", async () => {
+         const runSQL = sinon.stub().rejects(new Error("boom"));
+         const getMalloyConnection = sinon.stub().resolves({ runSQL });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves({ getMalloyConnection }),
+            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+               fn(),
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "FAILED",
+               manifest: {
+                  builtAt: new Date().toISOString(),
+                  strict: false,
+                  entries: {
+                     b1: {
+                        buildId: "b1",
+                        physicalTableName: "orders_mz",
+                        connectionName: "duckdb",
+                     },
+                  },
+               },
+            }),
+         );
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+            dropTables: true,
+         });
+
+         expect(
+            ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
+         ).toBe(true);
+      });
    });
 });
 

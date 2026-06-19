@@ -311,6 +311,7 @@ export class Package {
          resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
          explores: outcome.packageMetadata.explores,
          queryableSources: outcome.packageMetadata.queryableSources,
+         manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -631,6 +632,8 @@ export class Package {
       this.packageMetadata.explores = outcome.packageMetadata.explores;
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
+      this.packageMetadata.manifestLocation =
+         outcome.packageMetadata.manifestLocation ?? null;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
       // Re-run the fail-safe warning against the refreshed model set: an edit

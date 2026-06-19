@@ -1061,6 +1061,7 @@ export function registerLegacyRoutes(
                req.params.projectName,
                req.params.packageName,
                req.params.materializationId,
+               { dropTables: req.query.dropTables === "true" },
             );
             res.status(204).send();
          } catch (error) {
