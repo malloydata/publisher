@@ -324,12 +324,14 @@ export class PublisherClient {
     environmentName: string,
     packageName: string,
     materializationId: string,
+    dropTables?: boolean,
   ): Promise<void> {
     try {
       await this.materializationsApi.deleteMaterialization(
         environmentName,
         packageName,
         materializationId,
+        dropTables,
       );
     } catch (error) {
       throw this.handleError(error as AxiosError);

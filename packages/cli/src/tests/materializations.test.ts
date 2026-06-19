@@ -174,6 +174,28 @@ describe("Materialization Commands", () => {
       "env",
       "pkg",
       "m1",
+      undefined,
+    );
+  });
+
+  test("deleteMaterialization forwards dropTables", async () => {
+    const mockClient = {
+      deleteMaterialization: mock(() => Promise.resolve()),
+    } as unknown as PublisherClient;
+
+    await materializationCommands.deleteMaterialization(
+      mockClient,
+      "env",
+      "pkg",
+      "m1",
+      true,
+    );
+
+    expect(mockClient.deleteMaterialization).toHaveBeenCalledWith(
+      "env",
+      "pkg",
+      "m1",
+      true,
     );
   });
 });

@@ -594,13 +594,18 @@ export class MaterializationService {
    /**
     * Delete a materialization record. Only terminal materializations
     * (MANIFEST_FILE_READY, FAILED, CANCELLED) can be deleted; an active run must
-    * be stopped first. This removes the publisher's record only and does not
-    * drop any control-plane-owned physical tables.
+    * be stopped first.
+    *
+    * By default this removes the publisher's record only — the control plane
+    * owns table GC. When `dropTables` is set, the publisher additionally drops
+    * the physical tables recorded in this run's manifest as a best-effort
+    * cleanup (a drop failure is logged, not fatal, so the record still deletes).
     */
    async deleteMaterialization(
       environmentName: string,
       packageName: string,
       id: string,
+      options: { dropTables?: boolean } = {},
    ): Promise<void> {
       const m = await this.getMaterialization(environmentName, packageName, id);
 
@@ -615,7 +620,78 @@ export class MaterializationService {
          );
       }
 
+      if (options.dropTables) {
+         await this.dropMaterializedTables(environmentName, packageName, m);
+      }
+
       await this.repository.deleteMaterialization(id);
+   }
+
+   /**
+    * Best-effort drop of every physical table this run produced, read from the
+    * materialization's manifest. Resolves each entry's connection by name and
+    * issues `DROP TABLE IF EXISTS` for the physical table and its (possible)
+    * leftover staging table. Failures are logged and swallowed so a partial
+    * cleanup never blocks deletion of the record.
+    */
+   private async dropMaterializedTables(
+      environmentName: string,
+      packageName: string,
+      m: Materialization,
+   ): Promise<void> {
+      const entries = m.manifest?.entries;
+      if (!entries || Object.keys(entries).length === 0) {
+         return;
+      }
+
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const pkg = await environment.getPackage(packageName, false);
+      const connectionCache = new Map<string, MalloyConnection>();
+
+      for (const entry of Object.values(entries)) {
+         const connectionName = entry.connectionName;
+         const physicalTableName = entry.physicalTableName;
+         if (!connectionName || !physicalTableName) {
+            logger.warn("Skipping manifest entry with no connection/table", {
+               materializationId: m.id,
+               buildId: entry.buildId,
+            });
+            continue;
+         }
+
+         try {
+            let connection = connectionCache.get(connectionName);
+            if (!connection) {
+               connection = await pkg.getMalloyConnection(connectionName);
+               connectionCache.set(connectionName, connection);
+            }
+            await connection.runSQL(
+               `DROP TABLE IF EXISTS ${physicalTableName}`,
+            );
+            // A crash between staging-create and rename can leave the staging
+            // table behind; clean it up too while we hold the connection.
+            await connection.runSQL(
+               `DROP TABLE IF EXISTS ${physicalTableName}${stagingSuffix(
+                  entry.buildId,
+               )}`,
+            );
+            logger.info("Dropped materialized table on delete", {
+               materializationId: m.id,
+               physicalTableName,
+               connectionName,
+            });
+         } catch (err) {
+            logger.warn("Failed to drop materialized table on delete", {
+               materializationId: m.id,
+               physicalTableName,
+               connectionName,
+               error: err instanceof Error ? err.message : String(err),
+            });
+         }
+      }
    }
 
    // ==================== BUILD PLAN COMPILATION ====================
