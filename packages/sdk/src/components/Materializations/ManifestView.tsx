@@ -1,8 +1,5 @@
-import RefreshIcon from "@mui/icons-material/Refresh";
 import {
    Box,
-   Button,
-   Stack,
    Table,
    TableBody,
    TableCell,
@@ -11,67 +8,31 @@ import {
    Typography,
 } from "@mui/material";
 import { ManifestEntry } from "../../client";
-import { ApiError, ApiErrorDisplay } from "../ApiErrorDisplay";
 import { MONO_FONT_FAMILY } from "../styles";
 
 type ManifestViewProps = {
    entries: { [buildId: string]: ManifestEntry } | undefined;
-   mutable: boolean;
-   isReloading: boolean;
-   isError?: boolean;
-   error?: ApiError | null;
-   onReload: () => void;
 };
 
-export default function ManifestView({
-   entries,
-   mutable,
-   isReloading,
-   isError,
-   error,
-   onReload,
-}: ManifestViewProps) {
+/**
+ * Read-only view of a materialization's Round 2 build manifest: the physical
+ * tables the control plane produced from the build plan. The publisher no longer
+ * brokers a package-level manifest; this renders the manifest carried on a
+ * single materialization resource.
+ */
+export default function ManifestView({ entries }: ManifestViewProps) {
    const rows = Object.entries(entries ?? {});
 
    return (
       <Box>
-         <Stack
-            direction="row"
-            alignItems="flex-start"
-            justifyContent="space-between"
-            sx={{ mb: 1 }}
-         >
-            <Box>
-               <Typography
-                  variant="h6"
-                  sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
-               >
-                  Build manifest
-               </Typography>
-               <Typography variant="body2" color="text.secondary">
-                  Tables produced by materializing this package
-               </Typography>
-            </Box>
-            {mutable && (
-               <Button
-                  size="small"
-                  startIcon={<RefreshIcon />}
-                  loading={isReloading}
-                  onClick={onReload}
-                  aria-label="Reload manifest"
-               >
-                  Reload manifest
-               </Button>
-            )}
-         </Stack>
-
-         {isError ? (
-            <ApiErrorDisplay error={error ?? null} context="Build manifest" />
-         ) : rows.length === 0 ? (
+         <Typography variant="subtitle2" gutterBottom>
+            Build manifest
+         </Typography>
+         {rows.length === 0 ? (
             <Typography
                variant="body2"
                color="text.secondary"
-               sx={{ py: 1, fontStyle: "italic" }}
+               sx={{ fontStyle: "italic" }}
             >
                No materialized tables yet.
             </Typography>
@@ -79,18 +40,22 @@ export default function ManifestView({
             <Table size="small">
                <TableHead>
                   <TableRow>
-                     <TableCell>Build ID</TableCell>
+                     <TableCell>Source</TableCell>
                      <TableCell>Table name</TableCell>
+                     <TableCell align="right">Rows</TableCell>
                   </TableRow>
                </TableHead>
                <TableBody>
                   {rows.map(([buildId, entry]) => (
                      <TableRow key={buildId}>
                         <TableCell sx={{ fontFamily: MONO_FONT_FAMILY }}>
-                           {buildId}
+                           {entry.sourceName ?? buildId}
                         </TableCell>
                         <TableCell sx={{ fontFamily: MONO_FONT_FAMILY }}>
-                           {entry.tableName ?? "-"}
+                           {entry.physicalTableName ?? "-"}
+                        </TableCell>
+                        <TableCell align="right">
+                           {entry.rowCount ?? "-"}
                         </TableCell>
                      </TableRow>
                   ))}

@@ -16,6 +16,7 @@ import {
 } from "@mui/material";
 import { Materialization } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
+import ManifestView from "./ManifestView";
 import {
    formatDuration,
    formatRelativeTime,
@@ -33,8 +34,7 @@ export default function MaterializationDetailDialog({
    onClose,
 }: MaterializationDetailDialogProps) {
    const meta = materialization ? parseMetadata(materialization) : {};
-   const sources = meta.sources ?? [];
-   const gcErrors = meta.gcErrors ?? [];
+   const planSources = Object.values(materialization?.buildPlan?.sources ?? {});
 
    return (
       <Dialog
@@ -69,7 +69,7 @@ export default function MaterializationDetailDialog({
                   </IconButton>
                </DialogTitle>
                <DialogContent dividers>
-                  <Stack direction="row" spacing={4} sx={{ mb: 2 }}>
+                  <Stack direction="row" spacing={4} sx={{ mb: 3 }}>
                      <DetailField
                         label="Started"
                         value={formatRelativeTime(
@@ -95,7 +95,7 @@ export default function MaterializationDetailDialog({
                   </Stack>
 
                   {materialization.error && (
-                     <Box sx={{ mb: 2 }}>
+                     <Box sx={{ mb: 3 }}>
                         <Typography
                            variant="subtitle2"
                            color="error"
@@ -115,76 +115,55 @@ export default function MaterializationDetailDialog({
                      </Box>
                   )}
 
-                  <Typography variant="subtitle2" gutterBottom>
-                     Per-source results
-                  </Typography>
-                  {sources.length === 0 ? (
-                     <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{ fontStyle: "italic" }}
-                     >
-                        No per-source results recorded.
+                  <Box sx={{ mb: 3 }}>
+                     <Typography variant="subtitle2" gutterBottom>
+                        Build plan
                      </Typography>
-                  ) : (
-                     <Table size="small">
-                        <TableHead>
-                           <TableRow>
-                              <TableCell>Source</TableCell>
-                              <TableCell>Table</TableCell>
-                              <TableCell>Status</TableCell>
-                              <TableCell align="right">Duration</TableCell>
-                           </TableRow>
-                        </TableHead>
-                        <TableBody>
-                           {sources.map((source, index) => (
-                              <TableRow
-                                 key={
-                                    source.buildId ?? source.sourceName ?? index
-                                 }
-                              >
-                                 <TableCell
-                                    sx={{ fontFamily: MONO_FONT_FAMILY }}
-                                 >
-                                    {source.sourceName ?? "-"}
-                                 </TableCell>
-                                 <TableCell
-                                    sx={{ fontFamily: MONO_FONT_FAMILY }}
-                                 >
-                                    {source.tableName ?? "-"}
-                                 </TableCell>
-                                 <TableCell>{source.status ?? "-"}</TableCell>
-                                 <TableCell align="right">
-                                    {source.durationMs !== undefined
-                                       ? `${Math.round(source.durationMs)}ms`
-                                       : "-"}
-                                 </TableCell>
-                              </TableRow>
-                           ))}
-                        </TableBody>
-                     </Table>
-                  )}
-
-                  {gcErrors.length > 0 && (
-                     <Box sx={{ mt: 2 }}>
+                     {planSources.length === 0 ? (
                         <Typography
-                           variant="subtitle2"
-                           color="warning.main"
-                           gutterBottom
+                           variant="body2"
+                           color="text.secondary"
+                           sx={{ fontStyle: "italic" }}
                         >
-                           Garbage-collection errors
+                           No build plan yet.
                         </Typography>
-                        {gcErrors.map((gcError, index) => (
-                           <Typography
-                              key={index}
-                              variant="body2"
-                              sx={{ fontFamily: MONO_FONT_FAMILY }}
-                           >
-                              {gcError}
-                           </Typography>
-                        ))}
-                     </Box>
-                  )}
+                     ) : (
+                        <Table size="small">
+                           <TableHead>
+                              <TableRow>
+                                 <TableCell>Source</TableCell>
+                                 <TableCell>Connection</TableCell>
+                                 <TableCell>Dialect</TableCell>
+                                 <TableCell>Build ID</TableCell>
+                              </TableRow>
+                           </TableHead>
+                           <TableBody>
+                              {planSources.map((source) => (
+                                 <TableRow key={source.sourceID}>
+                                    <TableCell
+                                       sx={{ fontFamily: MONO_FONT_FAMILY }}
+                                    >
+                                       {source.name}
+                                    </TableCell>
+                                    <TableCell
+                                       sx={{ fontFamily: MONO_FONT_FAMILY }}
+                                    >
+                                       {source.connectionName}
+                                    </TableCell>
+                                    <TableCell>{source.dialect ?? "-"}</TableCell>
+                                    <TableCell
+                                       sx={{ fontFamily: MONO_FONT_FAMILY }}
+                                    >
+                                       {source.buildId}
+                                    </TableCell>
+                                 </TableRow>
+                              ))}
+                           </TableBody>
+                        </Table>
+                     )}
+                  </Box>
+
+                  <ManifestView entries={materialization.manifest?.entries} />
                </DialogContent>
             </>
          )}

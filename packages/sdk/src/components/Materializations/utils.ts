@@ -1,45 +1,44 @@
-import { Materialization, MaterializationStatusEnum } from "../../client";
+import { Materialization, MaterializationStatus } from "../../client";
 
-export function isActiveStatus(status?: MaterializationStatusEnum): boolean {
+/**
+ * Non-terminal phases of the two-round protocol. The publisher kicks off Round 1
+ * (PENDING -> BUILD_PLAN_READY); the control plane drives Round 2
+ * (-> MANIFEST_ROWS_READY -> MANIFEST_FILE_READY). Any of these may be polled and
+ * stopped.
+ */
+export function isActiveStatus(status?: MaterializationStatus): boolean {
    return (
-      status === MaterializationStatusEnum.Pending ||
-      status === MaterializationStatusEnum.Running
+      status === MaterializationStatus.Pending ||
+      status === MaterializationStatus.BuildPlanReady ||
+      status === MaterializationStatus.ManifestRowsReady
    );
 }
 
-export function isTerminalStatus(status?: MaterializationStatusEnum): boolean {
+export function isTerminalStatus(status?: MaterializationStatus): boolean {
    return (
-      status === MaterializationStatusEnum.Success ||
-      status === MaterializationStatusEnum.Failed ||
-      status === MaterializationStatusEnum.Cancelled
+      status === MaterializationStatus.ManifestFileReady ||
+      status === MaterializationStatus.Failed ||
+      status === MaterializationStatus.Cancelled
    );
 }
 
 type ChipColor = "default" | "info" | "success" | "error" | "warning";
 
-export function statusColor(status?: MaterializationStatusEnum): ChipColor {
+export function statusColor(status?: MaterializationStatus): ChipColor {
    switch (status) {
-      case MaterializationStatusEnum.Running:
+      case MaterializationStatus.BuildPlanReady:
+      case MaterializationStatus.ManifestRowsReady:
          return "info";
-      case MaterializationStatusEnum.Success:
+      case MaterializationStatus.ManifestFileReady:
          return "success";
-      case MaterializationStatusEnum.Failed:
+      case MaterializationStatus.Failed:
          return "error";
-      case MaterializationStatusEnum.Cancelled:
+      case MaterializationStatus.Cancelled:
          return "warning";
-      case MaterializationStatusEnum.Pending:
+      case MaterializationStatus.Pending:
       default:
          return "default";
    }
-}
-
-/** Per-source build result stored in Materialization.metadata.sources[]. */
-export interface MaterializationSourceResult {
-   sourceName?: string;
-   buildId?: string;
-   tableName?: string;
-   status?: string;
-   durationMs?: number;
 }
 
 /**
@@ -49,12 +48,9 @@ export interface MaterializationSourceResult {
  */
 export interface MaterializationMetadata {
    forceRefresh?: boolean;
-   autoLoadManifest?: boolean;
+   sourceNames?: string[];
    sourcesBuilt?: number;
    sourcesSkipped?: number;
-   sources?: MaterializationSourceResult[];
-   gcDropped?: string[];
-   gcErrors?: string[];
 }
 
 export function parseMetadata(
