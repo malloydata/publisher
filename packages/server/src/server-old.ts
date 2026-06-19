@@ -1053,6 +1053,23 @@ export function registerLegacyRoutes(
       },
    );
 
+   app.delete(
+      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
+      async (req, res) => {
+         try {
+            await materializationController.deleteMaterialization(
+               req.params.projectName,
+               req.params.packageName,
+               req.params.materializationId,
+            );
+            res.status(204).send();
+         } catch (error) {
+            const { json, status } = internalErrorToHttpError(error as Error);
+            res.status(status).json(json);
+         }
+      },
+   );
+
    logger.info(
       "Legacy /projects/* routes registered for backwards compatibility",
    );

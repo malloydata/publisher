@@ -206,6 +206,10 @@ export class MaterializationRepository {
       return updated;
    }
 
+   async deleteById(id: string): Promise<void> {
+      await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
+   }
+
    async deleteByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run(
          "DELETE FROM materializations WHERE environment_id = ?",

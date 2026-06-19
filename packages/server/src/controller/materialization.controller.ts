@@ -137,4 +137,16 @@ export class MaterializationController {
          materializationId,
       );
    }
+
+   async deleteMaterialization(
+      environmentName: string,
+      packageName: string,
+      materializationId: string,
+   ) {
+      return this.materializationService.deleteMaterialization(
+         environmentName,
+         packageName,
+         materializationId,
+      );
+   }
 }

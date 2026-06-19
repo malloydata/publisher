@@ -87,6 +87,7 @@ function createMocks() {
       getActiveMaterialization: sandbox.stub(),
       createMaterialization: sandbox.stub(),
       updateMaterialization: sandbox.stub(),
+      deleteMaterialization: sandbox.stub(),
    } as unknown as MockRepo;
 
    const storageManager = { getRepository: () => repository };
@@ -298,6 +299,34 @@ describe("MaterializationService", () => {
             await expect(
                ctx.service.stopMaterialization("my-env", "pkg", "mat-1"),
             ).rejects.toThrow(InvalidStateTransitionError);
+         });
+      }
+   });
+
+   describe("deleteMaterialization", () => {
+      const terminal = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"] as const;
+      for (const status of terminal) {
+         it(`deletes a ${status} materialization`, async () => {
+            ctx.repository.getMaterializationById.resolves(
+               makeMaterialization({ status }),
+            );
+            await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+            expect(
+               ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
+            ).toBe(true);
+         });
+      }
+
+      const active = ["PENDING", "BUILD_PLAN_READY", "MANIFEST_ROWS_READY"] as const;
+      for (const status of active) {
+         it(`rejects deleting a ${status} materialization`, async () => {
+            ctx.repository.getMaterializationById.resolves(
+               makeMaterialization({ status }),
+            );
+            await expect(
+               ctx.service.deleteMaterialization("my-env", "pkg", "mat-1"),
+            ).rejects.toThrow(InvalidStateTransitionError);
+            expect(ctx.repository.deleteMaterialization.called).toBe(false);
          });
       }
    });

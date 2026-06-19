@@ -184,4 +184,8 @@ export class DuckDBRepository implements ResourceRepository {
    ): Promise<Materialization> {
       return this.materializationRepo.update(id, updates);
    }
+
+   async deleteMaterialization(id: string): Promise<void> {
+      return this.materializationRepo.deleteById(id);
+   }
 }

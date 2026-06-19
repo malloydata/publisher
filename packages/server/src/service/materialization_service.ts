@@ -589,6 +589,33 @@ export class MaterializationService {
       });
    }
 
+   /**
+    * Delete a materialization record. Only terminal materializations
+    * (MANIFEST_FILE_READY, FAILED, CANCELLED) can be deleted; an active run must
+    * be stopped first. This removes the publisher's record only and does not
+    * drop any control-plane-owned physical tables.
+    */
+   async deleteMaterialization(
+      environmentName: string,
+      packageName: string,
+      id: string,
+   ): Promise<void> {
+      const m = await this.getMaterialization(environmentName, packageName, id);
+
+      const terminal: MaterializationStatus[] = [
+         "MANIFEST_FILE_READY",
+         "FAILED",
+         "CANCELLED",
+      ];
+      if (!terminal.includes(m.status)) {
+         throw new InvalidStateTransitionError(
+            `Cannot delete materialization ${id} while it is ${m.status}`,
+         );
+      }
+
+      await this.repository.deleteMaterialization(id);
+   }
+
    // ==================== BUILD PLAN COMPILATION ====================
 
    /**

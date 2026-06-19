@@ -1722,6 +1722,23 @@ app.post(
    },
 );
 
+app.delete(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
+   async (req, res) => {
+      try {
+         await materializationController.deleteMaterialization(
+            req.params.environmentName,
+            req.params.packageName,
+            req.params.materializationId,
+         );
+         res.status(204).send();
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 // Register legacy `/projects/...` routes for backwards compatibility with
 // clients that haven't migrated to `/environments/...` yet. Must be added
 // before the SPA catch-all below.

@@ -74,6 +74,7 @@ export interface ResourceRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization>;
+   deleteMaterialization(id: string): Promise<void>;
 }
 
 export interface Environment {

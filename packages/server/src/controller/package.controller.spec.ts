@@ -3,7 +3,6 @@ import sinon from "sinon";
 
 import { BadRequestError } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
-import type { ManifestService } from "../service/manifest_service";
 import { PackageController } from "./package.controller";
 
 describe("PackageController.addPackage explores validation", () => {
@@ -32,10 +31,7 @@ describe("PackageController.addPackage explores validation", () => {
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
 
-      const controller = new PackageController(
-         environmentStore,
-         {} as ManifestService,
-      );
+      const controller = new PackageController(environmentStore);
 
       await expect(
          controller.addPackage("env", {
@@ -83,10 +79,7 @@ describe("PackageController.addPackage explores validation", () => {
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
 
-      const controller = new PackageController(
-         environmentStore,
-         {} as ManifestService,
-      );
+      const controller = new PackageController(environmentStore);
 
       await expect(
          controller.addPackage("env", {
@@ -117,10 +110,7 @@ describe("PackageController.addPackage explores validation", () => {
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
 
-      const controller = new PackageController(
-         environmentStore,
-         {} as ManifestService,
-      );
+      const controller = new PackageController(environmentStore);
 
       await controller.addPackage("env", {
          name: "pkg",
@@ -172,10 +162,7 @@ describe("PackageController.updatePackage explores validation", () => {
          addPackageToDatabase,
       } as unknown as EnvironmentStore;
 
-      const controller = new PackageController(
-         environmentStore,
-         {} as ManifestService,
-      );
+      const controller = new PackageController(environmentStore);
 
       await expect(
          controller.updatePackage("env", "pkg", {
