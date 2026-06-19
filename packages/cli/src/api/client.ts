@@ -6,8 +6,6 @@ import {
   CreateMaterializationRequest,
   DatabasesApi,
   EnvironmentsApi,
-  ManifestActionActionEnum,
-  ManifestsApi,
   MaterializationActionActionEnum,
   MaterializationsApi,
   ModelsApi,
@@ -20,7 +18,6 @@ export class PublisherClient {
   private packagesApi: PackagesApi;
   private connectionsApi: ConnectionsApi;
   private materializationsApi: MaterializationsApi;
-  private manifestsApi: ManifestsApi;
   private modelsApi: ModelsApi;
   private notebooksApi: NotebooksApi;
   private databasesApi: DatabasesApi;
@@ -37,7 +34,6 @@ export class PublisherClient {
     this.packagesApi = new PackagesApi(config);
     this.connectionsApi = new ConnectionsApi(config);
     this.materializationsApi = new MaterializationsApi(config);
-    this.manifestsApi = new ManifestsApi(config);
     this.modelsApi = new ModelsApi(config);
     this.notebooksApi = new NotebooksApi(config);
     this.databasesApi = new DatabasesApi(config);
@@ -309,7 +305,7 @@ export class PublisherClient {
     environmentName: string,
     packageName: string,
     materializationId: string,
-    action: "start" | "stop",
+    action: "stop",
   ): Promise<any> {
     try {
       const response = await this.materializationsApi.materializationAction(
@@ -335,38 +331,6 @@ export class PublisherClient {
         packageName,
         materializationId,
       );
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
-  // Build manifest
-  async getManifest(
-    environmentName: string,
-    packageName: string,
-  ): Promise<any> {
-    try {
-      const response = await this.manifestsApi.getManifest(
-        environmentName,
-        packageName,
-      );
-      return response.data;
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
-  async reloadManifest(
-    environmentName: string,
-    packageName: string,
-  ): Promise<any> {
-    try {
-      const response = await this.manifestsApi.manifestAction(
-        environmentName,
-        packageName,
-        ManifestActionActionEnum.Reload,
-      );
-      return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
     }

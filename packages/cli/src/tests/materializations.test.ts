@@ -68,49 +68,38 @@ describe("Materialization Commands", () => {
     );
   });
 
-  test("materialize creates then starts, no poll without wait", async () => {
+  test("materialize creates Round 1 plan, no poll without wait", async () => {
     const mockClient = {
-      createMaterialization: mock(() => Promise.resolve({ id: "m1" })),
-      materializationAction: mock(() =>
-        Promise.resolve({ id: "m1", status: "RUNNING" }),
+      createMaterialization: mock(() =>
+        Promise.resolve({ id: "m1", status: "PENDING" }),
       ),
-      getMaterialization: mock(() => Promise.resolve({ status: "SUCCESS" })),
+      materializationAction: mock(() => Promise.resolve({})),
+      getMaterialization: mock(() => Promise.resolve({ status: "PENDING" })),
     } as unknown as PublisherClient;
 
     await materializationCommands.materialize(mockClient, "env", "pkg", {
       forceRefresh: true,
-      autoLoadManifest: true,
     });
 
-    expect(mockClient.createMaterialization).toHaveBeenCalledWith(
-      "env",
-      "pkg",
-      {
-        forceRefresh: true,
-        autoLoadManifest: true,
-      },
-    );
-    expect(mockClient.materializationAction).toHaveBeenCalledWith(
-      "env",
-      "pkg",
-      "m1",
-      "start",
-    );
+    expect(mockClient.createMaterialization).toHaveBeenCalledWith("env", "pkg", {
+      forceRefresh: true,
+    });
+    // Round 2 (build) is control-plane driven; the CLI never starts a build.
+    expect(mockClient.materializationAction).not.toHaveBeenCalled();
     expect(mockClient.getMaterialization).not.toHaveBeenCalled();
   });
 
-  test("materialize with wait polls until terminal", async () => {
+  test("materialize with wait polls until the build plan is ready", async () => {
     let calls = 0;
     const mockClient = {
-      createMaterialization: mock(() => Promise.resolve({ id: "m1" })),
-      materializationAction: mock(() =>
-        Promise.resolve({ id: "m1", status: "RUNNING" }),
+      createMaterialization: mock(() =>
+        Promise.resolve({ id: "m1", status: "PENDING" }),
       ),
       getMaterialization: mock(() => {
         calls += 1;
         return Promise.resolve({
           id: "m1",
-          status: calls >= 2 ? "SUCCESS" : "RUNNING",
+          status: calls >= 2 ? "BUILD_PLAN_READY" : "PENDING",
         });
       }),
     } as unknown as PublisherClient;
@@ -124,11 +113,10 @@ describe("Materialization Commands", () => {
     expect(calls).toBeGreaterThanOrEqual(2);
   });
 
-  test("materialize with wait throws on a FAILED build (non-zero exit)", async () => {
+  test("materialize with wait throws on a FAILED plan (non-zero exit)", async () => {
     const mockClient = {
-      createMaterialization: mock(() => Promise.resolve({ id: "m1" })),
-      materializationAction: mock(() =>
-        Promise.resolve({ id: "m1", status: "RUNNING" }),
+      createMaterialization: mock(() =>
+        Promise.resolve({ id: "m1", status: "PENDING" }),
       ),
       getMaterialization: mock(() =>
         Promise.resolve({ id: "m1", status: "FAILED", error: "boom" }),

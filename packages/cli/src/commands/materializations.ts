@@ -2,7 +2,16 @@ import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
 import { logSuccess, logInfo, logOutput, truncate } from "../utils/logger.js";
 
-const TERMINAL_STATUSES = ["SUCCESS", "FAILED", "CANCELLED"];
+// Round 1 (compile + plan) settles at BUILD_PLAN_READY or a failure. Round 2
+// (the build) is driven by the control plane with build instructions only it
+// holds, so a publisher-only client cannot await MANIFEST_FILE_READY.
+const SETTLED_STATUSES = [
+  "BUILD_PLAN_READY",
+  "MANIFEST_FILE_READY",
+  "FAILED",
+  "CANCELLED",
+];
+const SUCCESS_STATUSES = ["BUILD_PLAN_READY", "MANIFEST_FILE_READY"];
 
 export async function listMaterializations(
   client: PublisherClient,
@@ -54,10 +63,11 @@ export async function getMaterialization(
 }
 
 /**
- * Create a materialization and start it. With `wait`, poll until the build
- * reaches a terminal state (mirrors the UI's create-then-start flow). Without
- * `wait`, return immediately with a hint for checking status, since live
- * polling is awkward in a non-interactive CLI.
+ * Create a materialization: Round 1 (compile + plan). The control plane drives
+ * Round 2 (the build) from the resulting build plan, so there is no "start"
+ * here. With `wait`, poll until Round 1 settles (BUILD_PLAN_READY, or
+ * FAILED/CANCELLED); without it, return immediately with a hint for checking
+ * status.
  */
 export async function materialize(
   client: PublisherClient,
@@ -65,7 +75,6 @@ export async function materialize(
   packageName: string,
   options: {
     forceRefresh?: boolean;
-    autoLoadManifest?: boolean;
     wait?: boolean;
     pollIntervalMs?: number;
     timeoutMs?: number;
@@ -74,24 +83,13 @@ export async function materialize(
   const created = await client.createMaterialization(
     environmentName,
     packageName,
-    {
-      forceRefresh: options.forceRefresh,
-      autoLoadManifest: options.autoLoadManifest,
-    },
+    { forceRefresh: options.forceRefresh },
   );
   const id = created.id as string | undefined;
   if (!id) {
     throw new Error("Publisher returned a materialization with no id");
   }
-  logSuccess(`Created materialization: ${id}`);
-
-  let current = await client.materializationAction(
-    environmentName,
-    packageName,
-    id,
-    "start",
-  );
-  logInfo(`Started materialization: ${id} (status: ${current.status})`);
+  logSuccess(`Created materialization: ${id} (status: ${created.status})`);
 
   if (!options.wait) {
     logInfo(
@@ -104,7 +102,8 @@ export async function materialize(
   const timeoutMs = options.timeoutMs ?? 120000;
   const deadline = Date.now() + timeoutMs;
 
-  while (!TERMINAL_STATUSES.includes(current.status) && Date.now() < deadline) {
+  let current = created;
+  while (!SETTLED_STATUSES.includes(current.status) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     current = await client.getMaterialization(environmentName, packageName, id);
   }
@@ -112,19 +111,19 @@ export async function materialize(
   // Always print the final record for visibility.
   logOutput(JSON.stringify(current, null, 2));
 
-  if (current.status === "SUCCESS") {
-    logSuccess(`Materialization ${id} completed: SUCCESS`);
+  if (SUCCESS_STATUSES.includes(current.status)) {
+    logSuccess(`Materialization ${id} ready: ${current.status}`);
     return;
   }
 
   // Non-success: throw so the CLI exits non-zero. The index.ts action's catch
   // turns a thrown error into logError + process.exit(1), which is what a
   // CI/automation caller relying on --wait's exit code needs.
-  if (!TERMINAL_STATUSES.includes(current.status)) {
+  if (!SETTLED_STATUSES.includes(current.status)) {
     throw new Error(
       `Timed out waiting for materialization ${id} after ${Math.round(
         timeoutMs / 1000,
-      )}s (last status: ${current.status}). It may still be running.`,
+      )}s (last status: ${current.status}). Round 1 may still be running.`,
     );
   }
   throw new Error(

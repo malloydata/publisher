@@ -19,8 +19,8 @@ import {
 describe("CLI integration (real server)", () => {
   let server: TestServer | null = null;
   let baseUrl = "";
-  // Captured from the `materialize` step and reused by the get/stop/delete
-  // tests, so they don't depend on "first id in the list" or a clean server.
+  // Captured from the `materialize` step and reused by the get/stop tests, so
+  // they don't depend on "first id in the list" or a clean server.
   let createdId = "";
   const SCOPE = ["--environment", TEST_ENV, "--package", TEST_PKG];
 
@@ -34,11 +34,14 @@ describe("CLI integration (real server)", () => {
     if (!server) {
       return;
     }
-    // Best-effort: delete any materializations created during the run.
+    // Best-effort: stop (to reach a terminal state) then delete any
+    // materializations created during the run. Both can exit non-zero
+    // depending on current state; ignore those failures.
     try {
       const list = await runCli(["list", "materialization", ...SCOPE], baseUrl);
       const ids = list.output.match(/[0-9]{13}-[a-z0-9]+/g) ?? [];
       for (const id of ids) {
+        await runCli(["stop-materialization", id, ...SCOPE], baseUrl);
         await runCli(["delete", "materialization", id, ...SCOPE], baseUrl);
       }
     } catch {
@@ -96,31 +99,22 @@ describe("CLI integration (real server)", () => {
     expect(r.output).toContain("No materializations");
   });
 
-  it("materializes a package and waits for SUCCESS", async () => {
+  it("materializes a package and waits for the build plan (Round 1)", async () => {
+    // The publisher only drives Round 1; the control plane (absent here) would
+    // drive Round 2, so the reachable success state is BUILD_PLAN_READY.
     const r = await runCli(["materialize", ...SCOPE, "--wait"], baseUrl);
     expect(r.code).toBe(0);
-    expect(r.output).toContain("SUCCESS");
+    expect(r.output).toContain("BUILD_PLAN_READY");
     // Capture the id this run produced so the later tests are state-agnostic.
     const id = extractMaterializationId(r.output);
     expect(id).toBeDefined();
     createdId = id as string;
   });
 
-  it("shows the produced table in the manifest", async () => {
-    const r = await runCli(["get", "manifest", ...SCOPE], baseUrl);
-    expect(r.code).toBe(0);
-    expect(r.output).toContain("order_summary");
-  });
-
-  it("reloads the manifest", async () => {
-    const r = await runCli(["reload-manifest", ...SCOPE], baseUrl);
-    expect(r.code).toBe(0);
-  });
-
   it("lists the run and gets it by id", async () => {
     const list = await runCli(["list", "materialization", ...SCOPE], baseUrl);
     expect(list.code).toBe(0);
-    expect(list.output).toContain("SUCCESS");
+    expect(list.output).toContain("BUILD_PLAN_READY");
     expect(list.output).toContain(createdId);
 
     const get = await runCli(
@@ -131,23 +125,32 @@ describe("CLI integration (real server)", () => {
     expect(get.output).toContain(createdId);
   });
 
-  it("refuses to stop a terminal materialization (exit 1)", async () => {
+  it("stops the plan-ready run (Round 1 is cancellable)", async () => {
     const r = await runCli(
       ["stop-materialization", createdId, ...SCOPE],
       baseUrl,
     );
-    expect(r.code).toBe(1);
-    expect(r.output.toLowerCase()).toContain("cannot stop");
+    expect(r.code).toBe(0);
+    expect(r.output).toContain("Stopped");
   });
 
-  it("deletes the terminal materialization", async () => {
-    const del = await runCli(
-      ["delete", "materialization", createdId, ...SCOPE],
-      baseUrl,
-    );
-    expect(del.code).toBe(0);
-    expect(del.output).toContain("Deleted");
-  });
+   it("refuses to stop the now-terminal materialization (exit 1)", async () => {
+      const r = await runCli(
+         ["stop-materialization", createdId, ...SCOPE],
+         baseUrl,
+      );
+      expect(r.code).toBe(1);
+      expect(r.output.toLowerCase()).toContain("cannot stop");
+   });
+
+   it("deletes the terminal materialization", async () => {
+      const del = await runCli(
+         ["delete", "materialization", createdId, ...SCOPE],
+         baseUrl,
+      );
+      expect(del.code).toBe(0);
+      expect(del.output).toContain("Deleted");
+   });
 
   // ── exit-code contract on failure paths ───────────────────────────
 
