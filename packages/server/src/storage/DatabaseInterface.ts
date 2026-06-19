@@ -1,3 +1,5 @@
+import { components } from "../api";
+
 /**
  * Generic database interface for storage abstraction
  * This allows switching between DuckDB, PostgreSQL, MySQL, etc.
@@ -70,24 +72,8 @@ export interface ResourceRepository {
    ): Promise<Materialization>;
    updateMaterialization(
       id: string,
-      updates: {
-         status?: MaterializationStatus;
-         startedAt?: Date;
-         completedAt?: Date;
-         error?: string | null;
-         metadata?: Record<string, unknown> | null;
-      },
+      updates: MaterializationUpdate,
    ): Promise<Materialization>;
-   deleteMaterialization(id: string): Promise<void>;
-   // Build Manifests
-   listManifestEntries(
-      environmentId: string,
-      packageName: string,
-   ): Promise<ManifestEntry[]>;
-   upsertManifestEntry(
-      entry: Omit<ManifestEntry, "id" | "createdAt" | "updatedAt">,
-   ): Promise<ManifestEntry>;
-   deleteManifestEntry(id: string): Promise<void>;
 }
 
 export interface Environment {
@@ -121,18 +107,25 @@ export interface Connection {
    updatedAt: Date;
 }
 
+// Wire types for the two-round build protocol, kept in sync with the OpenAPI
+// spec via the generated `api.ts`.
 export type MaterializationStatus =
-   | "PENDING"
-   | "RUNNING"
-   | "SUCCESS"
-   | "FAILED"
-   | "CANCELLED";
+   components["schemas"]["MaterializationStatus"];
+export type BuildPlan = components["schemas"]["BuildPlan"];
+export type BuildManifestResult = components["schemas"]["BuildManifest"];
+export type ManifestEntry = components["schemas"]["ManifestEntry"];
+export type BuildInstruction = components["schemas"]["BuildInstruction"];
+export type Realization = components["schemas"]["Realization"];
 
 export interface Materialization {
    id: string;
    environmentId: string;
    packageName: string;
    status: MaterializationStatus;
+   /** Round 1 output. Null until status >= BUILD_PLAN_READY. */
+   buildPlan: BuildPlan | null;
+   /** Round 2 output. Null until status = MANIFEST_FILE_READY. */
+   manifest: BuildManifestResult | null;
    startedAt: Date | null;
    completedAt: Date | null;
    error: string | null;
@@ -141,20 +134,23 @@ export interface Materialization {
    updatedAt: Date;
 }
 
-export interface ManifestEntry {
-   id: string;
-   environmentId: string;
-   packageName: string;
-   buildId: string;
-   tableName: string;
-   sourceName: string;
-   connectionName: string;
-   createdAt: Date;
-   updatedAt: Date;
+export interface MaterializationUpdate {
+   status?: MaterializationStatus;
+   buildPlan?: BuildPlan | null;
+   manifest?: BuildManifestResult | null;
+   startedAt?: Date;
+   completedAt?: Date;
+   error?: string | null;
+   metadata?: Record<string, unknown> | null;
 }
 
-// ==================== MANIFEST STORE ====================
-
+/**
+ * Malloy-facing build manifest: maps a buildId to the physical table backing
+ * that persist source. This is the shape the Malloy runtime consumes when
+ * (re)loading models so persist references resolve to materialized tables.
+ * Distinct from {@link BuildManifestResult} (the wire/Round 2 output, which
+ * also carries CP bookkeeping like materializedTableId and rowCount).
+ */
 export interface BuildManifestEntry {
    tableName: string;
 }
@@ -162,28 +158,4 @@ export interface BuildManifestEntry {
 export interface BuildManifest {
    entries: Record<string, BuildManifestEntry>;
    strict?: boolean;
-}
-
-/**
- * Abstraction for manifest storage. Standalone mode uses DuckDB;
- * orchestrated mode swaps in a DuckLakeManifestStore.
- */
-export interface ManifestStore {
-   getManifest(
-      environmentId: string,
-      packageName: string,
-   ): Promise<BuildManifest>;
-   writeEntry(
-      environmentId: string,
-      packageName: string,
-      buildId: string,
-      tableName: string,
-      sourceName: string,
-      connectionName: string,
-   ): Promise<void>;
-   deleteEntry(id: string): Promise<void>;
-   listEntries(
-      environmentId: string,
-      packageName: string,
-   ): Promise<ManifestEntry[]>;
 }

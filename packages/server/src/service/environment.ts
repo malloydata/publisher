@@ -193,10 +193,6 @@ export class Environment {
          await this.writeEnvironmentReadme(payload.readme);
       }
 
-      if (payload.materializationStorage !== undefined) {
-         this.metadata.materializationStorage = payload.materializationStorage;
-      }
-
       // Handle connections update
       // TODO: Update environment connections should have its own API endpoint
       if (payload.connections) {

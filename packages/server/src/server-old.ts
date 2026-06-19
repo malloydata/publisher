@@ -30,7 +30,6 @@ import { ParsedQs } from "qs";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
-import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -57,7 +56,6 @@ export interface LegacyControllerSet {
    queryController: QueryController;
    compileController: CompileController;
    materializationController: MaterializationController;
-   manifestController: ManifestController;
 }
 
 // ─── response/body field mappers ───────────────────────────────────────────
@@ -97,7 +95,6 @@ export function registerLegacyRoutes(
       queryController,
       compileController,
       materializationController,
-      manifestController,
    } = controllers;
 
    // body-parser is already registered on the main app for `${API_PREFIX}/*`
@@ -674,11 +671,9 @@ export function registerLegacyRoutes(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages`,
       async (req, res) => {
          try {
-            const autoLoadManifest = req.query.autoLoadManifest === "true";
             const _package = await packageController.addPackage(
                req.params.projectName,
                req.body,
-               { autoLoadManifest },
             );
             res.status(200).json(_package?.getPackageMetadata());
          } catch (error) {
@@ -1025,33 +1020,17 @@ export function registerLegacyRoutes(
    );
 
    app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/teardown`,
-      async (req, res) => {
-         try {
-            const result = await materializationController.teardownPackage(
-               req.params.projectName,
-               req.params.packageName,
-               req.body || {},
-            );
-            res.status(200).json(result);
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
-   app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
       async (req, res) => {
          try {
             const action = req.query.action;
-            if (action === "start") {
+            if (action === "build") {
                const build =
-                  await materializationController.startMaterialization(
+                  await materializationController.buildMaterialization(
                      req.params.projectName,
                      req.params.packageName,
                      req.params.materializationId,
+                     req.body || {},
                   );
                res.status(202).json(remapMaterializationResponse(build));
             } else if (action === "stop") {
@@ -1064,69 +1043,10 @@ export function registerLegacyRoutes(
                res.status(200).json(remapMaterializationResponse(build));
             } else {
                throw new BadRequestError(
-                  `Unsupported action '${String(action ?? "")}'. Expected 'start' or 'stop'.`,
+                  `Unsupported action '${String(action ?? "")}'. Expected 'build' or 'stop'.`,
                );
             }
          } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
-   app.delete(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
-      async (req, res) => {
-         try {
-            await materializationController.deleteMaterialization(
-               req.params.projectName,
-               req.params.packageName,
-               req.params.materializationId,
-            );
-            res.status(204).send();
-         } catch (error) {
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
-   // ── manifest ────────────────────────────────────────────────────────────
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
-      async (req, res) => {
-         try {
-            const manifest = await manifestController.getManifest(
-               req.params.projectName,
-               req.params.packageName,
-            );
-            res.status(200).json(manifest);
-         } catch (error) {
-            logger.error("Get manifest error", { error });
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      },
-   );
-
-   app.post(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/manifest`,
-      async (req, res) => {
-         try {
-            const action = req.query.action;
-            if (action === "reload") {
-               const manifest = await manifestController.reloadManifest(
-                  req.params.projectName,
-                  req.params.packageName,
-               );
-               res.status(200).json(manifest);
-            } else {
-               throw new BadRequestError(
-                  `Unsupported action '${String(action ?? "")}'. Expected 'reload'.`,
-               );
-            }
-         } catch (error) {
-            logger.error("Manifest action error", { error });
             const { json, status } = internalErrorToHttpError(error as Error);
             res.status(status).json(json);
          }

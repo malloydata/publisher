@@ -1,22 +1,15 @@
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
-import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
-import { ManifestService } from "../service/manifest_service";
 
 type ApiPackage = components["schemas"]["Package"];
 
 export class PackageController {
    private environmentStore: EnvironmentStore;
-   private manifestService: ManifestService;
 
-   constructor(
-      environmentStore: EnvironmentStore,
-      manifestService: ManifestService,
-   ) {
+   constructor(environmentStore: EnvironmentStore) {
       this.environmentStore = environmentStore;
-      this.manifestService = manifestService;
    }
 
    public async listPackages(environmentName: string): Promise<ApiPackage[]> {
@@ -71,11 +64,7 @@ export class PackageController {
       return _package.getPackageMetadata();
    }
 
-   async addPackage(
-      environmentName: string,
-      body: ApiPackage,
-      options?: { autoLoadManifest?: boolean },
-   ) {
+   async addPackage(environmentName: string, body: ApiPackage) {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
@@ -139,52 +128,7 @@ export class PackageController {
          packageName,
       );
 
-      if (options?.autoLoadManifest === true) {
-         await this.tryLoadExistingManifest(environmentName, packageName);
-      }
-
       return result;
-   }
-
-   /**
-    * If there are already manifest entries for this package (e.g. from a
-    * previous materialization run), reload all models with the manifest so
-    * persist references resolve to the materialized tables immediately.
-    */
-   private async tryLoadExistingManifest(
-      environmentName: string,
-      packageName: string,
-   ): Promise<void> {
-      try {
-         const repository =
-            this.environmentStore.storageManager.getRepository();
-         const dbEnvironment =
-            await repository.getEnvironmentByName(environmentName);
-         if (!dbEnvironment) return;
-
-         const manifest = await this.manifestService.getManifest(
-            dbEnvironment.id,
-            packageName,
-         );
-         if (Object.keys(manifest.entries).length === 0) return;
-
-         await this.manifestService.reloadManifest(
-            dbEnvironment.id,
-            packageName,
-            environmentName,
-         );
-         logger.info("Auto-loaded existing manifest for added package", {
-            environmentName,
-            packageName,
-            entryCount: Object.keys(manifest.entries).length,
-         });
-      } catch (error) {
-         logger.warn("Failed to auto-load manifest for package", {
-            environmentName,
-            packageName,
-            error,
-         });
-      }
    }
 
    public async deletePackage(environmentName: string, packageName: string) {
