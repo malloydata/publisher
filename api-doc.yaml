@@ -3732,8 +3732,20 @@ components:
 
     CreateMaterializationRequest:
       type: object
-      description: Options for starting a two-round materialization (Round 1).
+      description:
+        Options for starting a materialization. Auto-run by default; opt into the
+        two-round control-plane-driven flow with pauseBetweenPhases.
       properties:
+        pauseBetweenPhases:
+          type: boolean
+          default: false
+          description:
+            When false (default) the publisher runs all phases in one pass —
+            self-assigns table names (the "#@ persist name=" value, else the
+            source name), builds with realization=COPY, assembles the manifest,
+            and auto-loads it into the package models. When true it pauses at
+            BUILD_PLAN_READY for the control plane to send Round 2 build
+            instructions.
         forceRefresh:
           type: boolean
           default: false
@@ -3767,6 +3779,11 @@ components:
           type: string
         packageName:
           type: string
+        pauseBetweenPhases:
+          type: boolean
+          description:
+            Echoes the create-time flag. False (default) = auto-run all phases;
+            true = pause at BUILD_PLAN_READY for control-plane-driven Round 2.
         status:
           $ref: "#/components/schemas/MaterializationStatus"
         buildPlan:

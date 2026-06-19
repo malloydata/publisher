@@ -20,8 +20,19 @@ export class MaterializationController {
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
       sourceNames?: string[];
+      pauseBetweenPhases?: boolean;
    } {
-      const result: { forceRefresh?: boolean; sourceNames?: string[] } = {};
+      const result: {
+         forceRefresh?: boolean;
+         sourceNames?: string[];
+         pauseBetweenPhases?: boolean;
+      } = {};
+      if (body.pauseBetweenPhases !== undefined) {
+         if (typeof body.pauseBetweenPhases !== "boolean") {
+            throw new BadRequestError("pauseBetweenPhases must be a boolean");
+         }
+         result.pauseBetweenPhases = body.pauseBetweenPhases;
+      }
       if (body.forceRefresh !== undefined) {
          if (typeof body.forceRefresh !== "boolean") {
             throw new BadRequestError("forceRefresh must be a boolean");

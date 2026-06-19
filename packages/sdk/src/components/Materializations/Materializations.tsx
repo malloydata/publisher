@@ -79,14 +79,20 @@ export default function Materializations({
    // control plane drives Round 2 (the build) from that plan, so there is no
    // "start" call here.
    const createMaterialization = useMutationWithApiError({
-      mutationFn: (opts: { forceRefresh: boolean }) =>
+      mutationFn: (opts: {
+         forceRefresh: boolean;
+         pauseBetweenPhases: boolean;
+      }) =>
          apiClients.materializations.createMaterialization(
             environmentName,
             packageName,
-            { forceRefresh: opts.forceRefresh },
+            {
+               forceRefresh: opts.forceRefresh,
+               pauseBetweenPhases: opts.pauseBetweenPhases,
+            },
          ),
       onSuccess() {
-         setNotificationMessage("Build plan requested");
+         setNotificationMessage("Materialization requested");
          invalidateList();
       },
       onError(error) {
