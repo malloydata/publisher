@@ -124,6 +124,43 @@ export function assertSafeEnvironmentPath(
 }
 
 /**
+ * Reject anything that doesn't look like a server-controlled absolute
+ * filesystem path before it reaches a local-file read in the manifest
+ * loader. A `manifestLocation` is admin-supplied config (publisher.json
+ * or an authenticated PATCH), but CodeQL conservatively treats it as
+ * tainted because it can arrive over the REST API. The length / NUL /
+ * `..` / absolute-ASCII checks below form the sanitizer barrier the
+ * `js/path-injection` query recognises, mirroring
+ * {@link assertSafeEnvironmentPath}.
+ */
+export function assertSafeLocalManifestPath(
+   manifestPath: unknown,
+): asserts manifestPath is string {
+   if (typeof manifestPath !== "string") {
+      throw new Error(`Invalid manifest path: must be a string`);
+   }
+   if (
+      manifestPath.length === 0 ||
+      manifestPath.length > MAX_ENVIRONMENT_PATH_LEN
+   ) {
+      throw new Error(`Invalid manifest path: bad length`);
+   }
+   if (manifestPath.indexOf("\0") !== -1) {
+      throw new Error(`Invalid manifest path: contains NUL byte`);
+   }
+   // Sanitizer barrier in the shape `x.indexOf("..") !== -1` that the
+   // CodeQL `js/path-injection` query recognises as a traversal guard.
+   if (manifestPath.indexOf("..") !== -1) {
+      throw new Error(`Invalid manifest path: contains ".." traversal segment`);
+   }
+   if (!SAFE_ENVIRONMENT_PATH_RE.test(manifestPath)) {
+      throw new Error(
+         `Invalid manifest path: must be an absolute path of printable ASCII characters`,
+      );
+   }
+}
+
+/**
  * Resolve `path.join(root, ...segments)` and verify the result lives
  * strictly inside `root` (or is `root` itself). Throws
  * `BadRequestError` if the resolved path escapes the root via `..`,

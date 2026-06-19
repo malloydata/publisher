@@ -4,6 +4,7 @@ import * as fs from "fs/promises";
 import { fileURLToPath } from "url";
 import { components } from "../api";
 import { logger } from "../logger";
+import { assertSafeLocalManifestPath } from "../path_safety";
 import { BuildManifest } from "../storage/DatabaseInterface";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
@@ -46,9 +47,12 @@ async function readManifestBytes(uri: string): Promise<string> {
       return res.Body.transformToString();
    }
    if (uri.startsWith("file://")) {
-      return fs.readFile(fileURLToPath(uri), "utf8");
+      const localPath = fileURLToPath(uri);
+      assertSafeLocalManifestPath(localPath);
+      return fs.readFile(localPath, "utf8");
    }
    // Bare local path (used by tests and local/mounted deployments).
+   assertSafeLocalManifestPath(uri);
    return fs.readFile(uri, "utf8");
 }
 
