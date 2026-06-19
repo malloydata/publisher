@@ -82,6 +82,8 @@ export async function initializeSchema(
    // `active_key` (see below) makes the insert-then-check race impossible —
    // a second concurrent create fails with a constraint violation, which the
    // service layer translates to `MaterializationConflictError`.
+   // `build_plan` (Round 1) and `manifest` (Round 2) are JSON blobs holding
+   // the two-round protocol payloads returned inline on the resource.
    await db.run(`
     CREATE TABLE IF NOT EXISTS materializations (
       id VARCHAR PRIMARY KEY,
@@ -93,26 +95,11 @@ export async function initializeSchema(
       completed_at TIMESTAMP,
       error TEXT,
       metadata JSON,
+      build_plan JSON,
+      manifest JSON,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       FOREIGN KEY (environment_id) REFERENCES environments(id)
-    )
-  `);
-
-   // Build manifests table
-   await db.run(`
-    CREATE TABLE IF NOT EXISTS build_manifests (
-      id VARCHAR PRIMARY KEY,
-      environment_id VARCHAR NOT NULL,
-      package_name VARCHAR NOT NULL,
-      build_id VARCHAR NOT NULL,
-      table_name VARCHAR NOT NULL,
-      source_name VARCHAR NOT NULL,
-      connection_name VARCHAR NOT NULL,
-      created_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP NOT NULL,
-      FOREIGN KEY (environment_id) REFERENCES environments(id),
-      UNIQUE (environment_id, package_name, build_id)
     )
   `);
 
@@ -128,9 +115,6 @@ export async function initializeSchema(
    );
    await db.run(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
-   );
-   await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_build_manifests_environment_package ON build_manifests(environment_id, package_name)",
    );
 }
 

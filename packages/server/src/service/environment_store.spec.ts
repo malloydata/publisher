@@ -11,29 +11,11 @@ import { EnvironmentStore } from "./environment_store";
 
 type MockData = Record<string, unknown>;
 
-const initializeDuckLakeCalls: Array<{
-   environmentId: string;
-   environmentName: string;
-   config: { catalogUrl: string; dataPath: string };
-}> = [];
-
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
          async initialize(_reInit?: boolean): Promise<void> {
             return;
-         }
-
-         async initializeDuckLakeForEnvironment(
-            environmentId: string,
-            environmentName: string,
-            config: { catalogUrl: string; dataPath: string },
-         ): Promise<void> {
-            initializeDuckLakeCalls.push({
-               environmentId,
-               environmentName,
-               config,
-            });
          }
 
          getRepository() {
@@ -486,69 +468,6 @@ describe("EnvironmentStore Service", () => {
       expect(existsSync(readmePath)).toBe(true);
       const readmeContent = readFileSync(readmePath, "utf-8");
       expect(readmeContent).toBe("Updated README content");
-   });
-
-   it("should propagate materializationStorage on addEnvironment for new environment", async () => {
-      writeFileSync(
-         path.join(serverRootPath, "publisher.config.json"),
-         JSON.stringify({ frozenConfig: false, environments: [] }),
-      );
-
-      await environmentStore.finishedInitialization;
-
-      const materializationStorage = {
-         catalogUrl:
-            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
-         dataPath: "gs://test-bucket",
-      };
-
-      initializeDuckLakeCalls.length = 0;
-      const project = await environmentStore.addEnvironment({
-         name: projectName,
-         materializationStorage,
-      });
-
-      expect(project.metadata.materializationStorage).toEqual(
-         materializationStorage,
-      );
-      expect(initializeDuckLakeCalls).toHaveLength(1);
-      expect(initializeDuckLakeCalls[0].config).toEqual(materializationStorage);
-   });
-
-   it("should propagate materializationStorage on update", async () => {
-      const projectPath = path.join(serverRootPath, projectName);
-      mkdirSync(projectPath, { recursive: true });
-      writeFileSync(
-         path.join(projectPath, "publisher.json"),
-         JSON.stringify({ name: projectName, description: "Test package" }),
-      );
-      writeFileSync(
-         path.join(serverRootPath, "publisher.config.json"),
-         JSON.stringify({
-            frozenConfig: false,
-            environments: [
-               {
-                  name: projectName,
-                  packages: [{ name: projectName, location: projectPath }],
-               },
-            ],
-         }),
-      );
-
-      await environmentStore.finishedInitialization;
-      const project = await environmentStore.getEnvironment(projectName);
-
-      const materializationStorage = {
-         catalogUrl:
-            "postgres:host=localhost port=5432 dbname=ducklake user=u password=p",
-         dataPath: "gs://test-bucket",
-      };
-
-      await project.update({ name: projectName, materializationStorage });
-
-      expect(project.metadata.materializationStorage).toEqual(
-         materializationStorage,
-      );
    });
 
    it(

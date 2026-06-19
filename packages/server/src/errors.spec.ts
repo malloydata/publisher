@@ -6,6 +6,7 @@ import {
    ConnectionError,
    internalErrorToHttpError,
    ModelCompilationError,
+   NotQueryableError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ServiceUnavailableError,
@@ -39,6 +40,17 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({
          code: 403,
          message: 'Access denied for source "gated".',
+      });
+   });
+
+   it("maps NotQueryableError to 404 (explore boundary)", () => {
+      const { status, json } = internalErrorToHttpError(
+         new NotQueryableError('No queryable source "hidden".'),
+      );
+      expect(status).toBe(404);
+      expect(json).toEqual({
+         code: 404,
+         message: 'No queryable source "hidden".',
       });
    });
 

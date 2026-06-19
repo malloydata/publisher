@@ -42,10 +42,10 @@ export async function openMaterializations(
    await gotoHome(page);
    await openEnvironment(page, env);
    await openPackage(page, env, pkg);
-   // The package page lists a "Materializations & Manifest" entry row that
+   // The package page lists a "Materializations" entry row (role=button) that
    // links to the dedicated screen. Git-cloned packages can take a while to
    // appear, so allow a generous timeout before clicking.
-   const entry = page.getByText("Materializations & Manifest", { exact: true });
+   const entry = page.getByRole("button", { name: "Materializations" });
    await expect(entry).toBeVisible({ timeout: 60_000 });
    await entry.click();
    await expect(page).toHaveURL(

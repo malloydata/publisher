@@ -5,6 +5,18 @@ export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
+
+/**
+ * Normalize a package-relative model path so author-written `explores`
+ * entries compare equal to the paths produced by `listPackageFiles`
+ * (forward slashes, no leading "./"). Shared by every input channel — the
+ * worker's on-disk parse and the API publish/update path — so a manifest
+ * behaves the same whether it's loaded from disk or written via the API.
+ */
+export function normalizeModelPath(p: string): string {
+   return p.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
 /**
  * Default row cap applied to Malloy model queries (the `runnable.run`
  * path used by `getQueryResults` and notebook cell execution) when

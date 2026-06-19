@@ -930,3 +930,70 @@ source: declared is duckdb.table('customers') extend { measure: c is count() }
       ).resolves.toBeUndefined();
    });
 });
+
+// A given can be both a runtime query parameter (substituted into a view's
+// `where`) AND the subject of an `#(authorize)` gate on the same source. These
+// two layers compose: the gate fires first (before any filtering), and once it
+// passes the parameterized filter applies to the result. This is the layered
+// case the end-to-end story rests on.
+describe("authorize composes with given parameters", () => {
+   // `ROLE` gates access; `REGION` is a runtime filter parameter on the view.
+   const COMPOSED = `##! experimental.givens
+
+given:
+  ROLE :: string
+  REGION :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: regional is duckdb.table('customers') extend {
+  measure: c is count()
+  view: in_region is {
+    where: region = $REGION
+    aggregate: c
+  }
+}
+`;
+
+   async function runComposed(givens: Record<string, GivenValue>) {
+      await writeModel("compose.malloy", COMPOSED);
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "compose.malloy",
+         getConnections(),
+      );
+      return model.getQueryResults(
+         undefined,
+         undefined,
+         "run: regional -> in_region",
+         undefined,
+         undefined,
+         givens,
+      );
+   }
+
+   function countOf(compactResult: unknown): number {
+      const rows = compactResult as Array<Record<string, unknown>>;
+      return Number(rows[0]?.c);
+   }
+
+   it("denies before filtering when the gate fails, even with the filter given supplied", async () => {
+      await expect(runComposed({ REGION: "us-west" })).rejects.toBeInstanceOf(
+         AccessDeniedError,
+      );
+   });
+
+   it("applies the parameterized filter once the gate passes", async () => {
+      // Seed: one 'us-west' customer, one 'us-east'.
+      const west = await runComposed({ ROLE: "analyst", REGION: "us-west" });
+      expect(countOf(west.compactResult)).toBe(1);
+
+      const east = await runComposed({ ROLE: "analyst", REGION: "us-east" });
+      expect(countOf(east.compactResult)).toBe(1);
+
+      // A region matching no rows proves the given genuinely filters (not a
+      // gate-only pass-through).
+      const none = await runComposed({ ROLE: "analyst", REGION: "nowhere" });
+      expect(countOf(none.compactResult)).toBe(0);
+   });
+});

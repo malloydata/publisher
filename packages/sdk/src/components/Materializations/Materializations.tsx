@@ -8,12 +8,8 @@ import {
    Typography,
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import React, { useEffect, useRef, useState } from "react";
-import {
-   ManifestActionActionEnum,
-   Materialization,
-   MaterializationActionActionEnum,
-} from "../../client";
+import React, { useState } from "react";
+import { Materialization, MaterializationActionActionEnum } from "../../client";
 import {
    useMutationWithApiError,
    useQueryWithApiError,
@@ -23,7 +19,6 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import CreateMaterializationDialog from "./CreateMaterializationDialog";
-import ManifestView from "./ManifestView";
 import MaterializationDetailDialog from "./MaterializationDetailDialog";
 import MaterializationRunsList from "./MaterializationRunsList";
 import { isActiveStatus } from "./utils";
@@ -75,57 +70,28 @@ export default function Materializations({
       },
    });
 
-   const manifestQuery = useQueryWithApiError({
-      queryKey: ["manifest", environmentName, packageName],
-      queryFn: () =>
-         apiClients.manifests.getManifest(environmentName, packageName),
-   });
-
    const invalidateList = () =>
       queryClient.invalidateQueries({
          queryKey: ["materializations", environmentName, packageName],
       });
-   const invalidateManifest = () =>
-      queryClient.invalidateQueries({
-         queryKey: ["manifest", environmentName, packageName],
-      });
 
+   // Auto-run: the publisher compiles, builds every persist source, and loads
+   // the resulting manifest in a single pass.
    const createMaterialization = useMutationWithApiError({
-      mutationFn: async (opts: {
-         forceRefresh: boolean;
-         autoLoadManifest: boolean;
-      }) => {
-         const created =
-            await apiClients.materializations.createMaterialization(
-               environmentName,
-               packageName,
-               {
-                  forceRefresh: opts.forceRefresh,
-                  autoLoadManifest: opts.autoLoadManifest,
-               },
-            );
-         const id = created.data?.id;
-         if (!id) {
-            throw new Error(
-               "Server did not return a materialization id; nothing was started.",
-            );
-         }
-         await apiClients.materializations.materializationAction(
+      mutationFn: (opts: { forceRefresh: boolean }) =>
+         apiClients.materializations.createMaterialization(
             environmentName,
             packageName,
-            id,
-            MaterializationActionActionEnum.Start,
-         );
-         return created;
-      },
+            {
+               forceRefresh: opts.forceRefresh,
+            },
+         ),
       onSuccess() {
-         setNotificationMessage("Materialization started");
+         setNotificationMessage("Materialization requested");
          invalidateList();
       },
       onError(error) {
          setNotificationMessage(error.message);
-         // A create can succeed (a PENDING row now exists) before the start
-         // action fails; refetch so that row surfaces and polling resumes.
          invalidateList();
       },
    });
@@ -163,22 +129,6 @@ export default function Materializations({
       },
    });
 
-   const reloadManifest = useMutationWithApiError({
-      mutationFn: () =>
-         apiClients.manifests.manifestAction(
-            environmentName,
-            packageName,
-            ManifestActionActionEnum.Reload,
-         ),
-      onSuccess() {
-         setNotificationMessage("Manifest reloaded");
-         invalidateManifest();
-      },
-      onError(error) {
-         setNotificationMessage(error.message);
-      },
-   });
-
    const materializations = (listQuery.data?.data ?? []) as Materialization[];
    const selected =
       materializations.find((row) => row.id === selectedId) ?? null;
@@ -187,19 +137,6 @@ export default function Materializations({
       createMaterialization.isPending ||
       stopMaterialization.isPending ||
       deleteMaterialization.isPending;
-
-   // When the last active run finishes, a build with autoLoadManifest enabled
-   // may have written new manifest entries, so refetch the manifest once on
-   // that active-to-terminal transition.
-   const wasActive = useRef(hasActive);
-   useEffect(() => {
-      if (wasActive.current && !hasActive) {
-         queryClient.invalidateQueries({
-            queryKey: ["manifest", environmentName, packageName],
-         });
-      }
-      wasActive.current = hasActive;
-   }, [hasActive, queryClient, environmentName, packageName]);
 
    return (
       <Container
@@ -244,8 +181,8 @@ export default function Materializations({
                      Materializations
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                     Build persist sources for {packageName} and inspect the
-                     tables they produce
+                     Materialize the persist sources in {packageName} into
+                     tables and serve queries from them
                   </Typography>
                </Box>
                {mutable && (
@@ -294,15 +231,6 @@ export default function Materializations({
                />
             )}
          </Box>
-
-         <ManifestView
-            entries={manifestQuery.data?.data?.entries}
-            mutable={mutable}
-            isReloading={reloadManifest.isPending}
-            isError={manifestQuery.isError}
-            error={manifestQuery.error}
-            onReload={() => reloadManifest.mutate()}
-         />
 
          <MaterializationDetailDialog
             materialization={selected}

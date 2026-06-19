@@ -12,7 +12,6 @@ import {
    ConnectionsApi,
    DatabasesApi,
    EnvironmentsApi,
-   ManifestsApi,
    MaterializationsApi,
    ModelsApi,
    NotebooksApi,
@@ -97,7 +96,6 @@ const getApiClients = (
          basePath,
          axiosInstance,
       ),
-      manifests: new ManifestsApi(config, basePath, axiosInstance),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
    };
 };

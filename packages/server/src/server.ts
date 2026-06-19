@@ -8,7 +8,6 @@ import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
-import { ParsedQs } from "qs";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -38,13 +37,11 @@ import { getMemoryGovernorConfig } from "./config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
-import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
 import { startAgentMcpServer } from "./mcp/agent_server";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
-import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
 import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
@@ -190,7 +187,6 @@ app.use(httpMetricsMiddleware);
 // chase OOMKills before checking the obvious config.
 checkHeapConfiguration();
 const environmentStore = new EnvironmentStore(SERVER_ROOT);
-const manifestService = new ManifestService(environmentStore);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
@@ -205,23 +201,13 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
-const packageController = new PackageController(
-   environmentStore,
-   manifestService,
-);
+const packageController = new PackageController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
-const materializationService = new MaterializationService(
-   environmentStore,
-   manifestService,
-);
+const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
-);
-const manifestController = new ManifestController(
-   environmentStore,
-   manifestService,
 );
 
 export const mcpApp = express();
@@ -1058,28 +1044,6 @@ app.get(
    },
 );
 
-/**
- * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlSource POST method instead
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
    async (req, res) => {
@@ -1100,26 +1064,6 @@ app.post(
 );
 
 // Per-package versions
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
    async (req, res) => {
@@ -1154,21 +1098,12 @@ app.post(
    queryConcurrency(),
    async (req, res) => {
       try {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-
-         // Support both body and query parameters for options for backwards compatibility
-         // TODO: To be removed in the future
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               options as string,
+               req.body?.options as string,
             ),
          );
       } catch (error) {
@@ -1184,65 +1119,12 @@ app.post(
    queryConcurrency(),
    async (req, res) => {
       try {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               options as string,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * @deprecated Use environments/:environmentName/connections/:connectionName/sqlTemporaryTable POST method instead
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/temporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/temporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
+               req.body?.options as string,
                req.params.packageName,
             ),
          );
@@ -1319,11 +1201,9 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages`,
    async (req, res) => {
       try {
-         const autoLoadManifest = req.query.autoLoadManifest === "true";
          const _package = await packageController.addPackage(
             req.params.environmentName,
             req.body,
-            { autoLoadManifest },
          );
          res.status(200).json(_package?.getPackageMetadata());
       } catch (error) {
@@ -1708,32 +1588,16 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/teardown`,
-   async (req, res) => {
-      try {
-         const result = await materializationController.teardownPackage(
-            req.params.environmentName,
-            req.params.packageName,
-            req.body || {},
-         );
-         res.status(200).json(result);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          const action = req.query.action;
-         if (action === "start") {
-            const build = await materializationController.startMaterialization(
+         if (action === "build") {
+            const build = await materializationController.buildMaterialization(
                req.params.environmentName,
                req.params.packageName,
                req.params.materializationId,
+               req.body || {},
             );
             res.status(202).json(build);
          } else if (action === "stop") {
@@ -1745,7 +1609,7 @@ app.post(
             res.status(200).json(build);
          } else {
             throw new BadRequestError(
-               `Unsupported action '${String(action ?? "")}'. Expected 'start' or 'stop'.`,
+               `Unsupported action '${String(action ?? "")}'. Expected 'build' or 'stop'.`,
             );
          }
       } catch (error) {
@@ -1763,52 +1627,10 @@ app.delete(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            { dropTables: req.query.dropTables === "true" },
          );
          res.status(204).send();
       } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// ==================== MANIFEST ROUTES ====================
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
-   async (req, res) => {
-      try {
-         const manifest = await manifestController.getManifest(
-            req.params.environmentName,
-            req.params.packageName,
-         );
-         res.status(200).json(manifest);
-      } catch (error) {
-         logger.error("Get manifest error", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
-   async (req, res) => {
-      try {
-         const action = req.query.action;
-         if (action === "reload") {
-            const manifest = await manifestController.reloadManifest(
-               req.params.environmentName,
-               req.params.packageName,
-            );
-            res.status(200).json(manifest);
-         } else {
-            throw new BadRequestError(
-               `Unsupported action '${String(action ?? "")}'. Expected 'reload'.`,
-            );
-         }
-      } catch (error) {
-         logger.error("Manifest action error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1827,7 +1649,6 @@ registerLegacyRoutes(app, {
    queryController,
    compileController,
    materializationController,
-   manifestController,
 });
 
 // Modify the catch-all route to only serve index.html in production
