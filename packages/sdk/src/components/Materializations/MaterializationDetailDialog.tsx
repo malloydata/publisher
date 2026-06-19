@@ -19,9 +19,10 @@ import { MONO_FONT_FAMILY } from "../styles";
 import ManifestView from "./ManifestView";
 import {
    formatDuration,
-   formatRelativeTime,
+   formatTimestamp,
    parseMetadata,
    statusColor,
+   statusLabel,
 } from "./utils";
 
 type MaterializationDetailDialogProps = {
@@ -50,7 +51,7 @@ export default function MaterializationDetailDialog({
                   <Stack direction="row" alignItems="center" spacing={1.5}>
                      <Chip
                         size="small"
-                        label={materialization.status ?? "UNKNOWN"}
+                        label={statusLabel(materialization.status)}
                         color={statusColor(materialization.status)}
                      />
                      <Typography
@@ -69,13 +70,41 @@ export default function MaterializationDetailDialog({
                   </IconButton>
                </DialogTitle>
                <DialogContent dividers>
-                  <Stack direction="row" spacing={4} sx={{ mb: 3 }}>
+                  <Box
+                     sx={{
+                        display: "grid",
+                        gridTemplateColumns:
+                           "repeat(auto-fit, minmax(150px, 1fr))",
+                        gap: 2,
+                        mb: 3,
+                     }}
+                  >
+                     <DetailField
+                        label="Package"
+                        value={materialization.packageName ?? "—"}
+                     />
+                     <DetailField
+                        label="Mode"
+                        value={
+                           materialization.pauseBetweenPhases
+                              ? "Two-round"
+                              : "Auto-run"
+                        }
+                     />
+                     <DetailField
+                        label="Force refresh"
+                        value={meta.forceRefresh ? "Yes" : "No"}
+                     />
                      <DetailField
                         label="Started"
-                        value={formatRelativeTime(
+                        value={formatTimestamp(
                            materialization.startedAt ??
                               materialization.createdAt,
                         )}
+                     />
+                     <DetailField
+                        label="Completed"
+                        value={formatTimestamp(materialization.completedAt)}
                      />
                      <DetailField
                         label="Duration"
@@ -92,7 +121,15 @@ export default function MaterializationDetailDialog({
                         label="Sources skipped"
                         value={`${meta.sourcesSkipped ?? 0}`}
                      />
-                  </Stack>
+                     <DetailField
+                        label="Created"
+                        value={formatTimestamp(materialization.createdAt)}
+                     />
+                     <DetailField
+                        label="Updated"
+                        value={formatTimestamp(materialization.updatedAt)}
+                     />
+                  </Box>
 
                   {materialization.error && (
                      <Box sx={{ mb: 3 }}>
@@ -134,6 +171,7 @@ export default function MaterializationDetailDialog({
                                  <TableCell>Source</TableCell>
                                  <TableCell>Connection</TableCell>
                                  <TableCell>Dialect</TableCell>
+                                 <TableCell align="right">Columns</TableCell>
                                  <TableCell>Build ID</TableCell>
                               </TableRow>
                            </TableHead>
@@ -153,8 +191,16 @@ export default function MaterializationDetailDialog({
                                     <TableCell>
                                        {source.dialect ?? "-"}
                                     </TableCell>
+                                    <TableCell align="right">
+                                       {source.columns?.length ?? 0}
+                                    </TableCell>
                                     <TableCell
-                                       sx={{ fontFamily: MONO_FONT_FAMILY }}
+                                       sx={{
+                                          fontFamily: MONO_FONT_FAMILY,
+                                          fontSize: "0.75rem",
+                                          wordBreak: "break-all",
+                                          maxWidth: 220,
+                                       }}
                                     >
                                        {source.buildId}
                                     </TableCell>
@@ -165,7 +211,10 @@ export default function MaterializationDetailDialog({
                      )}
                   </Box>
 
-                  <ManifestView entries={materialization.manifest?.entries} />
+                  <ManifestView
+                     entries={materialization.manifest?.entries}
+                     builtAt={materialization.manifest?.builtAt}
+                  />
                </DialogContent>
             </>
          )}

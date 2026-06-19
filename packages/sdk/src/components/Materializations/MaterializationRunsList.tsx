@@ -27,6 +27,7 @@ import {
    isTerminalStatus,
    parseMetadata,
    statusColor,
+   statusLabel,
 } from "./utils";
 
 type MaterializationRunsListProps = {
@@ -141,7 +142,7 @@ function MaterializationRow({
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                <Chip
                   size="small"
-                  label={materialization.status ?? "UNKNOWN"}
+                  label={statusLabel(materialization.status)}
                   color={statusColor(materialization.status)}
                   variant={active ? "filled" : "outlined"}
                />

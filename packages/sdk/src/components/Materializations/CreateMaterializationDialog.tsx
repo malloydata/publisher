@@ -14,10 +14,7 @@ import {
 import { useState } from "react";
 
 type CreateMaterializationDialogProps = {
-   onSubmit: (opts: {
-      forceRefresh: boolean;
-      pauseBetweenPhases: boolean;
-   }) => Promise<unknown>;
+   onSubmit: (opts: { forceRefresh: boolean }) => Promise<unknown>;
    isSubmitting: boolean;
    disabled?: boolean;
    disabledReason?: string;
@@ -31,13 +28,12 @@ export default function CreateMaterializationDialog({
 }: CreateMaterializationDialogProps) {
    const [open, setOpen] = useState(false);
    const [forceRefresh, setForceRefresh] = useState(false);
-   const [pauseBetweenPhases, setPauseBetweenPhases] = useState(false);
 
    const handleClose = () => setOpen(false);
 
    const handleRun = async () => {
       try {
-         await onSubmit({ forceRefresh, pauseBetweenPhases });
+         await onSubmit({ forceRefresh });
          setOpen(false);
       } catch {
          // The mutation surfaces the error through the caller's Snackbar;
@@ -81,9 +77,7 @@ export default function CreateMaterializationDialog({
                <DialogContentText sx={{ mb: 2 }}>
                   Materialize every persist source in this package: compile,
                   build the tables, and load them so queries serve from the
-                  materialized tables. Enable &ldquo;Pause between phases&rdquo;
-                  to stop at the build plan for a control plane to drive the
-                  build instead.
+                  materialized tables.
                </DialogContentText>
                <FormGroup>
                   <FormControlLabel
@@ -97,17 +91,6 @@ export default function CreateMaterializationDialog({
                      }
                      label="Force refresh (rebuild even if unchanged)"
                   />
-                  <FormControlLabel
-                     control={
-                        <Switch
-                           checked={pauseBetweenPhases}
-                           onChange={(event) =>
-                              setPauseBetweenPhases(event.target.checked)
-                           }
-                        />
-                     }
-                     label="Pause between phases (control-plane two-round flow)"
-                  />
                </FormGroup>
             </DialogContent>
             <DialogActions>
@@ -117,7 +100,7 @@ export default function CreateMaterializationDialog({
                   loading={isSubmitting}
                   onClick={handleRun}
                >
-                  {pauseBetweenPhases ? "Create plan" : "Materialize"}
+                  Materialize
                </Button>
             </DialogActions>
          </Dialog>

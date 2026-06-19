@@ -1,5 +1,6 @@
 import {
    Box,
+   Stack,
    Table,
    TableBody,
    TableCell,
@@ -9,25 +10,36 @@ import {
 } from "@mui/material";
 import { ManifestEntry } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
+import { formatTimestamp } from "./utils";
 
 type ManifestViewProps = {
    entries: { [buildId: string]: ManifestEntry } | undefined;
+   builtAt?: string;
 };
 
 /**
- * Read-only view of a materialization's Round 2 build manifest: the physical
- * tables the control plane produced from the build plan. The publisher no longer
- * brokers a package-level manifest; this renders the manifest carried on a
- * single materialization resource.
+ * Read-only view of a materialization's build manifest: the physical tables
+ * produced from the build plan, carried on the materialization resource.
  */
-export default function ManifestView({ entries }: ManifestViewProps) {
+export default function ManifestView({ entries, builtAt }: ManifestViewProps) {
    const rows = Object.entries(entries ?? {});
 
    return (
       <Box>
-         <Typography variant="subtitle2" gutterBottom>
-            Build manifest
-         </Typography>
+         <Stack
+            direction="row"
+            alignItems="baseline"
+            justifyContent="space-between"
+         >
+            <Typography variant="subtitle2" gutterBottom>
+               Build manifest
+            </Typography>
+            {builtAt && (
+               <Typography variant="caption" color="text.secondary">
+                  Built {formatTimestamp(builtAt)}
+               </Typography>
+            )}
+         </Stack>
          {rows.length === 0 ? (
             <Typography
                variant="body2"
@@ -42,6 +54,8 @@ export default function ManifestView({ entries }: ManifestViewProps) {
                   <TableRow>
                      <TableCell>Source</TableCell>
                      <TableCell>Table name</TableCell>
+                     <TableCell>Connection</TableCell>
+                     <TableCell>Realization</TableCell>
                      <TableCell align="right">Rows</TableCell>
                   </TableRow>
                </TableHead>
@@ -54,6 +68,10 @@ export default function ManifestView({ entries }: ManifestViewProps) {
                         <TableCell sx={{ fontFamily: MONO_FONT_FAMILY }}>
                            {entry.physicalTableName ?? "-"}
                         </TableCell>
+                        <TableCell sx={{ fontFamily: MONO_FONT_FAMILY }}>
+                           {entry.connectionName ?? "-"}
+                        </TableCell>
+                        <TableCell>{entry.realization ?? "-"}</TableCell>
                         <TableCell align="right">
                            {entry.rowCount ?? "-"}
                         </TableCell>
