@@ -381,6 +381,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
    description?: string;
    explores?: string[];
    queryableSources?: "declared" | "all";
+   manifestLocation?: string | null;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -389,6 +390,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
       description?: string;
       explores?: string[];
       queryableSources?: unknown;
+      manifestLocation?: unknown;
    };
    return {
       name: parsed.name,
@@ -399,6 +401,12 @@ async function readPackageMetadata(packagePath: string): Promise<{
       // Default + invalid fall back to "declared" (fail-safe: queryable ==
       // discoverable). Only an explicit "all" opts out of the query boundary.
       queryableSources: parsed.queryableSources === "all" ? "all" : "declared",
+      // URI (gs://, s3://, file://, or local path) of the control-plane-computed
+      // build manifest. The main thread fetches + binds it after load.
+      manifestLocation:
+         typeof parsed.manifestLocation === "string"
+            ? parsed.manifestLocation
+            : null,
    };
 }
 
