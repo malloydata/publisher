@@ -107,7 +107,8 @@ function createMocks() {
    });
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({
       getPackage: sinon.stub().resolves({}),
-      withPackageLock: async (_name: string, fn: () => Promise<unknown>) => fn(),
+      withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
+         fn(),
    });
 
    const service = new MaterializationService(environmentStore);
@@ -133,11 +134,14 @@ describe("MaterializationService", () => {
 
    describe("queries", () => {
       it("lists materializations for a package", async () => {
-         const rows = [makeMaterialization(), makeMaterialization({ id: "m2" })];
+         const rows = [
+            makeMaterialization(),
+            makeMaterialization({ id: "m2" }),
+         ];
          ctx.repository.listMaterializations.resolves(rows);
-         expect(await ctx.service.listMaterializations("my-env", "pkg")).toEqual(
-            rows,
-         );
+         expect(
+            await ctx.service.listMaterializations("my-env", "pkg"),
+         ).toEqual(rows);
       });
 
       it("returns a specific materialization", async () => {
@@ -317,7 +321,11 @@ describe("MaterializationService", () => {
          });
       }
 
-      const active = ["PENDING", "BUILD_PLAN_READY", "MANIFEST_ROWS_READY"] as const;
+      const active = [
+         "PENDING",
+         "BUILD_PLAN_READY",
+         "MANIFEST_ROWS_READY",
+      ] as const;
       for (const status of active) {
          it(`rejects deleting a ${status} materialization`, async () => {
             ctx.repository.getMaterializationById.resolves(

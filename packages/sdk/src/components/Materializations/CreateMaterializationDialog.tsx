@@ -75,9 +75,9 @@ export default function CreateMaterializationDialog({
             </DialogTitle>
             <DialogContent>
                <DialogContentText sx={{ mb: 2 }}>
-                  Compile this package and produce a build plan for every persist
-                  source. The control plane assigns table identities and drives
-                  the build from the plan.
+                  Compile this package and produce a build plan for every
+                  persist source. The control plane assigns table identities and
+                  drives the build from the plan.
                </DialogContentText>
                <FormGroup>
                   <FormControlLabel

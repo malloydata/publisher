@@ -33,7 +33,9 @@ export class MaterializationController {
             !Array.isArray(body.sourceNames) ||
             body.sourceNames.some((n) => typeof n !== "string")
          ) {
-            throw new BadRequestError("sourceNames must be an array of strings");
+            throw new BadRequestError(
+               "sourceNames must be an array of strings",
+            );
          }
          result.sourceNames = body.sourceNames as string[];
       }
@@ -54,7 +56,9 @@ export class MaterializationController {
       );
    }
 
-   private validateBuildBody(body: Record<string, unknown>): BuildInstruction[] {
+   private validateBuildBody(
+      body: Record<string, unknown>,
+   ): BuildInstruction[] {
       const sources = body.sources;
       if (!Array.isArray(sources) || sources.length === 0) {
          throw new BadRequestError(

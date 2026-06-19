@@ -183,11 +183,15 @@ export class MaterializationRepository {
       }
       if (updates.buildPlan !== undefined) {
          setClauses.push(`build_plan = ?`);
-         params.push(updates.buildPlan ? JSON.stringify(updates.buildPlan) : null);
+         params.push(
+            updates.buildPlan ? JSON.stringify(updates.buildPlan) : null,
+         );
       }
       if (updates.manifest !== undefined) {
          setClauses.push(`manifest = ?`);
-         params.push(updates.manifest ? JSON.stringify(updates.manifest) : null);
+         params.push(
+            updates.manifest ? JSON.stringify(updates.manifest) : null,
+         );
       }
 
       setClauses.push(`updated_at = ?`);

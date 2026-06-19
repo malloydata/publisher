@@ -70,7 +70,9 @@ function deriveColumns(persistSource: PersistSource): WireColumn[] {
 }
 
 /** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
-function flattenDependsOn(node: { dependsOn: { sourceID: string }[] }): string[] {
+function flattenDependsOn(node: {
+   dependsOn: { sourceID: string }[];
+}): string[] {
    return node.dependsOn.map((d) => d.sourceID);
 }
 
@@ -404,83 +406,83 @@ export class MaterializationService {
       const startedAt = Date.now();
 
       try {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const pkg = await environment.getPackage(packageName, false);
-
-      const { graphs, sources, connectionDigests, connections } =
-         await environment.withPackageLock(packageName, () =>
-            this.compilePackageBuildPlan(pkg, signal),
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
          );
+         const pkg = await environment.getPackage(packageName, false);
 
-      const byBuildId = new Map<string, BuildInstruction>();
-      for (const instruction of instructions) {
-         byBuildId.set(instruction.buildId, instruction);
-      }
-
-      // Accumulates physical names as sources are built so downstream sources
-      // resolve their upstream references to the freshly-assigned tables.
-      const manifest = new Manifest();
-      const entries: Record<string, ManifestEntry> = {};
-
-      for (const graph of graphs) {
-         const connection = connections.get(graph.connectionName);
-         if (!connection) {
-            throw new BadRequestError(
-               `Connection '${graph.connectionName}' not found`,
+         const { graphs, sources, connectionDigests, connections } =
+            await environment.withPackageLock(packageName, () =>
+               this.compilePackageBuildPlan(pkg, signal),
             );
+
+         const byBuildId = new Map<string, BuildInstruction>();
+         for (const instruction of instructions) {
+            byBuildId.set(instruction.buildId, instruction);
          }
-         for (const level of graph.nodes) {
-            for (const node of level) {
-               if (signal.aborted) throw new Error("Build cancelled");
-               const persistSource = sources[node.sourceID];
-               if (!persistSource) continue;
 
-               const buildId = persistSource.makeBuildId(
-                  connectionDigests[persistSource.connectionName],
-                  persistSource.getSQL(),
-               );
-               const instruction = byBuildId.get(buildId);
-               if (!instruction) continue;
+         // Accumulates physical names as sources are built so downstream sources
+         // resolve their upstream references to the freshly-assigned tables.
+         const manifest = new Manifest();
+         const entries: Record<string, ManifestEntry> = {};
 
-               const entry = await this.buildOneSource(
-                  persistSource,
-                  instruction,
-                  connection,
-                  connectionDigests,
-                  manifest,
+         for (const graph of graphs) {
+            const connection = connections.get(graph.connectionName);
+            if (!connection) {
+               throw new BadRequestError(
+                  `Connection '${graph.connectionName}' not found`,
                );
-               entries[buildId] = entry;
+            }
+            for (const level of graph.nodes) {
+               for (const node of level) {
+                  if (signal.aborted) throw new Error("Build cancelled");
+                  const persistSource = sources[node.sourceID];
+                  if (!persistSource) continue;
+
+                  const buildId = persistSource.makeBuildId(
+                     connectionDigests[persistSource.connectionName],
+                     persistSource.getSQL(),
+                  );
+                  const instruction = byBuildId.get(buildId);
+                  if (!instruction) continue;
+
+                  const entry = await this.buildOneSource(
+                     persistSource,
+                     instruction,
+                     connection,
+                     connectionDigests,
+                     manifest,
+                  );
+                  entries[buildId] = entry;
+               }
             }
          }
-      }
 
-      await this.transition(id, "MANIFEST_ROWS_READY");
+         await this.transition(id, "MANIFEST_ROWS_READY");
 
-      const manifestResult: BuildManifestResult = {
-         builtAt: new Date().toISOString(),
-         entries,
-         strict: false,
-      };
-      const durationMs = Date.now() - startedAt;
-      await this.transition(id, "MANIFEST_FILE_READY", {
-         completedAt: new Date(),
-         manifest: manifestResult,
-         metadata: {
+         const manifestResult: BuildManifestResult = {
+            builtAt: new Date().toISOString(),
+            entries,
+            strict: false,
+         };
+         const durationMs = Date.now() - startedAt;
+         await this.transition(id, "MANIFEST_FILE_READY", {
+            completedAt: new Date(),
+            manifest: manifestResult,
+            metadata: {
+               sourcesBuilt: Object.keys(entries).length,
+               durationMs,
+            },
+         });
+
+         this.recordRound("round2", "success", startedAt);
+         logger.info("Materialization Round 2 complete", {
+            materializationId: id,
+            packageName,
             sourcesBuilt: Object.keys(entries).length,
             durationMs,
-         },
-      });
-
-      this.recordRound("round2", "success", startedAt);
-      logger.info("Materialization Round 2 complete", {
-         materializationId: id,
-         packageName,
-         sourcesBuilt: Object.keys(entries).length,
-         durationMs,
-      });
+         });
       } catch (err) {
          this.recordRound("round2", outcomeFor(err, signal), startedAt);
          throw err;
@@ -683,7 +685,12 @@ export class MaterializationService {
          }
       }
 
-      return { graphs: allGraphs, sources: allSources, connectionDigests, connections };
+      return {
+         graphs: allGraphs,
+         sources: allSources,
+         connectionDigests,
+         connections,
+      };
    }
 
    /** Project the Malloy build plan into the trimmed v0 wire BuildPlan. */
@@ -745,14 +752,14 @@ export class MaterializationService {
       run(abortController.signal)
          .catch(async (err) => {
             const message = err instanceof Error ? err.message : String(err);
-            const next = abortController.signal.aborted ? "CANCELLED" : "FAILED";
+            const next = abortController.signal.aborted
+               ? "CANCELLED"
+               : "FAILED";
             try {
                await this.repository.updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
-                  error: abortController.signal.aborted
-                     ? "Cancelled"
-                     : message,
+                  error: abortController.signal.aborted ? "Cancelled" : message,
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {

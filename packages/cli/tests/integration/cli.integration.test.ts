@@ -134,23 +134,23 @@ describe("CLI integration (real server)", () => {
     expect(r.output).toContain("Stopped");
   });
 
-   it("refuses to stop the now-terminal materialization (exit 1)", async () => {
-      const r = await runCli(
-         ["stop-materialization", createdId, ...SCOPE],
-         baseUrl,
-      );
-      expect(r.code).toBe(1);
-      expect(r.output.toLowerCase()).toContain("cannot stop");
-   });
+  it("refuses to stop the now-terminal materialization (exit 1)", async () => {
+    const r = await runCli(
+      ["stop-materialization", createdId, ...SCOPE],
+      baseUrl,
+    );
+    expect(r.code).toBe(1);
+    expect(r.output.toLowerCase()).toContain("cannot stop");
+  });
 
-   it("deletes the terminal materialization", async () => {
-      const del = await runCli(
-         ["delete", "materialization", createdId, ...SCOPE],
-         baseUrl,
-      );
-      expect(del.code).toBe(0);
-      expect(del.output).toContain("Deleted");
-   });
+  it("deletes the terminal materialization", async () => {
+    const del = await runCli(
+      ["delete", "materialization", createdId, ...SCOPE],
+      baseUrl,
+    );
+    expect(del.code).toBe(0);
+    expect(del.output).toContain("Deleted");
+  });
 
   // ── exit-code contract on failure paths ───────────────────────────
 

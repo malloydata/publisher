@@ -81,9 +81,13 @@ describe("Materialization Commands", () => {
       forceRefresh: true,
     });
 
-    expect(mockClient.createMaterialization).toHaveBeenCalledWith("env", "pkg", {
-      forceRefresh: true,
-    });
+    expect(mockClient.createMaterialization).toHaveBeenCalledWith(
+      "env",
+      "pkg",
+      {
+        forceRefresh: true,
+      },
+    );
     // Round 2 (build) is control-plane driven; the CLI never starts a build.
     expect(mockClient.materializationAction).not.toHaveBeenCalled();
     expect(mockClient.getMaterialization).not.toHaveBeenCalled();

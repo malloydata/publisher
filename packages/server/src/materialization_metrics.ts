@@ -27,10 +27,13 @@ function ensureTelemetry(): { counter: Counter; duration: Histogram } {
    }
    const meter = metrics.getMeter("publisher");
    if (!roundCounter) {
-      roundCounter = meter.createCounter("publisher_materialization_rounds_total", {
-         description:
-            "Materialization rounds completed. Labels: round ('round1'|'round2'), outcome ('success'|'failed'|'cancelled').",
-      });
+      roundCounter = meter.createCounter(
+         "publisher_materialization_rounds_total",
+         {
+            description:
+               "Materialization rounds completed. Labels: round ('round1'|'round2'), outcome ('success'|'failed'|'cancelled').",
+         },
+      );
    }
    if (!roundDuration) {
       roundDuration = meter.createHistogram(

@@ -33,7 +33,9 @@ test.describe("package-materializations: read", () => {
       ).toBeVisible();
    });
 
-   test("materializations screen renders the Runs section", async ({ page }) => {
+   test("materializations screen renders the Runs section", async ({
+      page,
+   }) => {
       await openMaterializations(page, DEFAULT_ENV, PKG);
 
       await expect(

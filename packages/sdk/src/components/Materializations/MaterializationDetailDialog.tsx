@@ -150,7 +150,9 @@ export default function MaterializationDetailDialog({
                                     >
                                        {source.connectionName}
                                     </TableCell>
-                                    <TableCell>{source.dialect ?? "-"}</TableCell>
+                                    <TableCell>
+                                       {source.dialect ?? "-"}
+                                    </TableCell>
                                     <TableCell
                                        sx={{ fontFamily: MONO_FONT_FAMILY }}
                                     >
