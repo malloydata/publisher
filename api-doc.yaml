@@ -58,8 +58,6 @@ tags:
     description: Real-time file watching for development workflows
   - name: materializations
     description: Package-level materializations for persisting Malloy sources
-  - name: manifests
-    description: Build manifest management for tracking materialized source tables
 
 paths:
   /status:
@@ -1406,16 +1404,6 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: autoLoadManifest
-          in: query
-          description: |
-            When true, automatically loads any existing build manifest
-            for the package so materialized table references resolve immediately.
-            Defaults to false.
-          required: false
-          schema:
-            type: boolean
-            default: false
       requestBody:
         required: true
         content:
@@ -2255,10 +2243,13 @@ paths:
       tags:
         - materializations
       operationId: create-materialization
-      summary: Create a materialization
+      summary: Create a materialization (Round 1)
       description: |
-        Creates a new materialization in PENDING state for all persist sources across all
-        models in the package. Use POST .../materializations/{materializationId}?action=start to begin execution.
+        Starts Round 1 of the two-round build protocol: asynchronously compiles the package,
+        computes a build plan (per-source buildId, output columns, dependency/column lineage,
+        connection capability), and pauses at BUILD_PLAN_READY without writing any tables.
+        The control plane then issues Round 2 via
+        POST .../materializations/{materializationId}?action=build with build instructions.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -2345,8 +2336,11 @@ paths:
       description: |
         Performs an action on a materialization. The action is specified via
         the `action` query parameter:
-          * `start` - Transitions a PENDING materialization to RUNNING and begins execution in the background. Returns 202.
-          * `stop` - Cancels a PENDING or RUNNING materialization. Returns 200.
+          * `build` - Round 2. Provide BuildInstructions (CP-assigned table id, physical
+            table name, and realization per source). Builds only the instructed sources into
+            the exact names provided and assembles the manifest. Valid only when the
+            materialization is at BUILD_PLAN_READY. Returns 202.
+          * `stop` - Cancels a PENDING, BUILD_PLAN_READY, or building materialization. Returns 200.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -2357,9 +2351,15 @@ paths:
           schema:
             type: string
             enum:
-              - start
+              - build
               - stop
           description: Action to perform on the materialization
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildInstructions"
       responses:
         "200":
           description: Materialization cancelled (action=stop)
@@ -2368,7 +2368,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Materialization"
         "202":
-          description: Materialization started (action=start)
+          description: Round 2 build accepted (action=build)
           content:
             application/json:
               schema:
@@ -2383,86 +2383,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-    delete:
-      tags:
-        - materializations
-      operationId: delete-materialization
-      summary: Delete a materialization
-      description: Deletes a terminal (SUCCESS, FAILED, or CANCELLED) materialization
-        record.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/packageName"
-        - $ref: "#/components/parameters/materializationId"
-      responses:
-        "204":
-          description: Materialization deleted
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description: Materialization cannot be deleted (PENDING or RUNNING)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
-  /environments/{environmentName}/packages/{packageName}/manifest:
-    get:
-      tags:
-        - manifests
-      operationId: get-manifest
-      summary: Get the build manifest for a package
-      description: |
-        Returns the current build manifest containing buildId-to-tableName mappings
-        for all materialized sources in the package.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/packageName"
-      responses:
-        "200":
-          description: Build manifest
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BuildManifest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    post:
-      tags:
-        - manifests
-      operationId: manifest-action
-      summary: Perform an action on the package manifest
-      description: |
-        Performs an action on the package manifest. The action is specified via
-        the `action` query parameter:
-          * `reload` - Reads the build manifest from the shared store (DuckLake
-            in orchestrated mode, local DuckDB in standalone mode) and recompiles
-            every model in the package so subsequent queries resolve persisted
-            sources to their materialized tables. Intended for orchestrated
-            workers that did not themselves run the build; the endpoint does
-            not write anything *into* storage.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - $ref: "#/components/parameters/packageName"
-        - name: action
-          in: query
-          required: true
-          schema:
-            type: string
-            enum:
-              - reload
-          description: Action to perform on the manifest
-      responses:
-        "200":
-          description: Manifest loaded
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/BuildManifest"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
 
 components:
   responses:
@@ -2633,19 +2553,6 @@ components:
           description: List of Malloy packages in this environment
           items:
             $ref: "#/components/schemas/Package"
-        materializationStorage:
-          type: object
-          nullable: true
-          description: Optional DuckLake-backed storage for materialization manifests
-            (orchestrated mode). When set, manifests are stored in a shared
-            DuckLake catalog instead of the local DuckDB database.
-          properties:
-            catalogUrl:
-              type: string
-              description: PostgreSQL connection URL for the DuckLake catalog metadata store
-            dataPath:
-              type: string
-              description: Cloud storage path (s3:// or gs://) for DuckLake data files
 
     Package:
       type: object
@@ -2709,6 +2616,12 @@ components:
             there is no curated surface, so both modes are equivalent
             (everything queryable). Invalid values fall back to `"declared"`.
             Identity-based access is a separate concern — see `#(authorize)`.
+        manifestLocation:
+          type: [ "string", "null" ]
+          description: |
+            URI (gs:// or s3://) of the control-plane-computed manifest for this package.
+            On (re)load the worker reads it and binds persist references
+            (buildId -> physicalTableName). Null = serve live.
 
     Model:
       type: object
@@ -3750,22 +3663,33 @@ components:
 
     CreateMaterializationRequest:
       type: object
-      description: Options for creating a materialization
+      description: Options for starting a two-round materialization (Round 1).
       properties:
         forceRefresh:
           type: boolean
           default: false
-          description: If true, forces rebuild of all sources even if their BuildID is
-            unchanged
-        autoLoadManifest:
-          type: boolean
-          default: false
-          description: If true, automatically reloads the manifest into the Malloy Runtime
-            after a successful materialization
+          description: Build a new table even when a source's buildId is unchanged.
+        sourceNames:
+          type: array
+          items:
+            type: string
+          description: Restrict the plan/build to these persist source names. Omit = all
+            persist sources.
+
+    MaterializationStatus:
+      type: string
+      description: Phase-aware status of a two-round materialization run.
+      enum:
+        - PENDING
+        - BUILD_PLAN_READY
+        - MANIFEST_ROWS_READY
+        - MANIFEST_FILE_READY
+        - FAILED
+        - CANCELLED
 
     Materialization:
       type: object
-      description: A record of a package materialization
+      description: A record of one two-round materialization run for a package.
       properties:
         id:
           type: string
@@ -3774,8 +3698,17 @@ components:
         packageName:
           type: string
         status:
-          type: string
-          enum: [ "PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELLED" ]
+          $ref: "#/components/schemas/MaterializationStatus"
+        buildPlan:
+          oneOf:
+            - $ref: "#/components/schemas/BuildPlan"
+            - type: "null"
+          description: Round 1 output. Null until status >= BUILD_PLAN_READY.
+        manifest:
+          oneOf:
+            - $ref: "#/components/schemas/BuildManifest"
+            - type: "null"
+          description: Round 2 output. Null until status = MANIFEST_FILE_READY.
         startedAt:
           type: [ "string", "null" ]
           format: date-time
@@ -3796,26 +3729,155 @@ components:
           type: string
           format: date-time
 
+    BuildPlan:
+      type: object
+      description: |
+        Round 1 output. Mirrors Malloy's native build plan plus the minimal
+        per-source detail the control plane needs in v0 to assign
+        identity/naming/realization. Lineage, policy, and connection
+        capability are intentionally omitted until they carry real data.
+      required: [ graphs, sources ]
+      properties:
+        graphs:
+          type: array
+          description: Dependency-ordered build graphs, one per connection.
+          items:
+            $ref: "#/components/schemas/BuildGraph"
+        sources:
+          type: object
+          description: Map of sourceID ("sourceName@modelURL") to per-source plan.
+          additionalProperties:
+            $ref: "#/components/schemas/PersistSourcePlan"
+
+    BuildGraph:
+      type: object
+      required: [ connectionName, nodes ]
+      properties:
+        connectionName:
+          type: string
+        nodes:
+          type: array
+          description: Leveled build nodes; each inner array is one parallelizable level,
+            levels run in order.
+          items:
+            type: array
+            items:
+              $ref: "#/components/schemas/BuildNode"
+
+    BuildNode:
+      type: object
+      required: [ sourceID ]
+      properties:
+        sourceID:
+          type: string
+          description: "sourceName@modelURL"
+        dependsOn:
+          type: array
+          description: Upstream sourceIDs in this graph.
+          items:
+            type: string
+
+    PersistSourcePlan:
+      type: object
+      required: [ name, sourceID, connectionName, buildId, sql, columns ]
+      properties:
+        name:
+          type: string
+        sourceID:
+          type: string
+        connectionName:
+          type: string
+        dialect:
+          type: string
+        buildId:
+          type: string
+          description: hash(connectionDigest + canonical logical SQL).
+        sql:
+          type: string
+          description: The source's build SQL (with the build manifest applied for upstream
+            rewrites).
+        columns:
+          type: array
+          description: Output schema of the source.
+          items:
+            $ref: "#/components/schemas/Column"
+
+    Realization:
+      type: string
+      enum: [ SNAPSHOT, COPY ]
+      description: SNAPSHOT = warehouse clone/snapshot; COPY = CREATE TABLE AS SELECT.
+
+    BuildInstructions:
+      type: object
+      description: Round 2 input. Per-source instructions assigned by the control plane.
+      required: [ sources ]
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/BuildInstruction"
+
+    BuildInstruction:
+      type: object
+      required: [ buildId, materializedTableId, physicalTableName, realization ]
+      properties:
+        buildId:
+          type: string
+          description: Identifies which planned source this instruction is for
+            (matches PersistSourcePlan.buildId).
+        sourceID:
+          type: string
+          description: Optional convenience echo of "sourceName@modelURL"; buildId is
+            authoritative.
+        materializedTableId:
+          type: string
+          description: CP-assigned surrogate id for the materialized table about to be
+            produced.
+        physicalTableName:
+          type: string
+          description: Fully-qualified, dialect-quoted table name to create. The publisher
+            writes here verbatim.
+        realization:
+          $ref: "#/components/schemas/Realization"
+
     BuildManifest:
       type: object
-      description: Manifest mapping BuildIDs to materialized table names
+      description: Round 2 output. Maps each buildId a build produced to its physical table.
+        Returned inline; the control plane persists it.
       properties:
+        builtAt:
+          type: string
+          format: date-time
         entries:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of BuildID to manifest entry
+          description: Map of buildId to manifest entry.
         strict:
           type: boolean
-          description: Whether the manifest is in strict mode
+          description: Whether unresolved references should error.
 
     ManifestEntry:
       type: object
-      description: A single entry in the build manifest
+      description: A single entry in the build manifest.
+      required: [ buildId, physicalTableName ]
       properties:
-        tableName:
+        buildId:
           type: string
-          description: Name of the materialized table
+        sourceName:
+          type: string
+        materializedTableId:
+          type: string
+          description: Echoes the CP-assigned id from the BuildInstruction.
+        physicalTableName:
+          type: string
+          description: Name of the materialized table.
+        connectionName:
+          type: string
+        realization:
+          $ref: "#/components/schemas/Realization"
+        rowCount:
+          type: [ "integer", "null" ]
 
   parameters:
     environmentName:
