@@ -133,25 +133,38 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       async () => {
          const manifestFile = await writeManifest();
 
-         // Accept on update; the response echoes the bound location.
+         // Accept on update; the response echoes the bound location and the
+         // server-computed binding observability fields (surfaced on /status so
+         // the control plane can confirm the worker actually bound the manifest).
          const patchRes = await patchPackage({
             manifestLocation: manifestFile,
          });
          expect(patchRes.status).toBe(200);
-         expect((await patchRes.json()).manifestLocation).toBe(manifestFile);
+         const patched = await patchRes.json();
+         expect(patched.manifestLocation).toBe(manifestFile);
+         expect(patched.manifestBindingStatus).toBe("bound");
+         expect(patched.manifestEntryCount).toBe(1);
+         expect(patched.boundManifestUri).toBe(manifestFile);
 
          // In-memory metadata reflects it; binding did not break serving.
-         expect((await getPackage()).manifestLocation).toBe(manifestFile);
+         const bound = await getPackage();
+         expect(bound.manifestLocation).toBe(manifestFile);
+         expect(bound.manifestBindingStatus).toBe("bound");
+         expect(bound.manifestEntryCount).toBe(1);
          expect(await queryOrderSummaryStatus()).toBe(200);
 
          // Persisted to publisher.json: a reload re-reads and re-binds it.
          expect((await getPackage(true)).manifestLocation).toBe(manifestFile);
          expect(await queryOrderSummaryStatus()).toBe(200);
 
-         // Clearing reverts to live and survives a reload.
+         // Clearing reverts to live (unbound) and survives a reload.
          const clearRes = await patchPackage({ manifestLocation: null });
          expect(clearRes.status).toBe(200);
-         expect((await clearRes.json()).manifestLocation ?? null).toBeNull();
+         const cleared = await clearRes.json();
+         expect(cleared.manifestLocation ?? null).toBeNull();
+         expect(cleared.manifestBindingStatus).toBe("unbound");
+         expect(cleared.manifestEntryCount).toBe(0);
+         expect(cleared.boundManifestUri ?? null).toBeNull();
          expect((await getPackage(true)).manifestLocation ?? null).toBeNull();
          expect(await queryOrderSummaryStatus()).toBe(200);
       },
@@ -163,7 +176,13 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
 
       const patchRes = await patchPackage({ manifestLocation: missing });
       expect(patchRes.status).toBe(200);
-      expect((await patchRes.json()).manifestLocation).toBe(missing);
+      const patched = await patchRes.json();
+      expect(patched.manifestLocation).toBe(missing);
+      // The configured location is retained, but the binding is reported as a
+      // degraded live fallback (not "bound") with nothing actually bound.
+      expect(patched.manifestBindingStatus).toBe("live_fallback");
+      expect(patched.manifestEntryCount).toBe(0);
+      expect(patched.boundManifestUri ?? null).toBeNull();
 
       // A fetch failure must not brick the package — it still serves live.
       expect(await queryOrderSummaryStatus()).toBe(200);

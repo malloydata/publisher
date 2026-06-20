@@ -342,6 +342,100 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
       );
    });
 
+   // ── Group A1: Serve-time routing (the v0 payoff) ─────────────────
+   //
+   // Materialization only pays off if *served* queries scan the materialized
+   // table instead of recomputing from the base table. The auto-run path builds
+   // the table and auto-loads the manifest into the serving models in one
+   // process, so routing is provable in-process: capture the live SQL (scans the
+   // base CSV), run an auto-run materialization, then assert both the executed
+   // query SQL and the /compile preview SQL now scan the physical table and no
+   // longer touch the base CSV. The /compile half guards the parity fix
+   // (Environment.compileSource threads the package's bound manifest).
+   describe("serve-time routing (auto-load)", () => {
+      const MODEL_PATH = "persist_test.malloy";
+      const QUERY = "run: order_summary -> { aggregate: c is count() }";
+
+      async function executedSql(): Promise<string> {
+         const res = await fetch(
+            `${baseUrl}${API}/models/${MODEL_PATH}/query`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ query: QUERY }),
+            },
+         );
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as { result: string };
+         return (JSON.parse(body.result) as { sql: string }).sql;
+      }
+
+      async function compiledSql(): Promise<string> {
+         const res = await fetch(
+            `${baseUrl}${API}/models/${MODEL_PATH}/compile`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ source: QUERY, includeSql: true }),
+            },
+         );
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as { status: string; sql?: string };
+         expect(body.status).toBe("success");
+         expect(body.sql).toBeDefined();
+         return body.sql as string;
+      }
+
+      it(
+         "routes served + compiled queries to the materialized table after auto-load",
+         async () => {
+            // Reset to live: a prior group may have left an in-memory binding.
+            // Auto-load never writes manifestLocation to publisher.json, so a
+            // reload re-reads the live model.
+            await fetch(`${baseUrl}${API}?reload=true`);
+
+            // Baseline: with nothing materialized, both paths recompute from the
+            // base CSV.
+            expect(await executedSql()).toContain("data/orders.csv");
+            expect(await compiledSql()).toContain("data/orders.csv");
+
+            // Build + auto-load in one pass (self-assigns physicalTableName =
+            // "order_summary" from `#@ persist name="order_summary"`).
+            const createRes = await createMaterialization({
+               pauseBetweenPhases: false,
+            });
+            expect(createRes.status).toBe(201);
+            const { id } = (await createRes.json()) as { id: string };
+            const built = await pollUntil(
+               id,
+               (s) => TERMINAL_STATUSES.includes(s),
+               90_000,
+            );
+            expect(built.status).toBe("MANIFEST_FILE_READY");
+
+            // The payoff: the served query now scans the materialized table and
+            // no longer recomputes from the base CSV, and /compile previews the
+            // same routed SQL it would execute.
+            const routedExecuted = await executedSql();
+            const routedCompiled = await compiledSql();
+            expect(routedExecuted).not.toContain("data/orders.csv");
+            expect(routedExecuted).toContain("order_summary");
+            expect(routedCompiled).not.toContain("data/orders.csv");
+            expect(routedCompiled).toContain("order_summary");
+
+            // Cleanup: drop the table + record, then reload back to live so the
+            // dangling binding doesn't leak into later groups.
+            const deleteRes = await fetch(
+               url(`/materializations/${id}?dropTables=true`),
+               { method: "DELETE" },
+            );
+            expect(deleteRes.status).toBe(204);
+            await fetch(`${baseUrl}${API}?reload=true`);
+         },
+         { timeout: 120_000 },
+      );
+   });
+
    // ── Group B: State machine and error cases ───────────────────────
 
    describe("state machine and errors", () => {

@@ -606,6 +606,7 @@ export class Model {
       _packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Model {
       const modelDef = data.modelDef as ModelDef | undefined;
       const modelInfo = data.modelInfo as Malloy.ModelInfo | undefined;
@@ -645,7 +646,7 @@ export class Model {
          );
       }
 
-      const runtime = makeHydrationRuntime(malloyConfig);
+      const runtime = makeHydrationRuntime(malloyConfig, options?.buildManifest);
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
@@ -1921,6 +1922,7 @@ type HydrationMaterializer = ModelMaterializer & {
 
 function makeHydrationRuntime(
    malloyConfig: ModelConnectionInput,
+   buildManifest?: BuildManifest["entries"],
 ): HydrationRuntime {
    const urlReader = new HackyDataStylesAccumulator(URL_READER);
    const config =
@@ -1933,7 +1935,19 @@ function makeHydrationRuntime(
               );
               return c;
            })();
-   return new Runtime({ urlReader, config }) as HydrationRuntime;
+   // Thread the package's bound build manifest into the *serve* runtime. Malloy
+   // substitutes a persisted source for its materialized table at query
+   // (getSQL) time, gated on `prepareResultOptions.buildManifest`; without this
+   // the hydrated model always recomputes from the base tables even though the
+   // manifest was bound at load. `strict: false` keeps serving live for any
+   // source whose buildId is absent from the manifest.
+   return new Runtime({
+      urlReader,
+      config,
+      buildManifest: buildManifest
+         ? { entries: buildManifest, strict: false }
+         : undefined,
+   }) as HydrationRuntime;
 }
 
 /**

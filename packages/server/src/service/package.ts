@@ -58,6 +58,17 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private malloyConfig: MalloyConfig;
+   // Build-manifest binding state (Malloy Persistence v0). When bound, these
+   // entries (buildId -> { tableName }) are what served queries use to route
+   // persist sources to their materialized physical tables; they are also reused
+   // by the /compile preview so previewed SQL matches executed SQL. Surfaced on
+   // /status (via getPackageMetadata) so the control plane can confirm a worker
+   // actually bound the distributed manifest instead of inferring it from logs.
+   private buildManifestEntries: BuildManifest["entries"] | undefined;
+   private manifestBindingStatus: "unbound" | "bound" | "live_fallback" =
+      "unbound";
+   private manifestEntryCount = 0;
+   private boundManifestUri: string | null = null;
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -389,14 +400,68 @@ export class Package {
    }
 
    public getPackageMetadata(): ApiPackage {
-      // Surface explores misconfig so consumers/UI can show it (loading is
-      // fail-safe — the package still serves with the bad entry hidden — so this
-      // is the only non-log signal that it's broken). Computed fresh against the
-      // current models; absent when everything resolves. Returns a copy in that
-      // case so the added field never mutates the stored metadata.
+      // Overlay the server-computed fields onto the stored metadata: the
+      // explores misconfig warnings (loading is fail-safe — the package still
+      // serves with the bad entry hidden — so this is the only non-log signal
+      // that it's broken) and the manifest-binding state (so /status reflects
+      // whether persist sources are actually routed to materialized tables).
+      // Always returns a copy so these overlays never mutate the stored
+      // metadata; the binding fields are authoritative from the private state.
+      const metadata: ApiPackage = {
+         ...this.packageMetadata,
+         manifestBindingStatus: this.manifestBindingStatus,
+         manifestEntryCount: this.manifestEntryCount,
+         boundManifestUri: this.boundManifestUri,
+      };
       const warnings = this.exploreWarnings();
-      if (warnings.length === 0) return this.packageMetadata;
-      return { ...this.packageMetadata, exploresWarnings: warnings };
+      if (warnings.length > 0) {
+         metadata.exploresWarnings = warnings;
+      }
+      return metadata;
+   }
+
+   /**
+    * The currently-bound build-manifest entries (buildId -> { tableName }), or
+    * undefined when the package is serving live. Reused by the /compile preview
+    * so previewed SQL gets the same persist-source -> physical-table routing as
+    * execution.
+    */
+   public getBuildManifestEntries(): BuildManifest["entries"] | undefined {
+      return this.buildManifestEntries;
+   }
+
+   /**
+    * Record the URI whose manifest is currently bound to the served models. May
+    * differ from `manifestLocation` after an in-memory auto-load following a
+    * materialization build (no URI), in which case it stays null.
+    */
+   public setBoundManifestUri(uri: string | null): void {
+      this.boundManifestUri = uri;
+   }
+
+   /**
+    * Mark that a configured `manifestLocation` could not be fetched/bound, so
+    * the package is serving live despite intending to be materialized-routed.
+    */
+   public markManifestBindFailed(): void {
+      this.manifestBindingStatus = "live_fallback";
+   }
+
+   /**
+    * Store the entries applied by the latest (re)bind for reuse (/compile) and
+    * observability (/status). An empty map means the manifest was cleared, so
+    * the package reverts to live (unbound).
+    */
+   private recordManifestBinding(
+      buildManifest: BuildManifest["entries"],
+   ): void {
+      const count = Object.keys(buildManifest).length;
+      this.buildManifestEntries = count > 0 ? buildManifest : undefined;
+      this.manifestEntryCount = count;
+      this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
+      if (count === 0) {
+         this.boundManifestUri = null;
+      }
    }
 
    /**
@@ -595,6 +660,7 @@ export class Package {
                this.packagePath,
                this.malloyConfig,
                sm,
+               { buildManifest },
             );
             // Validate renderer tags here too (loadViaWorker does it for the
             // create path). Reload keeps per-model placeholders rather than
@@ -636,6 +702,9 @@ export class Package {
          outcome.packageMetadata.manifestLocation ?? null;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      // Remember what we just bound so /compile can route identically and
+      // /status can report the binding. An empty map reverts to live (unbound).
+      this.recordManifestBinding(buildManifest);
       // Re-run the fail-safe warning against the refreshed model set: an edit
       // to publisher.json that introduces a bad entry should surface in the
       // logs on reload too, not only at initial load (loadViaWorker).
