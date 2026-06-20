@@ -48,8 +48,6 @@ type PackageConnectionInput =
    | Map<string, Connection>
    | (() => MalloyConfig);
 
-const ENABLE_LIST_MODEL_COMPILATION = true;
-
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -741,15 +739,13 @@ export class Package {
             })
             .map(async (modelPath) => {
                let error: string | undefined;
-               if (ENABLE_LIST_MODEL_COMPILATION) {
-                  try {
-                     await this.models.get(modelPath)?.getModel();
-                  } catch (modelError) {
-                     error =
-                        modelError instanceof Error
-                           ? modelError.message
-                           : undefined;
-                  }
+               try {
+                  await this.models.get(modelPath)?.getModel();
+               } catch (modelError) {
+                  error =
+                     modelError instanceof Error
+                        ? modelError.message
+                        : undefined;
                }
                return {
                   environmentName: this.environmentName,
@@ -769,10 +765,7 @@ export class Package {
                return modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
             })
             .map(async (modelPath) => {
-               let error: Error | undefined;
-               if (ENABLE_LIST_MODEL_COMPILATION) {
-                  error = this.models.get(modelPath)?.getNotebookError();
-               }
+               const error = this.models.get(modelPath)?.getNotebookError();
                return {
                   environmentName: this.environmentName,
                   packageName: this.packageName,
