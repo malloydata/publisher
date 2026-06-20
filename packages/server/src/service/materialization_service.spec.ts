@@ -1,3 +1,4 @@
+import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
@@ -496,5 +497,174 @@ describe("MaterializationService", () => {
 describe("stagingSuffix", () => {
    it("derives a short, stable suffix from the buildId", () => {
       expect(stagingSuffix("abcdef1234567890")).toBe("_abcdef123456");
+   });
+});
+
+// Characterization (Pass 0): lock in the auto-run instruction-derivation and
+// the single-source build SQL sequence before the simplify pass moves them.
+// deriveSelfInstructions / buildOneSource are private; we exercise them via a
+// typed cast rather than the heavyweight runtime path.
+
+// A minimal stand-in for a Malloy PersistSource exposing only what the build
+// internals touch.
+function fakeSource(opts: {
+   name: string;
+   buildId: string;
+   sql?: string;
+   connectionName?: string;
+}): unknown {
+   return {
+      name: opts.name,
+      sourceID: opts.name,
+      connectionName: opts.connectionName ?? "duckdb",
+      makeBuildId: () => opts.buildId,
+      getSQL: () => opts.sql ?? "SELECT 1",
+      annotations: {
+         parseAsTag: () => ({ tag: { text: () => undefined } }),
+      },
+   };
+}
+
+describe("deriveSelfInstructions (characterization)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   function compiledWith(sources: Record<string, unknown>, levels: string[][]) {
+      return {
+         graphs: [
+            {
+               connectionName: "duckdb",
+               nodes: levels.map((level) =>
+                  level.map((sourceID) => ({ sourceID, dependsOn: [] })),
+               ),
+            },
+         ],
+         sources,
+         connectionDigests: { duckdb: "dig" },
+      };
+   }
+
+   it("carries forward unchanged buildIds and builds the rest (deduping repeats)", () => {
+      const compiled = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", buildId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1", "s2"], ["s2"]],
+      );
+      const priorEntries = {
+         b1aaaaaaaaaaaaaa: {
+            buildId: "b1aaaaaaaaaaaaaa",
+            physicalTableName: "s1_prev",
+            connectionName: "duckdb",
+         },
+      };
+
+      const { instructions, carried } = (
+         ctx.service as unknown as {
+            deriveSelfInstructions: (
+               c: unknown,
+               n: string[] | undefined,
+               p: unknown,
+            ) => { instructions: BuildInstruction[]; carried: unknown };
+         }
+      ).deriveSelfInstructions(compiled, undefined, priorEntries);
+
+      expect(instructions).toHaveLength(1);
+      expect(instructions[0].buildId).toBe("b2bbbbbbbbbbbbbb");
+      expect(instructions[0].physicalTableName).toBe("s2");
+      expect(instructions[0].realization).toBe("COPY");
+      expect(instructions[0].materializedTableId).toBe("local-b2bbbbbbbbbb");
+      expect(
+         (carried as Record<string, unknown>)["b1aaaaaaaaaaaaaa"],
+      ).toBeDefined();
+   });
+
+   it("honors the sourceNames filter (excluded sources are neither built nor carried)", () => {
+      const compiled = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", buildId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1", "s2"]],
+      );
+      const { instructions, carried } = (
+         ctx.service as unknown as {
+            deriveSelfInstructions: (
+               c: unknown,
+               n: string[] | undefined,
+               p: unknown,
+            ) => { instructions: BuildInstruction[]; carried: unknown };
+         }
+      ).deriveSelfInstructions(compiled, ["s2"], {});
+
+      expect(instructions).toHaveLength(1);
+      expect(instructions[0].buildId).toBe("b2bbbbbbbbbbbbbb");
+      expect(Object.keys(carried as Record<string, unknown>)).toHaveLength(0);
+   });
+});
+
+describe("buildOneSource (characterization)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   function callBuildOneSource(
+      connection: { runSQL: sinon.SinonStub },
+      physicalTableName: string,
+   ): Promise<{ buildId: string; physicalTableName: string }> {
+      const source = fakeSource({
+         name: "orders",
+         buildId: "abcdef1234567890",
+         sql: "SELECT * FROM t",
+      });
+      const instruction: BuildInstruction = {
+         buildId: "abcdef1234567890",
+         materializedTableId: "mt-1",
+         physicalTableName,
+         realization: "COPY",
+      };
+      return (
+         ctx.service as unknown as {
+            buildOneSource: (
+               s: unknown,
+               i: BuildInstruction,
+               c: unknown,
+               d: Record<string, string>,
+               m: Manifest,
+            ) => Promise<{ buildId: string; physicalTableName: string }>;
+         }
+      ).buildOneSource(source, instruction, connection, { duckdb: "dig" }, new Manifest());
+   }
+
+   it("stages, swaps, and renames in a crash-safe order", async () => {
+      const runSQL = sinon.stub().resolves();
+      const entry = await callBuildOneSource({ runSQL }, "orders_v1");
+
+      const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(sql).toEqual([
+         "DROP TABLE IF EXISTS orders_v1_abcdef123456",
+         "CREATE TABLE orders_v1_abcdef123456 AS (SELECT * FROM t)",
+         "DROP TABLE IF EXISTS orders_v1",
+         "ALTER TABLE orders_v1_abcdef123456 RENAME TO orders_v1",
+      ]);
+      expect(entry.physicalTableName).toBe("orders_v1");
+      expect(entry.buildId).toBe("abcdef1234567890");
+   });
+
+   it("drops the staging table and rethrows when the build SQL fails", async () => {
+      const runSQL = sinon.stub();
+      runSQL.onCall(0).resolves(); // initial staging drop
+      runSQL.onCall(1).rejects(new Error("create boom")); // CREATE TABLE AS
+      runSQL.onCall(2).resolves(); // cleanup staging drop
+      await expect(callBuildOneSource({ runSQL }, "orders_v1")).rejects.toThrow(
+         "create boom",
+      );
+      expect(runSQL.lastCall.args[0]).toBe(
+         "DROP TABLE IF EXISTS orders_v1_abcdef123456",
+      );
    });
 });
