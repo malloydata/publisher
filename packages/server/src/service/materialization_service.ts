@@ -16,7 +16,9 @@ import {
 import { logger } from "../logger";
 import {
    MaterializationRound,
+   recordDropTables,
    recordMaterializationRound,
+   recordSourceBuildDuration,
 } from "../materialization_metrics";
 import {
    BuildInstruction,
@@ -208,6 +210,11 @@ export class MaterializationService {
          );
       }
       this.validateTransition(current.status, next);
+      logger.info("Materialization transition", {
+         materializationId: id,
+         from: current.status,
+         to: next,
+      });
       return this.repository.updateMaterialization(id, {
          status: next,
          ...extra,
@@ -835,10 +842,12 @@ export class MaterializationService {
       // Make this table visible to downstream sources built later this round.
       manifest.update(buildId, { tableName: physicalTableName });
 
+      const durationMs = Math.round(performance.now() - startTime);
+      recordSourceBuildDuration(durationMs);
       // Shared by auto-run and Round 2, so the message is path-neutral.
       logger.info(`Built materialized source ${persistSource.name}`, {
          physicalTableName,
-         durationMs: Math.round(performance.now() - startTime),
+         durationMs,
       });
 
       return {
@@ -971,12 +980,14 @@ export class MaterializationService {
                   entry.buildId,
                )}`,
             );
+            recordDropTables("success");
             logger.info("Dropped materialized table on delete", {
                materializationId: m.id,
                physicalTableName,
                connectionName,
             });
          } catch (err) {
+            recordDropTables("failure");
             logger.warn("Failed to drop materialized table on delete", {
                materializationId: m.id,
                physicalTableName,

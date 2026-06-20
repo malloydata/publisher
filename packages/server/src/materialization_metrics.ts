@@ -17,9 +17,14 @@ import { metrics, type Counter, type Histogram } from "@opentelemetry/api";
 
 export type MaterializationRound = "round1" | "round2" | "auto";
 export type MaterializationOutcome = "success" | "failed" | "cancelled";
+/** Manifest bind outcome: timeout is split out from generic failure on purpose. */
+export type ManifestBindOutcome = "success" | "failure" | "timeout";
 
 let roundCounter: Counter | null = null;
 let roundDuration: Histogram | null = null;
+let manifestBindCounter: Counter | null = null;
+let sourceBuildDuration: Histogram | null = null;
+let dropTablesCounter: Counter | null = null;
 
 function ensureTelemetry(): { counter: Counter; duration: Histogram } {
    if (roundCounter && roundDuration) {
@@ -59,8 +64,54 @@ export function recordMaterializationRound(
    duration.record(durationMs, { round });
 }
 
+/**
+ * Record a manifest-bind attempt (publisher binding a control-plane manifest to
+ * a package at load). `timeout` is distinguished from `failure` so operators can
+ * tell an unreachable/slow manifest store from a malformed manifest.
+ */
+export function recordManifestBind(outcome: ManifestBindOutcome): void {
+   if (!manifestBindCounter) {
+      manifestBindCounter = metrics
+         .getMeter("publisher")
+         .createCounter("publisher_materialization_manifest_bind_total", {
+            description:
+               "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
+         });
+   }
+   manifestBindCounter.add(1, { outcome });
+}
+
+/** Record the wall-clock duration of building one persist source's table. */
+export function recordSourceBuildDuration(durationMs: number): void {
+   if (!sourceBuildDuration) {
+      sourceBuildDuration = metrics
+         .getMeter("publisher")
+         .createHistogram("publisher_materialization_source_build_duration_ms", {
+            description: "Wall-clock duration of building a single persist source.",
+            unit: "ms",
+         });
+   }
+   sourceBuildDuration.record(durationMs);
+}
+
+/** Record a best-effort physical-table drop on materialization delete. */
+export function recordDropTables(outcome: "success" | "failure"): void {
+   if (!dropTablesCounter) {
+      dropTablesCounter = metrics
+         .getMeter("publisher")
+         .createCounter("publisher_materialization_drop_tables_total", {
+            description:
+               "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
+         });
+   }
+   dropTablesCounter.add(1, { outcome });
+}
+
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */
 export function resetMaterializationTelemetryForTesting(): void {
    roundCounter = null;
    roundDuration = null;
+   manifestBindCounter = null;
+   sourceBuildDuration = null;
+   dropTablesCounter = null;
 }
