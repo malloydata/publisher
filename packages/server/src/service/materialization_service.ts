@@ -78,6 +78,21 @@ function flattenDependsOn(node: {
 }
 
 /**
+ * The buildId for a persist source: a stable digest of its connection identity
+ * and canonical SQL. Centralizes the (source, connectionDigests) call shape so
+ * planning, self-instruction, and build all agree on the same id.
+ */
+function computeBuildId(
+   source: PersistSource,
+   connectionDigests: Record<string, string>,
+): string {
+   return source.makeBuildId(
+      connectionDigests[source.connectionName],
+      source.getSQL(),
+   );
+}
+
+/**
  * Physical table name the publisher self-assigns in auto-run mode: the
  * `#@ persist name=<table>` value if present, else the Malloy source name.
  * The author owns quoting the `name=` value for the dialect.
@@ -435,25 +450,14 @@ export class MaterializationService {
             signal,
          );
 
-         await this.transition(id, "MANIFEST_ROWS_READY");
-
-         const manifestResult: BuildManifestResult = {
-            builtAt: new Date().toISOString(),
-            entries,
-            strict: false,
-         };
          const durationMs = Date.now() - startedAt;
-         await this.transition(id, "MANIFEST_FILE_READY", {
-            completedAt: new Date(),
-            manifest: manifestResult,
-            metadata: {
-               forceRefresh,
-               sourceNames: sourceNames ?? null,
-               pauseBetweenPhases: false,
-               sourcesBuilt: instructions.length,
-               sourcesReused: Object.keys(carried).length,
-               durationMs,
-            },
+         await this.commitManifest(id, entries, {
+            forceRefresh,
+            sourceNames: sourceNames ?? null,
+            pauseBetweenPhases: false,
+            sourcesBuilt: instructions.length,
+            sourcesReused: Object.keys(carried).length,
+            durationMs,
          });
 
          await this.autoLoadManifest(environment, packageName, entries);
@@ -503,9 +507,9 @@ export class MaterializationService {
                if (!persistSource) continue;
                if (include && !include.has(persistSource.name)) continue;
 
-               const buildId = persistSource.makeBuildId(
-                  compiled.connectionDigests[persistSource.connectionName],
-                  persistSource.getSQL(),
+               const buildId = computeBuildId(
+                  persistSource,
+                  compiled.connectionDigests,
                );
                if (seen.has(buildId)) continue;
                seen.add(buildId);
@@ -689,21 +693,10 @@ export class MaterializationService {
             signal,
          );
 
-         await this.transition(id, "MANIFEST_ROWS_READY");
-
-         const manifestResult: BuildManifestResult = {
-            builtAt: new Date().toISOString(),
-            entries,
-            strict: false,
-         };
          const durationMs = Date.now() - startedAt;
-         await this.transition(id, "MANIFEST_FILE_READY", {
-            completedAt: new Date(),
-            manifest: manifestResult,
-            metadata: {
-               sourcesBuilt: Object.keys(entries).length,
-               durationMs,
-            },
+         await this.commitManifest(id, entries, {
+            sourcesBuilt: Object.keys(entries).length,
+            durationMs,
          });
 
          this.recordRound("round2", "success", startedAt);
@@ -769,10 +762,7 @@ export class MaterializationService {
                const persistSource = sources[node.sourceID];
                if (!persistSource) continue;
 
-               const buildId = persistSource.makeBuildId(
-                  connectionDigests[persistSource.connectionName],
-                  persistSource.getSQL(),
-               );
+               const buildId = computeBuildId(persistSource, connectionDigests);
                const instruction = byBuildId.get(buildId);
                if (!instruction) continue;
 
@@ -845,7 +835,8 @@ export class MaterializationService {
       // Make this table visible to downstream sources built later this round.
       manifest.update(buildId, { tableName: physicalTableName });
 
-      logger.info(`Round 2 built source ${persistSource.name}`, {
+      // Shared by auto-run and Round 2, so the message is path-neutral.
+      logger.info(`Built materialized source ${persistSource.name}`, {
          physicalTableName,
          durationMs: Math.round(performance.now() - startTime),
       });
@@ -996,6 +987,29 @@ export class MaterializationService {
       }
    }
 
+   /**
+    * Finalize a successful build: advance MANIFEST_ROWS_READY -> FILE_READY and
+    * persist the assembled manifest. Shared by auto-run and Round 2; the caller
+    * supplies the per-path metadata. The build itself happens before this.
+    */
+   private async commitManifest(
+      id: string,
+      entries: Record<string, ManifestEntry>,
+      metadata: Record<string, unknown>,
+   ): Promise<void> {
+      await this.transition(id, "MANIFEST_ROWS_READY");
+      const manifest: BuildManifestResult = {
+         builtAt: new Date().toISOString(),
+         entries,
+         strict: false,
+      };
+      await this.transition(id, "MANIFEST_FILE_READY", {
+         completedAt: new Date(),
+         manifest,
+         metadata,
+      });
+   }
+
    // ==================== BUILD PLAN COMPILATION ====================
 
    /**
@@ -1098,10 +1112,7 @@ export class MaterializationService {
             sourceID: source.sourceID,
             connectionName: source.connectionName,
             dialect: source.dialectName,
-            buildId: source.makeBuildId(
-               connectionDigests[source.connectionName],
-               source.getSQL(),
-            ),
+            buildId: computeBuildId(source, connectionDigests),
             sql: source.getSQL(),
             columns: deriveColumns(source),
          };
