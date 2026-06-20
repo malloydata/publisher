@@ -606,6 +606,99 @@ describe("deriveSelfInstructions (characterization)", () => {
    });
 });
 
+describe("getMostRecentManifestEntries (skip-if-unchanged)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("returns entries from the most recent successful run, excluding the in-flight one", async () => {
+      const entries = {
+         b1: {
+            buildId: "b1",
+            physicalTableName: "orders_v1",
+            connectionName: "duckdb",
+         },
+      };
+      ctx.repository.listMaterializations.resolves([
+         makeMaterialization({ id: "in-flight", status: "MANIFEST_ROWS_READY" }),
+         makeMaterialization({
+            id: "old-success",
+            status: "MANIFEST_FILE_READY",
+            manifest: { builtAt: "t", strict: false, entries },
+         }),
+      ]);
+
+      const result = await (
+         ctx.service as unknown as {
+            getMostRecentManifestEntries: (
+               e: string,
+               p: string,
+               x: string,
+            ) => Promise<unknown>;
+         }
+      ).getMostRecentManifestEntries("env-1", "pkg", "in-flight");
+
+      expect(result).toEqual(entries);
+   });
+
+   it("returns {} when the only successful run is the excluded one", async () => {
+      ctx.repository.listMaterializations.resolves([
+         makeMaterialization({
+            id: "self",
+            status: "MANIFEST_FILE_READY",
+            manifest: {
+               builtAt: "t",
+               strict: false,
+               entries: { b1: { buildId: "b1", physicalTableName: "t1" } },
+            },
+         }),
+      ]);
+
+      const result = await (
+         ctx.service as unknown as {
+            getMostRecentManifestEntries: (
+               e: string,
+               p: string,
+               x: string,
+            ) => Promise<unknown>;
+         }
+      ).getMostRecentManifestEntries("env-1", "pkg", "self");
+
+      expect(result).toEqual({});
+   });
+});
+
+describe("stopMaterialization (in-flight)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("aborts a running build cooperatively without forcing a transition", async () => {
+      ctx.repository.getMaterializationById.resolves(
+         makeMaterialization({ status: "MANIFEST_ROWS_READY" }),
+      );
+      const controller = new AbortController();
+      (
+         ctx.service as unknown as {
+            runningAbortControllers: Map<string, AbortController>;
+         }
+      ).runningAbortControllers.set("mat-1", controller);
+
+      const result = await ctx.service.stopMaterialization(
+         "my-env",
+         "pkg",
+         "mat-1",
+      );
+
+      expect(controller.signal.aborted).toBe(true);
+      // The background run records the terminal state; stop must not also write.
+      expect(ctx.repository.updateMaterialization.called).toBe(false);
+      expect(result.status).toBe("MANIFEST_ROWS_READY");
+   });
+});
+
 describe("buildOneSource (characterization)", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
