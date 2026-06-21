@@ -86,10 +86,14 @@ export function recordSourceBuildDuration(durationMs: number): void {
    if (!sourceBuildDuration) {
       sourceBuildDuration = metrics
          .getMeter("publisher")
-         .createHistogram("publisher_materialization_source_build_duration_ms", {
-            description: "Wall-clock duration of building a single persist source.",
-            unit: "ms",
-         });
+         .createHistogram(
+            "publisher_materialization_source_build_duration_ms",
+            {
+               description:
+                  "Wall-clock duration of building a single persist source.",
+               unit: "ms",
+            },
+         );
    }
    sourceBuildDuration.record(durationMs);
 }

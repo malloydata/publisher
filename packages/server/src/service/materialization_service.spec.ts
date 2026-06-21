@@ -621,7 +621,10 @@ describe("getMostRecentManifestEntries (skip-if-unchanged)", () => {
          },
       };
       ctx.repository.listMaterializations.resolves([
-         makeMaterialization({ id: "in-flight", status: "MANIFEST_ROWS_READY" }),
+         makeMaterialization({
+            id: "in-flight",
+            status: "MANIFEST_ROWS_READY",
+         }),
          makeMaterialization({
             id: "old-success",
             status: "MANIFEST_FILE_READY",
@@ -730,7 +733,13 @@ describe("buildOneSource (characterization)", () => {
                m: Manifest,
             ) => Promise<{ buildId: string; physicalTableName: string }>;
          }
-      ).buildOneSource(source, instruction, connection, { duckdb: "dig" }, new Manifest());
+      ).buildOneSource(
+         source,
+         instruction,
+         connection,
+         { duckdb: "dig" },
+         new Manifest(),
+      );
    }
 
    it("stages, swaps, and renames in a crash-safe order", async () => {

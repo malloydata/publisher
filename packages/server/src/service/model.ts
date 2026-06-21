@@ -646,7 +646,10 @@ export class Model {
          );
       }
 
-      const runtime = makeHydrationRuntime(malloyConfig, options?.buildManifest);
+      const runtime = makeHydrationRuntime(
+         malloyConfig,
+         options?.buildManifest,
+      );
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
