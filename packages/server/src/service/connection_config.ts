@@ -337,6 +337,25 @@ function validateConnectionShape(connection: ApiConnection): void {
          break;
       }
       case "publisher": {
+         // SSRF gate (default-deny / fail-closed). A `publisher` connection
+         // makes THIS server issue outbound HTTP to a tenant-controlled
+         // `connectionUri` (both the query path in db-publisher's
+         // PublisherConnection and the introspection path in db_utils). That is
+         // the intended behavior for local `--watch-env` authoring, but in a
+         // hosted multi-tenant deployment (e.g. Credible running this server) it
+         // is an SSRF surface. Require an explicit opt-in so the type is refused
+         // unless the operator deliberately enabled it. This is the single
+         // choke point — every connection passes validateConnectionShape before
+         // it can be assembled, queried, or introspected — so denying here shuts
+         // off all three at once.
+         if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
+            throw new Error(
+               `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
+                  `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +
+                  `which is only appropriate for local --watch-env authoring. ` +
+                  `Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.`,
+            );
+         }
          const publisher = connection.publisherConnection;
          if (!publisher?.connectionUri) {
             throw new Error(

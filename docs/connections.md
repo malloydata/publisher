@@ -45,9 +45,20 @@ rows. This is the local-dev authoring loop: run a local Publisher with
 proxy to your real remote connection — no need to replicate warehouse
 credentials locally.
 
-It is the same connection type the Malloy CLI and the VS Code extensions use. To
-use it from the server, add a `publisher` connection block to the environment's
-`connections` in `publisher.config.json`:
+It is the same connection type the Malloy CLI and the VS Code extensions use.
+
+> **Disabled by default.** Because a `publisher` connection makes the server
+> issue outbound HTTP requests to a configured `connectionUri`, it is a
+> server-side request forgery (SSRF) surface in a hosted, multi-tenant
+> deployment. The type is therefore **denied unless explicitly enabled**: set
+> the environment variable `PUBLISHER_ALLOW_PROXY_CONNECTIONS=true` on the
+> server process. Enable it only for trusted local `--watch-env` authoring —
+> never in a shared/hosted deployment. With the flag unset, a `publisher`
+> connection fails at config load with an actionable error.
+
+To use it from the server, set `PUBLISHER_ALLOW_PROXY_CONNECTIONS=true` and add a
+`publisher` connection block to the environment's `connections` in
+`publisher.config.json`:
 
 ```json
 {

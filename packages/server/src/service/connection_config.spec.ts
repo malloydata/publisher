@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { generateKeyPairSync } from "crypto";
 import { components } from "../api";
 import {
@@ -180,6 +180,20 @@ describe("assembleEnvironmentConnections — publisher", () => {
       },
    };
 
+   // publisher connections are default-deny (SSRF gate); these assembly tests
+   // exercise the enabled path, so opt in for the block and restore after.
+   const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+   beforeEach(() => {
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+   });
+   afterEach(() => {
+      if (priorFlag === undefined) {
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+      } else {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
+      }
+   });
+
    it("emits a publisher core entry proxying to the remote dataplane", () => {
       const { pojo } = assembleEnvironmentConnections([validBase]);
 
@@ -253,5 +267,45 @@ describe("assembleEnvironmentConnections — publisher", () => {
       expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "Invalid connection configuration. No name.",
       );
+   });
+
+   describe("SSRF gate (PUBLISHER_ALLOW_PROXY_CONNECTIONS)", () => {
+      it("denies a valid publisher connection when the flag is unset (default-deny)", () => {
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         expect(() => assembleEnvironmentConnections([validBase])).toThrow(
+            "Publisher proxy connection 'analytics' is disabled in this deployment",
+         );
+      });
+
+      it("error names the env var to flip", () => {
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         expect(() => assembleEnvironmentConnections([validBase])).toThrow(
+            "Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true",
+         );
+      });
+
+      it("denies for any non-'true' value (fail-closed)", () => {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "1";
+         expect(() => assembleEnvironmentConnections([validBase])).toThrow(
+            "is disabled in this deployment",
+         );
+      });
+
+      it("gate fires before the connectionUri shape check", () => {
+         // A publisher connection missing connectionUri still surfaces the
+         // disabled error first when the gate is closed — the type is refused
+         // outright, not validated.
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         const conn: ApiConnection = { name: "analytics", type: "publisher" };
+         expect(() => assembleEnvironmentConnections([conn])).toThrow(
+            "is disabled in this deployment",
+         );
+      });
+
+      it("allows a valid publisher connection when the flag is 'true'", () => {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+         const { pojo } = assembleEnvironmentConnections([validBase]);
+         expect(pojo.connections["analytics"].is).toBe("publisher");
+      });
    });
 });
