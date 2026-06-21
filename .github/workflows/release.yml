@@ -38,25 +38,71 @@ jobs:
       - name: Bump version and create branch
         id: bump
         run: |
+          set -euo pipefail
+
+          PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json"
+
+          # Rewrite the top-level "version" field in each workspace package.json.
+          # We can't use `npm version --workspaces` here: this repo uses Bun's
+          # `workspace:*` dependency protocol, which npm rejects with
+          # EUNSUPPORTEDPROTOCOL. A direct, format-preserving replace avoids npm
+          # entirely.
+          set_version() {
+            local ver="$1" f
+            for f in $PKGS; do
+              node -e '
+                const fs = require("fs");
+                const [p, ver] = process.argv.slice(1);
+                const s = fs
+                  .readFileSync(p, "utf8")
+                  .replace(/("version"\s*:\s*")[^"]*(")/, `$1${ver}$2`);
+                fs.writeFileSync(p, s);
+              ' "$f" "$ver"
+            done
+          }
+
+          bump_patch() {
+            node -e 'const v=process.argv[1].split(".");v[2]=String(Number(v[2])+1);console.log(v.join("."))' "$1"
+          }
+
+          # A version is taken once its release branch or release tag exists, so
+          # reruns don't collide with a previously prepared release.
+          version_taken() {
+            local v="$1"
+            if git ls-remote --exit-code --heads origin "release/sdk-${v}" >/dev/null 2>&1; then
+              return 0
+            fi
+            if git ls-remote --exit-code --tags origin "v${v}" >/dev/null 2>&1; then
+              return 0
+            fi
+            return 1
+          }
+
           if [ -n "${{ inputs.version }}" ]; then
-            TARGET="${{ inputs.version }}"
-            echo "::notice title=Version::Using provided version $TARGET"
-            NEW_VERSION=$(npm version "$TARGET" --workspaces --no-git-tag-version | tail -1)
+            NEW_VERSION="${{ inputs.version }}"
+            NEW_VERSION="${NEW_VERSION#v}"
+            NEW_VERSION="$(echo "$NEW_VERSION" | tr -d '[:space:]')"
+            echo "::notice title=Version::Using provided version $NEW_VERSION"
+            if version_taken "$NEW_VERSION"; then
+              echo "::error title=Version::release/sdk-${NEW_VERSION} or tag v${NEW_VERSION} already exists"
+              exit 1
+            fi
           else
             echo "::notice title=Version::No version provided — performing patch bump"
-            NEW_VERSION=$(npm version patch --workspaces --no-git-tag-version | tail -1)
+            CURRENT="$(node -p "require('./packages/sdk/package.json').version")"
+            NEW_VERSION="$(bump_patch "$CURRENT")"
+            while version_taken "$NEW_VERSION"; do
+              echo "::notice title=Version::release/sdk-${NEW_VERSION} already exists — bumping again"
+              NEW_VERSION="$(bump_patch "$NEW_VERSION")"
+            done
           fi
 
-          # Strip any leading 'v' and surrounding whitespace
-          NEW_VERSION="${NEW_VERSION#v}"
-          NEW_VERSION="$(echo "$NEW_VERSION" | tr -d '[:space:]')"
+          set_version "$NEW_VERSION"
 
           BRANCH_NAME="release/sdk-${NEW_VERSION}"
           git checkout -b "$BRANCH_NAME"
 
-          git add packages/sdk/package.json packages/app/package.json packages/server/package.json
-          # package-lock.json may or may not change depending on repo setup
-          git add package-lock.json 2>/dev/null || true
+          git add $PKGS
           git commit -s -m "Release SDK/App version ${NEW_VERSION}"
 
           git push origin "$BRANCH_NAME"
