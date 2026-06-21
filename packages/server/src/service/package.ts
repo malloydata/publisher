@@ -405,8 +405,16 @@ export class Package {
       // whether persist sources are actually routed to materialized tables).
       // Always returns a copy so these overlays never mutate the stored
       // metadata; the binding fields are authoritative from the private state.
+      //
+      // `name` is the registered package name (the environment's identity for
+      // this package), not the value read from the package's own manifest —
+      // those can differ (e.g. a package installed under a different name than
+      // its publisher.json declares). `listPackages` already overrides it to
+      // the registered name; surfacing it here keeps the single-package GET
+      // consistent without relying on a returned-reference mutation.
       const metadata: ApiPackage = {
          ...this.packageMetadata,
+         name: this.packageName,
          manifestBindingStatus: this.manifestBindingStatus,
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
