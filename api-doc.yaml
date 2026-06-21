@@ -2451,6 +2451,37 @@ components:
             URI (gs:// or s3://) of the control-plane-computed manifest for this package.
             On (re)load the worker reads it and binds persist references
             (buildId -> physicalTableName). Null = serve live.
+        manifestBindingStatus:
+          type: string
+          readOnly: true
+          enum:
+            - unbound
+            - bound
+            - live_fallback
+          description: >-
+            Server-computed, read-only: whether the control-plane build manifest
+            is currently bound to this package's served models. `unbound` = no
+            manifest configured, so the package serves live. `bound` = a manifest
+            was fetched and applied, so persist sources route to their
+            materialized physical tables. `live_fallback` = a `manifestLocation`
+            is configured but the fetch/bind failed or timed out, so the package
+            is serving live despite intending to be materialized-routed. Lets the
+            control plane confirm a worker actually bound a distributed manifest
+            rather than inferring it from logs.
+        manifestEntryCount:
+          type: integer
+          readOnly: true
+          description: >-
+            Server-computed, read-only: number of buildId -> physical-table
+            entries currently bound (0 when unbound or on live fallback).
+        boundManifestUri:
+          type: ["string", "null"]
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the manifest URI actually bound to the
+            served models. Usually equals `manifestLocation`, but can differ
+            after an in-memory auto-load following a materialization build (no
+            URI), in which case it is null. Null whenever the package is unbound.
 
     Model:
       type: object

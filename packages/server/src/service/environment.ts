@@ -21,6 +21,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
+import { recordManifestBind } from "../materialization_metrics";
 import {
    assertSafeEnvironmentPath,
    assertSafePackageName,
@@ -55,6 +56,11 @@ import type { PackageMemoryGovernor } from "./package_memory_governor";
  */
 const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
+
+// How long to wait for a control-plane manifest fetch during (re)bind before
+// giving up and serving live. Binding happens before a package is marked
+// SERVING, so an unreachable/slow manifest store must not block the package.
+const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
 
 export enum PackageStatus {
    LOADING = "loading",
@@ -393,9 +399,17 @@ export class Environment {
          // Initialize Runtime with the package's active MalloyConfig so compile
          // checks see the same package-scoped duckdb as execution. This runtime
          // borrows the package config; the package/environment lifecycle owns release.
+         // Thread the package's bound build manifest (when present) so the
+         // /compile preview routes persist sources to their materialized tables
+         // exactly like execution does — otherwise includeSql=true would always
+         // show base-table SQL and diverge from what executeQuery actually runs.
+         const boundManifestEntries = pkg.getBuildManifestEntries();
          const runtime = new Runtime({
             urlReader: interceptingReader,
             config: pkg.getMalloyConfig(),
+            buildManifest: boundManifestEntries
+               ? { entries: boundManifestEntries, strict: false }
+               : undefined,
          });
 
          // Attempt to compile
@@ -1140,8 +1154,15 @@ export class Environment {
    ): Promise<void> {
       const packageName = pkg.getPackageName();
       try {
-         const entries = await fetchManifestEntries(manifestLocation);
+         // Bind runs before a package is marked SERVING, so a slow/unreachable
+         // manifest store must not block serving indefinitely — bound is the
+         // intended state, live is the degraded fallback. Race the fetch against
+         // a timeout and fall back to live on either failure.
+         const entries =
+            await this.fetchManifestEntriesWithTimeout(manifestLocation);
          await pkg.reloadAllModels(entries);
+         pkg.setBoundManifestUri(manifestLocation);
+         recordManifestBind("success");
          logger.info("Bound build manifest to package", {
             environmentName: this.environmentName,
             packageName,
@@ -1149,12 +1170,49 @@ export class Environment {
             entryCount: Object.keys(entries).length,
          });
       } catch (err) {
+         pkg.markManifestBindFailed();
+         const timedOut =
+            err instanceof Error && err.message.includes("Timed out after");
+         recordManifestBind(timedOut ? "timeout" : "failure");
          logger.warn("Failed to bind build manifest; serving live", {
             environmentName: this.environmentName,
             packageName,
             manifestLocation,
+            timedOut,
             error: err instanceof Error ? err.message : String(err),
          });
+      }
+   }
+
+   /**
+    * Fetch manifest entries, rejecting if the fetch exceeds
+    * {@link MANIFEST_FETCH_TIMEOUT_MS}. Keeps {@link bindManifest}'s bind-before-
+    * serve guarantee from stalling on an unreachable manifest store.
+    */
+   private async fetchManifestEntriesWithTimeout(
+      manifestLocation: string,
+   ): Promise<BuildManifest["entries"]> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+         timer = setTimeout(
+            () =>
+               reject(
+                  new Error(
+                     `Timed out after ${MANIFEST_FETCH_TIMEOUT_MS}ms fetching manifest ${manifestLocation}`,
+                  ),
+               ),
+            MANIFEST_FETCH_TIMEOUT_MS,
+         );
+      });
+      try {
+         return await Promise.race([
+            fetchManifestEntries(manifestLocation),
+            timeout,
+         ]);
+      } finally {
+         if (timer) {
+            clearTimeout(timer);
+         }
       }
    }
 
