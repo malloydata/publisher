@@ -10,21 +10,19 @@
 // DuckDB with a generic 500. The preflight catches that case and surfaces
 // it as a non-retryable 422 instead.
 
-// Catalog format versions the currently-baked DuckLake extension can read.
-// The extension is paired with duckdb@1.5.3 (see Dockerfile's DUCKDB_VERSION
-// and packages/server/package.json's @duckdb/node-api pin). The catalog format
-// bumped from the 0.3 line to "1.0" at the duckdb 1.4.x -> 1.5.0 transition,
-// so the 1.5.x extension produces and reads "1.0" catalogs. The earlier 0.3
-// line stays listed because the 1.5.x extension still attaches those catalogs
-// (it upgrades the format forward on write); dropping them would reject
-// existing on-disk catalogs that have not yet been touched by a 1.5.x write.
-export const SUPPORTED_CATALOG_VERSIONS: readonly string[] = [
-   "0.1",
-   "0.2",
-   "0.3-dev1",
-   "0.3",
-   "1.0",
-];
+// Catalog format versions the currently-baked DuckLake extension attaches
+// without migration. The extension is paired with duckdb@1.5.3 (see the
+// Dockerfile's DUCKDB_VERSION and packages/server/package.json's
+// @duckdb/node-api pin), which produces and attaches the "1.0" catalog format.
+//
+// The 1.5.x extension does NOT silently attach the older 0.3-line formats: a
+// plain ATTACH of a 0.1/0.2/0.3-dev1/0.3 catalog fails with "catalog version
+// mismatch ... the extension requires version 1.0" unless the caller opts into
+// AUTOMATIC_MIGRATION. The Publisher attach paths do not pass that flag, so
+// those versions are intentionally absent here -- listing them would let the
+// preflight wave through a catalog that then fails deep inside DuckDB, which
+// is exactly the 500 this preflight exists to convert into a clean 422.
+export const SUPPORTED_CATALOG_VERSIONS: readonly string[] = ["1.0"];
 
 export function isCatalogVersionSupported(version: string): boolean {
    return SUPPORTED_CATALOG_VERSIONS.includes(version);
