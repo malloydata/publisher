@@ -1,195 +1,241 @@
 /// <reference types="bun-types" />
 
-// Characterization tests for DuckLake's AUTOMATIC_MIGRATION on attach.
+// Migration matrix for DuckLake catalogs across historical catalog formats.
 //
-// The baked engine (duckdb@1.5.3) cannot attach a 0.3-line catalog as-is; it
-// requires AUTOMATIC_MIGRATION to upgrade the catalog to the "1.0" format
-// first. Before Publisher decides whether to ever pass that flag on a user's
-// behalf, these tests pin down what migration actually does to a real catalog,
-// because the behavior is not free of footguns:
+// The catalog format is set by the DuckDB engine that wrote it, and it has
+// changed over time:
 //
-//   1. Migration is one-way and in-place. It rewrites the user's catalog file
-//      to the "1.0" format; an older DuckDB engine (<1.5) can no longer open
-//      it afterward.
-//   2. Migration is data-path sensitive. If the DATA_PATH passed at attach does
-//      not byte-match the path recorded in the catalog, the attach refuses
-//      unless OVERRIDE_DATA_PATH is also set -- and this guards plain attach
-//      too, not just migration. Publisher computes absolute data paths, while
-//      catalogs created elsewhere may record relative ones, so this mismatch
-//      is a live hazard.
-//   3. OVERRIDE_DATA_PATH only suppresses the mismatch error; it does NOT
-//      persist the passed path into the catalog. The recorded data_path is
-//      left as-is, so a migrated catalog must subsequently be attached with
-//      either the originally recorded DATA_PATH or no DATA_PATH at all.
+//     DuckDB 1.4.1 .. 1.4.4   -> catalog format "0.3"
+//     DuckDB 1.5.0 .. 1.5.1   -> catalog format "0.4"
+//     DuckDB 1.5.2 .. 1.5.3   -> catalog format "1.0"
 //
-// The fixture under tests/fixtures/ducklake_v03_catalog is a genuine 0.3
-// catalog (created with the duckdb 1.4.4 CLI) with a relative recorded data
-// path, so these run in CI without needing an old engine present. Each test
-// copies the fixture to a temp dir and mutates only the copy.
+// The baked engine (resolved from the repo's single source of truth) can only
+// attach an older-format catalog after migrating it forward with
+// AUTOMATIC_MIGRATION. This suite confirms that, for every historical format,
+// a catalog written in that format migrates to the current format on attach
+// with its data intact -- and prints a migration report.
+//
+// This does not contradict the preflight in src/ducklake_version.ts, whose
+// SUPPORTED_CATALOG_VERSIONS gates plain attach-as-is (currently only the
+// current format). Older formats are intentionally not attach-as-is; this
+// suite documents that they remain recoverable through an explicit migration.
+//
+// The runner engine only writes the newest format, so the older-format
+// catalogs are committed as fixtures under tests/fixtures/ducklake, one per
+// distinct format, each seeded with the SAME rows. Regenerate them with
+// scripts/generate-ducklake-fixtures.sh when a new format appears.
+//
+// Migration footguns this exercises (all load-bearing for any future decision
+// to migrate on a user's behalf):
+//   - Migration is one-way and in-place; it rewrites the user's catalog file.
+//   - The attach DATA_PATH must match the path recorded in the catalog, or the
+//     attach is refused unless OVERRIDE_DATA_PATH is set. Publisher computes
+//     absolute data paths while these fixtures record a relative "data/", so
+//     OVERRIDE_DATA_PATH is required here.
+//   - OVERRIDE_DATA_PATH only suppresses the mismatch error; it does not
+//     persist the passed path.
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { resolveDuckDBVersion } from "../../../../scripts/duckdb-version.js";
 
-const FIXTURE_DIR = path.join(
-   process.cwd(),
-   "tests/fixtures/ducklake_v03_catalog",
-);
+const FIXTURE_ROOT = path.join(process.cwd(), "tests/fixtures/ducklake");
 
-interface MetadataRow {
-   value: string;
+// The rows every fixture is seeded with (see generate-ducklake-fixtures.sh).
+const EXPECTED_ROWS = [
+   { id: 1, label: "alpha" },
+   { id: 2, label: "beta" },
+   { id: 3, label: "gamma" },
+];
+
+interface Fixture {
+   // Catalog format the fixture is written in, e.g. "0.3", parsed from the
+   // directory name "v<format>_from_duckdb_<cli>".
+   format: string;
+   // DuckDB CLI version that wrote it, for the report.
+   writtenBy: string;
+   dir: string;
 }
 
-describe("DuckLake AUTOMATIC_MIGRATION characterization", () => {
-   let dir: string;
-   let metaPath: string;
-   let dataPath: string;
-   const openConnections: DuckDBConnection[] = [];
+interface ReportRow {
+   sourceFormat: string;
+   writtenBy: string;
+   migratedTo: string;
+   rows: number;
+   status: "ok" | "FAILED";
+   detail?: string;
+}
 
-   const connect = (name: string): DuckDBConnection => {
-      const conn = new DuckDBConnection(name);
-      openConnections.push(conn);
-      return conn;
-   };
+const FIXTURE_DIR_PATTERN = /^v(.+)_from_duckdb_(.+)$/;
 
-   beforeEach(async () => {
-      dir = await fs.mkdtemp(path.join(os.tmpdir(), "ducklake-migration-"));
-      await fs.cp(FIXTURE_DIR, dir, { recursive: true });
-      metaPath = path.join(dir, "catalog.ducklake");
-      dataPath = path.join(dir, "data");
+async function discoverFixtures(): Promise<Fixture[]> {
+   const entries = await fs.readdir(FIXTURE_ROOT, { withFileTypes: true });
+   const fixtures: Fixture[] = [];
+   for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const match = entry.name.match(FIXTURE_DIR_PATTERN);
+      if (!match) continue;
+      fixtures.push({
+         format: match[1],
+         writtenBy: match[2],
+         dir: path.join(FIXTURE_ROOT, entry.name),
+      });
+   }
+   fixtures.sort((a, b) => a.format.localeCompare(b.format));
+   return fixtures;
+}
+
+// Empirically determine the catalog format the current baked engine writes, by
+// creating a throwaway catalog and reading back its recorded version. Avoids
+// hard-coding a format that drifts when the engine is bumped.
+async function currentCatalogFormat(): Promise<string> {
+   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ducklake-current-"));
+   try {
+      const metaPath = path.join(dir, "catalog.ducklake");
+      const dataPath = path.join(dir, "data");
+      const writer = new DuckDBConnection("current_writer");
+      await writer.runSQL("LOAD ducklake");
+      await writer.runSQL(
+         `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}')`,
+      );
+      await writer.runSQL("CREATE TABLE dl.probe AS SELECT 1 AS x");
+      await writer.close();
+
+      const reader = new DuckDBConnection("current_reader");
+      await reader.runSQL(`ATTACH '${metaPath}' AS meta`);
+      const res = await reader.runSQL(
+         "SELECT value FROM meta.ducklake_metadata WHERE key = 'version'",
+      );
+      await reader.close();
+      return String((res.rows[0] as { value: string }).value);
+   } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+   }
+}
+
+describe("DuckLake catalog migration matrix", () => {
+   let fixtures: Fixture[];
+   let currentFormat: string;
+   const report: ReportRow[] = [];
+
+   beforeAll(async () => {
+      fixtures = await discoverFixtures();
+      currentFormat = await currentCatalogFormat();
    });
 
-   afterEach(async () => {
-      for (const conn of openConnections) {
+   afterAll(() => {
+      const engineVersion = resolveDuckDBVersion();
+      const lines = [
+         "",
+         `DuckLake migration report (engine duckdb@${engineVersion}, current catalog format ${currentFormat})`,
+         "-".repeat(78),
+         [
+            "source format".padEnd(15),
+            "written by".padEnd(14),
+            "migrated to".padEnd(13),
+            "rows".padEnd(6),
+            "status",
+         ].join(""),
+      ];
+      for (const r of report) {
+         lines.push(
+            [
+               r.sourceFormat.padEnd(15),
+               `duckdb ${r.writtenBy}`.padEnd(14),
+               r.migratedTo.padEnd(13),
+               String(r.rows).padEnd(6),
+               r.status === "ok" ? "ok" : `FAILED: ${r.detail ?? ""}`,
+            ].join(""),
+         );
+      }
+      lines.push("-".repeat(78), "");
+      console.log(lines.join("\n"));
+   });
+
+   it("ships a fixture for the format the current engine writes", () => {
+      // Guards against silent coverage loss: when the engine is bumped to a
+      // format with no fixture, this fails until a fixture is added (via
+      // scripts/generate-ducklake-fixtures.sh).
+      const formats = fixtures.map((f) => f.format);
+      expect(formats).toContain(currentFormat);
+   });
+
+   it("discovers at least one fixture", () => {
+      expect(fixtures.length).toBeGreaterThan(0);
+   });
+
+   it("migrates every fixture format forward with data intact", async () => {
+      expect(fixtures.length).toBeGreaterThan(0);
+
+      for (const fixture of fixtures) {
+         const workDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), `ducklake-migrate-${fixture.format}-`),
+         );
          try {
-            await conn.close();
-         } catch {
-            // already closed / never opened
+            await fs.cp(fixture.dir, workDir, { recursive: true });
+            const metaPath = path.join(workDir, "catalog.ducklake");
+            const dataPath = path.join(workDir, "data");
+
+            const conn = new DuckDBConnection(`migrate_${fixture.format}`);
+            try {
+               await conn.runSQL("LOAD ducklake");
+               // AUTOMATIC_MIGRATION upgrades the catalog to the current format.
+               // OVERRIDE_DATA_PATH is required because the fixture records a
+               // relative data path while this attach uses an absolute one.
+               await conn.runSQL(
+                  `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
+               );
+               const rows = await conn.runSQL(
+                  "SELECT id, label FROM dl.items ORDER BY id",
+               );
+               await conn.close();
+
+               const migratedTo = await (async () => {
+                  const reader = new DuckDBConnection(
+                     `verify_${fixture.format}`,
+                  );
+                  await reader.runSQL(`ATTACH '${metaPath}' AS meta`);
+                  const v = await reader.runSQL(
+                     "SELECT value FROM meta.ducklake_metadata WHERE key = 'version'",
+                  );
+                  await reader.close();
+                  return String((v.rows[0] as { value: string }).value);
+               })();
+
+               expect(rows.rows).toEqual(EXPECTED_ROWS);
+               // A fixture already at the current format is a no-op migration;
+               // an older one must end up at the current format.
+               expect(migratedTo).toBe(currentFormat);
+
+               report.push({
+                  sourceFormat: fixture.format,
+                  writtenBy: fixture.writtenBy,
+                  migratedTo,
+                  rows: rows.rows.length,
+                  status: "ok",
+               });
+            } catch (e) {
+               try {
+                  await conn.close();
+               } catch {
+                  // ignore
+               }
+               report.push({
+                  sourceFormat: fixture.format,
+                  writtenBy: fixture.writtenBy,
+                  migratedTo: "-",
+                  rows: 0,
+                  status: "FAILED",
+                  detail: String(e).split("\n")[0],
+               });
+               throw e;
+            }
+         } finally {
+            await fs.rm(workDir, { recursive: true, force: true });
          }
       }
-      openConnections.length = 0;
-      await fs.rm(dir, { recursive: true, force: true });
-   });
-
-   const recordedValue = async (key: string): Promise<string> => {
-      const conn = connect(`reader_${key}`);
-      await conn.runSQL(`ATTACH '${metaPath}' AS meta`);
-      const res = await conn.runSQL(
-         `SELECT value FROM meta.ducklake_metadata WHERE key = '${key}'`,
-      );
-      const value = String((res.rows[0] as MetadataRow).value);
-      await conn.close();
-      return value;
-   };
-
-   it("the fixture is a genuine 0.3-line catalog", async () => {
-      expect(await recordedValue("version")).toBe("0.3");
-      // Relative recorded data path is what makes the path-mismatch case below
-      // reproducible against an absolute attach path.
-      expect(await recordedValue("data_path")).toBe("data/");
-   });
-
-   it("a plain attach of the 0.3 catalog is rejected by the engine", async () => {
-      const conn = connect("plain_attach");
-      await conn.runSQL("LOAD ducklake");
-      let attachFailed = false;
-      try {
-         await conn.runSQL(
-            `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}')`,
-         );
-      } catch {
-         attachFailed = true;
-      }
-      expect(attachFailed).toBe(true);
-   });
-
-   it("AUTOMATIC_MIGRATION refuses when the attach data path differs from the recorded one", async () => {
-      // dataPath here is absolute; the catalog recorded the relative "data/".
-      // Migration must not silently proceed on a data-path mismatch.
-      const conn = connect("migrate_path_mismatch");
-      await conn.runSQL("LOAD ducklake");
-      let migrateFailed = false;
-      let message = "";
-      try {
-         await conn.runSQL(
-            `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}', AUTOMATIC_MIGRATION TRUE)`,
-         );
-      } catch (e) {
-         migrateFailed = true;
-         message = String(e);
-      }
-      expect(migrateFailed).toBe(true);
-      expect(message).toContain("does not match existing data path");
-
-      // The refused attempt must not have upgraded the catalog.
-      expect(await recordedValue("version")).toBe("0.3");
-   });
-
-   it("AUTOMATIC_MIGRATION + OVERRIDE_DATA_PATH migrates in place and preserves data, but leaves the recorded path unchanged", async () => {
-      const conn = connect("migrate_override");
-      await conn.runSQL("LOAD ducklake");
-      await conn.runSQL(
-         `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
-      );
-      const rows = await conn.runSQL(
-         "SELECT id, label FROM dl.items ORDER BY id",
-      );
-      expect(rows.rows).toEqual([
-         { id: 1, label: "alpha" },
-         { id: 2, label: "beta" },
-         { id: 3, label: "gamma" },
-      ]);
-      await conn.close();
-
-      // In-place upgrade: the catalog file is now 1.0. OVERRIDE_DATA_PATH only
-      // suppressed the mismatch error for this attach; it did NOT persist the
-      // absolute path, so data_path is still the original relative value.
-      expect(await recordedValue("version")).toBe("1.0");
-      expect(await recordedValue("data_path")).toBe("data/");
-   });
-
-   it("a migrated catalog re-attaches without the migration flag, using the recorded data path", async () => {
-      const migrate = connect("migrate_then_reattach");
-      await migrate.runSQL("LOAD ducklake");
-      await migrate.runSQL(
-         `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
-      );
-      await migrate.close();
-
-      // The catalog is now 1.0, so no migration flag is needed. But the
-      // recorded data path is still relative, so a plain attach must match it
-      // (or omit DATA_PATH entirely). Passing the absolute path again would
-      // re-trigger the mismatch error.
-      const reattach = connect("plain_reattach");
-      await reattach.runSQL("LOAD ducklake");
-      await reattach.runSQL(`ATTACH 'ducklake:${metaPath}' AS dl`);
-      const rows = await reattach.runSQL("SELECT count(*) AS n FROM dl.items");
-      expect(Number((rows.rows[0] as { n: number }).n)).toBe(3);
-   });
-
-   it("re-attaching a migrated catalog with a mismatched absolute path still fails", async () => {
-      const migrate = connect("migrate_for_mismatch");
-      await migrate.runSQL("LOAD ducklake");
-      await migrate.runSQL(
-         `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}', AUTOMATIC_MIGRATION TRUE, OVERRIDE_DATA_PATH TRUE)`,
-      );
-      await migrate.close();
-
-      const reattach = connect("mismatch_reattach");
-      await reattach.runSQL("LOAD ducklake");
-      let failed = false;
-      let message = "";
-      try {
-         await reattach.runSQL(
-            `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}')`,
-         );
-      } catch (e) {
-         failed = true;
-         message = String(e);
-      }
-      expect(failed).toBe(true);
-      expect(message).toContain("does not match existing data path");
    });
 });

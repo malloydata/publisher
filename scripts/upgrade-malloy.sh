@@ -77,8 +77,46 @@ echo "Updated all @malloydata/* packages to ^$NEW_VERSION (except @malloydata/ma
 # Dockerfile) to it. A Malloy bump can move that engine to a new DuckDB
 # version; syncing here keeps the baked CLI/extensions on the same version the
 # runtime reads, with no manual follow-up step.
+
+# Record the DuckDB engine version before the bump so we can tell afterward
+# whether the Malloy upgrade moved it. "|| true" because on a fresh tree the
+# lock may not yet resolve; an empty value just means "treat as changed".
+DUCKDB_VERSION_BEFORE=$(bun scripts/duckdb-version.js 2>/dev/null || true)
+
 echo "Pulling new versions with 'bun install'..."
 bun install
 
 echo "Syncing DuckDB build version to Malloy's @duckdb/node-api engine..."
 bun scripts/sync-duckdb-version.js --write
+
+DUCKDB_VERSION_AFTER=$(bun scripts/duckdb-version.js 2>/dev/null || true)
+
+# A DuckDB engine change can change the DuckLake catalog *format* the engine
+# writes (e.g. duckdb 1.4.x wrote "0.3", 1.5.0-1.5.1 write "0.4", 1.5.2+ write
+# "1.0"). The migration matrix test attaches a committed fixture for each
+# historical format and asserts the new engine migrates it forward without
+# data loss. When the engine moves, that fixture set must be regenerated and
+# the new current-format fixture committed, or the test's current-format guard
+# fails. Surface that here rather than letting it surprise CI.
+if [ "$DUCKDB_VERSION_BEFORE" != "$DUCKDB_VERSION_AFTER" ]; then
+  echo ""
+  echo "=============================================================================="
+  echo "DuckDB engine version changed: ${DUCKDB_VERSION_BEFORE:-<unknown>} -> ${DUCKDB_VERSION_AFTER:-<unknown>}"
+  echo ""
+  echo "This may change the DuckLake catalog format the engine writes. Regenerate"
+  echo "the DuckLake migration fixtures and commit them so the migration test can"
+  echo "validate safe forward-migration from every historical format:"
+  echo ""
+  echo "  1. Install any DuckDB CLIs the generator needs that you do not have:"
+  echo "       DUCKDB_VERSION=<version> bash -c \"curl -L https://install.duckdb.org | bash\""
+  echo "  2. Regenerate the fixtures (adds a fixture for the new current format):"
+  echo "       (cd packages/server && bash scripts/generate-ducklake-fixtures.sh)"
+  echo "  3. Validate the migration matrix against the new engine:"
+  echo "       (cd packages/server && bun test tests/integration/ducklake_migration.test.ts)"
+  echo "  4. COMMIT the regenerated fixtures under"
+  echo "       packages/server/tests/fixtures/ducklake/"
+  echo "     so CI can validate DuckLake catalog migration on the new version."
+  echo "=============================================================================="
+else
+  echo "DuckDB engine version unchanged (${DUCKDB_VERSION_AFTER:-<unknown>}); DuckLake migration fixtures are still current."
+fi
