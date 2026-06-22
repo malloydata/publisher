@@ -121,9 +121,24 @@ export function startAgentMcpServer(
       }
    });
 
-   return agentMcpApp.listen(port, host, () => {
+   const agentMcpServer = agentMcpApp.listen(port, host, () => {
       logger.info(
          `Agent MCP server listening at http://${host}:${port}${AGENT_MCP_ENDPOINT}`,
       );
    });
+
+   // The agent MCP server is auxiliary: a bind failure here (e.g. EADDRINUSE)
+   // must not take down the main API or the core MCP server. Without this
+   // handler the listener's 'error' event would surface as an uncaught
+   // exception and crash the whole process at boot. Log and degrade instead.
+   agentMcpServer.on("error", (err: NodeJS.ErrnoException) => {
+      logger.error("Agent MCP server failed to start; continuing without it", {
+         host,
+         port,
+         code: err.code,
+         error: err.message,
+      });
+   });
+
+   return agentMcpServer;
 }
