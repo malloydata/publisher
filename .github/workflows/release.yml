@@ -173,11 +173,34 @@ jobs:
             exit 0
           fi
 
+          # Pin the changelog base to the immediately preceding release tag.
+          # Each release is cut from a fresh release/sdk-* branch that is never
+          # merged back to main, so prior release tags are not ancestors of this
+          # release's commit. Left to --generate-notes alone, GitHub's ancestor
+          # walk skips every diverged sibling tag and lands on the last tag still
+          # in the mainline ancestry, producing a changelog spanning hundreds of
+          # PRs. Selecting the previous tag by version sort and passing it as the
+          # explicit start tag scopes the notes to just this release's changes.
+          # Prerelease tags (containing a hyphen) are excluded so the base is
+          # always the last stable release, consistent with the prerelease skip
+          # above.
+          git fetch --tags --force
+          PREV_TAG="$(git tag -l 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | grep -vx "$TAG" | tail -1)"
+
+          NOTES_START_ARGS=()
+          if [ -n "$PREV_TAG" ]; then
+            echo "::notice title=Changelog::Generating notes from ${PREV_TAG} to ${TAG}"
+            NOTES_START_ARGS=(--notes-start-tag "$PREV_TAG")
+          else
+            echo "::notice title=Changelog::No previous tag found; using default note generation"
+          fi
+
           gh release create "$TAG" \
             --target "$BRANCH" \
             --title "v${VERSION}" \
             --notes-file "$NOTES_FILE" \
-            --generate-notes
+            --generate-notes \
+            "${NOTES_START_ARGS[@]}"
 
           echo "## 🏷️ GitHub Release" >> $GITHUB_STEP_SUMMARY
           echo "Created release [\`${TAG}\`](https://github.com/${{ github.repository }}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY
