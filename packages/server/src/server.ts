@@ -39,6 +39,7 @@ import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { startAgentMcpServer } from "./mcp/agent_server";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationService } from "./service/materialization_service";
@@ -160,6 +161,7 @@ parseArgs();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+const AGENT_MCP_PORT = Number(process.env.AGENT_MCP_PORT || 4041);
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
@@ -1765,9 +1767,21 @@ mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
 
+// Separate, isolated MCP server for the agent retrieval tools (get_context,
+// search_docs) on its own listener. Kept apart from the core MCP server above.
+const agentMcpServer = startAgentMcpServer(
+   environmentStore,
+   PUBLISHER_HOST,
+   AGENT_MCP_PORT,
+);
+agentMcpServer.timeout = 600000;
+agentMcpServer.keepAliveTimeout = 600000;
+agentMcpServer.headersTimeout = 600000;
+
 registerSignalHandlers(
    mainServer,
    mcpServer,
    SHUTDOWN_DRAIN_DURATION_SECONDS,
    SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS,
+   agentMcpServer,
 );
