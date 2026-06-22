@@ -58,14 +58,14 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 
 ## Docker
 
-Two ways to run the Publisher in Docker: build the image from source, or pull the pre-built image from Docker Hub. Either way, the container's `WORKDIR` is `/publisher` (mount your `publisher.config.json` there), REST is on `:4000`, and MCP is on `:4040`.
+Two ways to run the Publisher in Docker: build the image from source, or pull the pre-built image from Docker Hub. Either way, the container's `WORKDIR` is `/publisher` (mount your `publisher.config.json` there), REST is on `:4000`, MCP is on `:4040`, and the agent MCP server is on `:4041`.
 
 ### Build from source
 
 ```bash
 docker build -t malloy-publisher .
 docker run -d \
-  -p 4000:4000 -p 4040:4040 \
+  -p 4000:4000 -p 4040:4040 -p 4041:4041 \
   -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
   malloy-publisher
 ```
@@ -79,7 +79,7 @@ The official pre-built image is published to Docker Hub at [`ms2data/malloy-publ
 ```bash
 docker pull ms2data/malloy-publisher
 docker run -d \
-  -p 4000:4000 -p 4040:4040 \
+  -p 4000:4000 -p 4040:4040 -p 4041:4041 \
   -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
   ms2data/malloy-publisher
 ```
@@ -101,6 +101,15 @@ A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compo
 3. `docker compose up -d`
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
+
+## Agent MCP server
+
+Alongside the core MCP server on `:4040`, Publisher runs a second, separate MCP server on `:4041` (`AGENT_MCP_PORT`) aimed at AI agents. It exposes two read-only retrieval tools:
+
+- **`malloy_getContext`**: given a plain-English question, returns the most relevant model entities (sources, views, named queries, and dimension/measure fields) for a package, so an agent can ground a query in what the model actually defines instead of guessing names.
+- **`malloy_searchDocs`**: keyword search over a bundled index of the Malloy documentation.
+
+It also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4041/mcp`. The server is stateless and unauthenticated, mirroring the core MCP server; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
 
 ## Documentation
 
@@ -135,7 +144,7 @@ When Malloy executes a query, the result includes both **data** and **rendering 
 
 An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the network and provides a professional UI for data exploration.
 
-- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
+- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, plus a separate [agent MCP server](#agent-mcp-server) (port 4041) with retrieval tools and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
 - **App:** Web interface for browsing Malloy content, exploring models with a no-code query builder, and viewing results.
 
 ### Publisher SDK
@@ -156,7 +165,7 @@ Publisher consists of four packages:
 
 | Package                                               | Description                                                                                                                                     |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **[packages/server](packages/server/)**               | Express.js backend providing REST API (port 4000) and MCP API (port 4040). Loads Malloy packages, compiles queries, executes against databases. |
+| **[packages/server](packages/server/)**               | Express.js backend providing REST API (port 4000), MCP API (port 4040), and an agent MCP server (port 4041). Loads Malloy packages, compiles queries, executes against databases. |
 | **[packages/sdk](packages/sdk/)**                     | React component library for building UIs that consume Publisher's REST API.                                                                     |
 | **[packages/app](packages/app/)**                     | Reference implementation and production-ready data exploration tool built with the SDK.                                                         |
 | **[packages/python-client](packages/python-client/)** | Auto-generated Python SDK for the REST API.                                                                                                     |
@@ -250,6 +259,7 @@ Publisher reads its runtime configuration from `publisher.config.json` (see [Dev
 | `PUBLISHER_PORT`                          | `--port <n>`                                    | `4000`    | REST + static-app HTTP port.                                                                                                                                                                           |
 | `PUBLISHER_HOST`                          | `--host <addr>`                                 | `0.0.0.0` | Host binding for the main server.                                                                                                                                                                      |
 | `MCP_PORT`                                | `--mcp_port <n>`                                | `4040`    | MCP HTTP port.                                                                                                                                                                                         |
+| `AGENT_MCP_PORT`                          | `(none)`                                        | `4041`    | Agent MCP HTTP port. Serves the agent retrieval tools (`malloy_getContext`, `malloy_searchDocs`) and the agent skills as MCP prompts, on a separate endpoint from the core MCP server. Binds to `PUBLISHER_HOST`.                  |
 | `SERVER_ROOT`                             | `--server_root <dir>`                           | `.` (cwd) | Directory containing `publisher.config.json`.                                                                                                                                                          |
 | `INITIALIZE_STORAGE`                      | `--init`                                        | _unset_   | Set to `true` (or pass `--init`) to initialize storage on boot. Set on the first run with new persistent storage; safe to omit afterward. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS`         | `--shutdown_drain_duration_seconds <s>`         | `0`       | Time to keep `/health` returning OK after SIGTERM before refusing new traffic.                                                                                                                         |
