@@ -11,6 +11,14 @@
 // engine the attach paths use) against local-file DuckLake catalogs so the
 // constant is pinned to observable engine behavior, with no cloud credentials
 // required.
+//
+// Each test uses a single connection for its whole flow. DuckDB on Windows
+// holds an exclusive OS lock on the catalog file until the owning connection's
+// handle is released, so a second connection re-attaching the same file before
+// the first is fully closed fails with a sharing-violation. Reusing one
+// connection (with DETACH between attach modes) and reading the recorded
+// version via the metadata catalog the ducklake ATTACH exposes
+// (__ducklake_metadata_<alias>) avoids that.
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -19,74 +27,60 @@ import os from "os";
 import path from "path";
 import { isCatalogVersionSupported } from "../../src/ducklake_version";
 
-interface MetadataRow {
-   value: string;
-}
-
 describe("DuckLake catalog version contract (real engine)", () => {
    let dir: string;
    let metaPath: string;
    let dataPath: string;
-   const openConnections: DuckDBConnection[] = [];
-
-   const connect = (name: string): DuckDBConnection => {
-      const conn = new DuckDBConnection(name);
-      openConnections.push(conn);
-      return conn;
-   };
+   let conn: DuckDBConnection;
 
    beforeEach(async () => {
       dir = await fs.mkdtemp(path.join(os.tmpdir(), "ducklake-version-"));
       metaPath = path.join(dir, "catalog.ducklake");
       dataPath = path.join(dir, "data");
+      conn = new DuckDBConnection("ducklake_contract");
+      await conn.runSQL("INSTALL ducklake");
+      await conn.runSQL("LOAD ducklake");
    });
 
    afterEach(async () => {
-      for (const conn of openConnections) {
-         try {
-            await conn.close();
-         } catch {
-            // already closed / never opened
-         }
+      try {
+         await conn.close();
+      } catch {
+         // already closed
       }
-      openConnections.length = 0;
       await fs.rm(dir, { recursive: true, force: true });
    });
 
+   // Create the catalog as ducklake and leave it detached so the same
+   // connection can re-attach it (as ducklake or as a plain database) next.
    const createCatalog = async (): Promise<void> => {
-      const conn = connect("ducklake_writer");
-      await conn.runSQL("INSTALL ducklake");
-      await conn.runSQL("LOAD ducklake");
       await conn.runSQL(
          `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}')`,
       );
       await conn.runSQL("CREATE TABLE dl.t AS SELECT 1 AS x");
-      await conn.close();
+      await conn.runSQL("DETACH dl");
    };
 
+   // Read/modify the recorded version by attaching the catalog file as a plain
+   // database (not as ducklake), then detaching so later attaches are clean.
    const readRecordedVersion = async (): Promise<string> => {
-      const conn = connect("metadata_reader");
       await conn.runSQL(`ATTACH '${metaPath}' AS meta`);
       const res = await conn.runSQL(
          `SELECT value FROM meta.ducklake_metadata WHERE key = 'version'`,
       );
-      const version = String((res.rows[0] as MetadataRow).value);
-      await conn.close();
-      return version;
+      await conn.runSQL("DETACH meta");
+      return String((res.rows[0] as { value: string }).value);
    };
 
    const setRecordedVersion = async (version: string): Promise<void> => {
-      const conn = connect("metadata_writer");
       await conn.runSQL(`ATTACH '${metaPath}' AS meta`);
       await conn.runSQL(
          `UPDATE meta.ducklake_metadata SET value = '${version}' WHERE key = 'version'`,
       );
-      await conn.close();
+      await conn.runSQL("DETACH meta");
    };
 
    const attachCatalog = async (): Promise<void> => {
-      const conn = connect("ducklake_attacher");
-      await conn.runSQL("LOAD ducklake");
       await conn.runSQL(
          `ATTACH 'ducklake:${metaPath}' AS attached (DATA_PATH '${dataPath}')`,
       );

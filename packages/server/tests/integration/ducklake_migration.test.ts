@@ -88,29 +88,41 @@ async function discoverFixtures(): Promise<Fixture[]> {
    return fixtures;
 }
 
+// Read a DuckLake catalog's recorded format version from the SAME connection
+// that has it attached, via the metadata catalog the ATTACH exposes as
+// __ducklake_metadata_<alias>. A separate connection re-attaching the file
+// would deadlock on Windows, where DuckDB holds an exclusive OS lock until the
+// first connection's handle is released.
+async function recordedVersion(
+   conn: DuckDBConnection,
+   alias: string,
+): Promise<string> {
+   const res = await conn.runSQL(
+      `SELECT value FROM __ducklake_metadata_${alias}.ducklake_metadata WHERE key = 'version'`,
+   );
+   return String((res.rows[0] as { value: string }).value);
+}
+
 // Empirically determine the catalog format the current baked engine writes, by
-// creating a throwaway catalog and reading back its recorded version. Avoids
-// hard-coding a format that drifts when the engine is bumped.
+// creating a throwaway catalog and reading back its recorded version on the
+// same connection. Avoids hard-coding a format that drifts when the engine is
+// bumped.
 async function currentCatalogFormat(): Promise<string> {
    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ducklake-current-"));
    try {
       const metaPath = path.join(dir, "catalog.ducklake");
       const dataPath = path.join(dir, "data");
-      const writer = new DuckDBConnection("current_writer");
-      await writer.runSQL("LOAD ducklake");
-      await writer.runSQL(
-         `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}')`,
-      );
-      await writer.runSQL("CREATE TABLE dl.probe AS SELECT 1 AS x");
-      await writer.close();
-
-      const reader = new DuckDBConnection("current_reader");
-      await reader.runSQL(`ATTACH '${metaPath}' AS meta`);
-      const res = await reader.runSQL(
-         "SELECT value FROM meta.ducklake_metadata WHERE key = 'version'",
-      );
-      await reader.close();
-      return String((res.rows[0] as { value: string }).value);
+      const conn = new DuckDBConnection("current_probe");
+      try {
+         await conn.runSQL("LOAD ducklake");
+         await conn.runSQL(
+            `ATTACH 'ducklake:${metaPath}' AS dl (DATA_PATH '${dataPath}')`,
+         );
+         await conn.runSQL("CREATE TABLE dl.probe AS SELECT 1 AS x");
+         return await recordedVersion(conn, "dl");
+      } finally {
+         await conn.close();
+      }
    } finally {
       await fs.rm(dir, { recursive: true, force: true });
    }
@@ -191,19 +203,10 @@ describe("DuckLake catalog migration matrix", () => {
                const rows = await conn.runSQL(
                   "SELECT id, label FROM dl.items ORDER BY id",
                );
+               // Read the post-migration version on the SAME connection (see
+               // recordedVersion); a second connection would lock on Windows.
+               const migratedTo = await recordedVersion(conn, "dl");
                await conn.close();
-
-               const migratedTo = await (async () => {
-                  const reader = new DuckDBConnection(
-                     `verify_${fixture.format}`,
-                  );
-                  await reader.runSQL(`ATTACH '${metaPath}' AS meta`);
-                  const v = await reader.runSQL(
-                     "SELECT value FROM meta.ducklake_metadata WHERE key = 'version'",
-                  );
-                  await reader.close();
-                  return String((v.rows[0] as { value: string }).value);
-               })();
 
                expect(rows.rows).toEqual(EXPECTED_ROWS);
                // A fixture already at the current format is a no-op migration;
