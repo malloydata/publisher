@@ -52,6 +52,9 @@ export function initializeMcpServer(
 
    registerTools(mcpServer, environmentStore);
 
+   // Note: malloy_getContext and malloy_searchDocs are intentionally NOT registered
+   // here. They run on a separate, isolated agent MCP server (see mcp/agent_server.ts).
+
    logger.info("[MCP Init] Registering prompt capability...");
    registerPromptCapability(mcpServer, environmentStore);
 
