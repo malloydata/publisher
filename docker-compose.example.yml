@@ -6,8 +6,9 @@
 # adjust the volume mounts to point at your own publisher.config.json
 # before bringing the stack up.
 #
-# REST is on :4000; MCP is on :4040. See the root README "Docker"
-# section for tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`).
+# REST is on :4000, MCP is on :4040, and the agent MCP server is on
+# :4041. See the root README "Docker" section for tag-scheme guidance
+# (`:latest`, `:X.Y.Z`, `:next`).
 #
 # The `publisher_data` named volume persists the per-environment
 # package clones and DuckDB extension cache across container
@@ -22,6 +23,7 @@ services:
     ports:
       - "4000:4000" # REST
       - "4040:4040" # MCP
+      - "4041:4041" # Agent MCP
     volumes:
       - ./publisher.config.json:/publisher/publisher.config.json:ro
       - publisher_data:/publisher/publisher_data
