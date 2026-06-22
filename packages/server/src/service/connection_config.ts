@@ -364,6 +364,30 @@ function validateConnectionShape(connection: ApiConnection): void {
                   `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
             );
          }
+         // Reject a malformed connectionUri here, at config-load, rather than
+         // letting it fail deep in the request path — where the thrown error can
+         // echo the raw value back, leaking any credentials embedded in it
+         // (`redactUrlCredentials` returns the URI unchanged when it can't parse
+         // it). Never include the raw connectionUri in these messages; the
+         // scheme is safe to name.
+         let parsedUri: URL;
+         try {
+            parsedUri = new URL(publisher.connectionUri);
+         } catch {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': connectionUri is not a valid URL. ` +
+                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+            );
+         }
+         if (
+            parsedUri.protocol !== "http:" &&
+            parsedUri.protocol !== "https:"
+         ) {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': connectionUri must use http or https (got '${parsedUri.protocol}'). ` +
+                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+            );
+         }
          break;
       }
    }

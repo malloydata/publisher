@@ -248,6 +248,46 @@ describe("assembleEnvironmentConnections — publisher", () => {
       );
    });
 
+   it("rejects a publisher connection whose connectionUri is not a valid URL", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: { connectionUri: "not a url" },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid publisher connection 'analytics': connectionUri is not a valid URL.",
+      );
+   });
+
+   it("rejects a publisher connection whose connectionUri uses a non-http(s) scheme", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: { connectionUri: "file:///etc/passwd" },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "connectionUri must use http or https (got 'file:')",
+      );
+   });
+
+   it("does not echo a credential-bearing connectionUri in the validation error", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         // Userinfo present but the URI is otherwise malformed (space in host)
+         // so it fails to parse and must not be reflected back verbatim.
+         publisherConnection: {
+            connectionUri: "https://user:s3cret@bad host/connections/x",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "connectionUri is not a valid URL",
+      );
+      expect(() => assembleEnvironmentConnections([conn])).not.toThrow(
+         /s3cret/,
+      );
+   });
+
    it("still rejects the reserved 'duckdb' name for a publisher connection", () => {
       const conn: ApiConnection = {
          name: "duckdb",
