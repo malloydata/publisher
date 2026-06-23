@@ -1,8 +1,8 @@
 import { HTMLInputTypeAttribute } from "react";
+import { ConnectionTypeEnum } from "../../client/api";
 import type {
    AzureConnection,
    BigqueryConnection,
-   ConnectionTypeEnum,
    DatabricksConnection,
    DucklakeConnection,
    GCSConnection,
@@ -313,6 +313,9 @@ export const connectionFieldsByType: Record<
    ],
    // DuckLake uses custom form rendering (catalog + storage dropdowns)
    ducklake: [],
+   // Publisher connections are defined in publisher.config.json, not built from
+   // this form (see uiCreatableConnectionTypes).
+   publisher: [],
 };
 
 export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
@@ -325,7 +328,17 @@ export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
    duckdb: "duckdbConnection",
    motherduck: "motherduckConnection",
    ducklake: "ducklakeConnection",
+   publisher: "publisherConnection",
 };
+
+/**
+ * Connection types the Add/Edit dialogs offer as creatable. `publisher` proxy
+ * connections are configured in publisher.config.json rather than through the
+ * UI, so they are a valid ConnectionTypeEnum but not a form choice.
+ */
+export const uiCreatableConnectionTypes = Object.values(
+   ConnectionTypeEnum,
+).filter((type) => type !== ConnectionTypeEnum.Publisher);
 
 // Mapping for attached database types to their connection field names
 export const attachedDatabaseConnectionFieldName: Record<string, string> = {

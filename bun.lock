@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "malloy-publisher",
@@ -28,7 +27,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.0.204",
+      "version": "0.0.207",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -80,7 +79,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.0.204",
+      "version": "0.0.207",
       "dependencies": {
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
@@ -133,7 +132,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.0.204",
+      "version": "0.0.207",
       "bin": {
         "malloy-publisher": "dist/server.mjs",
       },
@@ -148,6 +147,7 @@
         "@malloydata/db-duckdb": "^0.0.415",
         "@malloydata/db-mysql": "^0.0.415",
         "@malloydata/db-postgres": "^0.0.415",
+        "@malloydata/db-publisher": "^0.0.415",
         "@malloydata/db-snowflake": "^0.0.415",
         "@malloydata/db-trino": "^0.0.415",
         "@malloydata/malloy": "^0.0.415",
@@ -625,6 +625,8 @@
     "@malloydata/db-mysql": ["@malloydata/db-mysql@0.0.415", "", { "dependencies": { "@malloydata/malloy": "0.0.415", "@types/node": "^22.7.4", "fastestsmallesttextencoderdecoder": "^1.0.22", "luxon": "^3.5.0", "mysql2": "^3.11.3" } }, "sha512-JIoXdfnJieXPnbTWNk2TaQeHhOXb9sARekBhVjsL4//GFgN73zkTM6gJz24vWY38gbKNKRKhV0vdoTsr5gjYvw=="],
 
     "@malloydata/db-postgres": ["@malloydata/db-postgres@0.0.415", "", { "dependencies": { "@malloydata/malloy": "0.0.415", "@types/pg": "^8.6.1", "pg": "^8.7.1", "pg-query-stream": "4.2.3" } }, "sha512-zgyVbhzo50AaqFZ6dKpfu+PBmOvhtNoiHSIuXBqtW6i3ewS85He/41aqyJiEtQFnjgqimr4TYjWiRUBTjP5r3g=="],
+
+    "@malloydata/db-publisher": ["@malloydata/db-publisher@0.0.415", "", { "dependencies": { "@malloydata/malloy": "0.0.415", "axios": "^1.6.7" } }, "sha512-8d4cAQLA0oTiQHo6MeZEPogWbcbs2o1OaUmeYQbFhYVt2mfqAd/sa8J2sbCPtpvyF+F4k5OU7ZEcEtdSL9/QIQ=="],
 
     "@malloydata/db-snowflake": ["@malloydata/db-snowflake@0.0.415", "", { "dependencies": { "@malloydata/malloy": "0.0.415", "generic-pool": "^3.9.0", "snowflake-sdk": "2.3.1", "toml": "^3.0.0" } }, "sha512-kmuH+DWIiMZYOtIWvC1UxxBuNoHY4s/6iMZ2ehFklllKTIf7Q6GTkwbZ/2ESlMwIxaGf31CAIUcslSxRyH7cag=="],
 

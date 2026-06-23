@@ -2971,6 +2971,7 @@ components:
               duckdb,
               motherduck,
               ducklake,
+              publisher,
             ]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
@@ -2992,6 +2993,8 @@ components:
           $ref: "#/components/schemas/MotherDuckConnection"
         ducklakeConnection:
           $ref: "#/components/schemas/DucklakeConnection"
+        publisherConnection:
+          $ref: "#/components/schemas/PublisherConnection"
 
     ConnectionAttributes:
       type: object
@@ -3290,6 +3293,25 @@ components:
         database:
           type: string
           description: MotherDuck database name
+
+    PublisherConnection:
+      type: object
+      description: >
+        Malloy Publisher proxy connection. Proxies SQL to a remote Publisher
+        dataplane instead of connecting to a warehouse directly. The remote
+        dataplane owns authentication, access control, and read-only
+        enforcement.
+      properties:
+        connectionUri:
+          type: string
+          description: >
+            Full URI of the remote connection, e.g.
+            https://org.data.example.com/api/v0/environments/<env>/connections/<name>
+        accessToken:
+          type: string
+          description: Bearer token for the remote dataplane (user-scoped, short-lived)
+      required:
+        - connectionUri
 
     DuckdbConnection:
       type: object

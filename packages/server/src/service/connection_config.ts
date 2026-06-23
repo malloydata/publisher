@@ -336,6 +336,60 @@ function validateConnectionShape(connection: ApiConnection): void {
          }
          break;
       }
+      case "publisher": {
+         // SSRF gate (default-deny / fail-closed). A `publisher` connection
+         // makes THIS server issue outbound HTTP to a tenant-controlled
+         // `connectionUri` (both the query path in db-publisher's
+         // PublisherConnection and the introspection path in db_utils). That is
+         // the intended behavior for local `--watch-env` authoring, but in a
+         // hosted multi-tenant deployment (e.g. Credible running this server) it
+         // is an SSRF surface. Require an explicit opt-in so the type is refused
+         // unless the operator deliberately enabled it. This is the single
+         // choke point — every connection passes validateConnectionShape before
+         // it can be assembled, queried, or introspected — so denying here shuts
+         // off all three at once.
+         if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
+            throw new Error(
+               `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
+                  `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +
+                  `which is only appropriate for local --watch-env authoring. ` +
+                  `Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.`,
+            );
+         }
+         const publisher = connection.publisherConnection;
+         if (!publisher?.connectionUri) {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': missing connectionUri. ` +
+                  `Fix: { "name": "${connection.name}", "type": "publisher", ` +
+                  `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
+            );
+         }
+         // Reject a malformed connectionUri here, at config-load, rather than
+         // letting it fail deep in the request path — where the thrown error can
+         // echo the raw value back, leaking any credentials embedded in it
+         // (`redactUrlCredentials` returns the URI unchanged when it can't parse
+         // it). Never include the raw connectionUri in these messages; the
+         // scheme is safe to name.
+         let parsedUri: URL;
+         try {
+            parsedUri = new URL(publisher.connectionUri);
+         } catch {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': connectionUri is not a valid URL. ` +
+                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+            );
+         }
+         if (
+            parsedUri.protocol !== "http:" &&
+            parsedUri.protocol !== "https:"
+         ) {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': connectionUri must use http or https (got '${parsedUri.protocol}'). ` +
+                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+            );
+         }
+         break;
+      }
    }
 }
 
@@ -543,6 +597,22 @@ export function assembleEnvironmentConnections(
                environmentPath,
                `${connection.name}_ducklake.duckdb`,
             );
+            break;
+         }
+
+         case "publisher": {
+            // connectionUri presence is validated by validateConnectionShape
+            // above. The proxied dataplane owns auth and read-only enforcement;
+            // PublisherConnection itself does not reject writes. The real
+            // dialect is the remote connection's and is resolved at runtime by
+            // the live connection, so getStaticConnectionAttributes returns
+            // undefined for publisher (falls through to its default).
+            const publisher = connection.publisherConnection!;
+            pojo.connections[connection.name] = {
+               is: "publisher",
+               connectionUri: publisher.connectionUri,
+               accessToken: publisher.accessToken,
+            };
             break;
          }
 
