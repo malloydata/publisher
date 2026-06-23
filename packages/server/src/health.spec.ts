@@ -25,6 +25,18 @@ describe("performGracefulShutdownAfterDrain: shutdown ordering", () => {
    const originalExit = process.exit;
    let callOrder: string[];
 
+   afterAll(async () => {
+      // performGracefulShutdownAfterDrain drains the package-load worker pool
+      // via getPackageLoadPool().shutdown() — which lazily CREATES the global
+      // singleton and leaves it installed in its shut-down state. In prod the
+      // process exits right after, so that's fine; in this shared test process
+      // it poisons every later spec that touches the worker path
+      // (Package.create → "PackageLoadPool is shutting down"), with failures
+      // that come and go with bun's platform-dependent file order. Reset the
+      // singleton so the next user lazily creates a fresh pool.
+      await __setPackageLoadPoolForTests(null);
+   });
+
    beforeEach(() => {
       callOrder = [];
 

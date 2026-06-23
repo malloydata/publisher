@@ -1,45 +1,67 @@
-import { Materialization, MaterializationStatusEnum } from "../../client";
+import { Materialization, MaterializationStatus } from "../../client";
 
-export function isActiveStatus(status?: MaterializationStatusEnum): boolean {
+/**
+ * Non-terminal phases of the two-round protocol. The publisher kicks off Round 1
+ * (PENDING -> BUILD_PLAN_READY); the control plane drives Round 2
+ * (-> MANIFEST_ROWS_READY -> MANIFEST_FILE_READY). Any of these may be polled and
+ * stopped.
+ */
+export function isActiveStatus(status?: MaterializationStatus): boolean {
    return (
-      status === MaterializationStatusEnum.Pending ||
-      status === MaterializationStatusEnum.Running
+      status === MaterializationStatus.Pending ||
+      status === MaterializationStatus.BuildPlanReady ||
+      status === MaterializationStatus.ManifestRowsReady
    );
 }
 
-export function isTerminalStatus(status?: MaterializationStatusEnum): boolean {
+export function isTerminalStatus(status?: MaterializationStatus): boolean {
    return (
-      status === MaterializationStatusEnum.Success ||
-      status === MaterializationStatusEnum.Failed ||
-      status === MaterializationStatusEnum.Cancelled
+      status === MaterializationStatus.ManifestFileReady ||
+      status === MaterializationStatus.Failed ||
+      status === MaterializationStatus.Cancelled
    );
+}
+
+/**
+ * Human-friendly status label. The publisher drives every phase automatically,
+ * so the intermediate protocol states (PENDING / BUILD_PLAN_READY /
+ * MANIFEST_ROWS_READY) all read as "Pending" and the terminal success state
+ * reads as "Done". Failures and cancellations keep their own labels.
+ */
+export function statusLabel(status?: MaterializationStatus): string {
+   switch (status) {
+      case MaterializationStatus.ManifestFileReady:
+         return "Done";
+      case MaterializationStatus.Failed:
+         return "Failed";
+      case MaterializationStatus.Cancelled:
+         return "Cancelled";
+      case MaterializationStatus.Pending:
+      case MaterializationStatus.BuildPlanReady:
+      case MaterializationStatus.ManifestRowsReady:
+         return "Pending";
+      default:
+         return "Unknown";
+   }
 }
 
 type ChipColor = "default" | "info" | "success" | "error" | "warning";
 
-export function statusColor(status?: MaterializationStatusEnum): ChipColor {
+export function statusColor(status?: MaterializationStatus): ChipColor {
    switch (status) {
-      case MaterializationStatusEnum.Running:
+      case MaterializationStatus.BuildPlanReady:
+      case MaterializationStatus.ManifestRowsReady:
          return "info";
-      case MaterializationStatusEnum.Success:
+      case MaterializationStatus.ManifestFileReady:
          return "success";
-      case MaterializationStatusEnum.Failed:
+      case MaterializationStatus.Failed:
          return "error";
-      case MaterializationStatusEnum.Cancelled:
+      case MaterializationStatus.Cancelled:
          return "warning";
-      case MaterializationStatusEnum.Pending:
+      case MaterializationStatus.Pending:
       default:
          return "default";
    }
-}
-
-/** Per-source build result stored in Materialization.metadata.sources[]. */
-export interface MaterializationSourceResult {
-   sourceName?: string;
-   buildId?: string;
-   tableName?: string;
-   status?: string;
-   durationMs?: number;
 }
 
 /**
@@ -49,12 +71,9 @@ export interface MaterializationSourceResult {
  */
 export interface MaterializationMetadata {
    forceRefresh?: boolean;
-   autoLoadManifest?: boolean;
+   sourceNames?: string[];
    sourcesBuilt?: number;
    sourcesSkipped?: number;
-   sources?: MaterializationSourceResult[];
-   gcDropped?: string[];
-   gcErrors?: string[];
 }
 
 export function parseMetadata(
@@ -81,6 +100,20 @@ export function formatDuration(
    const hours = Math.floor(minutes / 60);
    const remMinutes = minutes % 60;
    return `${hours}h ${remMinutes}m`;
+}
+
+/** Absolute, locale-formatted timestamp (e.g. "Jun 19, 2026, 3:33 PM"). */
+export function formatTimestamp(iso?: string | null): string {
+   if (!iso) return "—";
+   const date = new Date(iso);
+   if (Number.isNaN(date.getTime())) return "—";
+   return date.toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+   });
 }
 
 /** Compact relative timestamp, e.g. "just now", "5m ago", "2h ago", "3d ago". */

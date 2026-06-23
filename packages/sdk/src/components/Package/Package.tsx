@@ -317,7 +317,7 @@ export default function Package({
                   <PackageItemRow
                      icon={<ContentTypeIcon type="materialization" />}
                      tint={MALLOY_BRAND.teal}
-                     label="Materializations & Manifest"
+                     label="Materializations"
                      onClick={(event) =>
                         onClick(
                            `/${environmentName}/${packageName}/materializations`,

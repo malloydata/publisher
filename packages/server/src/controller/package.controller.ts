@@ -1,21 +1,15 @@
 import { components } from "../api";
+import { normalizeModelPath } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
-import { logger } from "../logger";
 import { EnvironmentStore } from "../service/environment_store";
-import { ManifestService } from "../service/manifest_service";
 
 type ApiPackage = components["schemas"]["Package"];
 
 export class PackageController {
    private environmentStore: EnvironmentStore;
-   private manifestService: ManifestService;
 
-   constructor(
-      environmentStore: EnvironmentStore,
-      manifestService: ManifestService,
-   ) {
+   constructor(environmentStore: EnvironmentStore) {
       this.environmentStore = environmentStore;
-      this.manifestService = manifestService;
    }
 
    public async listPackages(environmentName: string): Promise<ApiPackage[]> {
@@ -70,11 +64,7 @@ export class PackageController {
       return _package.getPackageMetadata();
    }
 
-   async addPackage(
-      environmentName: string,
-      body: ApiPackage,
-      options?: { autoLoadManifest?: boolean },
-   ) {
+   async addPackage(environmentName: string, body: ApiPackage) {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
@@ -86,71 +76,59 @@ export class PackageController {
          environmentName,
          false,
       );
+      // Strict at publish: the author is in the loop here, so reject a bad
+      // explores with an actionable 400 instead of silently serving a hidden
+      // surface. (At startup/reload we fail safe and only warn — see
+      // Package.loadViaWorker.) The rollback differs by path so a rejected
+      // publish never destroys user content:
+      //   - location: the tree was just downloaded into a fresh canonical, so
+      //     validation runs inside installPackage's swap window and a failure
+      //     wipes that download (the existing rollback) — nothing pre-existing
+      //     to lose.
+      //   - no-location: addPackage registered a *pre-existing* user directory,
+      //     so we validate after the fact and `unloadPackage` (evict from
+      //     memory, keep the files) rather than delete it.
       let result;
       if (body.location) {
          const bodyLocation = body.location;
-         result = await environment.installPackage(packageName, (stagingPath) =>
-            this.downloadInto(
-               environmentName,
-               packageName,
-               bodyLocation,
-               stagingPath,
-            ),
+         result = await environment.installPackage(
+            packageName,
+            (stagingPath) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  bodyLocation,
+                  stagingPath,
+               ),
+            (pkg) => pkg.formatInvalidExplores(),
          );
       } else {
          result = await environment.addPackage(packageName);
       }
+
+      // `addPackage`/`installPackage` are typed `Package | undefined`; a missing
+      // result here is a should-never-happen internal fault. Fail loudly rather
+      // than letting optional chaining silently skip the validation below.
+      if (!result) {
+         throw new Error(`Failed to create package ${packageName}`);
+      }
+
+      if (!body.location) {
+         const invalidMsg = result.formatInvalidExplores();
+         if (invalidMsg) {
+            await environment.unloadPackage(packageName).catch(() => {
+               /* best-effort; the package is not persisted below */
+            });
+            throw new BadRequestError(invalidMsg);
+         }
+      }
+
       await this.environmentStore.addPackageToDatabase(
          environmentName,
          packageName,
       );
 
-      if (options?.autoLoadManifest === true) {
-         await this.tryLoadExistingManifest(environmentName, packageName);
-      }
-
       return result;
-   }
-
-   /**
-    * If there are already manifest entries for this package (e.g. from a
-    * previous materialization run), reload all models with the manifest so
-    * persist references resolve to the materialized tables immediately.
-    */
-   private async tryLoadExistingManifest(
-      environmentName: string,
-      packageName: string,
-   ): Promise<void> {
-      try {
-         const repository =
-            this.environmentStore.storageManager.getRepository();
-         const dbEnvironment =
-            await repository.getEnvironmentByName(environmentName);
-         if (!dbEnvironment) return;
-
-         const manifest = await this.manifestService.getManifest(
-            dbEnvironment.id,
-            packageName,
-         );
-         if (Object.keys(manifest.entries).length === 0) return;
-
-         await this.manifestService.reloadManifest(
-            dbEnvironment.id,
-            packageName,
-            environmentName,
-         );
-         logger.info("Auto-loaded existing manifest for added package", {
-            environmentName,
-            packageName,
-            entryCount: Object.keys(manifest.entries).length,
-         });
-      } catch (error) {
-         logger.warn("Failed to auto-load manifest for package", {
-            environmentName,
-            packageName,
-            error,
-         });
-      }
    }
 
    public async deletePackage(environmentName: string, packageName: string) {
@@ -184,15 +162,24 @@ export class PackageController {
       );
       if (body.location) {
          // Re-install: stream the new content into a staging dir (no lock)
-         // and atomically swap it in (under the lock).
+         // and atomically swap it in (under the lock). Validate the effective
+         // explores (the body override, else the new tree's own manifest)
+         // INSIDE the swap window, so a rejected update rolls back to the
+         // previous tree instead of swapping the bad one in and 400-ing after.
          const bodyLocation = body.location;
-         await environment.installPackage(packageName, (stagingPath) =>
-            this.downloadInto(
-               environmentName,
-               packageName,
-               bodyLocation,
-               stagingPath,
-            ),
+         await environment.installPackage(
+            packageName,
+            (stagingPath) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  bodyLocation,
+                  stagingPath,
+               ),
+            (pkg) =>
+               pkg.formatInvalidExplores(
+                  body.explores?.map(normalizeModelPath),
+               ),
          );
       }
       // Apply metadata changes (publisher.json) under the same per-package

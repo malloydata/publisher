@@ -150,11 +150,14 @@ describe("DuckDB legacy projects schema cleanup", () => {
          ["p1"],
       );
       expect(mats.length).toBe(0);
-      const manifests = await db.all<{ id: string }>(
-         "SELECT id FROM build_manifests WHERE environment_id = ?",
-         ["p1"],
+
+      // The legacy `build_manifests` table is dropped and not recreated: the
+      // two-round refactor folds the manifest into a JSON column on the
+      // `materializations` row, so no standalone manifest table remains.
+      const manifestTable = await db.all<{ name: string }>(
+         "SELECT name FROM sqlite_master WHERE type='table' AND name='build_manifests'",
       );
-      expect(manifests.length).toBe(0);
+      expect(manifestTable.length).toBe(0);
 
       await db.close();
    });

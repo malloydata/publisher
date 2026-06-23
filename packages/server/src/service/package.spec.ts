@@ -75,11 +75,19 @@ describe("service/package", () => {
          new Map([
             [
                "model1.malloy",
-               { getPath: () => "model1.malloy" } as unknown as Model,
+               {
+                  getPath: () => "model1.malloy",
+                  setDiscoveryCuration: () => {},
+                  setQueryBoundary: () => {},
+               } as unknown as Model,
             ],
             [
                "model2.malloynb",
-               { getPath: () => "model2.malloynb" } as unknown as Model,
+               {
+                  getPath: () => "model2.malloynb",
+                  setDiscoveryCuration: () => {},
+                  setQueryBoundary: () => {},
+               } as unknown as Model,
             ],
          ]),
       );
@@ -294,17 +302,21 @@ describe("service/package", () => {
                      {
                         getPath: () => "model1.malloy",
                         getModel: () => "foo",
+                        setDiscoveryCuration: () => {},
+                        setQueryBoundary: () => {},
                      } as unknown as Model,
                   ],
                   [
                      "model2.malloynb",
                      {
                         getPath: () => "model2.malloynb",
+                        setDiscoveryCuration: () => {},
                         getNotebookError: () => {
                            return {
                               message: "This is the error",
                            };
                         },
+                        setQueryBoundary: () => {},
                      } as unknown as Model,
                   ],
                ]),

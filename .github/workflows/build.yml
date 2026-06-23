@@ -260,7 +260,9 @@ jobs:
             || { echo "✗ Missing EXPOSE 4000"; exit 1; }
           echo "$exposed" | jq -e '."4040/tcp"' >/dev/null \
             || { echo "✗ Missing EXPOSE 4040"; exit 1; }
-          echo "✓ Both runtime ports declared"
+          echo "$exposed" | jq -e '."4041/tcp"' >/dev/null \
+            || { echo "✗ Missing EXPOSE 4041 (agent MCP)"; exit 1; }
+          echo "✓ All runtime ports declared"
           labels=$(docker inspect malloy-publisher:smoke-test \
             --format='{{json .Config.Labels}}')
           echo "Labels: $labels"

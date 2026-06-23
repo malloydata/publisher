@@ -7,14 +7,21 @@ import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { components } from "../api";
-import { API_PREFIX, README_NAME } from "../constants";
 import {
+   API_PREFIX,
+   normalizeModelPath,
+   NOTEBOOK_FILE_SUFFIX,
+   README_NAME,
+} from "../constants";
+import {
+   BadRequestError,
    ConnectionNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
+import { recordManifestBind } from "../materialization_metrics";
 import {
    assertSafeEnvironmentPath,
    assertSafePackageName,
@@ -29,6 +36,7 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
+import { fetchManifestEntries } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -48,6 +56,11 @@ import type { PackageMemoryGovernor } from "./package_memory_governor";
  */
 const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
+
+// How long to wait for a control-plane manifest fetch during (re)bind before
+// giving up and serving live. Binding happens before a package is marked
+// SERVING, so an unreachable/slow manifest store must not block the package.
+const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
 
 export enum PackageStatus {
    LOADING = "loading",
@@ -187,10 +200,6 @@ export class Environment {
          await this.writeEnvironmentReadme(payload.readme);
       }
 
-      if (payload.materializationStorage !== undefined) {
-         this.metadata.materializationStorage = payload.materializationStorage;
-      }
-
       // Handle connections update
       // TODO: Update environment connections should have its own API endpoint
       if (payload.connections) {
@@ -296,6 +305,17 @@ export class Environment {
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelName);
+      // /compile appends the submitted source to the TARGET MODEL's content for
+      // namespace context. A notebook (.malloynb) is markdown + cells, not a
+      // model, so compiling against it only yields a confusing parse error —
+      // reject it up front with an actionable message. (Notebooks remain public
+      // for discovery/query; this is specific to the compile context.)
+      if (modelName.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         throw new BadRequestError(
+            `Cannot compile against a notebook ("${modelName}"). ` +
+               `/compile takes a .malloy model path for namespace context.`,
+         );
+      }
       // Hold the per-package mutex for the duration of every disk read —
       // both the explicit `fs.readFile(modelPath)` below and the implicit
       // import resolution that `runtime.loadModel` does through the URL
@@ -365,15 +385,31 @@ export class Environment {
          // and compilation surfaces its own error.
          const gateModel = pkg.getModel(modelName);
          if (gateModel) {
+            // Query boundary first (the *what* axis): /compile compiles ad-hoc
+            // text against a model, so gate it like an ad-hoc query — a
+            // non-`explores` model file, or text whose surface-resolved target
+            // is a non-curated model source (under queryableSources:
+            // "declared"), is rejected with a generic 404 before compilation
+            // can leak schema/SQL. Text the early gate can't pin is settled by
+            // the compiled backstop below.
+            gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
             await gateModel.assertAuthorizedForText(source, givens ?? {});
          }
 
          // Initialize Runtime with the package's active MalloyConfig so compile
          // checks see the same package-scoped duckdb as execution. This runtime
          // borrows the package config; the package/environment lifecycle owns release.
+         // Thread the package's bound build manifest (when present) so the
+         // /compile preview routes persist sources to their materialized tables
+         // exactly like execution does — otherwise includeSql=true would always
+         // show base-table SQL and diverge from what executeQuery actually runs.
+         const boundManifestEntries = pkg.getBuildManifestEntries();
          const runtime = new Runtime({
             urlReader: interceptingReader,
             config: pkg.getMalloyConfig(),
+            buildManifest: boundManifestEntries
+               ? { entries: boundManifestEntries, strict: false }
+               : undefined,
          });
 
          // Attempt to compile
@@ -392,8 +428,8 @@ export class Environment {
                // gate or extract beyond the early text gate already applied.
             }
 
-            // Compiled-source backstop — runs REGARDLESS of includeSql. It gates
-            // the source the COMPILED final query actually reads, closing
+            // Compiled-source backstops — run REGARDLESS of includeSql. They
+            // gate the source the COMPILED final query actually reads, closing
             // named-query / multi-statement indirection the early surface-syntax
             // gate misses (e.g. `run: ungated\nrun: gated` — the early gate only
             // matches the FIRST `run:`, but the LAST statement is what executes).
@@ -401,9 +437,26 @@ export class Environment {
             // (field-not-found errors leak its columns), so this must not be
             // conditional on SQL extraction. (A `source: x is gated` alias makes
             // a new ungated source — that's the documented "extend doesn't
-            // inherit authorize" footgun, the same as the query path.) Only run
-            // when the model declares gates so ungated compiles don't pay for
-            // the extra final-query compile.
+            // inherit authorize" footgun, the same as the query path.)
+
+            // Boundary backstop (the *what* axis, 404) before the authorize
+            // one (the *who* axis, 403). /compile text is always ad-hoc — the
+            // early gate can only positively deny, never fully clear — so the
+            // compiled final query's run target is the authority. Self-gates
+            // internally (no-ops when the boundary is inert: "all" / no
+            // explores), so it is deliberately NOT guarded by hasAuthorize().
+            // Text that compiles only source definitions (no final query) has
+            // no run target and nothing to gate.
+            if (queryMaterializer && gateModel) {
+               await gateModel.assertQueryBoundaryForRunnable(
+                  queryMaterializer,
+                  source,
+               );
+            }
+
+            // Authorize backstop (the *who* axis, 403). Only run when the model
+            // declares gates so ungated compiles don't pay for the extra
+            // final-query compile.
             if (queryMaterializer && gateModel?.hasAuthorize()) {
                await gateModel.assertAuthorizedForRunnable(
                   queryMaterializer,
@@ -792,6 +845,7 @@ export class Environment {
             packagePath,
             () => this.malloyConfig.malloyConfig,
          );
+         await this.bindManifestIfConfigured(_package);
          if (existingPackage !== undefined && reload) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
                existingPackage.getMalloyConfig().shutdown("close"),
@@ -897,6 +951,7 @@ export class Environment {
    public async installPackage(
       packageName: string,
       downloader: (stagingPath: string) => Promise<void>,
+      validate?: (pkg: Package) => string | undefined,
    ): Promise<Package> {
       assertSafePackageName(packageName);
       const stagingPath = this.allocateStagingPath(packageName);
@@ -963,6 +1018,15 @@ export class Environment {
                canonicalPath,
                () => this.malloyConfig.malloyConfig,
             );
+            // Strict-reject hook (publish/update only — reload passes no
+            // validator and stays fail-safe). Throw INSIDE the try so the
+            // catch below rolls the swap back: the just-installed tree is
+            // wiped and the retired tree (if any) is restored, so a rejected
+            // publish/update never leaves the bad tree served on disk.
+            const validationMsg = validate?.(newPackage);
+            if (validationMsg) {
+               throw new BadRequestError(validationMsg);
+            }
             logger.debug("install.phase2.committed", {
                environmentName: this.environmentName,
                packageName,
@@ -1007,6 +1071,11 @@ export class Environment {
             });
             throw err;
          }
+
+         // Best-effort manifest bind happens after the swap commits, outside the
+         // rollback window: a manifest that can't be fetched must not undo an
+         // otherwise-successful install (the package serves live instead).
+         await this.bindManifestIfConfigured(newPackage);
 
          this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
@@ -1063,6 +1132,91 @@ export class Environment {
    }
 
    /**
+    * If the freshly-loaded package declares a `manifestLocation`, fetch the
+    * control-plane-computed build manifest and rebind its models so persist
+    * references resolve to the materialized tables. Best-effort: a fetch/bind
+    * failure logs a warning and leaves the package serving live (the models are
+    * already loaded without a manifest). Callers must hold the package lock —
+    * this rebinds `pkg` in place rather than re-entering {@link withPackageLock}.
+    */
+   private async bindManifestIfConfigured(pkg: Package): Promise<void> {
+      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+      if (!manifestLocation) {
+         return;
+      }
+      await this.bindManifest(pkg, manifestLocation);
+   }
+
+   /** Fetch + bind a specific manifest URI onto an already-loaded package. */
+   private async bindManifest(
+      pkg: Package,
+      manifestLocation: string,
+   ): Promise<void> {
+      const packageName = pkg.getPackageName();
+      try {
+         // Bind runs before a package is marked SERVING, so a slow/unreachable
+         // manifest store must not block serving indefinitely — bound is the
+         // intended state, live is the degraded fallback. Race the fetch against
+         // a timeout and fall back to live on either failure.
+         const entries =
+            await this.fetchManifestEntriesWithTimeout(manifestLocation);
+         await pkg.reloadAllModels(entries);
+         pkg.setBoundManifestUri(manifestLocation);
+         recordManifestBind("success");
+         logger.info("Bound build manifest to package", {
+            environmentName: this.environmentName,
+            packageName,
+            manifestLocation,
+            entryCount: Object.keys(entries).length,
+         });
+      } catch (err) {
+         pkg.markManifestBindFailed();
+         const timedOut =
+            err instanceof Error && err.message.includes("Timed out after");
+         recordManifestBind(timedOut ? "timeout" : "failure");
+         logger.warn("Failed to bind build manifest; serving live", {
+            environmentName: this.environmentName,
+            packageName,
+            manifestLocation,
+            timedOut,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+
+   /**
+    * Fetch manifest entries, rejecting if the fetch exceeds
+    * {@link MANIFEST_FETCH_TIMEOUT_MS}. Keeps {@link bindManifest}'s bind-before-
+    * serve guarantee from stalling on an unreachable manifest store.
+    */
+   private async fetchManifestEntriesWithTimeout(
+      manifestLocation: string,
+   ): Promise<BuildManifest["entries"]> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+         timer = setTimeout(
+            () =>
+               reject(
+                  new Error(
+                     `Timed out after ${MANIFEST_FETCH_TIMEOUT_MS}ms fetching manifest ${manifestLocation}`,
+                  ),
+               ),
+            MANIFEST_FETCH_TIMEOUT_MS,
+         );
+      });
+      try {
+         return await Promise.race([
+            fetchManifestEntries(manifestLocation),
+            timeout,
+         ]);
+      } finally {
+         if (timer) {
+            clearTimeout(timer);
+         }
+      }
+   }
+
+   /**
     * Read a model's source text from disk, holding the per-package mutex
     * so the read is serialized against {@link installPackage} /
     * {@link deletePackage} / {@link updatePackage}.
@@ -1086,7 +1240,13 @@ export class Environment {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: { name: string; description?: string },
+      metadata: {
+         name: string;
+         description?: string;
+         explores?: string[];
+         queryableSources?: "declared" | "all";
+         manifestLocation?: string | null;
+      },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
@@ -1101,11 +1261,23 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
-         // Update with new metadata
+         // Update with new metadata. `explores`/`queryableSources` are only
+         // overwritten when the caller explicitly provides them; otherwise the
+         // existing on-disk value is preserved via the spread (an undefined here
+         // must not erase it).
          const updatedManifest = {
             ...existingManifest,
             name: metadata.name,
             description: metadata.description,
+            ...(metadata.explores !== undefined
+               ? { explores: metadata.explores }
+               : {}),
+            ...(metadata.queryableSources !== undefined
+               ? { queryableSources: metadata.queryableSources }
+               : {}),
+            ...(metadata.manifestLocation !== undefined
+               ? { manifestLocation: metadata.manifestLocation }
+               : {}),
          };
 
          // Write back to file
@@ -1132,17 +1304,71 @@ export class Environment {
          if (body.name) {
             _package.setName(body.name);
          }
+         // Preserve `explores` across a metadata PATCH. `setPackageMetadata`
+         // replaces the whole object, so a name/description-only update must
+         // carry the existing discovery surface through — otherwise the
+         // in-memory `explores` is wiped and `listModels()` silently starts
+         // serving every model until the next reload. When the body explicitly
+         // carries `explores`, honor the new set instead.
+         const existing = _package.getPackageMetadata();
+         // Normalize API-body explores through the same helper the worker uses
+         // for on-disk explores, so `["./index.malloy"]` / backslash paths
+         // validate and persist identically regardless of input channel (no
+         // misleading publish-time 400, no publish-vs-reload divergence).
+         const normalizedExplores = body.explores?.map(normalizeModelPath);
+         const explores =
+            normalizedExplores !== undefined
+               ? normalizedExplores
+               : existing.explores;
+         const queryableSources =
+            body.queryableSources !== undefined
+               ? body.queryableSources
+               : existing.queryableSources;
+         // Preserve the existing manifestLocation unless the body explicitly
+         // sets it (including to null, which clears it and reverts to live).
+         const manifestLocation =
+            body.manifestLocation !== undefined
+               ? body.manifestLocation
+               : existing.manifestLocation;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
             resource: body.resource,
             location: body.location,
+            explores,
+            queryableSources,
+            manifestLocation,
          });
+
+         // Strict-reject, symmetric with the publish path
+         // (package.controller.addPackage): validate the resulting explores
+         // against the live model set and restore the prior metadata before
+         // rejecting, so a bad update neither persists nor mutates the served
+         // surface.
+         const invalidMsg = _package.formatInvalidExplores();
+         if (invalidMsg) {
+            _package.setPackageMetadata(existing);
+            throw new BadRequestError(invalidMsg);
+         }
 
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
+            explores: normalizedExplores,
+            queryableSources: body.queryableSources,
+            manifestLocation: body.manifestLocation,
          });
+
+         // When the body changes manifestLocation, apply it now so the new
+         // binding takes effect without a separate reload: a URI rebinds models
+         // to the materialized tables; null/empty reverts the package to live.
+         if (body.manifestLocation !== undefined) {
+            if (body.manifestLocation) {
+               await this.bindManifest(_package, body.manifestLocation);
+            } else {
+               await _package.reloadAllModels({});
+            }
+         }
 
          return _package.getPackageMetadata();
       });
@@ -1242,6 +1468,38 @@ export class Environment {
                   });
             });
          }
+      });
+   }
+
+   /**
+    * Evict a package from the in-memory caches WITHOUT touching its on-disk
+    * directory — the non-destructive counterpart to {@link deletePackage}.
+    *
+    * Used to roll back a no-location `addPackage` (which registers a
+    * *pre-existing*, user-owned directory) when post-load validation rejects
+    * it: deleting the tree there would destroy content the publisher never
+    * created. This still drains and closes the connections the just-created
+    * `Package` opened, so the duckdb handle isn't leaked.
+    */
+   public async unloadPackage(packageName: string): Promise<void> {
+      assertSafePackageName(packageName);
+      return this.withPackageLock(packageName, async () => {
+         const _package = this.packages.get(packageName);
+         if (!_package) {
+            return;
+         }
+         if (
+            this.packageStatuses.get(packageName)?.status ===
+            PackageStatus.SERVING
+         ) {
+            this.setPackageStatus(packageName, PackageStatus.UNLOADING);
+         }
+         // Same 30s connection drain as deletePackage — just no fs rename/rm.
+         this.retireConnectionGeneration(`package ${packageName}`, () =>
+            _package.getMalloyConfig().shutdown("close"),
+         );
+         this.packages.delete(packageName);
+         this.packageStatuses.delete(packageName);
       });
    }
 

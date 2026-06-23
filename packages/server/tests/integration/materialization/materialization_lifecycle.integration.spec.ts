@@ -12,7 +12,16 @@ const PROJECT_NAME = "test-project";
 const PACKAGE_NAME = "persist-test";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
-describe("Materialization & Manifest REST API (E2E)", () => {
+/** Statuses from which no background round is in flight. */
+const SETTLED_STATUSES = [
+   "BUILD_PLAN_READY",
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+];
+const TERMINAL_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
+
+describe("Materialization REST API: auto-run + two-round (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 
@@ -82,45 +91,60 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       return `${baseUrl}${API}${p}`;
    }
 
+   // Most tests here exercise the control-plane two-round flow, so default to
+   // pauseBetweenPhases=true (pause at BUILD_PLAN_READY). The auto-run group
+   // overrides this with pauseBetweenPhases=false.
    async function createMaterialization(
       body: Record<string, unknown> = {},
    ): Promise<Response> {
       return fetch(url("/materializations"), {
          method: "POST",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(body),
+         body: JSON.stringify({ pauseBetweenPhases: true, ...body }),
       });
    }
 
-   async function pollUntilTerminal(
+   async function getMaterialization(
       id: string,
+   ): Promise<Record<string, unknown>> {
+      const res = await fetch(url(`/materializations/${id}`));
+      expect(res.status).toBe(200);
+      return (await res.json()) as Record<string, unknown>;
+   }
+
+   /** Poll until `status` satisfies `done`, returning the record. */
+   async function pollUntil(
+      id: string,
+      done: (status: string) => boolean,
       timeoutMs = 30_000,
    ): Promise<Record<string, unknown>> {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-         const res = await fetch(url(`/materializations/${id}`));
-         expect(res.status).toBe(200);
-         const data = (await res.json()) as Record<string, unknown>;
-         const status = data.status as string;
-         if (["SUCCESS", "FAILED", "CANCELLED"].includes(status)) {
+         const data = await getMaterialization(id);
+         if (done(data.status as string)) {
             return data;
          }
-         await new Promise((r) => setTimeout(r, 500));
+         await new Promise((r) => setTimeout(r, 250));
       }
-      throw new Error(`Materialization ${id} did not reach terminal state`);
+      throw new Error(`Materialization ${id} did not reach the expected state`);
    }
 
+   const pollUntilSettled = (id: string) =>
+      pollUntil(id, (s) => SETTLED_STATUSES.includes(s));
+   const pollUntilTerminal = (id: string) =>
+      pollUntil(id, (s) => TERMINAL_STATUSES.includes(s));
+
    /**
-    * Clean up a materialization so it doesn't interfere with other tests.
-    * Stops it if active, then deletes if terminal.
+    * Drive a materialization to a terminal state and delete its record so it
+    * doesn't hold the per-package active slot for later tests.
     */
    async function cleanup(id: string): Promise<void> {
       const res = await fetch(url(`/materializations/${id}`));
       if (res.status !== 200) return;
-      const data = (await res.json()) as Record<string, unknown>;
-      const status = data.status as string;
 
-      if (status === "PENDING" || status === "RUNNING") {
+      // Let any in-flight round settle before acting on it.
+      const settled = await pollUntilSettled(id);
+      if (!TERMINAL_STATUSES.includes(settled.status as string)) {
          await fetch(url(`/materializations/${id}?action=stop`), {
             method: "POST",
          });
@@ -129,104 +153,298 @@ describe("Materialization & Manifest REST API (E2E)", () => {
       await fetch(url(`/materializations/${id}`), { method: "DELETE" });
    }
 
-   // ── Group A: Full lifecycle with persist sources ──────────────────
+   /** First planned source from a BUILD_PLAN_READY materialization. */
+   function firstPlannedSource(
+      materialization: Record<string, unknown>,
+   ): Record<string, unknown> {
+      const plan = materialization.buildPlan as Record<string, unknown>;
+      expect(plan).toBeDefined();
+      const sources = plan.sources as Record<string, Record<string, unknown>>;
+      const values = Object.values(sources);
+      expect(values.length).toBeGreaterThan(0);
+      return values[0];
+   }
 
-   describe("full lifecycle (happy path)", () => {
-      let materializationId: string;
+   // ── Group A0: Auto-run lifecycle (default) ───────────────────────
 
-      afterAll(async () => {
-         if (materializationId) await cleanup(materializationId);
-      });
-
+   describe("auto-run lifecycle (default)", () => {
       it(
-         "should create, start, build, verify manifest, and delete",
+         "runs all phases on create, self-assigns names, and auto-loads",
          async () => {
-            // 1. Create
+            // pauseBetweenPhases=false (default): the publisher runs compile +
+            // plan + build + load in one pass with no Round 2.
             const createRes = await createMaterialization({
-               autoLoadManifest: true,
+               pauseBetweenPhases: false,
             });
             expect(createRes.status).toBe(201);
             const created = (await createRes.json()) as Record<string, unknown>;
             expect(created.status).toBe("PENDING");
-            expect(created.id).toBeDefined();
-            materializationId = created.id as string;
+            expect(created.pauseBetweenPhases).toBe(false);
+            const id = created.id as string;
 
-            // 2. List
-            const listRes = await fetch(url("/materializations"));
-            expect(listRes.status).toBe(200);
-            const list = (await listRes.json()) as Record<string, unknown>[];
-            expect(list.some((m) => m.id === materializationId)).toBe(true);
-
-            // 3. Get by ID
-            const getRes = await fetch(
-               url(`/materializations/${materializationId}`),
+            // It settles at MANIFEST_FILE_READY without any build instruction.
+            const built = await pollUntil(
+               id,
+               (s) => TERMINAL_STATUSES.includes(s),
+               90_000,
             );
-            expect(getRes.status).toBe(200);
-            const got = (await getRes.json()) as Record<string, unknown>;
-            expect(got.status).toBe("PENDING");
+            expect(built.status).toBe("MANIFEST_FILE_READY");
 
-            // 4. Start
-            const startRes = await fetch(
-               url(`/materializations/${materializationId}?action=start`),
-               { method: "POST" },
-            );
-            expect(startRes.status).toBe(202);
-            const started = (await startRes.json()) as Record<string, unknown>;
-            expect(started.status).toBe("RUNNING");
-
-            // 5. Poll until terminal
-            const terminal = await pollUntilTerminal(materializationId);
-            expect(terminal.status).toBe("SUCCESS");
-            const metadata = terminal.metadata as Record<string, unknown>;
-            expect(metadata.sourcesBuilt).toBeGreaterThan(0);
-
-            // 6. Get manifest
-            const manifestRes = await fetch(url("/manifest"));
-            expect(manifestRes.status).toBe(200);
-            const manifest = (await manifestRes.json()) as Record<
+            // The manifest carries the self-assigned physical table name (from
+            // `#@ persist name="order_summary"`).
+            const manifest = built.manifest as Record<string, unknown>;
+            expect(manifest).toBeDefined();
+            const entries = manifest.entries as Record<
                string,
-               unknown
+               Record<string, unknown>
             >;
-            expect(manifest.entries).toBeDefined();
-            const entries = manifest.entries as Record<string, unknown>;
-            expect(Object.keys(entries).length).toBeGreaterThan(0);
-            const firstEntry = Object.values(entries)[0] as Record<
-               string,
-               unknown
-            >;
-            expect(firstEntry.tableName).toBe("order_summary");
+            const values = Object.values(entries);
+            expect(values.length).toBe(1);
+            expect(values[0].physicalTableName).toBe("order_summary");
+            expect(values[0].sourceName).toBe("order_summary");
+            expect(values[0].realization).toBe("COPY");
 
-            // 7. Reload manifest
-            const reloadRes = await fetch(url("/manifest?action=reload"), {
-               method: "POST",
-            });
-            expect(reloadRes.status).toBe(200);
-            const reloadedManifest = (await reloadRes.json()) as Record<
-               string,
-               unknown
-            >;
-            expect(reloadedManifest.entries).toBeDefined();
-
-            // 8. Delete
+            // Cleanup: delete the record and drop the self-built table.
             const deleteRes = await fetch(
-               url(`/materializations/${materializationId}`),
+               url(`/materializations/${id}?dropTables=true`),
                { method: "DELETE" },
             );
             expect(deleteRes.status).toBe(204);
-            materializationId = ""; // prevent afterAll cleanup
          },
-         { timeout: 60_000 },
+         { timeout: 120_000 },
+      );
+
+      it("rejects action=build on an auto-run materialization (409)", async () => {
+         // Force a pause so we can observe a BUILD_PLAN_READY record, but mark it
+         // auto-run via metadata by creating a real auto-run and racing build is
+         // flaky; instead assert the guard on a freshly created auto-run that we
+         // immediately try to build. Auto-run never needs Round 2.
+         const createRes = await createMaterialization({
+            pauseBetweenPhases: false,
+         });
+         expect(createRes.status).toBe(201);
+         const { id } = (await createRes.json()) as { id: string };
+
+         // Drive to terminal so there is no in-flight round, then assert build
+         // is rejected (auto-run records never accept action=build).
+         await pollUntil(id, (s) => TERMINAL_STATUSES.includes(s), 90_000);
+
+         const buildRes = await fetch(
+            url(`/materializations/${id}?action=build`),
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  sources: [
+                     {
+                        buildId: "x",
+                        materializedTableId: "mt",
+                        physicalTableName: "t",
+                        realization: "COPY",
+                     },
+                  ],
+               }),
+            },
+         );
+         expect(buildRes.status).toBe(409);
+
+         await fetch(url(`/materializations/${id}?dropTables=true`), {
+            method: "DELETE",
+         });
+      });
+   });
+
+   // ── Group A: Full two-round lifecycle (happy path) ────────────────
+
+   describe("full two-round lifecycle", () => {
+      it(
+         "plans (round 1), builds on control-plane instruction (round 2), then deletes",
+         async () => {
+            // Round 1: create kicks off compile + plan in the background.
+            const createRes = await createMaterialization();
+            expect(createRes.status).toBe(201);
+            const created = (await createRes.json()) as Record<string, unknown>;
+            expect(created.status).toBe("PENDING");
+            expect(created.id).toBeDefined();
+            const id = created.id as string;
+
+            // List should include the new run.
+            const listRes = await fetch(url("/materializations"));
+            expect(listRes.status).toBe(200);
+            const list = (await listRes.json()) as Record<string, unknown>[];
+            expect(list.some((m) => m.id === id)).toBe(true);
+
+            // Round 1 completes at BUILD_PLAN_READY with a plan for our source.
+            const planned = await pollUntil(
+               id,
+               (s) => s === "BUILD_PLAN_READY" || TERMINAL_STATUSES.includes(s),
+            );
+            expect(planned.status).toBe("BUILD_PLAN_READY");
+            const source = firstPlannedSource(planned);
+            expect(source.name).toBe("order_summary");
+            expect(typeof source.buildId).toBe("string");
+
+            // Round 2: control plane instructs a COPY build into a physical name.
+            const physicalTableName = "order_summary_built";
+            const buildRes = await fetch(
+               url(`/materializations/${id}?action=build`),
+               {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                     sources: [
+                        {
+                           buildId: source.buildId,
+                           sourceID: source.sourceID,
+                           materializedTableId: "mt-order-summary",
+                           physicalTableName,
+                           realization: "COPY",
+                        },
+                     ],
+                  }),
+               },
+            );
+            expect(buildRes.status).toBe(202);
+
+            // Round 2 completes at MANIFEST_FILE_READY with an inline manifest.
+            const built = await pollUntil(
+               id,
+               (s) =>
+                  s === "MANIFEST_FILE_READY" ||
+                  s === "FAILED" ||
+                  s === "CANCELLED",
+            );
+            expect(built.status).toBe("MANIFEST_FILE_READY");
+            const manifest = built.manifest as Record<string, unknown>;
+            expect(manifest).toBeDefined();
+            const entries = manifest.entries as Record<
+               string,
+               Record<string, unknown>
+            >;
+            const entry = entries[source.buildId as string];
+            expect(entry).toBeDefined();
+            expect(entry.physicalTableName).toBe(physicalTableName);
+            expect(entry.sourceName).toBe("order_summary");
+
+            // A terminal materialization can be deleted; dropTables=true also
+            // drops the physical table this run produced in Round 2.
+            const deleteRes = await fetch(
+               url(`/materializations/${id}?dropTables=true`),
+               { method: "DELETE" },
+            );
+            expect(deleteRes.status).toBe(204);
+
+            // It's gone.
+            const getRes = await fetch(url(`/materializations/${id}`));
+            expect(getRes.status).toBe(404);
+         },
+         { timeout: 90_000 },
       );
    });
 
-   // ── Group B: Error cases and state machine validation ────────────
+   // ── Group A1: Serve-time routing (the v0 payoff) ─────────────────
+   //
+   // Materialization only pays off if *served* queries scan the materialized
+   // table instead of recomputing from the base table. The auto-run path builds
+   // the table and auto-loads the manifest into the serving models in one
+   // process, so routing is provable in-process: capture the live SQL (scans the
+   // base CSV), run an auto-run materialization, then assert both the executed
+   // query SQL and the /compile preview SQL now scan the physical table and no
+   // longer touch the base CSV. The /compile half guards the parity fix
+   // (Environment.compileSource threads the package's bound manifest).
+   describe("serve-time routing (auto-load)", () => {
+      const MODEL_PATH = "persist_test.malloy";
+      const QUERY = "run: order_summary -> { aggregate: c is count() }";
 
-   describe("error cases", () => {
-      it("should stop a PENDING materialization (PENDING -> CANCELLED)", async () => {
+      async function executedSql(): Promise<string> {
+         const res = await fetch(
+            `${baseUrl}${API}/models/${MODEL_PATH}/query`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ query: QUERY }),
+            },
+         );
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as { result: string };
+         return (JSON.parse(body.result) as { sql: string }).sql;
+      }
+
+      async function compiledSql(): Promise<string> {
+         const res = await fetch(
+            `${baseUrl}${API}/models/${MODEL_PATH}/compile`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ source: QUERY, includeSql: true }),
+            },
+         );
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as { status: string; sql?: string };
+         expect(body.status).toBe("success");
+         expect(body.sql).toBeDefined();
+         return body.sql as string;
+      }
+
+      it(
+         "routes served + compiled queries to the materialized table after auto-load",
+         async () => {
+            // Reset to live: a prior group may have left an in-memory binding.
+            // Auto-load never writes manifestLocation to publisher.json, so a
+            // reload re-reads the live model.
+            await fetch(`${baseUrl}${API}?reload=true`);
+
+            // Baseline: with nothing materialized, both paths recompute from the
+            // base CSV.
+            expect(await executedSql()).toContain("data/orders.csv");
+            expect(await compiledSql()).toContain("data/orders.csv");
+
+            // Build + auto-load in one pass (self-assigns physicalTableName =
+            // "order_summary" from `#@ persist name="order_summary"`).
+            const createRes = await createMaterialization({
+               pauseBetweenPhases: false,
+            });
+            expect(createRes.status).toBe(201);
+            const { id } = (await createRes.json()) as { id: string };
+            const built = await pollUntil(
+               id,
+               (s) => TERMINAL_STATUSES.includes(s),
+               90_000,
+            );
+            expect(built.status).toBe("MANIFEST_FILE_READY");
+
+            // The payoff: the served query now scans the materialized table and
+            // no longer recomputes from the base CSV, and /compile previews the
+            // same routed SQL it would execute.
+            const routedExecuted = await executedSql();
+            const routedCompiled = await compiledSql();
+            expect(routedExecuted).not.toContain("data/orders.csv");
+            expect(routedExecuted).toContain("order_summary");
+            expect(routedCompiled).not.toContain("data/orders.csv");
+            expect(routedCompiled).toContain("order_summary");
+
+            // Cleanup: drop the table + record, then reload back to live so the
+            // dangling binding doesn't leak into later groups.
+            const deleteRes = await fetch(
+               url(`/materializations/${id}?dropTables=true`),
+               { method: "DELETE" },
+            );
+            expect(deleteRes.status).toBe(204);
+            await fetch(`${baseUrl}${API}?reload=true`);
+         },
+         { timeout: 120_000 },
+      );
+   });
+
+   // ── Group B: State machine and error cases ───────────────────────
+
+   describe("state machine and errors", () => {
+      it("stops a plan-ready materialization (-> CANCELLED)", async () => {
          const createRes = await createMaterialization();
          expect(createRes.status).toBe(201);
-         const created = (await createRes.json()) as Record<string, unknown>;
-         const id = created.id as string;
+         const { id } = (await createRes.json()) as { id: string };
+
+         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
 
          const stopRes = await fetch(
             url(`/materializations/${id}?action=stop`),
@@ -241,44 +459,85 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          await cleanup(id);
       });
 
-      it("should reject a second concurrent materialization with 409", async () => {
+      it("rejects a second concurrent materialization with 409", async () => {
          const first = await createMaterialization();
          expect(first.status).toBe(201);
-         const firstData = (await first.json()) as Record<string, unknown>;
-         const firstId = firstData.id as string;
+         const { id } = (await first.json()) as { id: string };
 
          const second = await createMaterialization();
          expect(second.status).toBe(409);
 
-         await cleanup(firstId);
+         await cleanup(id);
       });
 
-      it("should reject starting a CANCELLED materialization with 409", async () => {
+      it("rejects building from a non-plan-ready state with 409", async () => {
          const createRes = await createMaterialization();
          expect(createRes.status).toBe(201);
-         const created = (await createRes.json()) as Record<string, unknown>;
-         const id = created.id as string;
+         const { id } = (await createRes.json()) as { id: string };
 
+         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
          await fetch(url(`/materializations/${id}?action=stop`), {
             method: "POST",
          });
+         await pollUntil(id, (s) => s === "CANCELLED");
 
-         const startRes = await fetch(
-            url(`/materializations/${id}?action=start`),
+         const buildRes = await fetch(
+            url(`/materializations/${id}?action=build`),
             {
                method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  sources: [
+                     {
+                        buildId: "deadbeef",
+                        materializedTableId: "mt",
+                        physicalTableName: "t",
+                        realization: "COPY",
+                     },
+                  ],
+               }),
             },
          );
-         expect(startRes.status).toBe(409);
+         expect(buildRes.status).toBe(409);
+
+         await fetch(url(`/materializations/${id}`), { method: "DELETE" });
+      });
+
+      it("rejects a build instruction with an unknown buildId (400)", async () => {
+         const createRes = await createMaterialization();
+         expect(createRes.status).toBe(201);
+         const { id } = (await createRes.json()) as { id: string };
+
+         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
+
+         const buildRes = await fetch(
+            url(`/materializations/${id}?action=build`),
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  sources: [
+                     {
+                        buildId: "not-a-real-build-id",
+                        materializedTableId: "mt",
+                        physicalTableName: "t",
+                        realization: "COPY",
+                     },
+                  ],
+               }),
+            },
+         );
+         expect(buildRes.status).toBe(400);
 
          await cleanup(id);
       });
 
-      it("should reject deleting a PENDING materialization with 409", async () => {
+      it("rejects deleting a non-terminal materialization with 409", async () => {
          const createRes = await createMaterialization();
          expect(createRes.status).toBe(201);
-         const created = (await createRes.json()) as Record<string, unknown>;
-         const id = created.id as string;
+         const { id } = (await createRes.json()) as { id: string };
+
+         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
 
          const deleteRes = await fetch(url(`/materializations/${id}`), {
             method: "DELETE",
@@ -288,183 +547,29 @@ describe("Materialization & Manifest REST API (E2E)", () => {
          await cleanup(id);
       });
 
-      it("should return 404 for a non-existent materialization", async () => {
+      it("rejects an unsupported action with 400", async () => {
+         const createRes = await createMaterialization();
+         expect(createRes.status).toBe(201);
+         const { id } = (await createRes.json()) as { id: string };
+
+         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
+
+         const res = await fetch(
+            url(`/materializations/${id}?action=frobnicate`),
+            {
+               method: "POST",
+            },
+         );
+         expect(res.status).toBe(400);
+
+         await cleanup(id);
+      });
+
+      it("returns 404 for a non-existent materialization", async () => {
          const res = await fetch(
             url("/materializations/non-existent-id-12345"),
          );
          expect(res.status).toBe(404);
       });
-   });
-
-   // ── Group C: Package Teardown ────────────────────────────────────
-
-   describe("package teardown", () => {
-      it(
-         "dryRun reports stale entries without dropping tables or deleting rows",
-         async () => {
-            // Run a full build so there are manifest entries to tear down.
-            const createRes = await createMaterialization({
-               autoLoadManifest: true,
-            });
-            expect(createRes.status).toBe(201);
-            const created = (await createRes.json()) as Record<string, unknown>;
-            const id = created.id as string;
-            await fetch(url(`/materializations/${id}?action=start`), {
-               method: "POST",
-            });
-            const terminal = await pollUntilTerminal(id);
-            expect(terminal.status).toBe("SUCCESS");
-
-            // Must delete the materialization record before teardown
-            // (teardown refuses to run while an active materialization exists).
-            await fetch(url(`/materializations/${id}`), { method: "DELETE" });
-
-            // dryRun teardown — should report entries but not actually drop them.
-            const teardownRes = await fetch(url("/materializations/teardown"), {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({ dryRun: true }),
-            });
-            expect(teardownRes.status).toBe(200);
-            const teardownResult = (await teardownRes.json()) as Record<
-               string,
-               unknown
-            >;
-            const dropped = teardownResult.dropped as Record<string, unknown>[];
-            expect(dropped).toBeDefined();
-            expect(teardownResult.errors).toBeDefined();
-
-            // Manifest should still be intact after a dry run.
-            const manifestRes = await fetch(url("/manifest"));
-            expect(manifestRes.status).toBe(200);
-            const manifest = (await manifestRes.json()) as Record<
-               string,
-               unknown
-            >;
-            const entries = manifest.entries as Record<string, unknown>;
-            expect(Object.keys(entries).length).toBeGreaterThan(0);
-         },
-         { timeout: 60_000 },
-      );
-
-      it(
-         "live teardown drops stale manifest entries and cleans up tables",
-         async () => {
-            // Build so there are manifest entries.
-            const createRes = await createMaterialization({
-               autoLoadManifest: true,
-            });
-            expect(createRes.status).toBe(201);
-            const created = (await createRes.json()) as Record<string, unknown>;
-            const id = created.id as string;
-            await fetch(url(`/materializations/${id}?action=start`), {
-               method: "POST",
-            });
-            const terminal = await pollUntilTerminal(id);
-            expect(terminal.status).toBe("SUCCESS");
-
-            await fetch(url(`/materializations/${id}`), { method: "DELETE" });
-
-            // Live teardown — should drop everything since all entries are
-            // stale (no active build claims them).
-            const teardownRes = await fetch(url("/materializations/teardown"), {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({}),
-            });
-            expect(teardownRes.status).toBe(200);
-            const teardownResult = (await teardownRes.json()) as Record<
-               string,
-               unknown
-            >;
-            const dropped = teardownResult.dropped as Record<string, unknown>[];
-            expect(dropped.length).toBeGreaterThan(0);
-            expect((teardownResult.errors as unknown[]).length).toBe(0);
-
-            // Manifest should be empty after live teardown.
-            const manifestRes = await fetch(url("/manifest"));
-            expect(manifestRes.status).toBe(200);
-            const manifest = (await manifestRes.json()) as Record<
-               string,
-               unknown
-            >;
-            const entries = manifest.entries as Record<string, unknown>;
-            expect(Object.keys(entries).length).toBe(0);
-         },
-         { timeout: 60_000 },
-      );
-
-      it("teardown rejects while an active materialization exists", async () => {
-         const createRes = await createMaterialization();
-         expect(createRes.status).toBe(201);
-         const created = (await createRes.json()) as Record<string, unknown>;
-         const id = created.id as string;
-
-         const teardownRes = await fetch(url("/materializations/teardown"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-         });
-         expect(teardownRes.status).toBe(409);
-
-         await cleanup(id);
-      });
-
-      it(
-         "forceRefresh rebuilds and post-build GC step executes",
-         async () => {
-            // First build — populates manifest.
-            const first = await createMaterialization({
-               autoLoadManifest: true,
-            });
-            expect(first.status).toBe(201);
-            const firstData = (await first.json()) as Record<string, unknown>;
-            const firstId = firstData.id as string;
-            await fetch(url(`/materializations/${firstId}?action=start`), {
-               method: "POST",
-            });
-            const firstTerminal = await pollUntilTerminal(firstId);
-            expect(firstTerminal.status).toBe("SUCCESS");
-            await fetch(url(`/materializations/${firstId}`), {
-               method: "DELETE",
-            });
-
-            // Second build with forceRefresh — the buildId won't change
-            // (hash of SQL + connection is identical), but forceRefresh
-            // forces a rebuild rather than skipping.
-            const second = await createMaterialization({
-               forceRefresh: true,
-               autoLoadManifest: true,
-            });
-            expect(second.status).toBe(201);
-            const secondData = (await second.json()) as Record<string, unknown>;
-            const secondId = secondData.id as string;
-            await fetch(url(`/materializations/${secondId}?action=start`), {
-               method: "POST",
-            });
-            const secondTerminal = await pollUntilTerminal(secondId);
-            expect(secondTerminal.status).toBe("SUCCESS");
-
-            const metadata = secondTerminal.metadata as Record<string, unknown>;
-            // forceRefresh should actually rebuild, not skip.
-            expect(metadata.sourcesBuilt).toBeGreaterThan(0);
-            expect(metadata.sourcesSkipped).toBe(0);
-            // Post-build GC step ran (arrays present even if empty).
-            expect(metadata.gcDropped).toBeDefined();
-            expect(metadata.gcErrors).toBeDefined();
-
-            // Manifest should still have entries after rebuild.
-            const manifestRes = await fetch(url("/manifest"));
-            const manifest = (await manifestRes.json()) as Record<
-               string,
-               unknown
-            >;
-            const entries = manifest.entries as Record<string, unknown>;
-            expect(Object.keys(entries).length).toBeGreaterThan(0);
-
-            await cleanup(secondId);
-         },
-         { timeout: 90_000 },
-      );
    });
 });
