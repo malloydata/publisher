@@ -1,10 +1,12 @@
 import { Delete } from "@mui/icons-material";
 import CloseIcon from "@mui/icons-material/Close";
 import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import IconButton from "@mui/material/IconButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
@@ -22,13 +24,15 @@ export default function DeleteMaterializationDialog({
    materialization: Materialization;
    onCloseDialog: () => void;
    isMutating: boolean;
-   onDelete: () => void;
+   onDelete: (dropTables: boolean) => void;
 }) {
    const [open, setOpen] = useState(false);
+   const [dropTables, setDropTables] = useState(false);
 
    const handleClickOpen = () => setOpen(true);
    const handleClose = () => {
       setOpen(false);
+      setDropTables(false);
       onCloseDialog();
    };
 
@@ -73,13 +77,24 @@ export default function DeleteMaterializationDialog({
                   Are you sure you want to delete this materialization record?
                   This action cannot be undone.
                </Typography>
+               <FormControlLabel
+                  control={
+                     <Checkbox
+                        checked={dropTables}
+                        onChange={(event) =>
+                           setDropTables(event.target.checked)
+                        }
+                     />
+                  }
+                  label="Also drop the materialized table(s) this run produced"
+               />
             </DialogContent>
             <DialogActions>
                <Button
                   loading={isMutating}
                   variant="contained"
                   autoFocus
-                  onClick={() => onDelete()}
+                  onClick={() => onDelete(dropTables)}
                   color="error"
                >
                   Delete

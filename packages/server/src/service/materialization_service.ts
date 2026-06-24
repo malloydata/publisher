@@ -320,6 +320,12 @@ export class MaterializationService {
       const startedAt = Date.now();
 
       try {
+         // Persist the run's start time so the UI can compute a duration
+         // (start -> now while in-flight, start -> completed once terminal).
+         await this.repository.updateMaterialization(id, {
+            startedAt: new Date(startedAt),
+         });
+
          const environmentId = await this.resolveEnvironmentId(environmentName);
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
