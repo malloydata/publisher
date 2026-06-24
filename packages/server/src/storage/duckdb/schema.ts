@@ -75,15 +75,15 @@ export async function initializeSchema(
 
    // Materializations table.
    //
-   // `active_key` enforces at-most-one active (PENDING or RUNNING)
-   // materialization per (environment, package) at the DB layer. It is set to
+   // `active_key` enforces at-most-one active (non-terminal) materialization
+   // per (environment, package) at the DB layer. It is set to
    // `{environment_id}|{package_name}` while the row is active and cleared
    // to NULL on transition to any terminal state. A unique index on
    // `active_key` (see below) makes the insert-then-check race impossible —
    // a second concurrent create fails with a constraint violation, which the
    // service layer translates to `MaterializationConflictError`.
-   // `build_plan` (Round 1) and `manifest` (Round 2) are JSON blobs holding
-   // the two-round protocol payloads returned inline on the resource.
+   // `manifest` is a JSON blob holding the build output returned inline on the
+   // resource.
    await db.run(`
     CREATE TABLE IF NOT EXISTS materializations (
       id VARCHAR PRIMARY KEY,
@@ -95,7 +95,6 @@ export async function initializeSchema(
       completed_at TIMESTAMP,
       error TEXT,
       metadata JSON,
-      build_plan JSON,
       manifest JSON,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,

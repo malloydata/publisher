@@ -108,8 +108,8 @@ export interface Connection {
    updatedAt: Date;
 }
 
-// Wire types for the two-round build protocol, kept in sync with the OpenAPI
-// spec via the generated `api.ts`.
+// Wire types for the build protocol, kept in sync with the OpenAPI spec via
+// the generated `api.ts`.
 export type MaterializationStatus =
    components["schemas"]["MaterializationStatus"];
 export type BuildPlan = components["schemas"]["BuildPlan"];
@@ -122,15 +122,8 @@ export interface Materialization {
    id: string;
    environmentId: string;
    packageName: string;
-   /**
-    * Echoes the create-time flag (read from metadata). False (default) =
-    * auto-run all phases; true = pause at BUILD_PLAN_READY for Round 2.
-    */
-   pauseBetweenPhases: boolean;
    status: MaterializationStatus;
-   /** Round 1 output. Null until status >= BUILD_PLAN_READY. */
-   buildPlan: BuildPlan | null;
-   /** Round 2 output. Null until status = MANIFEST_FILE_READY. */
+   /** Build output. Null until status = MANIFEST_FILE_READY. */
    manifest: BuildManifestResult | null;
    startedAt: Date | null;
    completedAt: Date | null;
@@ -142,7 +135,6 @@ export interface Materialization {
 
 export interface MaterializationUpdate {
    status?: MaterializationStatus;
-   buildPlan?: BuildPlan | null;
    manifest?: BuildManifestResult | null;
    startedAt?: Date;
    completedAt?: Date;
@@ -154,8 +146,8 @@ export interface MaterializationUpdate {
  * Malloy-facing build manifest: maps a buildId to the physical table backing
  * that persist source. This is the shape the Malloy runtime consumes when
  * (re)loading models so persist references resolve to materialized tables.
- * Distinct from {@link BuildManifestResult} (the wire/Round 2 output, which
- * also carries CP bookkeeping like materializedTableId and rowCount).
+ * Distinct from {@link BuildManifestResult} (the wire build output, which also
+ * carries caller bookkeeping like materializedTableId and rowCount).
  */
 export interface BuildManifestEntry {
    tableName: string;

@@ -28,9 +28,11 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { formatDuration, logger } from "../logger";
+import { recordBuildPlanComputeDuration } from "../materialization_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest } from "../storage/DatabaseInterface";
+import { BuildManifest, BuildPlan } from "../storage/DatabaseInterface";
 import { ignoreDotfiles } from "../utils";
+import { computePackageBuildPlan } from "./build_plan";
 import { Model } from "./model";
 
 type ApiDatabase = components["schemas"]["Database"];
@@ -67,6 +69,13 @@ export class Package {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
+   // The package's persist build plan: a deterministic property of the compiled
+   // package (per-source buildId, columns, build SQL, dependency graphs),
+   // computed once at load from the live (unbound) models so it is stable for a
+   // given (package version, connection config). Null when the package declares
+   // no persist source. Surfaced read-only on getPackageMetadata() so a caller
+   // can derive build instructions without a separate plan round-trip.
+   private buildPlan: BuildPlan | null = null;
    private static meter = metrics.getMeter("publisher");
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -377,6 +386,26 @@ export class Package {
          malloyConfig,
       );
 
+      // Compute the persist build plan off the live (unbound) models, before the
+      // caller binds any configured manifest, so the surfaced plan reflects the
+      // canonical build (not the manifest-rewritten SQL). Best-effort: a plan
+      // failure is logged, not fatal — the package still serves; the plan is
+      // just absent. Recompiles the models (duplicate schema RPCs vs the worker
+      // compile); accepted for now.
+      try {
+         const buildPlanStart = Date.now();
+         pkg.buildPlan = await computePackageBuildPlan(pkg);
+         recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
+      } catch (err) {
+         logger.warn(
+            `Failed to compute build plan for package ${packageName}`,
+            {
+               packageName,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+      }
+
       // Fail-safe at load: a bad explores entry doesn't fail the package
       // (its models still load and listModels hides the unmatched entry — it
       // never falls back to listing everything). Warn so the misconfig is
@@ -395,6 +424,16 @@ export class Package {
 
    public getPackageName(): string {
       return this.packageName;
+   }
+
+   /**
+    * The package's persist build plan (per-source buildId, columns, build SQL,
+    * dependency graphs), or null when the package declares no persist source.
+    * A deterministic property of the compiled package; callers derive build
+    * instructions from it for an orchestrated materialization.
+    */
+   public getBuildPlan(): BuildPlan | null {
+      return this.buildPlan;
    }
 
    public getPackageMetadata(): ApiPackage {
@@ -418,6 +457,7 @@ export class Package {
          manifestBindingStatus: this.manifestBindingStatus,
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
+         buildPlan: this.buildPlan,
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {

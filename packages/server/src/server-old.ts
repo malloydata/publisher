@@ -944,16 +944,7 @@ export function registerLegacyRoutes(
       async (req, res) => {
          try {
             const action = req.query.action;
-            if (action === "build") {
-               const build =
-                  await materializationController.buildMaterialization(
-                     req.params.projectName,
-                     req.params.packageName,
-                     req.params.materializationId,
-                     req.body || {},
-                  );
-               res.status(202).json(remapMaterializationResponse(build));
-            } else if (action === "stop") {
+            if (action === "stop") {
                const build =
                   await materializationController.stopMaterialization(
                      req.params.projectName,
@@ -963,7 +954,7 @@ export function registerLegacyRoutes(
                res.status(200).json(remapMaterializationResponse(build));
             } else {
                throw new BadRequestError(
-                  `Unsupported action '${String(action ?? "")}'. Expected 'build' or 'stop'.`,
+                  `Unsupported action '${String(action ?? "")}'. Expected 'stop'.`,
                );
             }
          } catch (error) {

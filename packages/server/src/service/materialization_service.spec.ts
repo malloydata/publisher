@@ -1,3 +1,4 @@
+import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
@@ -10,72 +11,21 @@ import {
 } from "../errors";
 import {
    BuildInstruction,
-   BuildPlan,
-   Materialization,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import { EnvironmentStore } from "./environment_store";
 import {
+   compiledWith,
+   fakeSource,
+   makeBuildPlan,
+   makeInstruction,
+   makeMaterialization,
+} from "./materialization_test_fixtures";
+import {
    MaterializationService,
    stagingSuffix,
 } from "./materialization_service";
-
-function makeMaterialization(
-   overrides: Partial<Materialization> = {},
-): Materialization {
-   return {
-      id: "mat-1",
-      environmentId: "env-1",
-      packageName: "pkg",
-      pauseBetweenPhases: false,
-      status: "PENDING",
-      buildPlan: null,
-      manifest: null,
-      startedAt: null,
-      completedAt: null,
-      error: null,
-      metadata: null,
-      createdAt: new Date("2026-01-01"),
-      updatedAt: new Date("2026-01-01"),
-      ...overrides,
-   };
-}
-
-function makeBuildPlan(overrides: Partial<BuildPlan> = {}): BuildPlan {
-   return {
-      graphs: [
-         {
-            connectionName: "duckdb",
-            nodes: [[{ sourceID: "orders@m.malloy", dependsOn: [] }]],
-         },
-      ],
-      sources: {
-         "orders@m.malloy": {
-            name: "orders",
-            sourceID: "orders@m.malloy",
-            connectionName: "duckdb",
-            dialect: "duckdb",
-            buildId: "build-orders",
-            sql: "SELECT 1",
-            columns: [],
-         },
-      },
-      ...overrides,
-   };
-}
-
-function makeInstruction(
-   overrides: Partial<BuildInstruction> = {},
-): BuildInstruction {
-   return {
-      buildId: "build-orders",
-      materializedTableId: "mt-1",
-      physicalTableName: '"orders_v1"',
-      realization: "COPY",
-      ...overrides,
-   };
-}
 
 type MockRepo = sinon.SinonStubbedInstance<ResourceRepository>;
 
@@ -99,7 +49,10 @@ function createMocks() {
       getEnvironment: sandbox.stub(),
    } as unknown as EnvironmentStore;
 
-   // Default: environment resolves and yields a package.
+   // Default: environment resolves and yields a package whose build plan is
+   // empty (no persist sources). Individual tests override getBuildPlan to
+   // exercise the orchestrated path. getModelPaths()=>[] keeps the background
+   // build from touching the Malloy runtime.
    repository.getEnvironmentByName.resolves({
       id: "env-1",
       name: "my-env",
@@ -107,15 +60,32 @@ function createMocks() {
       createdAt: new Date(),
       updatedAt: new Date(),
    });
-   (environmentStore.getEnvironment as sinon.SinonStub).resolves({
-      getPackage: sinon.stub().resolves({}),
-      withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
-         fn(),
-   });
+   setPackage(environmentStore, { getBuildPlan: () => null });
 
    const service = new MaterializationService(environmentStore);
 
    return { sandbox, repository, environmentStore, service };
+}
+
+/** Point environmentStore.getEnvironment at a package with the given overrides. */
+function setPackage(
+   environmentStore: EnvironmentStore,
+   pkgOverrides: Record<string, unknown>,
+): void {
+   const pkg = {
+      getBuildPlan: () => null,
+      getModelPaths: () => [],
+      getPackagePath: () => "/test",
+      getMalloyConfig: () => ({}),
+      getMalloyConnection: async () => ({}),
+      ...pkgOverrides,
+   };
+   (environmentStore.getEnvironment as sinon.SinonStub).resolves({
+      getPackage: sinon.stub().resolves(pkg),
+      withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
+         fn(),
+      reloadAllModelsForPackage: sinon.stub().resolves(),
+   });
 }
 
 describe("MaterializationService", () => {
@@ -171,8 +141,8 @@ describe("MaterializationService", () => {
       });
    });
 
-   describe("createMaterialization (Round 1)", () => {
-      it("creates a PENDING record and persists options", async () => {
+   describe("createMaterialization (auto-run)", () => {
+      it("creates a PENDING record and persists options with mode=auto", async () => {
          ctx.repository.getActiveMaterialization.resolves(null);
          const pending = makeMaterialization({ status: "PENDING" });
          ctx.repository.createMaterialization.resolves(pending);
@@ -183,7 +153,6 @@ describe("MaterializationService", () => {
             {
                forceRefresh: true,
                sourceNames: ["orders"],
-               pauseBetweenPhases: true,
             },
          );
 
@@ -195,12 +164,12 @@ describe("MaterializationService", () => {
             {
                forceRefresh: true,
                sourceNames: ["orders"],
-               pauseBetweenPhases: true,
+               mode: "auto",
             },
          ]);
       });
 
-      it("defaults pauseBetweenPhases to false (auto-run) in metadata", async () => {
+      it("defaults to auto mode in metadata", async () => {
          ctx.repository.getActiveMaterialization.resolves(null);
          ctx.repository.createMaterialization.resolves(
             makeMaterialization({ status: "PENDING" }),
@@ -212,14 +181,17 @@ describe("MaterializationService", () => {
             {
                forceRefresh: false,
                sourceNames: null,
-               pauseBetweenPhases: false,
+               mode: "auto",
             },
          );
       });
 
       it("rejects when an active materialization already exists", async () => {
          ctx.repository.getActiveMaterialization.resolves(
-            makeMaterialization({ id: "existing", status: "BUILD_PLAN_READY" }),
+            makeMaterialization({
+               id: "existing",
+               status: "MANIFEST_ROWS_READY",
+            }),
          );
          await expect(
             ctx.service.createMaterialization("my-env", "pkg"),
@@ -241,89 +213,65 @@ describe("MaterializationService", () => {
       });
    });
 
-   describe("buildMaterialization (Round 2)", () => {
-      it("rejects action=build on an auto-run materialization", async () => {
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "BUILD_PLAN_READY",
-               pauseBetweenPhases: false,
-               buildPlan: makeBuildPlan(),
-            }),
-         );
-         await expect(
-            ctx.service.buildMaterialization("my-env", "pkg", "mat-1", [
-               makeInstruction(),
-            ]),
-         ).rejects.toThrow(InvalidStateTransitionError);
-      });
-
-      it("rejects when not at BUILD_PLAN_READY", async () => {
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "PENDING",
-               pauseBetweenPhases: true,
-            }),
-         );
-         await expect(
-            ctx.service.buildMaterialization("my-env", "pkg", "mat-1", [
-               makeInstruction(),
-            ]),
-         ).rejects.toThrow(InvalidStateTransitionError);
-      });
-
-      it("rejects instructions that reference an unknown buildId", async () => {
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "BUILD_PLAN_READY",
-               pauseBetweenPhases: true,
-               buildPlan: makeBuildPlan(),
-            }),
-         );
-         await expect(
-            ctx.service.buildMaterialization("my-env", "pkg", "mat-1", [
-               makeInstruction({ buildId: "ghost" }),
-            ]),
-         ).rejects.toThrow(BadRequestError);
-      });
-
-      it("rejects SNAPSHOT when the connection does not support it", async () => {
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "BUILD_PLAN_READY",
-               pauseBetweenPhases: true,
-               buildPlan: makeBuildPlan(),
-            }),
-         );
-         await expect(
-            ctx.service.buildMaterialization("my-env", "pkg", "mat-1", [
-               makeInstruction({ realization: "SNAPSHOT" }),
-            ]),
-         ).rejects.toThrow(BadRequestError);
-      });
-
-      it("accepts a valid build and returns the record (202)", async () => {
-         const m = makeMaterialization({
-            status: "BUILD_PLAN_READY",
-            pauseBetweenPhases: true,
-            buildPlan: makeBuildPlan(),
+   describe("createMaterialization (orchestrated)", () => {
+      it("creates a PENDING record with mode=orchestrated for valid instructions", async () => {
+         setPackage(ctx.environmentStore, {
+            getBuildPlan: () => makeBuildPlan(),
          });
-         ctx.repository.getMaterializationById.resolves(m);
-         const result = await ctx.service.buildMaterialization(
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({ status: "PENDING" }),
+         );
+
+         const result = await ctx.service.createMaterialization(
             "my-env",
             "pkg",
-            "mat-1",
-            [makeInstruction()],
+            { buildInstructions: [makeInstruction()] },
          );
-         expect(result.id).toBe("mat-1");
+
+         expect(result.status).toBe("PENDING");
+         expect(
+            ctx.repository.createMaterialization.firstCall.args[3],
+         ).toMatchObject({ mode: "orchestrated" });
+      });
+
+      it("rejects instructions referencing an unknown buildId before creating", async () => {
+         setPackage(ctx.environmentStore, {
+            getBuildPlan: () => makeBuildPlan(),
+         });
+         await expect(
+            ctx.service.createMaterialization("my-env", "pkg", {
+               buildInstructions: [makeInstruction({ buildId: "ghost" })],
+            }),
+         ).rejects.toThrow(BadRequestError);
+         expect(ctx.repository.createMaterialization.called).toBe(false);
+      });
+
+      it("rejects SNAPSHOT realization", async () => {
+         setPackage(ctx.environmentStore, {
+            getBuildPlan: () => makeBuildPlan(),
+         });
+         await expect(
+            ctx.service.createMaterialization("my-env", "pkg", {
+               buildInstructions: [
+                  makeInstruction({ realization: "SNAPSHOT" }),
+               ],
+            }),
+         ).rejects.toThrow(BadRequestError);
+      });
+
+      it("rejects buildInstructions when the package has no persist sources", async () => {
+         setPackage(ctx.environmentStore, { getBuildPlan: () => null });
+         await expect(
+            ctx.service.createMaterialization("my-env", "pkg", {
+               buildInstructions: [makeInstruction()],
+            }),
+         ).rejects.toThrow(BadRequestError);
       });
    });
 
    describe("stopMaterialization", () => {
-      const cancellable = [
-         "PENDING",
-         "BUILD_PLAN_READY",
-         "MANIFEST_ROWS_READY",
-      ] as const;
+      const cancellable = ["PENDING", "MANIFEST_ROWS_READY"] as const;
 
       for (const status of cancellable) {
          it(`cancels a ${status} materialization`, async () => {
@@ -369,11 +317,7 @@ describe("MaterializationService", () => {
          });
       }
 
-      const active = [
-         "PENDING",
-         "BUILD_PLAN_READY",
-         "MANIFEST_ROWS_READY",
-      ] as const;
+      const active = ["PENDING", "MANIFEST_ROWS_READY"] as const;
       for (const status of active) {
          it(`rejects deleting a ${status} materialization`, async () => {
             ctx.repository.getMaterializationById.resolves(
@@ -500,51 +444,11 @@ describe("stagingSuffix", () => {
    });
 });
 
-// Characterization (Pass 0): lock in the auto-run instruction-derivation and
-// the single-source build SQL sequence before the simplify pass moves them.
-// deriveSelfInstructions / buildOneSource are private; we exercise them via a
-// typed cast rather than the heavyweight runtime path.
-
-// A minimal stand-in for a Malloy PersistSource exposing only what the build
-// internals touch.
-function fakeSource(opts: {
-   name: string;
-   buildId: string;
-   sql?: string;
-   connectionName?: string;
-}): unknown {
-   return {
-      name: opts.name,
-      sourceID: opts.name,
-      connectionName: opts.connectionName ?? "duckdb",
-      makeBuildId: () => opts.buildId,
-      getSQL: () => opts.sql ?? "SELECT 1",
-      annotations: {
-         parseAsTag: () => ({ tag: { text: () => undefined } }),
-      },
-   };
-}
-
-describe("deriveSelfInstructions (characterization)", () => {
+describe("deriveSelfInstructions", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
       ctx = createMocks();
    });
-
-   function compiledWith(sources: Record<string, unknown>, levels: string[][]) {
-      return {
-         graphs: [
-            {
-               connectionName: "duckdb",
-               nodes: levels.map((level) =>
-                  level.map((sourceID) => ({ sourceID, dependsOn: [] })),
-               ),
-            },
-         ],
-         sources,
-         connectionDigests: { duckdb: "dig" },
-      };
-   }
 
    it("carries forward unchanged buildIds and builds the rest (deduping repeats)", () => {
       const compiled = compiledWith(
@@ -702,7 +606,98 @@ describe("stopMaterialization (in-flight)", () => {
    });
 });
 
-describe("buildOneSource (characterization)", () => {
+describe("executeInstructedBuild", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   function callExecute(
+      compiled: unknown,
+      instructions: BuildInstruction[],
+      seed: Record<string, unknown>,
+   ): Promise<Record<string, { physicalTableName?: string }>> {
+      return (
+         ctx.service as unknown as {
+            executeInstructedBuild: (
+               c: unknown,
+               i: BuildInstruction[],
+               s: Record<string, unknown>,
+               sig: AbortSignal,
+            ) => Promise<Record<string, { physicalTableName?: string }>>;
+         }
+      ).executeInstructedBuild(
+         compiled,
+         instructions,
+         seed,
+         new AbortController().signal,
+      );
+   }
+
+   it("builds instructed sources in dependency order and seeds carried entries", async () => {
+      const runSQL = sinon.stub().resolves();
+      const connection = { runSQL } as unknown as MalloyConnection;
+      const s1 = fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" });
+      const s2 = fakeSource({ name: "s2", buildId: "b2bbbbbbbbbbbbbb" });
+      const compiled = compiledWith(
+         { s1, s2 },
+         [["s1"], ["s2"]],
+         new Map([["duckdb", connection]]),
+      );
+
+      const entries = await callExecute(
+         compiled,
+         [
+            {
+               buildId: "b1aaaaaaaaaaaaaa",
+               materializedTableId: "mt-1",
+               physicalTableName: "s1_v1",
+               realization: "COPY",
+            },
+            {
+               buildId: "b2bbbbbbbbbbbbbb",
+               materializedTableId: "mt-2",
+               physicalTableName: "s2_v1",
+               realization: "COPY",
+            },
+         ],
+         {
+            carried0: {
+               buildId: "carried0",
+               physicalTableName: "carried_tbl",
+               connectionName: "duckdb",
+            },
+         },
+      );
+
+      // Both instructed sources built, plus the carried seed entry retained.
+      expect(entries["b1aaaaaaaaaaaaaa"].physicalTableName).toBe("s1_v1");
+      expect(entries["b2bbbbbbbbbbbbbb"].physicalTableName).toBe("s2_v1");
+      expect(entries["carried0"].physicalTableName).toBe("carried_tbl");
+   });
+
+   it("throws when an instructed graph's connection is missing", async () => {
+      const s1 = fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" });
+      const compiled = compiledWith({ s1 }, [["s1"]], new Map());
+
+      await expect(
+         callExecute(
+            compiled,
+            [
+               {
+                  buildId: "b1aaaaaaaaaaaaaa",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "s1_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+         ),
+      ).rejects.toThrow(BadRequestError);
+   });
+});
+
+describe("buildOneSource", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
       ctx = createMocks();
@@ -768,5 +763,214 @@ describe("buildOneSource (characterization)", () => {
       expect(runSQL.lastCall.args[0]).toBe(
          "DROP TABLE IF EXISTS orders_v1_abcdef123456",
       );
+   });
+});
+
+describe("runBuild (branch behavior)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   // Exercise runBuild's orchestration in isolation: the build engine and
+   // manifest commit are stubbed so the test asserts which instructions flow
+   // through and whether the manifest is auto-loaded, not how a source is built.
+   type RunBuildInternals = {
+      executeInstructedBuild: sinon.SinonStub;
+      commitManifest: sinon.SinonStub;
+      autoLoadManifest: sinon.SinonStub;
+      runBuild: (
+         id: string,
+         env: string,
+         pkg: string,
+         opts: {
+            sourceNames: string[] | undefined;
+            forceRefresh: boolean;
+            buildInstructions: BuildInstruction[] | undefined;
+         },
+         signal: AbortSignal,
+      ) => Promise<void>;
+   };
+
+   function stubEngine(): RunBuildInternals {
+      const entries = {
+         "build-orders": {
+            buildId: "build-orders",
+            physicalTableName: '"orders_v1"',
+            connectionName: "duckdb",
+         },
+      };
+      const svc = ctx.service as unknown as RunBuildInternals;
+      svc.executeInstructedBuild = sinon.stub().resolves(entries);
+      svc.commitManifest = sinon.stub().resolves();
+      svc.autoLoadManifest = sinon.stub().resolves();
+      return svc;
+   }
+
+   it("orchestrated: builds caller instructions and does not auto-load", async () => {
+      const svc = stubEngine();
+      const instructions = [makeInstruction()];
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: instructions,
+         },
+         new AbortController().signal,
+      );
+
+      expect(svc.executeInstructedBuild.calledOnce).toBe(true);
+      // Caller instructions pass straight through; nothing is carried/reused.
+      expect(svc.executeInstructedBuild.firstCall.args[1]).toEqual(
+         instructions,
+      );
+      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual({});
+      expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
+         mode: "orchestrated",
+         sourcesBuilt: 1,
+         sourcesReused: 0,
+      });
+      // Orchestrated leaves distribution to the caller.
+      expect(svc.autoLoadManifest.called).toBe(false);
+   });
+
+   it("auto-run: derives instructions and auto-loads the manifest", async () => {
+      const svc = stubEngine();
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+         },
+         new AbortController().signal,
+      );
+
+      expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
+         mode: "auto",
+      });
+      // Auto-run owns distribution: it loads the fresh manifest into the models.
+      expect(svc.autoLoadManifest.calledOnce).toBe(true);
+   });
+});
+
+describe("autoLoadManifest", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("loads only entries with a physical table into the package models", async () => {
+      const reloadAllModelsForPackage = sinon.stub().resolves();
+      const entries = {
+         b1: {
+            buildId: "b1",
+            physicalTableName: "orders_v1",
+            connectionName: "duckdb",
+         },
+         b2: { buildId: "b2", physicalTableName: undefined },
+      };
+
+      await (
+         ctx.service as unknown as {
+            autoLoadManifest: (
+               env: { reloadAllModelsForPackage: sinon.SinonStub },
+               pkg: string,
+               entries: Record<string, unknown>,
+            ) => Promise<void>;
+         }
+      ).autoLoadManifest({ reloadAllModelsForPackage }, "pkg", entries);
+
+      expect(reloadAllModelsForPackage.calledOnce).toBe(true);
+      expect(reloadAllModelsForPackage.firstCall.args).toEqual([
+         "pkg",
+         { b1: { tableName: "orders_v1" } },
+      ]);
+   });
+
+   it("swallows a reload failure (best-effort; run already succeeded)", async () => {
+      const reloadAllModelsForPackage = sinon
+         .stub()
+         .rejects(new Error("reload boom"));
+      await expect(
+         (
+            ctx.service as unknown as {
+               autoLoadManifest: (
+                  env: { reloadAllModelsForPackage: sinon.SinonStub },
+                  pkg: string,
+                  entries: Record<string, unknown>,
+               ) => Promise<void>;
+            }
+         ).autoLoadManifest({ reloadAllModelsForPackage }, "pkg", {
+            b1: { buildId: "b1", physicalTableName: "t" },
+         }),
+      ).resolves.toBeUndefined();
+   });
+});
+
+describe("runInBackground (terminal recording)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   const flush = () => new Promise((r) => setTimeout(r, 20));
+
+   function background(): {
+      runInBackground: (
+         id: string,
+         run: (signal: AbortSignal) => Promise<void>,
+      ) => void;
+      runningAbortControllers: Map<string, AbortController>;
+   } {
+      return ctx.service as unknown as {
+         runInBackground: (
+            id: string,
+            run: (signal: AbortSignal) => Promise<void>,
+         ) => void;
+         runningAbortControllers: Map<string, AbortController>;
+      };
+   }
+
+   it("records FAILED with the error message when the run rejects", async () => {
+      background().runInBackground("bg-1", async () => {
+         throw new Error("boom");
+      });
+      await flush();
+
+      expect(ctx.repository.updateMaterialization.calledOnce).toBe(true);
+      expect(ctx.repository.updateMaterialization.firstCall.args[0]).toBe(
+         "bg-1",
+      );
+      expect(
+         ctx.repository.updateMaterialization.firstCall.args[1],
+      ).toMatchObject({ status: "FAILED", error: "boom" });
+   });
+
+   it("records CANCELLED when the run aborts cooperatively", async () => {
+      const bg = background();
+      bg.runInBackground("bg-2", async () => {
+         bg.runningAbortControllers.get("bg-2")!.abort();
+         throw new Error("boom");
+      });
+      await flush();
+
+      expect(
+         ctx.repository.updateMaterialization.firstCall.args[1],
+      ).toMatchObject({ status: "CANCELLED", error: "Cancelled" });
+   });
+
+   it("clears the abort controller once the run settles", async () => {
+      const bg = background();
+      bg.runInBackground("bg-3", async () => {});
+      await flush();
+      expect(bg.runningAbortControllers.has("bg-3")).toBe(false);
    });
 });
