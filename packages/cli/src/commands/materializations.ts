@@ -2,19 +2,10 @@ import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
 import { logSuccess, logInfo, logOutput, truncate } from "../utils/logger.js";
 
-// Auto-run (default) settles at MANIFEST_FILE_READY (the full build + load
-// completed) or a failure. In pauseBetweenPhases mode the publisher pauses at
-// BUILD_PLAN_READY for the control plane to drive Round 2, so that is also a
-// settled (success) state for a publisher-only client.
-const AUTO_SETTLED_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
-const AUTO_SUCCESS_STATUSES = ["MANIFEST_FILE_READY"];
-const PAUSE_SETTLED_STATUSES = [
-  "BUILD_PLAN_READY",
-  "MANIFEST_FILE_READY",
-  "FAILED",
-  "CANCELLED",
-];
-const PAUSE_SUCCESS_STATUSES = ["BUILD_PLAN_READY", "MANIFEST_FILE_READY"];
+// A build settles at MANIFEST_FILE_READY (the full build + load completed) or
+// a failure/cancellation.
+const SETTLED_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
+const SUCCESS_STATUSES = ["MANIFEST_FILE_READY"];
 
 export async function listMaterializations(
   client: PublisherClient,
@@ -66,11 +57,10 @@ export async function getMaterialization(
 }
 
 /**
- * Create a materialization. By default (auto-run) the publisher runs all phases
- * — compile, plan, self-assign table names, build, and auto-load the manifest —
- * settling at MANIFEST_FILE_READY. With `pauseBetweenPhases`, it pauses at
- * BUILD_PLAN_READY for the control plane to drive Round 2. With `wait`, poll
- * until the run settles; without it, return immediately with a status hint.
+ * Create a materialization (auto-run): the publisher compiles, self-assigns
+ * table names, builds every persist source, and auto-loads the manifest,
+ * settling at MANIFEST_FILE_READY. With `wait`, poll until the run settles;
+ * without it, return immediately with a status hint.
  */
 export async function materialize(
   client: PublisherClient,
@@ -78,7 +68,6 @@ export async function materialize(
   packageName: string,
   options: {
     forceRefresh?: boolean;
-    pauseBetweenPhases?: boolean;
     wait?: boolean;
     pollIntervalMs?: number;
     timeoutMs?: number;
@@ -89,7 +78,6 @@ export async function materialize(
     packageName,
     {
       forceRefresh: options.forceRefresh,
-      pauseBetweenPhases: options.pauseBetweenPhases,
     },
   );
   const id = created.id as string | undefined;
@@ -105,12 +93,8 @@ export async function materialize(
     return;
   }
 
-  const settledStatuses = options.pauseBetweenPhases
-    ? PAUSE_SETTLED_STATUSES
-    : AUTO_SETTLED_STATUSES;
-  const successStatuses = options.pauseBetweenPhases
-    ? PAUSE_SUCCESS_STATUSES
-    : AUTO_SUCCESS_STATUSES;
+  const settledStatuses = SETTLED_STATUSES;
+  const successStatuses = SUCCESS_STATUSES;
 
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
   const timeoutMs = options.timeoutMs ?? 120000;

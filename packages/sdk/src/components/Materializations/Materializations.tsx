@@ -70,6 +70,14 @@ export default function Materializations({
       },
    });
 
+   // The build plan is a property of the compiled package (Package.buildPlan),
+   // not of a historical run, so fetch it from the package for the detail view.
+   const packageQuery = useQueryWithApiError({
+      queryKey: ["package", environmentName, packageName],
+      queryFn: () =>
+         apiClients.packages.getPackage(environmentName, packageName),
+   });
+
    const invalidateList = () =>
       queryClient.invalidateQueries({
          queryKey: ["materializations", environmentName, packageName],
@@ -234,6 +242,7 @@ export default function Materializations({
 
          <MaterializationDetailDialog
             materialization={selected}
+            buildPlan={packageQuery.data?.data?.buildPlan ?? null}
             onClose={() => setSelectedId(null)}
          />
 

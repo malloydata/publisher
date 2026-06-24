@@ -108,8 +108,8 @@ function MaterializationRow({
 
    const meta = parseMetadata(materialization);
    const sourcesLabel =
-      meta.sourcesBuilt !== undefined || meta.sourcesSkipped !== undefined
-         ? `${meta.sourcesBuilt ?? 0} built, ${meta.sourcesSkipped ?? 0} skipped`
+      meta.sourcesBuilt !== undefined || meta.sourcesReused !== undefined
+         ? `${meta.sourcesBuilt ?? 0} built, ${meta.sourcesReused ?? 0} reused`
          : "-";
    const active = isActiveStatus(materialization.status);
    const terminal = isTerminalStatus(materialization.status);

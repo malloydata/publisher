@@ -14,7 +14,7 @@ import {
    TableRow,
    Typography,
 } from "@mui/material";
-import { Materialization } from "../../client";
+import { BuildPlan, Materialization } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
 import ManifestView from "./ManifestView";
 import {
@@ -27,15 +27,19 @@ import {
 
 type MaterializationDetailDialogProps = {
    materialization: Materialization | null;
+   // The compiled package's current build plan (Package.buildPlan), shown for
+   // context. It is a property of the package version, not the historical run.
+   buildPlan: BuildPlan | null;
    onClose: () => void;
 };
 
 export default function MaterializationDetailDialog({
    materialization,
+   buildPlan,
    onClose,
 }: MaterializationDetailDialogProps) {
    const meta = materialization ? parseMetadata(materialization) : {};
-   const planSources = Object.values(materialization?.buildPlan?.sources ?? {});
+   const planSources = Object.values(buildPlan?.sources ?? {});
 
    return (
       <Dialog
@@ -84,14 +88,6 @@ export default function MaterializationDetailDialog({
                         value={materialization.packageName ?? "—"}
                      />
                      <DetailField
-                        label="Mode"
-                        value={
-                           materialization.pauseBetweenPhases
-                              ? "Two-round"
-                              : "Auto-run"
-                        }
-                     />
-                     <DetailField
                         label="Force refresh"
                         value={meta.forceRefresh ? "Yes" : "No"}
                      />
@@ -118,8 +114,8 @@ export default function MaterializationDetailDialog({
                         value={`${meta.sourcesBuilt ?? 0}`}
                      />
                      <DetailField
-                        label="Sources skipped"
-                        value={`${meta.sourcesSkipped ?? 0}`}
+                        label="Sources reused"
+                        value={`${meta.sourcesReused ?? 0}`}
                      />
                      <DetailField
                         label="Created"
@@ -162,7 +158,7 @@ export default function MaterializationDetailDialog({
                            color="text.secondary"
                            sx={{ fontStyle: "italic" }}
                         >
-                           No build plan yet.
+                           This package has no persist sources.
                         </Typography>
                      ) : (
                         <Table size="small">

@@ -99,12 +99,12 @@ describe("CLI integration (real server)", () => {
     expect(r.output).toContain("No materializations");
   });
 
-  it("materializes a package and waits for the build plan (Round 1)", async () => {
-    // The publisher only drives Round 1; the control plane (absent here) would
-    // drive Round 2, so the reachable success state is BUILD_PLAN_READY.
+  it("materializes a package and waits for completion", async () => {
+    // Auto-run: the publisher compiles, builds, and auto-loads in one pass,
+    // settling at MANIFEST_FILE_READY.
     const r = await runCli(["materialize", ...SCOPE, "--wait"], baseUrl);
     expect(r.code).toBe(0);
-    expect(r.output).toContain("BUILD_PLAN_READY");
+    expect(r.output).toContain("MANIFEST_FILE_READY");
     // Capture the id this run produced so the later tests are state-agnostic.
     const id = extractMaterializationId(r.output);
     expect(id).toBeDefined();
@@ -114,7 +114,7 @@ describe("CLI integration (real server)", () => {
   it("lists the run and gets it by id", async () => {
     const list = await runCli(["list", "materialization", ...SCOPE], baseUrl);
     expect(list.code).toBe(0);
-    expect(list.output).toContain("BUILD_PLAN_READY");
+    expect(list.output).toContain("MANIFEST_FILE_READY");
     expect(list.output).toContain(createdId);
 
     const get = await runCli(
@@ -123,15 +123,6 @@ describe("CLI integration (real server)", () => {
     );
     expect(get.code).toBe(0);
     expect(get.output).toContain(createdId);
-  });
-
-  it("stops the plan-ready run (Round 1 is cancellable)", async () => {
-    const r = await runCli(
-      ["stop-materialization", createdId, ...SCOPE],
-      baseUrl,
-    );
-    expect(r.code).toBe(0);
-    expect(r.output).toContain("Stopped");
   });
 
   it("refuses to stop the now-terminal materialization (exit 1)", async () => {

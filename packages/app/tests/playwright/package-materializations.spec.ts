@@ -91,9 +91,9 @@ test.describe("package-materializations: mutable", () => {
       await expect(row).toBeVisible({ timeout: 30_000 });
 
       // --- Auto-run settles itself ---
-      // Unlike the two-round flow, the publisher drives every phase without
-      // pausing, so the run reaches a terminal state (MANIFEST_FILE_READY on
-      // success, FAILED on a broken package) with no manual Round 2.
+      // The publisher drives every phase without pausing, so the run reaches a
+      // terminal state (MANIFEST_FILE_READY on success, FAILED on a broken
+      // package) with no manual follow-up build call.
       await expect(page.getByText(TERMINAL_STATUS).first()).toBeVisible({
          timeout: 90_000,
       });
@@ -138,7 +138,8 @@ test.describe("package-materializations: mutable", () => {
       });
 
       // The run row is a keyboard-operable button (role + tabindex), and Enter
-      // opens the detail dialog, which always renders a "Build plan" section.
+      // opens the detail dialog, which always renders a "Build plan" section
+      // sourced from Package.buildPlan (compile-time persist plan).
       await expect(row).toHaveAttribute("tabindex", "0");
       await row.focus();
       await page.keyboard.press("Enter");

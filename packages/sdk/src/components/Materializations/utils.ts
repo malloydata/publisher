@@ -1,15 +1,13 @@
 import { Materialization, MaterializationStatus } from "../../client";
 
 /**
- * Non-terminal phases of the two-round protocol. The publisher kicks off Round 1
- * (PENDING -> BUILD_PLAN_READY); the control plane drives Round 2
- * (-> MANIFEST_ROWS_READY -> MANIFEST_FILE_READY). Any of these may be polled and
- * stopped.
+ * Non-terminal phases of a build: PENDING (building) -> MANIFEST_ROWS_READY
+ * (tables built) -> MANIFEST_FILE_READY (terminal). Any non-terminal phase may
+ * be polled and stopped.
  */
 export function isActiveStatus(status?: MaterializationStatus): boolean {
    return (
       status === MaterializationStatus.Pending ||
-      status === MaterializationStatus.BuildPlanReady ||
       status === MaterializationStatus.ManifestRowsReady
    );
 }
@@ -24,9 +22,9 @@ export function isTerminalStatus(status?: MaterializationStatus): boolean {
 
 /**
  * Human-friendly status label. The publisher drives every phase automatically,
- * so the intermediate protocol states (PENDING / BUILD_PLAN_READY /
- * MANIFEST_ROWS_READY) all read as "Pending" and the terminal success state
- * reads as "Done". Failures and cancellations keep their own labels.
+ * so the intermediate states (PENDING / MANIFEST_ROWS_READY) both read as
+ * "Pending" and the terminal success state reads as "Done". Failures and
+ * cancellations keep their own labels.
  */
 export function statusLabel(status?: MaterializationStatus): string {
    switch (status) {
@@ -37,7 +35,6 @@ export function statusLabel(status?: MaterializationStatus): string {
       case MaterializationStatus.Cancelled:
          return "Cancelled";
       case MaterializationStatus.Pending:
-      case MaterializationStatus.BuildPlanReady:
       case MaterializationStatus.ManifestRowsReady:
          return "Pending";
       default:
@@ -49,7 +46,6 @@ type ChipColor = "default" | "info" | "success" | "error" | "warning";
 
 export function statusColor(status?: MaterializationStatus): ChipColor {
    switch (status) {
-      case MaterializationStatus.BuildPlanReady:
       case MaterializationStatus.ManifestRowsReady:
          return "info";
       case MaterializationStatus.ManifestFileReady:
@@ -72,8 +68,9 @@ export function statusColor(status?: MaterializationStatus): ChipColor {
 export interface MaterializationMetadata {
    forceRefresh?: boolean;
    sourceNames?: string[];
+   mode?: "auto" | "orchestrated";
    sourcesBuilt?: number;
-   sourcesSkipped?: number;
+   sourcesReused?: number;
 }
 
 export function parseMetadata(

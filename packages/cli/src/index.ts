@@ -431,21 +431,17 @@ program
 // resources with differing requirements (e.g. `list environment` needs no
 // --package), so they validate manually inside each case instead.
 
-// MATERIALIZE COMMAND (Round 1: compile + build plan; the control plane drives
-// the build from the resulting plan)
+// MATERIALIZE COMMAND (auto-run: compile, build every persist source, and
+// auto-load the resulting manifest)
 program
   .command("materialize")
   .description(
-    "Materialize a package: by default run all phases (build + load); use --pause-between-phases for the control-plane two-round flow",
+    "Materialize a package: compile, build all persist sources, and auto-load the manifest",
   )
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
   .option("--force-refresh", "Rebuild all sources, ignoring existing build IDs")
-  .option(
-    "--pause-between-phases",
-    "Pause at BUILD_PLAN_READY for the control plane to drive Round 2 (default: run all phases)",
-  )
-  .option("--wait", "Poll until the run settles (build complete, or paused)")
+  .option("--wait", "Poll until the run settles (build complete or failed)")
   .option(
     "--timeout <seconds>",
     "With --wait, seconds to wait before giving up (default 120)",
@@ -468,7 +464,6 @@ program
         options.package,
         {
           forceRefresh: options.forceRefresh,
-          pauseBetweenPhases: options.pauseBetweenPhases,
           wait: options.wait,
           timeoutMs: timeoutSec !== undefined ? timeoutSec * 1000 : undefined,
           pollIntervalMs: pollSec !== undefined ? pollSec * 1000 : undefined,
