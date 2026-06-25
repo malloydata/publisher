@@ -9,6 +9,7 @@ import { components } from "../api";
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { logger } from "../logger";
 import { recordConnectionDigestSkipped } from "../materialization_metrics";
+import { errMessage } from "../utils";
 import { Model } from "./model";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
@@ -54,7 +55,7 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
    } catch (err) {
       logger.warn("Failed to derive columns for persist source", {
          sourceID: persistSource.sourceID,
-         error: err instanceof Error ? err.message : String(err),
+         error: errMessage(err),
       });
       return [];
    }
@@ -93,6 +94,24 @@ export function flattenDependsOn(node: {
 }
 
 /**
+ * Yield each dependency-ordered persist source of one graph, resolving the
+ * node's sourceID against the sources map and skipping nodes whose source is
+ * absent. Centralizes the graph→levels→nodes→source walk shared by the
+ * planning and build loops.
+ */
+export function* iterGraphSources(
+   graph: MalloyBuildGraph,
+   sources: Record<string, PersistSource>,
+): Iterable<PersistSource> {
+   for (const level of graph.nodes) {
+      for (const node of level) {
+         const source = sources[node.sourceID];
+         if (source) yield source;
+      }
+   }
+}
+
+/**
  * The buildId for a persist source: a stable digest of its connection identity
  * and canonical SQL. Centralizes the (source, connectionDigests) call shape so
  * planning, self-instruction, and build all agree on the same id.
@@ -126,7 +145,7 @@ export async function resolvePackageConnections(
          map.set(name, await pkg.getMalloyConnection(name));
       } catch (err) {
          logger.warn(`Failed to resolve connection ${name}`, {
-            error: err instanceof Error ? err.message : String(err),
+            error: errMessage(err),
          });
       }
    }

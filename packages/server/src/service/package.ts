@@ -31,7 +31,7 @@ import { formatDuration, logger } from "../logger";
 import { recordBuildPlanComputeDuration } from "../materialization_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import { BuildManifest, BuildPlan } from "../storage/DatabaseInterface";
-import { ignoreDotfiles } from "../utils";
+import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
@@ -412,7 +412,7 @@ export class Package {
             `Failed to compute build plan for package ${packageName}`,
             {
                packageName,
-               error: err instanceof Error ? err.message : String(err),
+               error: errMessage(err),
             },
          );
       }

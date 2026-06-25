@@ -1,12 +1,14 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
+import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
    computeBuildId,
    computePackageBuildPlan,
    deriveAnnotationFields,
    deriveBuildPlan,
    flattenDependsOn,
+   iterGraphSources,
    resolvePackageConnections,
 } from "./build_plan";
 import { fakeSource } from "./materialization_test_fixtures";
@@ -18,6 +20,28 @@ describe("flattenDependsOn", () => {
             dependsOn: [{ sourceID: "a" }, { sourceID: "b" }],
          }),
       ).toEqual(["a", "b"]);
+   });
+});
+
+describe("iterGraphSources", () => {
+   it("yields resolvable sources in dependency order, skipping missing ones", () => {
+      const a = fakeSource({ name: "a", buildId: "ba" });
+      const b = fakeSource({ name: "b", buildId: "bb" });
+      const graph = {
+         connectionName: "duckdb",
+         nodes: [
+            [{ sourceID: "a@m", dependsOn: [] }],
+            [
+               { sourceID: "missing@m", dependsOn: [] },
+               { sourceID: "b@m", dependsOn: [] },
+            ],
+         ],
+      } as unknown as MalloyBuildGraph;
+
+      const names = [...iterGraphSources(graph, { "a@m": a, "b@m": b })].map(
+         (s) => s.name,
+      );
+      expect(names).toEqual(["a", "b"]);
    });
 });
 

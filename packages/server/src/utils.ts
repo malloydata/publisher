@@ -22,3 +22,8 @@ export const URL_READER: URLReader = {
 export function ignoreDotfiles(file: string): boolean {
    return path.basename(file).startsWith(".");
 }
+
+/** The message of a thrown value, stringifying non-Error throws. */
+export function errMessage(err: unknown): string {
+   return err instanceof Error ? err.message : String(err);
+}
