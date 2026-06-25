@@ -7,8 +7,8 @@
  * the run-duration histogram carries `mode` so a dashboard can render auto-run
  * vs orchestrated build latency side by side.
  *
- * Lazy init for the same reason as {@link ./query_cap_metrics}: instruments
- * created before `setGlobalMeterProvider` bind to a NoOp meter
+ * Instruments are created lazily for the same reason as {@link ./query_cap_metrics}:
+ * one created before `setGlobalMeterProvider` binds to a NoOp meter
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
@@ -19,39 +19,74 @@ export type MaterializationOutcome = "success" | "failed" | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 
-let runCounter: Counter | null = null;
-let runDuration: Histogram | null = null;
-let sourcesCounter: Counter | null = null;
-let buildPlanComputeDuration: Histogram | null = null;
-let autoLoadCounter: Counter | null = null;
-let connectionDigestSkipCounter: Counter | null = null;
-let manifestBindCounter: Counter | null = null;
-let sourceBuildDuration: Histogram | null = null;
-let dropTablesCounter: Counter | null = null;
+const resetHooks: (() => void)[] = [];
 
-function ensureTelemetry(): { counter: Counter; duration: Histogram } {
-   if (runCounter && runDuration) {
-      return { counter: runCounter, duration: runDuration };
-   }
-   const meter = metrics.getMeter("publisher");
-   if (!runCounter) {
-      runCounter = meter.createCounter("publisher_materialization_runs_total", {
-         description:
-            "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'failed'|'cancelled').",
-      });
-   }
-   if (!runDuration) {
-      runDuration = meter.createHistogram(
-         "publisher_materialization_run_duration_ms",
-         {
-            description:
-               "Wall-clock duration of a materialization build. Label: mode ('auto'|'orchestrated').",
-            unit: "ms",
-         },
-      );
-   }
-   return { counter: runCounter, duration: runDuration };
+/**
+ * A lazily-created instrument: built from the global meter on first use (so it
+ * binds to the real MeterProvider, not the NoOp default) and memoized. Each
+ * registers a reset hook so a test can swap in a fresh MeterProvider.
+ */
+function lazyCounter(name: string, description: string): () => Counter {
+   let instrument: Counter | null = null;
+   resetHooks.push(() => (instrument = null));
+   return () =>
+      (instrument ??= metrics
+         .getMeter("publisher")
+         .createCounter(name, { description }));
 }
+
+function lazyHistogram(
+   name: string,
+   description: string,
+   unit: string,
+): () => Histogram {
+   let instrument: Histogram | null = null;
+   resetHooks.push(() => (instrument = null));
+   return () =>
+      (instrument ??= metrics
+         .getMeter("publisher")
+         .createHistogram(name, { description, unit }));
+}
+
+const runCounter = lazyCounter(
+   "publisher_materialization_runs_total",
+   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'failed'|'cancelled').",
+);
+const runDuration = lazyHistogram(
+   "publisher_materialization_run_duration_ms",
+   "Wall-clock duration of a materialization build. Label: mode ('auto'|'orchestrated').",
+   "ms",
+);
+const sourcesCounter = lazyCounter(
+   "publisher_materialization_sources_total",
+   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
+);
+const buildPlanComputeDuration = lazyHistogram(
+   "publisher_materialization_build_plan_compute_duration_ms",
+   "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
+   "ms",
+);
+const autoLoadCounter = lazyCounter(
+   "publisher_materialization_auto_load_total",
+   "Auto-run manifest auto-load attempts. Label: outcome ('success'|'failure').",
+);
+const connectionDigestSkipCounter = lazyCounter(
+   "publisher_materialization_connection_digest_skipped_total",
+   "Connection digests skipped during build-plan compile because the connection did not resolve.",
+);
+const manifestBindCounter = lazyCounter(
+   "publisher_materialization_manifest_bind_total",
+   "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
+);
+const sourceBuildDuration = lazyHistogram(
+   "publisher_materialization_source_build_duration_ms",
+   "Wall-clock duration of building a single persist source.",
+   "ms",
+);
+const dropTablesCounter = lazyCounter(
+   "publisher_materialization_drop_tables_total",
+   "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
+);
 
 /** Record the outcome and duration of a materialization build. */
 export function recordMaterializationRun(
@@ -59,9 +94,8 @@ export function recordMaterializationRun(
    outcome: MaterializationOutcome,
    durationMs: number,
 ): void {
-   const { counter, duration } = ensureTelemetry();
-   counter.add(1, { mode, outcome });
-   duration.record(durationMs, { mode });
+   runCounter().add(1, { mode, outcome });
+   runDuration().record(durationMs, { mode });
 }
 
 /**
@@ -74,15 +108,7 @@ export function recordSourcesOutcome(
    count: number,
 ): void {
    if (count <= 0) return;
-   if (!sourcesCounter) {
-      sourcesCounter = metrics
-         .getMeter("publisher")
-         .createCounter("publisher_materialization_sources_total", {
-            description:
-               "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
-         });
-   }
-   sourcesCounter.add(count, { outcome });
+   sourcesCounter().add(count, { outcome });
 }
 
 /**
@@ -91,19 +117,7 @@ export function recordSourcesOutcome(
  * tracking as a discrete cost separate from the build itself.
  */
 export function recordBuildPlanComputeDuration(durationMs: number): void {
-   if (!buildPlanComputeDuration) {
-      buildPlanComputeDuration = metrics
-         .getMeter("publisher")
-         .createHistogram(
-            "publisher_materialization_build_plan_compute_duration_ms",
-            {
-               description:
-                  "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
-               unit: "ms",
-            },
-         );
-   }
-   buildPlanComputeDuration.record(durationMs);
+   buildPlanComputeDuration().record(durationMs);
 }
 
 /**
@@ -112,15 +126,7 @@ export function recordBuildPlanComputeDuration(durationMs: number): void {
  * the run is MANIFEST_FILE_READY but queries still resolve to the old tables.
  */
 export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
-   if (!autoLoadCounter) {
-      autoLoadCounter = metrics
-         .getMeter("publisher")
-         .createCounter("publisher_materialization_auto_load_total", {
-            description:
-               "Auto-run manifest auto-load attempts. Label: outcome ('success'|'failure').",
-         });
-   }
-   autoLoadCounter.add(1, { outcome });
+   autoLoadCounter().add(1, { outcome });
 }
 
 /**
@@ -129,18 +135,7 @@ export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
  * are computed without a digest, so this is a correctness signal, not just noise.
  */
 export function recordConnectionDigestSkipped(): void {
-   if (!connectionDigestSkipCounter) {
-      connectionDigestSkipCounter = metrics
-         .getMeter("publisher")
-         .createCounter(
-            "publisher_materialization_connection_digest_skipped_total",
-            {
-               description:
-                  "Connection digests skipped during build-plan compile because the connection did not resolve.",
-            },
-         );
-   }
-   connectionDigestSkipCounter.add(1);
+   connectionDigestSkipCounter().add(1);
 }
 
 /**
@@ -149,56 +144,20 @@ export function recordConnectionDigestSkipped(): void {
  * tell an unreachable/slow manifest store from a malformed manifest.
  */
 export function recordManifestBind(outcome: ManifestBindOutcome): void {
-   if (!manifestBindCounter) {
-      manifestBindCounter = metrics
-         .getMeter("publisher")
-         .createCounter("publisher_materialization_manifest_bind_total", {
-            description:
-               "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
-         });
-   }
-   manifestBindCounter.add(1, { outcome });
+   manifestBindCounter().add(1, { outcome });
 }
 
 /** Record the wall-clock duration of building one persist source's table. */
 export function recordSourceBuildDuration(durationMs: number): void {
-   if (!sourceBuildDuration) {
-      sourceBuildDuration = metrics
-         .getMeter("publisher")
-         .createHistogram(
-            "publisher_materialization_source_build_duration_ms",
-            {
-               description:
-                  "Wall-clock duration of building a single persist source.",
-               unit: "ms",
-            },
-         );
-   }
-   sourceBuildDuration.record(durationMs);
+   sourceBuildDuration().record(durationMs);
 }
 
 /** Record a best-effort physical-table drop on materialization delete. */
 export function recordDropTables(outcome: "success" | "failure"): void {
-   if (!dropTablesCounter) {
-      dropTablesCounter = metrics
-         .getMeter("publisher")
-         .createCounter("publisher_materialization_drop_tables_total", {
-            description:
-               "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
-         });
-   }
-   dropTablesCounter.add(1, { outcome });
+   dropTablesCounter().add(1, { outcome });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */
 export function resetMaterializationTelemetryForTesting(): void {
-   runCounter = null;
-   runDuration = null;
-   sourcesCounter = null;
-   buildPlanComputeDuration = null;
-   autoLoadCounter = null;
-   connectionDigestSkipCounter = null;
-   manifestBindCounter = null;
-   sourceBuildDuration = null;
-   dropTablesCounter = null;
+   for (const reset of resetHooks) reset();
 }

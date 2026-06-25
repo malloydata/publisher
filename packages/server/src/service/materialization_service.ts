@@ -30,13 +30,16 @@ import {
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
+import { errMessage } from "../utils";
 import {
    CompiledBuildPlan,
    compilePackageBuildPlan,
    computeBuildId,
+   deriveAnnotationFields,
+   iterGraphSources,
 } from "./build_plan";
 import { EnvironmentStore } from "./environment_store";
-import { splitTablePath } from "./quoting";
+import { bareTableName, quoteIdentifier, quoteTablePath } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
 
 /**
@@ -58,14 +61,7 @@ export function stagingSuffix(buildId: string): string {
  * The author owns quoting the `name=` value for the dialect.
  */
 function selfAssignTableName(persistSource: PersistSource): string {
-   try {
-      return (
-         persistSource.annotations.parseAsTag("@").tag.text("name") ||
-         persistSource.name
-      );
-   } catch {
-      return persistSource.name;
-   }
+   return deriveAnnotationFields(persistSource).name || persistSource.name;
 }
 
 /** Classify a thrown build error as cancelled (cooperative abort) or failed. */
@@ -239,9 +235,7 @@ export class MaterializationService {
          packageName,
       );
       if (active) {
-         throw new MaterializationConflictError(
-            `Package ${packageName} already has an active materialization (${active.id})`,
-         );
+         throw this.activeConflict(packageName, active.id);
       }
 
       const forceRefresh = options.forceRefresh ?? false;
@@ -265,11 +259,7 @@ export class MaterializationService {
                environmentId,
                packageName,
             );
-            throw new MaterializationConflictError(
-               winner
-                  ? `Package ${packageName} already has an active materialization (${winner.id})`
-                  : `Package ${packageName} already has an active materialization`,
-            );
+            throw this.activeConflict(packageName, winner?.id);
          }
          throw err;
       }
@@ -320,6 +310,12 @@ export class MaterializationService {
       const startedAt = Date.now();
 
       try {
+         // Persist the run's start time so the UI can compute a duration
+         // (start -> now while in-flight, start -> completed once terminal).
+         await this.repository.updateMaterialization(id, {
+            startedAt: new Date(startedAt),
+         });
+
          const environmentId = await this.resolveEnvironmentId(environmentName);
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
@@ -418,35 +414,34 @@ export class MaterializationService {
       const seen = new Set<string>();
 
       for (const graph of compiled.graphs) {
-         for (const level of graph.nodes) {
-            for (const node of level) {
-               const persistSource = compiled.sources[node.sourceID];
-               if (!persistSource) continue;
-               if (include && !include.has(persistSource.name)) continue;
+         for (const persistSource of iterGraphSources(
+            graph,
+            compiled.sources,
+         )) {
+            if (include && !include.has(persistSource.name)) continue;
 
-               const buildId = computeBuildId(
-                  persistSource,
-                  compiled.connectionDigests,
-               );
-               if (seen.has(buildId)) continue;
-               seen.add(buildId);
+            const buildId = computeBuildId(
+               persistSource,
+               compiled.connectionDigests,
+            );
+            if (seen.has(buildId)) continue;
+            seen.add(buildId);
 
-               const prior = priorEntries[buildId];
-               if (prior && prior.physicalTableName) {
-                  carried[buildId] = prior;
-                  continue;
-               }
-
-               instructions.push({
-                  buildId,
-                  materializedTableId: `local-${buildId.substring(
-                     0,
-                     STAGING_BUILD_ID_LEN,
-                  )}`,
-                  physicalTableName: selfAssignTableName(persistSource),
-                  realization: "COPY",
-               });
+            const prior = priorEntries[buildId];
+            if (prior && prior.physicalTableName) {
+               carried[buildId] = prior;
+               continue;
             }
+
+            instructions.push({
+               buildId,
+               materializedTableId: `local-${buildId.substring(
+                  0,
+                  STAGING_BUILD_ID_LEN,
+               )}`,
+               physicalTableName: selfAssignTableName(persistSource),
+               realization: "COPY",
+            });
          }
       }
 
@@ -589,25 +584,21 @@ export class MaterializationService {
                `Connection '${graph.connectionName}' not found`,
             );
          }
-         for (const level of graph.nodes) {
-            for (const node of level) {
-               if (signal.aborted) throw new Error("Build cancelled");
-               const persistSource = sources[node.sourceID];
-               if (!persistSource) continue;
+         for (const persistSource of iterGraphSources(graph, sources)) {
+            if (signal.aborted) throw new Error("Build cancelled");
 
-               const buildId = computeBuildId(persistSource, connectionDigests);
-               const instruction = byBuildId.get(buildId);
-               if (!instruction) continue;
+            const buildId = computeBuildId(persistSource, connectionDigests);
+            const instruction = byBuildId.get(buildId);
+            if (!instruction) continue;
 
-               const entry = await this.buildOneSource(
-                  persistSource,
-                  instruction,
-                  connection,
-                  connectionDigests,
-                  manifest,
-               );
-               entries[buildId] = entry;
-            }
+            const entry = await this.buildOneSource(
+               persistSource,
+               instruction,
+               connection,
+               connectionDigests,
+               manifest,
+            );
+            entries[buildId] = entry;
          }
       }
 
@@ -633,32 +624,37 @@ export class MaterializationService {
          connectionDigests,
       });
 
-      const { bareName } = splitTablePath(physicalTableName);
+      const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(buildId)}`;
+      // The control plane sends the logical (unquoted) physical name; dialect-
+      // quote each identifier here so a container path or quote-requiring name
+      // (e.g. a hyphenated BigQuery project id) produces valid DDL. The manifest
+      // echoes the logical name (below) so the CP stays in logical-name space.
+      const dialect = persistSource.dialectName;
+      const quotedStaging = quoteTablePath(stagingTableName, dialect);
+      const quotedPhysical = quoteTablePath(physicalTableName, dialect);
+      const quotedBareName = quoteIdentifier(bareName, dialect);
 
       const startTime = performance.now();
-      await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
+      await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
       try {
          await connection.runSQL(
-            `CREATE TABLE ${stagingTableName} AS (${buildSQL})`,
+            `CREATE TABLE ${quotedStaging} AS (${buildSQL})`,
          );
-         await connection.runSQL(`DROP TABLE IF EXISTS ${physicalTableName}`);
+         await connection.runSQL(`DROP TABLE IF EXISTS ${quotedPhysical}`);
          await connection.runSQL(
-            `ALTER TABLE ${stagingTableName} RENAME TO ${bareName}`,
+            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
          );
       } catch (err) {
          try {
-            await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
+            await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
          } catch (cleanupErr) {
             logger.warn(
                "Failed to clean up staging table after a failed build; physical leak",
                {
                   stagingTableName,
                   connectionName: persistSource.connectionName,
-                  cleanupError:
-                     cleanupErr instanceof Error
-                        ? cleanupErr.message
-                        : String(cleanupErr),
+                  cleanupError: errMessage(cleanupErr),
                },
             );
          }
@@ -795,14 +791,23 @@ export class MaterializationService {
                connection = await pkg.getMalloyConnection(connectionName);
                connectionCache.set(connectionName, connection);
             }
+            // Dialect-quote from the live connection, the same way
+            // buildOneSource quoted at build time, so a name that built
+            // successfully also drops successfully (container paths, hyphenated
+            // BigQuery project ids, etc.).
+            const dialect = connection.dialectName;
             await connection.runSQL(
-               `DROP TABLE IF EXISTS ${physicalTableName}`,
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  physicalTableName,
+                  dialect,
+               )}`,
             );
             // A crash between staging-create and rename can leave the staging
             // table behind; clean it up too while we hold the connection.
             await connection.runSQL(
-               `DROP TABLE IF EXISTS ${physicalTableName}${stagingSuffix(
-                  entry.buildId,
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  `${physicalTableName}${stagingSuffix(entry.buildId)}`,
+                  dialect,
                )}`,
             );
             recordDropTables("success");
@@ -817,7 +822,7 @@ export class MaterializationService {
                materializationId: m.id,
                physicalTableName,
                connectionName,
-               error: err instanceof Error ? err.message : String(err),
+               error: errMessage(err),
             });
          }
       }
@@ -848,6 +853,17 @@ export class MaterializationService {
 
    // ==================== HELPERS ====================
 
+   /** The single-active conflict error, with the winning run's id when known. */
+   private activeConflict(
+      packageName: string,
+      activeId?: string,
+   ): MaterializationConflictError {
+      const suffix = activeId ? ` (${activeId})` : "";
+      return new MaterializationConflictError(
+         `Package ${packageName} already has an active materialization${suffix}`,
+      );
+   }
+
    private recordRun(
       mode: MaterializationMode,
       outcome: "success" | "failed" | "cancelled",
@@ -865,7 +881,7 @@ export class MaterializationService {
 
       run(abortController.signal)
          .catch(async (err) => {
-            const message = err instanceof Error ? err.message : String(err);
+            const message = errMessage(err);
             const next = abortController.signal.aborted
                ? "CANCELLED"
                : "FAILED";
@@ -879,10 +895,7 @@ export class MaterializationService {
                logger.error("Failed to record materialization failure", {
                   materializationId: id,
                   originalError: message,
-                  transitionError:
-                     transitionErr instanceof Error
-                        ? transitionErr.message
-                        : String(transitionErr),
+                  transitionError: errMessage(transitionErr),
                });
             }
          })

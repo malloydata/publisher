@@ -1,14 +1,19 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
+import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
+   compilePackageBuildPlan,
    computeBuildId,
    computePackageBuildPlan,
+   deriveAnnotationFields,
    deriveBuildPlan,
    flattenDependsOn,
+   iterGraphSources,
    resolvePackageConnections,
 } from "./build_plan";
 import { fakeSource } from "./materialization_test_fixtures";
+import { Model } from "./model";
 
 describe("flattenDependsOn", () => {
    it("maps nested dependsOn entries to a flat sourceID list", () => {
@@ -17,6 +22,62 @@ describe("flattenDependsOn", () => {
             dependsOn: [{ sourceID: "a" }, { sourceID: "b" }],
          }),
       ).toEqual(["a", "b"]);
+   });
+});
+
+describe("iterGraphSources", () => {
+   it("yields resolvable sources in dependency order, skipping missing ones", () => {
+      const a = fakeSource({ name: "a", buildId: "ba" });
+      const b = fakeSource({ name: "b", buildId: "bb" });
+      const graph = {
+         connectionName: "duckdb",
+         nodes: [
+            [{ sourceID: "a@m", dependsOn: [] }],
+            [
+               { sourceID: "missing@m", dependsOn: [] },
+               { sourceID: "b@m", dependsOn: [] },
+            ],
+         ],
+      } as unknown as MalloyBuildGraph;
+
+      const names = [...iterGraphSources(graph, { "a@m": a, "b@m": b })].map(
+         (s) => s.name,
+      );
+      expect(names).toEqual(["a", "b"]);
+   });
+});
+
+describe("deriveAnnotationFields", () => {
+   it("returns all key=value fields of the #@ persist annotation", () => {
+      const source = {
+         annotations: {
+            parseAsTag: () => ({
+               tag: {
+                  *entries() {
+                     yield ["name", { text: () => "engaged_events" }];
+                     yield ["realization", { text: () => "COPY" }];
+                  },
+               },
+            }),
+         },
+      } as unknown as PersistSource;
+
+      expect(deriveAnnotationFields(source)).toEqual({
+         name: "engaged_events",
+         realization: "COPY",
+      });
+   });
+
+   it("degrades to {} when the annotation is absent or unparseable", () => {
+      const source = {
+         annotations: {
+            parseAsTag: () => {
+               throw new Error("no @ annotation");
+            },
+         },
+      } as unknown as PersistSource;
+
+      expect(deriveAnnotationFields(source)).toEqual({});
    });
 });
 
@@ -99,6 +160,29 @@ describe("deriveBuildPlan", () => {
       );
 
       expect(Object.keys(plan.sources)).toEqual(["a@m"]);
+   });
+});
+
+describe("compilePackageBuildPlan", () => {
+   it("skips .malloynb notebooks without compiling them", async () => {
+      // A notebook would throw on its `>>>` cell delimiter if compiled as a
+      // flat model, aborting the whole package plan; it must be skipped.
+      const getModelRuntime = sinon.stub(Model, "getModelRuntime");
+      try {
+         const pkg = {
+            getModelPaths: () => ["notes.malloynb"],
+            getPackagePath: () => "/test",
+            getMalloyConfig: () => ({}),
+            getMalloyConnection: async () => ({}),
+         } as unknown as Parameters<typeof compilePackageBuildPlan>[0];
+
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         expect(compiled.graphs).toEqual([]);
+         expect(getModelRuntime.called).toBe(false);
+      } finally {
+         getModelRuntime.restore();
+      }
    });
 });
 

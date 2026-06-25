@@ -11,6 +11,7 @@ import {
 } from "../errors";
 import {
    BuildInstruction,
+   MaterializationStatus,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
@@ -366,7 +367,9 @@ describe("MaterializationService", () => {
 
       it("drops manifest tables (and staging) when dropTables is set", async () => {
          const runSQL = sinon.stub().resolves();
-         const getMalloyConnection = sinon.stub().resolves({ runSQL });
+         const getMalloyConnection = sinon
+            .stub()
+            .resolves({ runSQL, dialectName: "duckdb" });
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon.stub().resolves({ getMalloyConnection }),
             withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
@@ -395,11 +398,50 @@ describe("MaterializationService", () => {
 
          expect(getMalloyConnection.calledOnceWith("duckdb")).toBe(true);
          const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
-         expect(dropped).toContain("DROP TABLE IF EXISTS orders_mz");
-         expect(dropped.some((s) => s.includes("orders_mz_"))).toBe(true);
+         expect(dropped).toContain('DROP TABLE IF EXISTS "orders_mz"');
+         expect(dropped.some((s) => s.includes('"orders_mz_'))).toBe(true);
          expect(
             ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
          ).toBe(true);
+      });
+
+      it("dialect-quotes the drop DDL from the live connection (backtick + container path)", async () => {
+         const runSQL = sinon.stub().resolves();
+         const getMalloyConnection = sinon
+            .stub()
+            .resolves({ runSQL, dialectName: "standardsql" });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves({ getMalloyConnection }),
+            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+               fn(),
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  builtAt: new Date().toISOString(),
+                  strict: false,
+                  entries: {
+                     b1: {
+                        buildId: "b1",
+                        // Container path on a hyphenated BigQuery project: each
+                        // segment must be backtick-quoted independently.
+                        physicalTableName: "my-proj.ds.engaged",
+                        connectionName: "bq",
+                     },
+                  },
+               },
+            }),
+         );
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+            dropTables: true,
+         });
+
+         const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
+         expect(dropped).toContain(
+            "DROP TABLE IF EXISTS `my-proj`.`ds`.`engaged`",
+         );
       });
 
       it("still deletes the record when a table drop fails", async () => {
@@ -706,11 +748,13 @@ describe("buildOneSource", () => {
    function callBuildOneSource(
       connection: { runSQL: sinon.SinonStub },
       physicalTableName: string,
+      dialectName?: string,
    ): Promise<{ buildId: string; physicalTableName: string }> {
       const source = fakeSource({
          name: "orders",
          buildId: "abcdef1234567890",
          sql: "SELECT * FROM t",
+         dialectName,
       });
       const instruction: BuildInstruction = {
          buildId: "abcdef1234567890",
@@ -743,10 +787,10 @@ describe("buildOneSource", () => {
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
       expect(sql).toEqual([
-         "DROP TABLE IF EXISTS orders_v1_abcdef123456",
-         "CREATE TABLE orders_v1_abcdef123456 AS (SELECT * FROM t)",
-         "DROP TABLE IF EXISTS orders_v1",
-         "ALTER TABLE orders_v1_abcdef123456 RENAME TO orders_v1",
+         'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
+         'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
+         'DROP TABLE IF EXISTS "orders_v1"',
+         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.buildId).toBe("abcdef1234567890");
@@ -761,8 +805,28 @@ describe("buildOneSource", () => {
          "create boom",
       );
       expect(runSQL.lastCall.args[0]).toBe(
-         "DROP TABLE IF EXISTS orders_v1_abcdef123456",
+         'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
       );
+   });
+
+   it("quotes each segment of a container path for a backtick dialect", async () => {
+      const runSQL = sinon.stub().resolves();
+      // Container path (dataset.table) on a backtick dialect (BigQuery): each
+      // segment is quoted independently, and the rename targets the bare name.
+      const entry = await callBuildOneSource(
+         { runSQL },
+         "ds.orders_v1",
+         "standardsql",
+      );
+
+      const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(sql).toEqual([
+         "DROP TABLE IF EXISTS `ds`.`orders_v1_abcdef123456`",
+         "CREATE TABLE `ds`.`orders_v1_abcdef123456` AS (SELECT * FROM t)",
+         "DROP TABLE IF EXISTS `ds`.`orders_v1`",
+         "ALTER TABLE `ds`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
+      ]);
+      expect(entry.physicalTableName).toBe("ds.orders_v1");
    });
 });
 
@@ -972,5 +1036,59 @@ describe("runInBackground (terminal recording)", () => {
       bg.runInBackground("bg-3", async () => {});
       await flush();
       expect(bg.runningAbortControllers.has("bg-3")).toBe(false);
+   });
+});
+
+describe("transition (state machine)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   function transition(): (
+      id: string,
+      next: MaterializationStatus,
+   ) => Promise<unknown> {
+      return (
+         ctx.service as unknown as {
+            transition: (
+               id: string,
+               next: MaterializationStatus,
+            ) => Promise<unknown>;
+         }
+      ).transition.bind(ctx.service);
+   }
+
+   it("throws MaterializationNotFoundError when the record is gone", async () => {
+      ctx.repository.getMaterializationById.resolves(undefined);
+      await expect(
+         transition()("mat-1", "MANIFEST_ROWS_READY"),
+      ).rejects.toThrow(MaterializationNotFoundError);
+   });
+
+   it("rejects a transition the state machine disallows", async () => {
+      ctx.repository.getMaterializationById.resolves(
+         makeMaterialization({ status: "MANIFEST_FILE_READY" }),
+      );
+      // MANIFEST_FILE_READY is terminal; nothing follows it.
+      await expect(transition()("mat-1", "PENDING")).rejects.toThrow(
+         InvalidStateTransitionError,
+      );
+      expect(ctx.repository.updateMaterialization.called).toBe(false);
+   });
+
+   it("persists a valid transition", async () => {
+      ctx.repository.getMaterializationById.resolves(
+         makeMaterialization({ status: "PENDING" }),
+      );
+      ctx.repository.updateMaterialization.resolves(
+         makeMaterialization({ status: "MANIFEST_ROWS_READY" }),
+      );
+      await transition()("mat-1", "MANIFEST_ROWS_READY");
+      expect(
+         ctx.repository.updateMaterialization.calledOnceWith("mat-1", {
+            status: "MANIFEST_ROWS_READY",
+         }),
+      ).toBe(true);
    });
 });

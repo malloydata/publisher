@@ -122,11 +122,18 @@ export default function Materializations({
    });
 
    const deleteMaterialization = useMutationWithApiError({
-      mutationFn: (materialization: Materialization) =>
+      mutationFn: ({
+         materialization,
+         dropTables,
+      }: {
+         materialization: Materialization;
+         dropTables: boolean;
+      }) =>
          apiClients.materializations.deleteMaterialization(
             environmentName,
             packageName,
             materialization.id as string,
+            dropTables,
          ),
       onSuccess() {
          setNotificationMessage("Materialization deleted");
@@ -230,8 +237,11 @@ export default function Materializations({
                   onStop={(materialization) =>
                      stopMaterialization.mutate(materialization)
                   }
-                  onDelete={(materialization) =>
-                     deleteMaterialization.mutate(materialization)
+                  onDelete={(materialization, dropTables) =>
+                     deleteMaterialization.mutate({
+                        materialization,
+                        dropTables,
+                     })
                   }
                   onViewDetails={(materialization) =>
                      setSelectedId(materialization.id ?? null)
