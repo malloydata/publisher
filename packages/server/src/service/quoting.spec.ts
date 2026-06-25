@@ -30,6 +30,35 @@ describe("quoteIdentifier", () => {
    });
 });
 
+// Cross-repo conformance (PR ms2data/service#5272 review item 1). The publisher
+// keys identifier quoting off the Malloy `dialectName`; the control plane keys
+// the SAME fact off the publisher *connection type* in
+// `PhysicalTableName.BACKTICK_TYPES` ({bigquery, mysql, databricks}). The two
+// must stay byte-compatible — a name the publisher CREATEs with backticks the CP
+// must DROP with backticks — but they live in different repos under different key
+// vocabularies (`standardsql` the dialect vs `bigquery` the connection type), so
+// drift produces malformed DDL with no compile error. This table pins the full
+// connection-type → dialect → quote-char correspondence; if it changes, update
+// `PhysicalTableName.BACKTICK_TYPES` in the control plane in lockstep.
+describe("dialect/connection-type quoting conformance", () => {
+   const QUOTING = [
+      { connectionType: "bigquery", dialect: "standardsql", quote: "`" },
+      { connectionType: "mysql", dialect: "mysql", quote: "`" },
+      { connectionType: "databricks", dialect: "databricks", quote: "`" },
+      { connectionType: "postgres", dialect: "postgres", quote: '"' },
+      { connectionType: "snowflake", dialect: "snowflake", quote: '"' },
+      { connectionType: "trino", dialect: "trino", quote: '"' },
+      { connectionType: "duckdb", dialect: "duckdb", quote: '"' },
+      { connectionType: "motherduck", dialect: "duckdb", quote: '"' },
+   ] as const;
+
+   for (const { connectionType, dialect, quote } of QUOTING) {
+      it(`${connectionType} (${dialect}) quotes with ${quote}`, () => {
+         expect(quoteIdentifier("x", dialect)).toBe(`${quote}x${quote}`);
+      });
+   }
+});
+
 describe("quoteTablePath", () => {
    it("quotes each segment of a container path independently", () => {
       expect(

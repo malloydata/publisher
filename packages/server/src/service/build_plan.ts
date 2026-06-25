@@ -1,6 +1,7 @@
 import type {
    AtomicField,
    BuildGraph as MalloyBuildGraph,
+   BuildNode,
    MalloyConfig,
    Connection as MalloyConnection,
    PersistSource,
@@ -94,19 +95,46 @@ export function flattenDependsOn(node: {
 }
 
 /**
- * Yield each dependency-ordered persist source of one graph, resolving the
- * node's sourceID against the sources map and skipping nodes whose source is
- * absent. Centralizes the graph→levels→nodes→source walk shared by the
- * planning and build loops.
+ * Yield every persist source of one graph in dependency order — each source's
+ * persist dependencies before the source itself — resolving each node's
+ * sourceID against the sources map and skipping nodes whose source is absent.
+ * Centralizes the graph→source walk shared by the planning and build loops.
+ *
+ * <p>Malloy's {@code getBuildPlan()} puts only the <em>root</em> persist sources
+ * (the terminals nothing else consumes) in {@code graph.nodes}; every transitive
+ * persist dependency is nested under a root in its recursive {@code dependsOn}
+ * tree (and present in {@code sources}). Walking only {@code graph.nodes} —
+ * which this used to do — therefore silently skips every intermediate persist
+ * source, so it never gets materialized (it only got a table by coincidence when
+ * it shared a buildId with a root). We post-order DFS the {@code dependsOn} tree
+ * so dependencies are built first (a downstream build can then read its upstream
+ * source's freshly materialized table), deduplicating shared (diamond)
+ * dependencies by sourceID so each is yielded once. This mirrors the canonical
+ * malloy-cli reference build loop (its {@code flattenBuildNodes} +
+ * dedup-by-sourceID; see malloydata/malloy-cli src/malloy/build_graph.ts).
  */
 export function* iterGraphSources(
    graph: MalloyBuildGraph,
    sources: Record<string, PersistSource>,
 ): Iterable<PersistSource> {
+   const seen = new Set<string>();
+
+   function* visit(node: BuildNode): Iterable<PersistSource> {
+      if (seen.has(node.sourceID)) return;
+      // Dependencies first: a source built later in the run resolves its
+      // upstream references against the tables built earlier (see the Manifest
+      // threading in executeInstructedBuild).
+      for (const dep of node.dependsOn) {
+         yield* visit(dep);
+      }
+      seen.add(node.sourceID);
+      const source = sources[node.sourceID];
+      if (source) yield source;
+   }
+
    for (const level of graph.nodes) {
       for (const node of level) {
-         const source = sources[node.sourceID];
-         if (source) yield source;
+         yield* visit(node);
       }
    }
 }
