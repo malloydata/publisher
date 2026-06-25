@@ -290,19 +290,54 @@ describe("Materialization REST API: single-call (E2E)", () => {
    describe("serve-time routing (auto-load)", () => {
       const MODEL_PATH = "persist_test.malloy";
       const QUERY = "run: order_summary -> { aggregate: c is count() }";
+      // The full grouped contents of the persisted source. Used to prove that
+      // the rows served from the materialized table match the base computation
+      // (data equivalence), not just that the SQL was rewritten.
+      const DETAIL_QUERY = "run: order_summary -> { select: * }";
 
-      async function executedSql(): Promise<string> {
+      type QueryResult = { sql: string; rows: unknown[][] };
+
+      function cellValue(cell: Record<string, unknown>): unknown {
+         if ("number_value" in cell) return cell.number_value;
+         if ("string_value" in cell) return cell.string_value;
+         if ("boolean_value" in cell) return cell.boolean_value;
+         return null;
+      }
+
+      /** Flatten the nested result cells into row tuples, order-normalized. */
+      function extractRows(result: Record<string, unknown>): unknown[][] {
+         const data = result.data as
+            | { array_value?: { record_value?: Record<string, unknown>[] }[] }
+            | undefined;
+         const records = data?.array_value ?? [];
+         const rows = records.map((rec) =>
+            (rec.record_value ?? []).map((c) => cellValue(c)),
+         );
+         // Sort by serialized tuple so the comparison is independent of the
+         // row order the engine happens to return.
+         return rows
+            .map((r) => JSON.stringify(r))
+            .sort()
+            .map((s) => JSON.parse(s) as unknown[]);
+      }
+
+      async function runQuery(query: string): Promise<QueryResult> {
          const res = await fetch(
             `${baseUrl}${API}/models/${MODEL_PATH}/query`,
             {
                method: "POST",
                headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({ query: QUERY }),
+               body: JSON.stringify({ query }),
             },
          );
          expect(res.status).toBe(200);
          const body = (await res.json()) as { result: string };
-         return (JSON.parse(body.result) as { sql: string }).sql;
+         const result = JSON.parse(body.result) as Record<string, unknown>;
+         return { sql: result.sql as string, rows: extractRows(result) };
+      }
+
+      async function executedSql(): Promise<string> {
+         return (await runQuery(QUERY)).sql;
       }
 
       async function compiledSql(): Promise<string> {
@@ -332,6 +367,15 @@ describe("Materialization REST API: single-call (E2E)", () => {
             expect(await executedSql()).toContain("data/orders.csv");
             expect(await compiledSql()).toContain("data/orders.csv");
 
+            // Capture the live (CSV-computed) contents of the persisted source.
+            // This is the ground truth the materialized table must reproduce.
+            const baseline = await runQuery(DETAIL_QUERY);
+            expect(baseline.sql).toContain("data/orders.csv");
+            expect(baseline.rows).toEqual([
+               ["clothing", 2, 125],
+               ["electronics", 2, 300],
+            ]);
+
             // Build + auto-load in one pass (self-assigns physicalTableName =
             // "order_summary" from `#@ persist name="order_summary"`).
             const createRes = await createMaterialization();
@@ -349,6 +393,20 @@ describe("Materialization REST API: single-call (E2E)", () => {
             expect(routedExecuted).toContain("order_summary");
             expect(routedCompiled).not.toContain("data/orders.csv");
             expect(routedCompiled).toContain("order_summary");
+
+            // (b) Physically queryable: the served detail query scans the
+            // physical table (not the CSV) and the table answers with real
+            // rows — proving a physically queryable table exists and is the
+            // thing being served from, not a recompute that happens to alias
+            // the name.
+            const served = await runQuery(DETAIL_QUERY);
+            expect(served.sql).toContain("order_summary");
+            expect(served.sql).not.toContain("data/orders.csv");
+            expect(served.rows.length).toBeGreaterThan(0);
+
+            // (a) Data equivalence: the rows served from the materialized table
+            // match the base computation exactly.
+            expect(served.rows).toEqual(baseline.rows);
 
             // Cleanup: drop the table + record, then reload back to live so the
             // dangling binding doesn't leak into later groups.
