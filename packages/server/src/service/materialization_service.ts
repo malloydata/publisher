@@ -695,6 +695,7 @@ export class MaterializationService {
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
+         dialect,
          realization: instruction.realization,
          rowCount: null,
       };
@@ -809,14 +810,23 @@ export class MaterializationService {
                connection = await pkg.getMalloyConnection(connectionName);
                connectionCache.set(connectionName, connection);
             }
+            // Quote with the dialect recorded at build time; fall back to the
+            // live connection's dialect for manifests written before `dialect`
+            // was persisted. buildOneSource quoted the same way, so a name that
+            // built successfully also drops successfully.
+            const dialect = entry.dialect ?? connection.dialectName;
             await connection.runSQL(
-               `DROP TABLE IF EXISTS ${physicalTableName}`,
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  physicalTableName,
+                  dialect,
+               )}`,
             );
             // A crash between staging-create and rename can leave the staging
             // table behind; clean it up too while we hold the connection.
             await connection.runSQL(
-               `DROP TABLE IF EXISTS ${physicalTableName}${stagingSuffix(
-                  entry.buildId,
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  `${physicalTableName}${stagingSuffix(entry.buildId)}`,
+                  dialect,
                )}`,
             );
             recordDropTables("success");

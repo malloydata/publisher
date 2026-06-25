@@ -80,11 +80,13 @@ export function fakeSource(opts: {
    buildId: string;
    sql?: string;
    connectionName?: string;
+   dialectName?: string;
 }): PersistSource {
    return {
       name: opts.name,
       sourceID: opts.name,
       connectionName: opts.connectionName ?? "duckdb",
+      dialectName: opts.dialectName ?? "duckdb",
       makeBuildId: () => opts.buildId,
       getSQL: () => opts.sql ?? "SELECT 1",
       annotations: {

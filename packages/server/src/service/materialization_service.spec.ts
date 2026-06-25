@@ -383,6 +383,7 @@ describe("MaterializationService", () => {
                         buildId: "b1",
                         physicalTableName: "orders_mz",
                         connectionName: "duckdb",
+                        dialect: "duckdb",
                      },
                   },
                },
@@ -395,11 +396,85 @@ describe("MaterializationService", () => {
 
          expect(getMalloyConnection.calledOnceWith("duckdb")).toBe(true);
          const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
-         expect(dropped).toContain("DROP TABLE IF EXISTS orders_mz");
-         expect(dropped.some((s) => s.includes("orders_mz_"))).toBe(true);
+         expect(dropped).toContain('DROP TABLE IF EXISTS "orders_mz"');
+         expect(dropped.some((s) => s.includes('"orders_mz_'))).toBe(true);
          expect(
             ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
          ).toBe(true);
+      });
+
+      it("quotes the drop DDL for the entry's dialect (backtick dialects)", async () => {
+         const runSQL = sinon.stub().resolves();
+         const getMalloyConnection = sinon.stub().resolves({ runSQL });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves({ getMalloyConnection }),
+            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+               fn(),
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  builtAt: new Date().toISOString(),
+                  strict: false,
+                  entries: {
+                     b1: {
+                        buildId: "b1",
+                        // Container path on a hyphenated BigQuery project: each
+                        // segment must be backtick-quoted independently.
+                        physicalTableName: "my-proj.ds.engaged",
+                        connectionName: "bq",
+                        dialect: "standardsql",
+                     },
+                  },
+               },
+            }),
+         );
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+            dropTables: true,
+         });
+
+         const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
+         expect(dropped).toContain(
+            "DROP TABLE IF EXISTS `my-proj`.`ds`.`engaged`",
+         );
+      });
+
+      it("falls back to the live connection dialect for legacy entries", async () => {
+         const runSQL = sinon.stub().resolves();
+         const getMalloyConnection = sinon
+            .stub()
+            .resolves({ runSQL, dialectName: "standardsql" });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon.stub().resolves({ getMalloyConnection }),
+            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+               fn(),
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  builtAt: new Date().toISOString(),
+                  strict: false,
+                  entries: {
+                     // No `dialect` field — a manifest written before it existed.
+                     b1: {
+                        buildId: "b1",
+                        physicalTableName: "orders_mz",
+                        connectionName: "bq",
+                     },
+                  },
+               },
+            }),
+         );
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+            dropTables: true,
+         });
+
+         const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
+         expect(dropped).toContain("DROP TABLE IF EXISTS `orders_mz`");
       });
 
       it("still deletes the record when a table drop fails", async () => {
@@ -706,7 +781,11 @@ describe("buildOneSource", () => {
    function callBuildOneSource(
       connection: { runSQL: sinon.SinonStub },
       physicalTableName: string,
-   ): Promise<{ buildId: string; physicalTableName: string }> {
+   ): Promise<{
+      buildId: string;
+      physicalTableName: string;
+      dialect?: string;
+   }> {
       const source = fakeSource({
          name: "orders",
          buildId: "abcdef1234567890",
@@ -726,7 +805,11 @@ describe("buildOneSource", () => {
                c: unknown,
                d: Record<string, string>,
                m: Manifest,
-            ) => Promise<{ buildId: string; physicalTableName: string }>;
+            ) => Promise<{
+               buildId: string;
+               physicalTableName: string;
+               dialect?: string;
+            }>;
          }
       ).buildOneSource(
          source,
@@ -750,6 +833,8 @@ describe("buildOneSource", () => {
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.buildId).toBe("abcdef1234567890");
+      // Dialect is recorded so the table can be dialect-quoted on a later drop.
+      expect(entry.dialect).toBe("duckdb");
    });
 
    it("drops the staging table and rethrows when the build SQL fails", async () => {
