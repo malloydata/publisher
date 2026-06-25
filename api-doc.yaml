@@ -3798,12 +3798,6 @@ components:
             and matches on the same logical name it assigned.
         connectionName:
           type: string
-        dialect:
-          type: string
-          description:
-            Malloy dialect of the source's connection (e.g. `duckdb`,
-            `standardsql`). Recorded so the table can be dialect-quoted when it
-            is later dropped, without recompiling the package.
         realization:
           $ref: "#/components/schemas/Realization"
         rowCount:

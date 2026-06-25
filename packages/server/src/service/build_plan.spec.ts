@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
+   compilePackageBuildPlan,
    computeBuildId,
    computePackageBuildPlan,
    deriveAnnotationFields,
@@ -12,6 +13,7 @@ import {
    resolvePackageConnections,
 } from "./build_plan";
 import { fakeSource } from "./materialization_test_fixtures";
+import { Model } from "./model";
 
 describe("flattenDependsOn", () => {
    it("maps nested dependsOn entries to a flat sourceID list", () => {
@@ -158,6 +160,29 @@ describe("deriveBuildPlan", () => {
       );
 
       expect(Object.keys(plan.sources)).toEqual(["a@m"]);
+   });
+});
+
+describe("compilePackageBuildPlan", () => {
+   it("skips .malloynb notebooks without compiling them", async () => {
+      // A notebook would throw on its `>>>` cell delimiter if compiled as a
+      // flat model, aborting the whole package plan; it must be skipped.
+      const getModelRuntime = sinon.stub(Model, "getModelRuntime");
+      try {
+         const pkg = {
+            getModelPaths: () => ["notes.malloynb"],
+            getPackagePath: () => "/test",
+            getMalloyConfig: () => ({}),
+            getMalloyConnection: async () => ({}),
+         } as unknown as Parameters<typeof compilePackageBuildPlan>[0];
+
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         expect(compiled.graphs).toEqual([]);
+         expect(getModelRuntime.called).toBe(false);
+      } finally {
+         getModelRuntime.restore();
+      }
    });
 });
 

@@ -677,7 +677,6 @@ export class MaterializationService {
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
-         dialect,
          realization: instruction.realization,
          rowCount: null,
       };
@@ -792,11 +791,11 @@ export class MaterializationService {
                connection = await pkg.getMalloyConnection(connectionName);
                connectionCache.set(connectionName, connection);
             }
-            // Quote with the dialect recorded at build time; fall back to the
-            // live connection's dialect for manifests written before `dialect`
-            // was persisted. buildOneSource quoted the same way, so a name that
-            // built successfully also drops successfully.
-            const dialect = entry.dialect ?? connection.dialectName;
+            // Dialect-quote from the live connection, the same way
+            // buildOneSource quoted at build time, so a name that built
+            // successfully also drops successfully (container paths, hyphenated
+            // BigQuery project ids, etc.).
+            const dialect = connection.dialectName;
             await connection.runSQL(
                `DROP TABLE IF EXISTS ${quoteTablePath(
                   physicalTableName,
