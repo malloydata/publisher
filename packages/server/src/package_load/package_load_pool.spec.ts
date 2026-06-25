@@ -31,6 +31,42 @@ import {
    __setPackageLoadPoolForTests,
    getPackageLoadWorkerCount,
 } from "./package_load_pool";
+import type { Connection } from "@malloydata/malloy";
+import { BaseConnection } from "@malloydata/malloy/connection";
+import { ConnectionAuthError, ConnectionError } from "../errors";
+
+/**
+ * A non-duckdb connection whose schema introspection always fails the same
+ * way `PublisherConnection` does for an expired token: it THROWS, and Malloy's
+ * `BaseConnection` catches that into `result.errors[table]` as a string. This
+ * lets the real-worker tests drive the pool's failure classification (and the
+ * compile cascade it short-circuits) without a live remote data plane.
+ */
+class FlakyConnection extends BaseConnection {
+   constructor(private readonly failure: Error) {
+      super();
+   }
+   get name(): string {
+      return "flaky";
+   }
+   get dialectName(): string {
+      // Borrow duckdb's dialect so table paths validate and the compiler can
+      // reach the schema-fetch step (where introspection then fails).
+      return "duckdb";
+   }
+   getDigest(): string {
+      return "flaky-digest";
+   }
+   async fetchTableSchema(): Promise<never> {
+      throw this.failure;
+   }
+   async fetchSelectSchema(): Promise<never> {
+      throw this.failure;
+   }
+   async runSQL(): Promise<never> {
+      throw new Error("FlakyConnection.runSQL is not used by compile tests");
+   }
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // getPackageLoadWorkerCount — env var parsing
@@ -224,6 +260,118 @@ describe("PackageLoadPool (real worker)", () => {
          });
          expect(outcome.models).toHaveLength(1);
          expect(outcome.models[0].compilationError).toBeUndefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   // ───────────────────────────────────────────────────────────────
+   // Connection introspection failures (the DX bug this fixes)
+   //
+   // A model that references a flaky non-duckdb connection. When schema
+   // introspection fails, the source can't resolve, so every field
+   // referencing it would normally emit its own "X is not defined" — the
+   // misleading cascade. These tests assert auth/transport failures are
+   // short-circuited into one connection error, while a genuine
+   // table-not-found is left to compile as a normal model error.
+   // ───────────────────────────────────────────────────────────────
+
+   const FLAKY_MODEL = `source: sales is flaky.table('analytics.orders') extend {
+  dimension: item is customer_id
+  dimension: venue is order_status
+  measure: total is order_total.sum()
+}
+run: sales -> { group_by: item, venue; aggregate: total }`;
+
+   async function buildConfigWithFlaky(failure: Error): Promise<{
+      malloyConfig: import("@malloydata/malloy").MalloyConfig;
+      duckdb: { close: () => Promise<void> };
+   }> {
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const flaky = new FlakyConnection(failure);
+      const connections = new FixedConnectionMap(
+         new Map<string, Connection>([
+            ["duckdb", duckdb as unknown as Connection],
+            ["flaky", flaky as unknown as Connection],
+         ]),
+         "duckdb",
+      );
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+      return { malloyConfig, duckdb };
+   }
+
+   /** Load the flaky-model package and return the error it rejects with. */
+   async function loadFlakyPackageExpectingRejection(
+      failure: Error,
+   ): Promise<Error> {
+      writeManifest(tempDir);
+      fs.writeFileSync(path.join(tempDir, "sales.malloy"), FLAKY_MODEL);
+      const { malloyConfig, duckdb } = await buildConfigWithFlaky(failure);
+      try {
+         let caught: unknown;
+         try {
+            await pool.loadPackage({
+               packagePath: tempDir,
+               packageName: "pkg",
+               malloyConfig,
+               defaultConnectionName: "duckdb",
+            });
+         } catch (e) {
+            caught = e;
+         }
+         if (!(caught instanceof Error)) {
+            throw new Error("expected loadPackage to reject, but it resolved");
+         }
+         return caught;
+      } finally {
+         await duckdb.close();
+      }
+   }
+
+   it("auth failure (401) surfaces ONE ConnectionAuthError, not the cascade", async () => {
+      const err = await loadFlakyPackageExpectingRejection(
+         new Error("Request failed with status code 401"),
+      );
+      expect(err).toBeInstanceOf(ConnectionAuthError);
+      expect(err.message).toContain("flaky");
+      expect(err.message).toContain("analytics.orders");
+      expect(err.message).toContain("401");
+      // The derivative cascade must NOT leak into the surfaced diagnostic.
+      expect(err.message).not.toContain("is not defined");
+      expect(err.message).not.toContain("import reference failure");
+   });
+
+   it("transport failure (503) surfaces ONE ConnectionError", async () => {
+      const err = await loadFlakyPackageExpectingRejection(
+         new Error("Request failed with status code 503"),
+      );
+      expect(err).toBeInstanceOf(ConnectionError);
+      expect(err.message).toContain("503");
+      expect(err.message).not.toContain("is not defined");
+   });
+
+   it("not-found (404) is NOT short-circuited — normal model error preserved", async () => {
+      writeManifest(tempDir);
+      fs.writeFileSync(path.join(tempDir, "sales.malloy"), FLAKY_MODEL);
+      const { malloyConfig, duckdb } = await buildConfigWithFlaky(
+         new Error("Request failed with status code 404"),
+      );
+      try {
+         // Resolves (does NOT reject): the failure stays an in-band per-model
+         // compilation error, exactly as a genuine modeling mistake would.
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         expect(outcome.models).toHaveLength(1);
+         expect(outcome.models[0].compilationError).toBeDefined();
       } finally {
          await duckdb.close();
       }
