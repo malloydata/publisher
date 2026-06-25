@@ -1,23 +1,12 @@
 /**
- * Split a possibly schema-qualified table name into its schema prefix
- * (including the trailing dot) and the bare table name.
- *
- * Examples:
- *   "my_schema.my_table" -> { schemaPrefix: "my_schema.", bareName: "my_table" }
- *   "my_table"           -> { schemaPrefix: "", bareName: "my_table" }
+ * The bare (unqualified) name of a possibly container-qualified table path:
+ * the segment after the last dot, e.g. `my_schema.my_table` -> `my_table` and
+ * `my_table` -> `my_table`. Used as the RENAME target, which names a table
+ * within its existing schema rather than re-stating the full path.
  */
-export function splitTablePath(tableName: string): {
-   schemaPrefix: string;
-   bareName: string;
-} {
+export function bareTableName(tableName: string): string {
    const lastDot = tableName.lastIndexOf(".");
-   if (lastDot >= 0) {
-      return {
-         schemaPrefix: tableName.substring(0, lastDot + 1),
-         bareName: tableName.substring(lastDot + 1),
-      };
-   }
-   return { schemaPrefix: "", bareName: tableName };
+   return lastDot >= 0 ? tableName.substring(lastDot + 1) : tableName;
 }
 
 // Dialects whose identifier quote character is a backtick; everything else uses

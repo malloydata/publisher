@@ -1,19 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { quoteIdentifier, quoteTablePath, splitTablePath } from "./quoting";
+import { bareTableName, quoteIdentifier, quoteTablePath } from "./quoting";
 
-describe("splitTablePath", () => {
-   it("splits a schema-qualified name", () => {
-      expect(splitTablePath("my_schema.my_table")).toEqual({
-         schemaPrefix: "my_schema.",
-         bareName: "my_table",
-      });
+describe("bareTableName", () => {
+   it("returns the segment after the last dot for a qualified name", () => {
+      expect(bareTableName("my_schema.my_table")).toBe("my_table");
    });
 
-   it("returns an empty prefix for a bare name", () => {
-      expect(splitTablePath("my_table")).toEqual({
-         schemaPrefix: "",
-         bareName: "my_table",
-      });
+   it("returns the name unchanged when it is unqualified", () => {
+      expect(bareTableName("my_table")).toBe("my_table");
    });
 });
 

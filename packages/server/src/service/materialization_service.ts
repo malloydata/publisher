@@ -39,7 +39,7 @@ import {
    iterGraphSources,
 } from "./build_plan";
 import { EnvironmentStore } from "./environment_store";
-import { quoteIdentifier, quoteTablePath, splitTablePath } from "./quoting";
+import { bareTableName, quoteIdentifier, quoteTablePath } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
 
 /**
@@ -624,7 +624,7 @@ export class MaterializationService {
          connectionDigests,
       });
 
-      const { bareName } = splitTablePath(physicalTableName);
+      const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(buildId)}`;
       // The control plane sends the logical (unquoted) physical name; dialect-
       // quote each identifier here so a container path or quote-requiring name
