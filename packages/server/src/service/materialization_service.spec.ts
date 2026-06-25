@@ -718,6 +718,66 @@ describe("executeInstructedBuild", () => {
       expect(entries["carried0"].physicalTableName).toBe("carried_tbl");
    });
 
+   it("builds an intermediate persist source nested under a root node", async () => {
+      // Mirrors malloy getBuildPlan(): only the terminal `root` is a graph
+      // node; its persist dependency `mid` is nested in dependsOn (not a node).
+      // Before the iterGraphSources fix, `mid` was silently never built even
+      // though the caller instructed it. Both must now build, `mid` first.
+      const runSQL = sinon.stub().resolves();
+      const connection = { runSQL } as unknown as MalloyConnection;
+      const root = fakeSource({ name: "root", buildId: "brootaaaaaaaaaa" });
+      const mid = fakeSource({ name: "mid", buildId: "bmidbbbbbbbbbbb" });
+      const compiled = {
+         graphs: [
+            {
+               connectionName: "duckdb",
+               nodes: [
+                  [
+                     {
+                        sourceID: "root",
+                        dependsOn: [{ sourceID: "mid", dependsOn: [] }],
+                     },
+                  ],
+               ],
+            },
+         ],
+         sources: { root, mid },
+         connectionDigests: { duckdb: "dig" },
+         connections: new Map([["duckdb", connection]]),
+      };
+
+      const entries = await callExecute(
+         compiled,
+         [
+            {
+               buildId: "brootaaaaaaaaaa",
+               materializedTableId: "mt-r",
+               physicalTableName: "root_v1",
+               realization: "COPY",
+            },
+            {
+               buildId: "bmidbbbbbbbbbbb",
+               materializedTableId: "mt-m",
+               physicalTableName: "mid_v1",
+               realization: "COPY",
+            },
+         ],
+         {},
+      );
+
+      expect(entries["bmidbbbbbbbbbbb"].physicalTableName).toBe("mid_v1");
+      expect(entries["brootaaaaaaaaaa"].physicalTableName).toBe("root_v1");
+      // The dependency's CREATE precedes its dependent's (dependency order).
+      const creates = runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string)
+         .filter((s) => s.startsWith("CREATE TABLE"));
+      const midIdx = creates.findIndex((s) => s.includes("mid_v1"));
+      const rootIdx = creates.findIndex((s) => s.includes("root_v1"));
+      expect(midIdx).toBeGreaterThanOrEqual(0);
+      expect(rootIdx).toBeGreaterThan(midIdx);
+   });
+
    it("throws when an instructed graph's connection is missing", async () => {
       const s1 = fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" });
       const compiled = compiledWith({ s1 }, [["s1"]], new Map());

@@ -10,7 +10,10 @@ export function bareTableName(tableName: string): string {
 }
 
 // Dialects whose identifier quote character is a backtick; everything else uses
-// the SQL-standard double quote. Keyed by Malloy `dialectName`.
+// the SQL-standard double quote. Keyed by Malloy `dialectName`. The control
+// plane encodes the same fact keyed by connection type
+// (`PhysicalTableName.BACKTICK_TYPES` = {bigquery, mysql, databricks}); the two
+// must stay byte-compatible. See the conformance table in quoting.spec.ts.
 const BACKTICK_DIALECTS = new Set(["standardsql", "mysql", "databricks"]);
 
 /**

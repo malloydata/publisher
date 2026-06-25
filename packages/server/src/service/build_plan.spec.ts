@@ -45,6 +45,74 @@ describe("iterGraphSources", () => {
       );
       expect(names).toEqual(["a", "b"]);
    });
+
+   it("walks each root's nested dependsOn tree, deps before dependents", () => {
+      // root -> mid -> leaf, with only `root` at the graph's node level — this
+      // mirrors malloy getBuildPlan(): terminal persist sources are the nodes,
+      // and every transitive persist dependency is nested in dependsOn. All
+      // three must be yielded (so all get built), leaf-first so a downstream
+      // build reads its upstream's freshly materialized table.
+      const root = fakeSource({ name: "root", buildId: "br" });
+      const mid = fakeSource({ name: "mid", buildId: "bm" });
+      const leaf = fakeSource({ name: "leaf", buildId: "bl" });
+      const graph = {
+         connectionName: "duckdb",
+         nodes: [
+            [
+               {
+                  sourceID: "root@m",
+                  dependsOn: [
+                     {
+                        sourceID: "mid@m",
+                        dependsOn: [{ sourceID: "leaf@m", dependsOn: [] }],
+                     },
+                  ],
+               },
+            ],
+         ],
+      } as unknown as MalloyBuildGraph;
+
+      const names = [
+         ...iterGraphSources(graph, {
+            "root@m": root,
+            "mid@m": mid,
+            "leaf@m": leaf,
+         }),
+      ].map((s) => s.name);
+      expect(names).toEqual(["leaf", "mid", "root"]);
+   });
+
+   it("deduplicates a shared (diamond) dependency across roots", () => {
+      // r1 and r2 both depend on `shared`; it must be yielded exactly once and
+      // before both dependents.
+      const r1 = fakeSource({ name: "r1", buildId: "b1" });
+      const r2 = fakeSource({ name: "r2", buildId: "b2" });
+      const shared = fakeSource({ name: "shared", buildId: "bs" });
+      const graph = {
+         connectionName: "duckdb",
+         nodes: [
+            [
+               {
+                  sourceID: "r1@m",
+                  dependsOn: [{ sourceID: "shared@m", dependsOn: [] }],
+               },
+               {
+                  sourceID: "r2@m",
+                  dependsOn: [{ sourceID: "shared@m", dependsOn: [] }],
+               },
+            ],
+         ],
+      } as unknown as MalloyBuildGraph;
+
+      const names = [
+         ...iterGraphSources(graph, {
+            "r1@m": r1,
+            "r2@m": r2,
+            "shared@m": shared,
+         }),
+      ].map((s) => s.name);
+      expect(names).toEqual(["shared", "r1", "r2"]);
+   });
 });
 
 describe("deriveAnnotationFields", () => {
