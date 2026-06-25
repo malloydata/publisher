@@ -238,7 +238,10 @@ export default function Materializations({
                      stopMaterialization.mutate(materialization)
                   }
                   onDelete={(materialization, dropTables) =>
-                     deleteMaterialization.mutate({ materialization, dropTables })
+                     deleteMaterialization.mutate({
+                        materialization,
+                        dropTables,
+                     })
                   }
                   onViewDetails={(materialization) =>
                      setSelectedId(materialization.id ?? null)
