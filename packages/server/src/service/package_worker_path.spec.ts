@@ -28,10 +28,12 @@ import {
    describe,
    expect,
    it,
+   spyOn,
 } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { logger } from "../logger";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -280,14 +282,13 @@ source: gated is duckdb.sql("select 1 as id")`,
       }
    });
 
-   it("rejects a package whose view carries an invalid renderer tag", async () => {
+   it("logs a warning for a package whose view carries an invalid renderer tag", async () => {
       writeManifest();
       // `# big_value { sparkline=... }` is a child-only renderer config placed on
       // the view itself, with no activating big_value. The renderer declines to
-      // match it; without compile-time validation it renders as "[object Object]"
-      // at query time. Render-tag validation runs on the main thread after the
-      // worker hydrates the model, so the load must reject with a 424
-      // ModelCompilationError naming the offending view.
+      // match it. Render-tag validation runs on the main thread after the worker
+      // hydrates the model. The misconfiguration is logged as a warning naming
+      // the offending view; it does not fail the package load.
       fs.writeFileSync(
          path.join(tempDir, "bad_render.malloy"),
          `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
@@ -302,21 +303,21 @@ source: gated is duckdb.sql("select 1 as id")`,
 }`,
       );
 
-      const { ModelCompilationError } = await import("../errors");
+      const warnSpy = spyOn(logger, "warn");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
-         let caught: unknown;
-         try {
-            await Package.create("env", "pkg", tempDir, malloyConfig);
-         } catch (err) {
-            caught = err;
-         }
-         expect(caught).toBeInstanceOf(ModelCompilationError);
-         expect((caught as Error).message).toContain(
-            "Invalid renderer configuration",
-         );
-         expect((caught as Error).message).toContain("nums -> card");
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getModelPaths()).toEqual(["bad_render.malloy"]);
+         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+         expect(
+            warnings.some(
+               (m) =>
+                  m.includes("Invalid renderer configuration") &&
+                  m.includes("nums -> card"),
+            ),
+         ).toBe(true);
       } finally {
+         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
@@ -341,7 +342,7 @@ source: gated is duckdb.sql("select 1 as id")`,
       }
    });
 
-   it("rejects a package whose backtick-quoted (hyphenated) source has a bad view render tag", async () => {
+   it("logs a warning for a backtick-quoted (hyphenated) source with a bad view render tag", async () => {
       writeManifest();
       // A source whose name needs Malloy backtick-quoting (here, a hyphen). The
       // validation target must quote the identifier; otherwise `run: bad-source
@@ -363,26 +364,26 @@ source: gated is duckdb.sql("select 1 as id")`,
 }`,
       );
 
-      const { ModelCompilationError } = await import("../errors");
+      const warnSpy = spyOn(logger, "warn");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
-         let caught: unknown;
-         try {
-            await Package.create("env", "pkg", tempDir, malloyConfig);
-         } catch (err) {
-            caught = err;
-         }
-         expect(caught).toBeInstanceOf(ModelCompilationError);
-         expect((caught as Error).message).toContain(
-            "Invalid renderer configuration",
-         );
-         expect((caught as Error).message).toContain("bad-source -> card");
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getModelPaths()).toEqual(["hyphen_render.malloy"]);
+         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+         expect(
+            warnings.some(
+               (m) =>
+                  m.includes("Invalid renderer configuration") &&
+                  m.includes("bad-source -> card"),
+            ),
+         ).toBe(true);
       } finally {
+         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
 
-   it("rejects a package whose source name contains an escaped backtick with a bad view render tag", async () => {
+   it("logs a warning for a source name containing an escaped backtick with a bad view render tag", async () => {
       writeManifest();
       // Source name with a literal backtick (written escaped in Malloy as
       // `wei\`rd`). The validation target must re-escape it; a bare wrap would
@@ -403,26 +404,26 @@ source: gated is duckdb.sql("select 1 as id")`,
 }`,
       );
 
-      const { ModelCompilationError } = await import("../errors");
+      const warnSpy = spyOn(logger, "warn");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
-         let caught: unknown;
-         try {
-            await Package.create("env", "pkg", tempDir, malloyConfig);
-         } catch (err) {
-            caught = err;
-         }
-         expect(caught).toBeInstanceOf(ModelCompilationError);
-         expect((caught as Error).message).toContain(
-            "Invalid renderer configuration",
-         );
-         expect((caught as Error).message).toContain("card");
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getModelPaths()).toEqual(["backtick_render.malloy"]);
+         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+         expect(
+            warnings.some(
+               (m) =>
+                  m.includes("Invalid renderer configuration") &&
+                  m.includes("card"),
+            ),
+         ).toBe(true);
       } finally {
+         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
 
-   it("rejects a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
+   it("logs a warning for a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
       writeManifest();
       fs.writeFileSync(
          path.join(tempDir, "bad_render.malloynb"),
@@ -439,18 +440,22 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
 }`,
       );
 
-      const { ModelCompilationError } = await import("../errors");
+      const warnSpy = spyOn(logger, "warn");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
-         await expect(
-            Package.create("env", "pkg", tempDir, malloyConfig),
-         ).rejects.toBeInstanceOf(ModelCompilationError);
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.getModelPaths()).toEqual(["bad_render.malloynb"]);
+         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+         expect(
+            warnings.some((m) => m.includes("Invalid renderer configuration")),
+         ).toBe(true);
       } finally {
+         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
 
-   it("re-validates renderer tags on reload, recording a model that develops a bad tag as a per-model error", async () => {
+   it("re-validates renderer tags on reload, logging a warning for a model that develops a bad tag", async () => {
       writeManifest();
       // Start valid so Package.create succeeds.
       fs.writeFileSync(
@@ -463,13 +468,15 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const warnSpy = spyOn(logger, "warn");
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.getModel("m.malloy")).toBeDefined();
+         warnSpy.mockClear();
 
-         // The model now develops a misconfigured render tag. Reload must catch
-         // it (not just Package.create) and surface it as the model's error,
-         // without aborting the whole reload.
+         // The model now develops a misconfigured render tag. Reload re-validates
+         // (not just Package.create) and logs a warning for it, without aborting
+         // the reload or failing the model.
          fs.writeFileSync(
             path.join(tempDir, "m.malloy"),
             `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
@@ -487,10 +494,13 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
 
          const reloaded = pkg.getModel("m.malloy");
          expect(reloaded).toBeDefined();
-         await expect(reloaded!.getModel()).rejects.toThrow(
-            "Invalid renderer configuration",
-         );
+         await expect(reloaded!.getModel()).resolves.toBeDefined();
+         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+         expect(
+            warnings.some((m) => m.includes("Invalid renderer configuration")),
+         ).toBe(true);
       } finally {
+         warnSpy.mockRestore();
          await duckdb.close();
       }
    });

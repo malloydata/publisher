@@ -25,11 +25,6 @@ import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
 import { components } from "../api";
-import { deserializeError } from "../package_load/package_load_pool";
-import type {
-   SerializedModel,
-   SerializedNotebookCell,
-} from "../package_load/protocol";
 import {
    getDefaultQueryRowLimit,
    getMaxQueryRows,
@@ -46,8 +41,19 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { logger } from "../logger";
+import { deserializeError } from "../package_load/package_load_pool";
+import type {
+   SerializedModel,
+   SerializedNotebookCell,
+} from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
+import { modelAnnotations } from "./annotations";
+import {
+   collectAuthorizeExprs,
+   evaluateAuthorize,
+   validateAuthorizeProbes,
+} from "./authorize";
 import {
    buildFilterClause,
    FilterValidationError,
@@ -55,21 +61,15 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import {
-   collectAuthorizeExprs,
-   evaluateAuthorize,
-   validateAuthorizeProbes,
-} from "./authorize";
-import { modelAnnotations } from "./annotations";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
-import {
-   extractQueriesFromModelDef,
-   extractSourcesFromModelDef,
-} from "./source_extraction";
 import {
    assertWithinModelResponseLimits,
    resolveModelQueryRowLimit,
 } from "./model_limits";
+import {
+   extractQueriesFromModelDef,
+   extractSourcesFromModelDef,
+} from "./source_extraction";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -980,13 +980,13 @@ export class Model {
     * annotated source view (`run: <source> -> <view>`) compile-only -- no
     * execution -- to get a stable result schema, then runs the renderer's
     * headless `validateRenderTags`. Targets with no annotations carry no render
-    * tags, so they are skipped without compiling. Any
-    * error-severity finding throws a `ModelCompilationError` (HTTP 424) so a
-    * misconfigured tag (e.g. a child-only `# big_value { sparkline=... }` placed
-    * on a view with no activating big_value) fails the package load with a clear
-    * message instead of rendering as "[object Object]" at query time. Warnings
-    * (e.g. unread tags) are left for the query-time `renderLogs` surface so a
-    * benign render lint never blocks a load.
+    * tags, so they are skipped without compiling. Any error-severity finding
+    * (e.g. a child-only `# big_value { sparkline=... }` placed on a view with no
+    * activating big_value) is logged as a warning naming the offending target;
+    * it does not fail the package load. Such a tag still renders as
+    * "[object Object]" at query time, so the warning is the operator-facing
+    * signal. Lower-severity findings are left for the query-time `renderLogs`
+    * surface.
     */
    public async validateRenderTags(): Promise<void> {
       const mm = this.modelMaterializer;
@@ -1053,11 +1053,11 @@ export class Model {
             (log) => log.severity === "error",
          );
          if (errors.length > 0) {
-            throw new ModelCompilationError({
-               message: `Invalid renderer configuration on '${target.label}': ${errors
+            logger.warn(
+               `Invalid renderer configuration on '${target.label}': ${errors
                   .map((e) => e.message)
                   .join("; ")}`,
-            });
+            );
          }
       }
    }

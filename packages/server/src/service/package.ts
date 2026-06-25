@@ -359,8 +359,7 @@ export class Package {
          );
          // Validate renderer tags on the main thread (the renderer is too heavy
          // to load inside the pure-CPU package-load worker). A misconfigured tag
-         // throws a ModelCompilationError (424), aborting the whole load like any
-         // other per-model compile error above.
+         // is logged as a warning naming the target; it does not fail the load.
          await model.validateRenderTags();
          models.set(sm.modelPath, model);
       }
@@ -709,9 +708,10 @@ export class Package {
                { buildManifest },
             );
             // Validate renderer tags here too (loadViaWorker does it for the
-            // create path). Reload keeps per-model placeholders rather than
-            // aborting the whole package, so a render-tag error is recorded as
-            // this model's compilationError instead of thrown.
+            // create path). Render-tag findings are logged as warnings inside
+            // validateRenderTags and never throw. The catch is defensive: an
+            // unexpected internal failure is recorded as this model's
+            // compilationError rather than aborting the whole reload.
             try {
                await model.validateRenderTags();
                nextModels.set(sm.modelPath, model);
