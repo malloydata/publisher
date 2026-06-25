@@ -34,6 +34,7 @@ import { BuildManifest, BuildPlan } from "../storage/DatabaseInterface";
 import { ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
 import { Model } from "./model";
+import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
@@ -361,6 +362,17 @@ export class Package {
          // to load inside the pure-CPU package-load worker). A misconfigured tag
          // is logged as a warning naming the target; it does not fail the load.
          await model.validateRenderTags();
+         // Reject unquoted `#@ persist name=` annotations the same way: an
+         // unquoted name is dropped from the build plan, so the source would
+         // publish but never materialize. Scan the raw `.malloy` source (the
+         // ground truth for quoting); throws a ModelCompilationError (424).
+         if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+            const modelSource = await fs.readFile(
+               path.join(packagePath, sm.modelPath),
+               "utf-8",
+            );
+            assertPersistNamesQuoted(modelSource, sm.modelPath);
+         }
          models.set(sm.modelPath, model);
       }
 

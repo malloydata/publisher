@@ -4,6 +4,7 @@ import * as sinon from "sinon";
 import {
    computeBuildId,
    computePackageBuildPlan,
+   deriveAnnotationFields,
    deriveBuildPlan,
    flattenDependsOn,
    resolvePackageConnections,
@@ -17,6 +18,40 @@ describe("flattenDependsOn", () => {
             dependsOn: [{ sourceID: "a" }, { sourceID: "b" }],
          }),
       ).toEqual(["a", "b"]);
+   });
+});
+
+describe("deriveAnnotationFields", () => {
+   it("returns all key=value fields of the #@ persist annotation", () => {
+      const source = {
+         annotations: {
+            parseAsTag: () => ({
+               tag: {
+                  *entries() {
+                     yield ["name", { text: () => "engaged_events" }];
+                     yield ["realization", { text: () => "COPY" }];
+                  },
+               },
+            }),
+         },
+      } as unknown as PersistSource;
+
+      expect(deriveAnnotationFields(source)).toEqual({
+         name: "engaged_events",
+         realization: "COPY",
+      });
+   });
+
+   it("degrades to {} when the annotation is absent or unparseable", () => {
+      const source = {
+         annotations: {
+            parseAsTag: () => {
+               throw new Error("no @ annotation");
+            },
+         },
+      } as unknown as PersistSource;
+
+      expect(deriveAnnotationFields(source)).toEqual({});
    });
 });
 

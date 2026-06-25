@@ -743,10 +743,10 @@ describe("buildOneSource", () => {
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
       expect(sql).toEqual([
-         "DROP TABLE IF EXISTS orders_v1_abcdef123456",
-         "CREATE TABLE orders_v1_abcdef123456 AS (SELECT * FROM t)",
-         "DROP TABLE IF EXISTS orders_v1",
-         "ALTER TABLE orders_v1_abcdef123456 RENAME TO orders_v1",
+         'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
+         'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
+         'DROP TABLE IF EXISTS "orders_v1"',
+         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.buildId).toBe("abcdef1234567890");
@@ -761,7 +761,7 @@ describe("buildOneSource", () => {
          "create boom",
       );
       expect(runSQL.lastCall.args[0]).toBe(
-         "DROP TABLE IF EXISTS orders_v1_abcdef123456",
+         'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
       );
    });
 });

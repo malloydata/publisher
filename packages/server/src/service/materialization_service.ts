@@ -36,7 +36,7 @@ import {
    computeBuildId,
 } from "./build_plan";
 import { EnvironmentStore } from "./environment_store";
-import { splitTablePath } from "./quoting";
+import { quoteIdentifier, quoteTablePath, splitTablePath } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
 
 /**
@@ -641,20 +641,28 @@ export class MaterializationService {
 
       const { bareName } = splitTablePath(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(buildId)}`;
+      // The control plane sends the logical (unquoted) physical name; dialect-
+      // quote each identifier here so a container path or quote-requiring name
+      // (e.g. a hyphenated BigQuery project id) produces valid DDL. The manifest
+      // echoes the logical name (below) so the CP stays in logical-name space.
+      const dialect = persistSource.dialectName;
+      const quotedStaging = quoteTablePath(stagingTableName, dialect);
+      const quotedPhysical = quoteTablePath(physicalTableName, dialect);
+      const quotedBareName = quoteIdentifier(bareName, dialect);
 
       const startTime = performance.now();
-      await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
+      await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
       try {
          await connection.runSQL(
-            `CREATE TABLE ${stagingTableName} AS (${buildSQL})`,
+            `CREATE TABLE ${quotedStaging} AS (${buildSQL})`,
          );
-         await connection.runSQL(`DROP TABLE IF EXISTS ${physicalTableName}`);
+         await connection.runSQL(`DROP TABLE IF EXISTS ${quotedPhysical}`);
          await connection.runSQL(
-            `ALTER TABLE ${stagingTableName} RENAME TO ${bareName}`,
+            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
          );
       } catch (err) {
          try {
-            await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
+            await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
          } catch (cleanupErr) {
             logger.warn(
                "Failed to clean up staging table after a failed build; physical leak",

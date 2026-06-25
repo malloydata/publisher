@@ -6,6 +6,7 @@ import type {
    PersistSource,
 } from "@malloydata/malloy";
 import { components } from "../api";
+import { MODEL_FILE_SUFFIX } from "../constants";
 import { logger } from "../logger";
 import { recordConnectionDigestSkipped } from "../materialization_metrics";
 import { Model } from "./model";
@@ -57,6 +58,31 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
       });
       return [];
    }
+}
+
+/**
+ * All key=value fields of a source's `#@ persist` annotation (e.g.
+ * `{ name: "engaged_events", realization: "COPY" }`), degrading to {} if the
+ * annotation is absent or unparseable. The control plane consumes these — most
+ * importantly `name`, which it uses as the materialized table name (and which
+ * may carry a dialect-style container path like `dataset.table`). Returning the
+ * full set rather than a fixed subset means new persist directives flow through
+ * without a publisher change.
+ */
+export function deriveAnnotationFields(
+   persistSource: PersistSource,
+): Record<string, string> {
+   const out: Record<string, string> = {};
+   try {
+      const tag = persistSource.annotations.parseAsTag("@").tag;
+      for (const [key, value] of tag.entries()) {
+         const text = value.text();
+         if (text !== undefined) out[key] = text;
+      }
+   } catch {
+      // Degrade to {} — mirrors deriveColumns / selfAssignTableName.
+   }
+   return out;
 }
 
 /** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
@@ -121,6 +147,11 @@ export async function compilePackageBuildPlan(
    const allSources: Record<string, PersistSource> = {};
 
    for (const modelPath of pkg.getModelPaths()) {
+      // Only `.malloy` models declare persist sources. Skip `.malloynb`
+      // notebooks: getModel() parses a model file as a flat model and throws on
+      // the notebook's `>>>` cell delimiter, which would abort the entire
+      // package build plan and silently drop every persist source in it.
+      if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
       if (signal?.aborted) throw new Error("Build cancelled");
 
       const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
@@ -211,6 +242,7 @@ export function deriveBuildPlan(
          buildId: computeBuildId(source, connectionDigests),
          sql: source.getSQL(),
          columns: deriveColumns(source),
+         annotationFields: deriveAnnotationFields(source),
       };
    }
 

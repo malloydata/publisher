@@ -3704,6 +3704,16 @@ components:
           description: Output schema of the source.
           items:
             $ref: "#/components/schemas/Column"
+        annotationFields:
+          type: object
+          additionalProperties:
+            type: string
+          description:
+            All key=value fields of the source's `#@ persist` annotation (e.g.
+            `name`, `realization`). The control plane uses `name` as the
+            materialized table name (it may carry a dialect container path like
+            `dataset.table`). Returned as the full set so new persist directives
+            need no publisher change.
 
     Realization:
       type: string
@@ -3741,8 +3751,12 @@ components:
         physicalTableName:
           type: string
           description:
-            Fully-qualified, dialect-quoted table name to create. The publisher
-            writes here verbatim.
+            Logical, fully-qualified (but unquoted) table name to create — an
+            optional dialect container path plus the table name, e.g.
+            `mydataset.engaged_events_<buildId>_v0`. The publisher dialect-quotes
+            each segment when it emits the DDL, so quote-requiring names (a
+            hyphenated BigQuery project id, a container path) are valid, and
+            echoes this logical name back in the manifest.
         realization:
           $ref: "#/components/schemas/Realization"
 
@@ -3778,7 +3792,10 @@ components:
           description: Echoes the caller-assigned id from the BuildInstruction.
         physicalTableName:
           type: string
-          description: Name of the materialized table.
+          description:
+            The logical (unquoted) name of the materialized table — echoes the
+            BuildInstruction's physicalTableName so the control plane persists
+            and matches on the same logical name it assigned.
         connectionName:
           type: string
         realization:
