@@ -47,8 +47,13 @@ export interface SchemaFetchFailure {
    status?: number;
    /** Connection name the model referenced (e.g. `prod_warehouse`). */
    connection: string;
-   /** What we were introspecting — a table path or an inline SQL source. */
-   target: string;
+   /**
+    * What we were introspecting — a table path or an inline SQL source.
+    * Omitted when the failure happened while *resolving* the connection
+    * itself (e.g. db-publisher validates the token at `create()` time, so
+    * the 401 surfaces before any specific table/SQL is in hand).
+    */
+   target?: string;
    /** The raw (flattened) error string from the connection layer. */
    rawMessage: string;
 }
@@ -144,8 +149,14 @@ export function buildConnectionDiagnostic(failure: SchemaFetchFailure): string {
          ? "The access token is likely expired or invalid; refresh the connection and reload."
          : "The data plane may be down, unreachable, or timing out; check the connection and retry.";
 
+   // With a specific table/SQL in hand we name it; a connection-resolution
+   // failure (no target) reads as "while establishing the connection".
+   const locus = target
+      ? `while introspecting "${target}"`
+      : "while establishing the connection";
+
    return (
-      `Connection "${connection}" ${statusPhrase} while introspecting "${target}". ` +
+      `Connection "${connection}" ${statusPhrase} ${locus}. ` +
       `${cause} ` +
       `This is a connection problem, not an error in your Malloy model ` +
       `(underlying error: ${rawMessage}).`

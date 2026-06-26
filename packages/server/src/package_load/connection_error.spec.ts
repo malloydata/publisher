@@ -101,6 +101,22 @@ describe("buildConnectionDiagnostic", () => {
       expect(msg).toContain("could not be reached");
       expect(msg).not.toContain("undefined");
    });
+
+   it("uses connection-level phrasing when no target is in hand (resolution failure)", () => {
+      // The path real publisher connections take: the token is validated at
+      // `lookupConnection` time, before any specific table/SQL is known.
+      const msg = buildConnectionDiagnostic({
+         kind: "auth",
+         status: 401,
+         connection: "prod_warehouse",
+         rawMessage: "Request failed with status code 401",
+      });
+      expect(msg).toContain("establishing the connection");
+      // No specific target → must not emit a quoted-empty / "undefined" target.
+      expect(msg).not.toContain("undefined");
+      expect(msg).not.toContain('introspecting ""');
+      expect(msg).toContain("401 Unauthorized");
+   });
 });
 
 describe("connectionFailureToError", () => {

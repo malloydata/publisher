@@ -681,11 +681,15 @@ export class PackageLoadPool {
       }
    }
 
-   /** Same as above for a single error string (SQL schema / thrown error). */
+   /**
+    * Same as above for a single error string (SQL schema, thrown schema
+    * fetch, or a connection-resolution failure). `target` is omitted for
+    * connection-resolution failures, where no specific table/SQL is in hand.
+    */
    private noteInfraFailureFromMessage(
       ctx: JobContext,
       connectionName: string,
-      target: string,
+      target: string | undefined,
       message: string,
    ): void {
       if (ctx.connectionFailure) return;
@@ -747,6 +751,22 @@ export class PackageLoadPool {
             },
          });
       } catch (error) {
+         // The connection can fail to RESOLVE for the same infra reasons a
+         // schema fetch can — and for some connections it fails here FIRST.
+         // `@malloydata/db-publisher`'s `PublisherConnection.create()` eagerly
+         // calls `getConnection()` + `test()` against the data plane, so an
+         // expired token (401) / unreachable plane (5xx) throws out of
+         // `lookupConnection` BEFORE any `fetchSchemaForTables`. Classify it
+         // here too, else the worker compiles on with an unresolved connection
+         // and the load resolves with the misleading "X is not defined"
+         // cascade instead of one clear connection diagnostic. No specific
+         // table is in hand yet, so the diagnostic is connection-level.
+         this.noteInfraFailureFromMessage(
+            ctx,
+            msg.connectionName,
+            undefined,
+            error instanceof Error ? error.message : String(error),
+         );
          reply({
             type: "rpc-error",
             requestId: msg.requestId,

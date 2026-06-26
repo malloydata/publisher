@@ -31,16 +31,19 @@ import {
    __setPackageLoadPoolForTests,
    getPackageLoadWorkerCount,
 } from "./package_load_pool";
-import type { Connection } from "@malloydata/malloy";
+import type { Connection, LookupConnection } from "@malloydata/malloy";
 import { BaseConnection } from "@malloydata/malloy/connection";
 import { ConnectionAuthError, ConnectionError } from "../errors";
 
 /**
- * A non-duckdb connection whose schema introspection always fails the same
- * way `PublisherConnection` does for an expired token: it THROWS, and Malloy's
- * `BaseConnection` catches that into `result.errors[table]` as a string. This
- * lets the real-worker tests drive the pool's failure classification (and the
- * compile cascade it short-circuits) without a live remote data plane.
+ * A non-duckdb connection that RESOLVES fine but THROWS when introspecting a
+ * table schema — exercising the `fetchSchemaForTables` failure path (Malloy's
+ * `BaseConnection` catches the throw into `result.errors[table]` as a string).
+ *
+ * NOTE: this is NOT how an expired *publisher* token fails. `PublisherConnection`
+ * validates the token at `create()`/resolution time, so it fails earlier, at the
+ * connection-metadata RPC — see `buildConfigWithUnresolvableFlaky` below, which
+ * covers that path. This double covers schema-fetch; that one covers resolution.
  */
 class FlakyConnection extends BaseConnection {
    constructor(private readonly failure: Error) {
@@ -375,6 +378,99 @@ run: sales -> { group_by: item, venue; aggregate: total }`;
       } finally {
          await duckdb.close();
       }
+   });
+
+   // ───────────────────────────────────────────────────────────────
+   // Connection-RESOLUTION failures (the path real publisher connections
+   // actually take). `@malloydata/db-publisher`'s
+   // `PublisherConnection.create()` validates the token against the data
+   // plane (`getConnection` + `test`) at resolution time, so an expired
+   // token throws out of `lookupConnection` — i.e. the worker's
+   // `connection-metadata` RPC — BEFORE any `fetchSchemaForTables`.
+   // `FlakyConnection` above can't model this: it constructs synchronously
+   // and only fails at schema-fetch. These tests fail at resolution, which
+   // is where the live bug reproduces.
+   // ───────────────────────────────────────────────────────────────
+
+   /**
+    * A config whose `flaky` connection throws on RESOLUTION (not schema
+    * fetch), mirroring `PublisherConnection.create()` rejecting on a 401/5xx.
+    */
+   async function buildConfigWithUnresolvableFlaky(failure: Error): Promise<{
+      malloyConfig: import("@malloydata/malloy").MalloyConfig;
+      duckdb: { close: () => Promise<void> };
+   }> {
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const base = new FixedConnectionMap(
+         new Map<string, Connection>([
+            ["duckdb", duckdb as unknown as Connection],
+         ]),
+         "duckdb",
+      );
+      const connections: LookupConnection<Connection> = {
+         lookupConnection: async (name?: string): Promise<Connection> => {
+            if (name === "flaky") throw failure;
+            return base.lookupConnection(name);
+         },
+      };
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+      return { malloyConfig, duckdb };
+   }
+
+   async function loadUnresolvablePackageExpectingRejection(
+      failure: Error,
+   ): Promise<Error> {
+      writeManifest(tempDir);
+      fs.writeFileSync(path.join(tempDir, "sales.malloy"), FLAKY_MODEL);
+      const { malloyConfig, duckdb } =
+         await buildConfigWithUnresolvableFlaky(failure);
+      try {
+         let caught: unknown;
+         try {
+            await pool.loadPackage({
+               packagePath: tempDir,
+               packageName: "pkg",
+               malloyConfig,
+               defaultConnectionName: "duckdb",
+            });
+         } catch (e) {
+            caught = e;
+         }
+         if (!(caught instanceof Error)) {
+            throw new Error("expected loadPackage to reject, but it resolved");
+         }
+         return caught;
+      } finally {
+         await duckdb.close();
+      }
+   }
+
+   it("auth failure at connection RESOLUTION (401) surfaces ONE ConnectionAuthError, not the cascade", async () => {
+      const err = await loadUnresolvablePackageExpectingRejection(
+         new Error("Request failed with status code 401"),
+      );
+      expect(err).toBeInstanceOf(ConnectionAuthError);
+      expect(err.message).toContain("flaky");
+      expect(err.message).toContain("401");
+      // Connection-level phrasing: no specific table is in hand at resolution.
+      expect(err.message).toContain("establishing the connection");
+      // The derivative cascade must NOT leak into the surfaced diagnostic.
+      expect(err.message).not.toContain("is not defined");
+      expect(err.message).not.toContain("import reference failure");
+   });
+
+   it("transport failure at connection RESOLUTION (503) surfaces ONE ConnectionError", async () => {
+      const err = await loadUnresolvablePackageExpectingRejection(
+         new Error("Request failed with status code 503"),
+      );
+      expect(err).toBeInstanceOf(ConnectionError);
+      expect(err.message).toContain("503");
+      expect(err.message).not.toContain("is not defined");
    });
 });
 
