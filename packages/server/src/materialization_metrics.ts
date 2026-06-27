@@ -12,7 +12,8 @@
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { metrics, type Counter, type Histogram } from "@opentelemetry/api";
+import { type Counter, type Histogram } from "@opentelemetry/api";
+import { publisherMeter } from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
 export type MaterializationOutcome = "success" | "failed" | "cancelled";
@@ -30,9 +31,7 @@ function lazyCounter(name: string, description: string): () => Counter {
    let instrument: Counter | null = null;
    resetHooks.push(() => (instrument = null));
    return () =>
-      (instrument ??= metrics
-         .getMeter("publisher")
-         .createCounter(name, { description }));
+      (instrument ??= publisherMeter().createCounter(name, { description }));
 }
 
 function lazyHistogram(
@@ -43,9 +42,10 @@ function lazyHistogram(
    let instrument: Histogram | null = null;
    resetHooks.push(() => (instrument = null));
    return () =>
-      (instrument ??= metrics
-         .getMeter("publisher")
-         .createHistogram(name, { description, unit }));
+      (instrument ??= publisherMeter().createHistogram(name, {
+         description,
+         unit,
+      }));
 }
 
 const runCounter = lazyCounter(

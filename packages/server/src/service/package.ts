@@ -12,7 +12,7 @@ import {
    MalloyError,
    SourceDef,
 } from "@malloydata/malloy";
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
@@ -77,7 +77,7 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
-   private static meter = metrics.getMeter("publisher");
+   private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
       {

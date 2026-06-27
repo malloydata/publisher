@@ -1,4 +1,4 @@
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "./telemetry";
 import * as v8 from "v8";
 
 import { logger } from "./logger";
@@ -32,7 +32,7 @@ let heapGaugesInstalled = false;
 function installHeapGauges(): void {
    if (heapGaugesInstalled) return;
    heapGaugesInstalled = true;
-   const meter = metrics.getMeter("publisher");
+   const meter = publisherMeter();
    meter
       .createObservableGauge("publisher_heap_size_limit_bytes", {
          description:

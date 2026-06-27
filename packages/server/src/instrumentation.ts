@@ -1,5 +1,4 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { metrics } from "@opentelemetry/api";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
@@ -18,6 +17,7 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import type { NextFunction, Request, Response } from "express";
 import { logger } from "./logger";
+import { publisherMeter } from "./telemetry";
 
 let prometheusExporter: PrometheusExporter | null = null;
 let sdk: NodeSDK | null = null;
@@ -98,7 +98,7 @@ instrument();
 
 // --- HTTP metrics middleware ---
 
-const meter = metrics.getMeter("publisher");
+const meter = publisherMeter();
 
 const httpRequestDuration = meter.createHistogram(
    "http_server_request_duration_ms",

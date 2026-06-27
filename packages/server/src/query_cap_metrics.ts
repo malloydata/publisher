@@ -25,7 +25,8 @@
  * is one boolean check after the first 413.
  */
 
-import { metrics, type Counter } from "@opentelemetry/api";
+import { type Counter } from "@opentelemetry/api";
+import { publisherMeter } from "./telemetry";
 
 import { getMaxQueryRows, getMaxResponseBytes } from "./config";
 
@@ -39,7 +40,7 @@ function ensureCapTelemetry(): Counter {
    if (capExceededCounter && configGaugesInstalled) {
       return capExceededCounter;
    }
-   const meter = metrics.getMeter("publisher");
+   const meter = publisherMeter();
    if (!capExceededCounter) {
       capExceededCounter = meter.createCounter(
          "publisher_query_cap_exceeded_total",

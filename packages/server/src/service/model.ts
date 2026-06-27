@@ -20,7 +20,7 @@ import {
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
@@ -152,7 +152,7 @@ export class Model {
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
-   private meter = metrics.getMeter("publisher");
+   private meter = publisherMeter();
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
       {
