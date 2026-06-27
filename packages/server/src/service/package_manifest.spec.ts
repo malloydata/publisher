@@ -5,7 +5,7 @@ describe("service/package_manifest", () => {
    describe("parsePackageMaterialization", () => {
       it("extracts a string schedule", () => {
          expect(parsePackageMaterialization({ schedule: "0 6 * * *" })).toEqual(
-            { schedule: "0 6 * * *" },
+            { schedule: "0 6 * * *", freshness: null },
          );
       });
 
@@ -14,20 +14,45 @@ describe("service/package_manifest", () => {
          expect(parsePackageMaterialization(null)).toBeNull();
       });
 
+      it("extracts the freshness window and fallback", () => {
+         expect(
+            parsePackageMaterialization({
+               schedule: "*/15 * * * *",
+               freshness: { window: "24h", fallback: "stale_ok" },
+            }),
+         ).toEqual({
+            schedule: "*/15 * * * *",
+            freshness: { window: "24h", fallback: "stale_ok" },
+         });
+      });
+
+      it("defaults the freshness fallback to null when absent", () => {
+         expect(
+            parsePackageMaterialization({ freshness: { window: "7d" } }),
+         ).toEqual({ schedule: null, freshness: { window: "7d", fallback: null } });
+      });
+
       it("ignores extra/unknown fields", () => {
          expect(
             parsePackageMaterialization({
                schedule: "*/15 * * * *",
-               freshness: { window: "24h" },
+               somethingElse: true,
             }),
-         ).toEqual({ schedule: "*/15 * * * *" });
+         ).toEqual({ schedule: "*/15 * * * *", freshness: null });
       });
 
-      it("degrades a non-string schedule to null", () => {
+      it("degrades non-string leaf values to null", () => {
          expect(parsePackageMaterialization({ schedule: 42 })).toEqual({
             schedule: null,
+            freshness: null,
          });
-         expect(parsePackageMaterialization({})).toEqual({ schedule: null });
+         expect(parsePackageMaterialization({})).toEqual({
+            schedule: null,
+            freshness: null,
+         });
+         expect(
+            parsePackageMaterialization({ freshness: { window: 1, fallback: 2 } }),
+         ).toEqual({ schedule: null, freshness: { window: null, fallback: null } });
       });
 
       it("returns null for non-object input", () => {
