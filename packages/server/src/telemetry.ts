@@ -6,7 +6,7 @@ import { metrics, type Meter } from "@opentelemetry/api";
  * silently split a metric onto a second meter and drop it from the
  * Prometheus scrape.
  */
-export const METER_NAME = "publisher";
+const METER_NAME = "publisher";
 
 /**
  * The shared publisher meter. Resolves lazily through the OTel global
