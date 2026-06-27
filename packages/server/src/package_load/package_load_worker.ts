@@ -16,7 +16,7 @@
  * duplicates the in-memory DB state and adds native-module load
  * latency to every worker spawn. Database probing (`readDatabases`)
  * stays on the main thread where it can reuse the package's existing
- * DuckDB connection (see PR #772).
+ * DuckDB connection.
  *
  * Boundary
  * --------

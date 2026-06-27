@@ -54,8 +54,7 @@
  *   - **Job timeout.** `PACKAGE_LOAD_JOB_TIMEOUT_MS` (default 120s) caps a
  *     single package load. On timeout we **terminate the worker** and
  *     reject the caller — we do not silently fall back, and we do not
- *     leave a zombie compile burning CPU on the worker (that's the
- *     exact scenario PR-#767's job-timeout-without-terminate had).
+ *     leave a zombie compile burning CPU on the worker.
  *
  * Schema-fetch RPC routing
  * ------------------------
