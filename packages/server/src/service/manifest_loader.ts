@@ -4,6 +4,7 @@ import * as fs from "fs/promises";
 import { fileURLToPath } from "url";
 import { components } from "../api";
 import { logger } from "../logger";
+import { recordManifestStaleEntry } from "../materialization_metrics";
 import { BuildManifest } from "../storage/DatabaseInterface";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
@@ -163,12 +164,16 @@ export async function fetchManifestEntries(
       // compiled into the model at bind time), so a stale `fail` source drops
       // its binding and serves live rather than serving stale data; per-query
       // erroring would need Malloy-runtime support. `live` and `fail` therefore
-      // both drop the binding, differing only in the log.
-      logger.info("Manifest entry is stale; dropping binding (serving live)", {
+      // both drop the binding, differing only in the metric label.
+      const fallback = decision === "fail" ? "fail" : "live";
+      recordManifestStaleEntry(fallback);
+      // Per-entry detail at debug to keep a large stale manifest from flooding
+      // info logs on every bind; the counter is the operational signal.
+      logger.debug("Manifest entry is stale; dropping binding (serving live)", {
          uri,
          buildId,
          physicalTableName,
-         freshnessFallback: entry.freshnessFallback ?? "live",
+         freshnessFallback: fallback,
          builtAt: entry.builtAt ?? null,
          freshnessWindowSeconds: entry.freshnessWindowSeconds ?? null,
       });
