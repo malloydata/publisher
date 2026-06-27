@@ -4,9 +4,9 @@ import { parsePackageMaterialization } from "./package_manifest";
 describe("service/package_manifest", () => {
    describe("parsePackageMaterialization", () => {
       it("extracts a string schedule", () => {
-         expect(
-            parsePackageMaterialization({ schedule: "0 6 * * *" }),
-         ).toEqual({ schedule: "0 6 * * *" });
+         expect(parsePackageMaterialization({ schedule: "0 6 * * *" })).toEqual(
+            { schedule: "0 6 * * *" },
+         );
       });
 
       it("returns null when the block is absent", () => {
