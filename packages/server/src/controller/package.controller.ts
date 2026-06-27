@@ -195,9 +195,9 @@ export class PackageController {
 
    /**
     * Run the right downloader for the given location into `targetPath`.
-    * This used to point at the canonical package directory, but the
-    * install pipeline now passes a sibling staging dir so the long-running
-    * download doesn't hold the per-package mutex.
+    * Callers pass a sibling staging dir (not the canonical package
+    * directory) so the long-running download doesn't hold the per-package
+    * mutex.
     */
    private async downloadInto(
       environmentName: string,

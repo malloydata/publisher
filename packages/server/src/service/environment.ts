@@ -1,6 +1,6 @@
 import type { GivenValue, LogMessage } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -97,24 +97,26 @@ let queryAdmissionRejectionsCounter: Counter | null = null;
 let packageAdmissionRejectionsCounter: Counter | null = null;
 function getQueryAdmissionRejectionsCounter(): Counter {
    if (queryAdmissionRejectionsCounter) return queryAdmissionRejectionsCounter;
-   queryAdmissionRejectionsCounter = metrics
-      .getMeter("publisher")
-      .createCounter("publisher_query_admission_rejections_total", {
+   queryAdmissionRejectionsCounter = publisherMeter().createCounter(
+      "publisher_query_admission_rejections_total",
+      {
          description:
             "Queries rejected with 503 because Environment.assertCanAdmitQuery() observed memory back-pressure",
-      });
+      },
+   );
    return queryAdmissionRejectionsCounter;
 }
 function getPackageAdmissionRejectionsCounter(): Counter {
    if (packageAdmissionRejectionsCounter) {
       return packageAdmissionRejectionsCounter;
    }
-   packageAdmissionRejectionsCounter = metrics
-      .getMeter("publisher")
-      .createCounter("publisher_package_admission_rejections_total", {
+   packageAdmissionRejectionsCounter = publisherMeter().createCounter(
+      "publisher_package_admission_rejections_total",
+      {
          description:
             "Package loads rejected with 503 because Environment.assertCanAdmitNewPackage() observed memory back-pressure",
-      });
+      },
+   );
    return packageAdmissionRejectionsCounter;
 }
 

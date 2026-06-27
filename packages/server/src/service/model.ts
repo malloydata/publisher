@@ -20,7 +20,7 @@ import {
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
@@ -66,6 +66,7 @@ import {
    assertWithinModelResponseLimits,
    resolveModelQueryRowLimit,
 } from "./model_limits";
+import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -151,7 +152,7 @@ export class Model {
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
-   private meter = metrics.getMeter("publisher");
+   private meter = publisherMeter();
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
       {
@@ -330,7 +331,8 @@ export class Model {
 
    /**
     * Gate ad-hoc compile/query text by the named source it targets. Resolves the
-    * source from surface syntax (`extractSourceName`) and applies the gate. An
+    * source from surface syntax (`extractRunTargetSourceName`) and applies the
+    * gate. An
     * unnamed/inline source resolves to `undefined`, so only the model-wide
     * file-level gate applies — the same top-level-only boundary as the query
     * path's early gate. Used by the `/compile` path, which has no runnable to
@@ -340,7 +342,7 @@ export class Model {
       text: string,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.assertAuthorized(this.extractSourceName(text), givens);
+      await this.assertAuthorized(extractRunTargetSourceName(text), givens);
    }
 
    /**
@@ -390,21 +392,6 @@ export class Model {
     * Best-effort extraction of a source name from an ad-hoc Malloy query string.
     * Matches patterns like `run: source_name -> ...` or `source_name -> ...`.
     */
-   private extractSourceName(query?: string): string | undefined {
-      if (!query) return undefined;
-      // Match a bare `\w+` identifier or a backtick-quoted Malloy identifier
-      // (e.g. `gated-source`, which needs quoting for the hyphen). Quoted names
-      // must be recognized here too, or the early schema-oracle gate would miss
-      // a gated source with a quoted name and let a denied caller probe its
-      // columns via a pre-compilation field error. The quoted capture returns
-      // the inner name (no backticks), matching how sources are keyed.
-      const runMatch = query.match(/run\s*:\s*(?:`([^`]+)`|(\w+))\s*->/);
-      const arrowMatch = query.match(/^\s*(?:`([^`]+)`|(\w+))\s*->/m);
-      return (
-         runMatch?.[1] ?? runMatch?.[2] ?? arrowMatch?.[1] ?? arrowMatch?.[2]
-      );
-   }
-
    /**
     * Resolve the run target of an ad-hoc query to the model-defined source
     * whose filters apply, following source-derivation declarations so that a
@@ -414,10 +401,10 @@ export class Model {
     * from a protected source.
     */
    private resolveFilterSource(query?: string): string | undefined {
-      const target = this.extractSourceName(query);
+      const target = extractRunTargetSourceName(query);
       if (!target || !query) return undefined;
 
-      const aliasOf = Model.buildAliasMap(query);
+      const aliasOf = buildSourceAliasMap(query);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;
@@ -856,7 +843,7 @@ export class Model {
       // schema. Everything else (inline derivations, multi-statement, forms
       // the regex can't read) defers to the compiled backstop.
       if (query) {
-         const target = this.extractSourceName(query);
+         const target = extractRunTargetSourceName(query);
          if (
             target &&
             !curatedSources.has(target) &&
@@ -935,7 +922,7 @@ export class Model {
     *  queryable source is itself queryable. */
    private derivesFromCurated(name: string, query: string): boolean {
       const curated = this.curatedSourceNames();
-      const aliasOf = Model.buildAliasMap(query);
+      const aliasOf = buildSourceAliasMap(query);
       let current: string | undefined = name;
       const seen = new Set<string>();
       while (current && !seen.has(current)) {
@@ -944,27 +931,6 @@ export class Model {
          current = aliasOf.get(current);
       }
       return false;
-   }
-
-   /** Map each ad-hoc source alias to the base it derives from
-    *  (`source: NAME is BASE …` → NAME → BASE). Shared by filter inheritance
-    *  ({@link resolveFilterSource}) and the query boundary, which both walk
-    *  derivation chains in caller-authored query text. */
-   private static buildAliasMap(query: string): Map<string, string> {
-      const aliasOf = new Map<string, string>();
-      // Match a bare `\w+` or a backtick-quoted Malloy identifier on BOTH sides
-      // (a hyphenated source like `customer-orders` needs quoting), same pattern
-      // as `extractSourceName`. The quoted capture returns the inner name (no
-      // backticks), keeping aliases keyed the way `curatedSourceNames()` and the
-      // compiled run target are — otherwise a derivation over a quoted source
-      // wouldn't walk back to the curated set and would be falsely denied.
-      const declRe =
-         /source\s*:\s*(?:`([^`]+)`|(\w+))\s+is\s+(?:`([^`]+)`|(\w+))/g;
-      let match: RegExpExecArray | null;
-      while ((match = declRe.exec(query)) !== null) {
-         aliasOf.set(match[1] ?? match[2], match[3] ?? match[4]);
-      }
-      return aliasOf;
    }
 
    /**
@@ -1157,7 +1123,7 @@ export class Model {
          (queryName
             ? this.queries?.find((q) => q.name === queryName)?.sourceName
             : undefined) ||
-         this.extractSourceName(query);
+         extractRunTargetSourceName(query);
       if (earlySource) {
          await this.assertAuthorized(earlySource, givens ?? {});
       }
@@ -1511,7 +1477,7 @@ export class Model {
 
             // If filters need to be applied, rebuild the query with a refinement
             if (!bypassFilters && cell.modelMaterializer) {
-               const effectiveSource = this.extractSourceName(cell.text);
+               const effectiveSource = extractRunTargetSourceName(cell.text);
                if (effectiveSource) {
                   const filters = this.getFilters(effectiveSource);
                   if (filters.length > 0) {

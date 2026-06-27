@@ -109,10 +109,10 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 // allowedDirectories, setupSQL, etc.). It is NOT a filesystem isolation
 // boundary: attachedDatabases[].path is not normalized or constrained to stay
 // under the environment root, and DuckDB's local-file access is unchanged.
-// Adversarial filesystem isolation is explicit non-goal of the MalloyConfig
-// adoption — see PR #682 release notes ("DuckDB hardening knobs are not
-// exposed", "no adversarial DuckDB filesystem isolation"). Future work owns
-// any path-traversal/allowlist enforcement.
+// Adversarial filesystem isolation is an explicit non-goal here: DuckDB
+// hardening knobs are not exposed and there is no adversarial DuckDB
+// filesystem isolation. Future work owns any path-traversal/allowlist
+// enforcement.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 

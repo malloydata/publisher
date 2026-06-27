@@ -147,9 +147,7 @@ function parseArgs() {
    // this — the user told us where to look. Skip in NODE_ENV=test as a
    // belt-and-suspenders so any spec that ends up evaluating this
    // module doesn't accidentally pin the EnvironmentStore to the
-   // bundled malloy-samples config; query-param helpers have been
-   // moved to `./query_param_utils` precisely so unit specs no longer
-   // need to import this module at all.
+   // bundled malloy-samples config.
    if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
@@ -688,12 +686,12 @@ app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
 // opt-in (`--watch-env <name>` CLI flag, or `POST /api/v0/watch-mode/start`).
 // Instead it reports whether watch mode is currently active for the requested
 // env via a `mode` event and, if so, fans out file-change events to the
-// browser. This avoids two earlier bugs:
-//   - Auto-starting from the request handler made arbitrary fetches reach
-//     in to mutate global watch-mode state (`event traversal — see below).
-//   - The runtime previously had no way to know "watch mode isn't running,
-//     don't expect reloads"; with the `mode` event it can choose to surface
-//     a small dev indicator (today: silent).
+// browser. This avoids two failure modes:
+//   - Auto-starting from the request handler would let arbitrary fetches
+//     reach in to mutate global watch-mode state.
+//   - Without the `mode` event the client cannot tell "watch mode isn't
+//     running, don't expect reloads"; with it the client can choose to
+//     surface a small dev indicator (today: silent).
 //
 // Inputs are validated before any state lookup. Names that don't pass the
 // canonical `assertSafePackageName` allowlist get 400 — preventing requests

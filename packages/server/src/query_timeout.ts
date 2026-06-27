@@ -1,4 +1,5 @@
-import { metrics, type Counter } from "@opentelemetry/api";
+import { type Counter } from "@opentelemetry/api";
+import { publisherMeter } from "./telemetry";
 
 import { getQueryTimeoutMs } from "./config";
 import { QueryTimeoutError } from "./errors";
@@ -28,7 +29,7 @@ function ensureTimeoutTelemetry(): Counter {
    if (queryTimeoutCounter && timeoutTelemetryInitialized) {
       return queryTimeoutCounter;
    }
-   const meter = metrics.getMeter("publisher");
+   const meter = publisherMeter();
    if (!queryTimeoutCounter) {
       queryTimeoutCounter = meter.createCounter(
          "publisher_query_timeout_total",

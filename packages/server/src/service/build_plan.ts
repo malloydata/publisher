@@ -103,10 +103,10 @@ export function flattenDependsOn(node: {
  * <p>Malloy's {@code getBuildPlan()} puts only the <em>root</em> persist sources
  * (the terminals nothing else consumes) in {@code graph.nodes}; every transitive
  * persist dependency is nested under a root in its recursive {@code dependsOn}
- * tree (and present in {@code sources}). Walking only {@code graph.nodes} —
- * which this used to do — therefore silently skips every intermediate persist
- * source, so it never gets materialized (it only got a table by coincidence when
- * it shared a buildId with a root). We post-order DFS the {@code dependsOn} tree
+ * tree (and present in {@code sources}). Walking only {@code graph.nodes}
+ * silently skips every intermediate persist source, so it never gets
+ * materialized (it only gets a table by coincidence when it shares a buildId
+ * with a root). We post-order DFS the {@code dependsOn} tree
  * so dependencies are built first (a downstream build can then read its upstream
  * source's freshly materialized table), deduplicating shared (diamond)
  * dependencies by sourceID so each is yielded once. This mirrors the canonical
