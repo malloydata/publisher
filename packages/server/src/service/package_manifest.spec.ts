@@ -29,7 +29,10 @@ describe("service/package_manifest", () => {
       it("defaults the freshness fallback to null when absent", () => {
          expect(
             parsePackageMaterialization({ freshness: { window: "7d" } }),
-         ).toEqual({ schedule: null, freshness: { window: "7d", fallback: null } });
+         ).toEqual({
+            schedule: null,
+            freshness: { window: "7d", fallback: null },
+         });
       });
 
       it("ignores extra/unknown fields", () => {
@@ -51,8 +54,13 @@ describe("service/package_manifest", () => {
             freshness: null,
          });
          expect(
-            parsePackageMaterialization({ freshness: { window: 1, fallback: 2 } }),
-         ).toEqual({ schedule: null, freshness: { window: null, fallback: null } });
+            parsePackageMaterialization({
+               freshness: { window: 1, fallback: 2 },
+            }),
+         ).toEqual({
+            schedule: null,
+            freshness: { window: null, fallback: null },
+         });
       });
 
       it("returns null for non-object input", () => {
