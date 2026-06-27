@@ -2436,6 +2436,14 @@ components:
             URI (gs:// or s3://) of the externally-computed manifest for this package.
             On (re)load the publisher reads it and binds persist references
             (buildId -> physicalTableName). Null = serve live.
+        materialization:
+          oneOf:
+            - $ref: "#/components/schemas/PackageMaterializationConfig"
+            - type: "null"
+          description: |
+            Package-level Malloy Persistence policy declared in
+            malloy-publisher.json. The control plane reads it to drive scheduled
+            re-materialization. Null/absent = no package-level policy.
         manifestBindingStatus:
           type: string
           readOnly: true
@@ -2484,6 +2492,21 @@ components:
             (package version, connection config). Returned by default whenever the
             package is compiled; null only when the package declares no persist
             source.
+
+    PackageMaterializationConfig:
+      type: object
+      description: >-
+        Package-level Malloy Persistence policy from malloy-publisher.json's
+        `materialization` block. Surfaced verbatim so the control plane can drive
+        scheduled version-level re-materialization without re-reading the package
+        files.
+      properties:
+        schedule:
+          type: ["string", "null"]
+          description: >-
+            5-field UNIX cron controlling how often the control plane
+            re-materializes this package's published versions. Null/absent = no
+            scheduled re-materialization (publish / on-demand only).
 
     Model:
       type: object

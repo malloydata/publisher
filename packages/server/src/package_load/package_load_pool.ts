@@ -234,6 +234,7 @@ export interface LoadPackageOutcome {
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
+      materialization?: { schedule: string | null } | null;
    };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {

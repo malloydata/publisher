@@ -331,6 +331,7 @@ export class Package {
          explores: outcome.packageMetadata.explores,
          queryableSources: outcome.packageMetadata.queryableSources,
          manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
+         materialization: outcome.packageMetadata.materialization ?? null,
       };
 
       // Build live `Model`s from worker output. Any per-model compile

@@ -179,6 +179,7 @@ export interface LoadPackageResult {
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
+      materialization?: { schedule: string | null } | null;
    };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */
