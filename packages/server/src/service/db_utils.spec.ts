@@ -7,8 +7,16 @@ mock.module("@azure/identity", () => ({
 mock.module("@azure/storage-blob", () => ({
    ContainerClient: class {},
 }));
+// Records bigquery.dataset() calls so tests can assert how a (possibly
+// project-qualified) schema name is split into datasetId + projectId.
+const bqDatasetCalls: Array<{ id: string; options?: unknown }> = [];
 mock.module("@google-cloud/bigquery", () => ({
-   BigQuery: class {},
+   BigQuery: class {
+      dataset(id: string, options?: unknown) {
+         bqDatasetCalls.push({ id, options });
+         return { getTables: async () => [[]] };
+      }
+   },
 }));
 
 import { Connection } from "@malloydata/malloy";
@@ -1029,5 +1037,49 @@ describe("publisher proxy introspection", () => {
       await expect(getSchemasForConnection(conn, noConn)).rejects.toThrow(
          'failed for connection "analytics": ECONNREFUSED',
       );
+   });
+});
+
+// ---------------------------------------------------------------------------
+// listTablesForSchema — bigquery (project-qualified dataset)
+// ---------------------------------------------------------------------------
+describe("listTablesForSchema bigquery", () => {
+   const bqConnection = {
+      name: "bq",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "default-proj",
+         serviceAccountKeyJson: JSON.stringify({ project_id: "default-proj" }),
+      },
+   } as unknown as ApiConnection;
+   const malloyConn = {} as unknown as Connection;
+
+   it("splits a project-qualified schema into a bare dataset id + projectId", async () => {
+      bqDatasetCalls.length = 0;
+      await listTablesForSchema(bqConnection, "myproj.myds", malloyConn);
+      expect(bqDatasetCalls).toHaveLength(1);
+      expect(bqDatasetCalls[0]?.id).toBe("myds");
+      expect(bqDatasetCalls[0]?.options).toEqual({ projectId: "myproj" });
+   });
+
+   it("splits on the last dot so domain-scoped project ids survive", async () => {
+      bqDatasetCalls.length = 0;
+      await listTablesForSchema(
+         bqConnection,
+         "domain.com:proj.myds",
+         malloyConn,
+      );
+      expect(bqDatasetCalls[0]?.id).toBe("myds");
+      expect(bqDatasetCalls[0]?.options).toEqual({
+         projectId: "domain.com:proj",
+      });
+   });
+
+   it("passes a bare dataset name through unqualified", async () => {
+      bqDatasetCalls.length = 0;
+      await listTablesForSchema(bqConnection, "myds", malloyConn);
+      expect(bqDatasetCalls).toHaveLength(1);
+      expect(bqDatasetCalls[0]?.id).toBe("myds");
+      expect(bqDatasetCalls[0]?.options).toBeUndefined();
    });
 });

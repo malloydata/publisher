@@ -1077,7 +1077,20 @@ async function listTablesForBigQuery(
 ): Promise<ApiTable[]> {
    try {
       const bigquery = createBigQueryClient(connection);
-      const dataset = bigquery.dataset(schemaName);
+      // A 3-segment table reference ("project.dataset.table") reaches here with a
+      // project-qualified schema ("project.dataset"). bigquery.dataset() takes a
+      // BARE dataset id plus an optional projectId, so passing "project.dataset" as
+      // the id resolves to a non-existent dataset in the client's default project —
+      // the dataset's tables never list, so the orphan sweep can't see (and reclaim)
+      // those tables. Split the project off the last dot. (Domain-scoped project ids
+      // like "domain.com:project" keep their dots/colon since we split on the last.)
+      const lastDot = schemaName.lastIndexOf(".");
+      const dataset =
+         lastDot === -1
+            ? bigquery.dataset(schemaName)
+            : bigquery.dataset(schemaName.slice(lastDot + 1), {
+                 projectId: schemaName.slice(0, lastDot),
+              });
       const [tables] = await dataset.getTables();
 
       let names = tables
