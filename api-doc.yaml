@@ -2507,6 +2507,41 @@ components:
             5-field UNIX cron controlling how often the control plane
             re-materializes this package's published versions. Null/absent = no
             scheduled re-materialization (publish / on-demand only).
+        freshness:
+          oneOf:
+            - $ref: "#/components/schemas/MaterializationFreshnessConfig"
+            - type: "null"
+          description: |
+            Staleness policy. The control plane threads it (resolved to seconds)
+            plus each serving table's build time into the build manifest; the
+            publisher evaluates it when it binds the manifest (package load /
+            reload), re-evaluating on the next rebind rather than per query.
+            Null/absent = no freshness gate (serve the materialized table
+            whenever one exists).
+
+    MaterializationFreshnessConfig:
+      type: object
+      description: >-
+        Freshness gate for a package's persisted sources, applied when the
+        publisher binds the build manifest. A source's materialized table backs
+        queries only while it was younger than `window` at bind time; once
+        older, `fallback` decides what the binding does.
+      properties:
+        window:
+          type: ["string", "null"]
+          description: >-
+            Maximum age a materialized table may have at manifest bind time to
+            stay bound, as a duration with a unit suffix (`s`/`m`/`h`/`d`, e.g.
+            `24h`, `7d`, `30m`). Null/absent = no window (never considered
+            stale).
+        fallback:
+          type: ["string", "null"]
+          description: >-
+            What the binding does when the materialized table is older than
+            `window` at bind time: `live` (default) drops the binding so queries
+            run live against the base tables; `stale_ok` keeps the stale table
+            bound; `fail` is treated like `live` today (the bound model has no
+            per-query error hook). Null/absent defaults to `live`.
 
     Model:
       type: object
@@ -3825,6 +3860,34 @@ components:
           $ref: "#/components/schemas/Realization"
         rowCount:
           type: ["integer", "null"]
+        builtAt:
+          type: ["string", "null"]
+          format: date-time
+          description: >-
+            When this table's data was built (the materialized table's create
+            time). The publisher uses it as the freshness clock when it binds the
+            manifest: the table is bound only while
+            `bindTime - builtAt <= freshnessWindowSeconds`. Null = no freshness
+            clock (treated as never stale).
+        freshnessWindowSeconds:
+          type: ["integer", "null"]
+          description: >-
+            Maximum age in seconds the table may have at manifest bind time
+            before it is considered stale (from the package's
+            materialization.freshness window). Null/absent = no freshness gate
+            (always bind).
+        freshnessFallback:
+          type: string
+          enum: [live, stale_ok, fail]
+          description: >-
+            What the binding does when this table is older than
+            `freshnessWindowSeconds` at bind time: `live` (default) drops the
+            binding so queries run live, `stale_ok` keeps the stale table bound,
+            `fail` is treated like `live` today (the bound model has no per-query
+            error hook). Absent defaults to `live`. Ignored when
+            `freshnessWindowSeconds` is null. Always one of the three values —
+            the control plane resolves the package config to a valid fallback
+            before writing the manifest.
 
   parameters:
     environmentName:

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
    recordConnectionDigestSkipped,
    recordDropTables,
+   recordManifestStaleEntry,
    recordMaterializationRun,
    recordSourcesOutcome,
    resetMaterializationTelemetryForTesting,
@@ -78,6 +79,25 @@ describe("materialization_metrics", () => {
       expect(
          await harness.collectCounter(
             "publisher_materialization_connection_digest_skipped_total",
+         ),
+      ).toBe(1);
+   });
+
+   it("counts stale manifest entries labeled by fallback", async () => {
+      recordManifestStaleEntry("live");
+      recordManifestStaleEntry("live");
+      recordManifestStaleEntry("fail");
+
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_manifest_stale_entries_total",
+            { fallback: "live" },
+         ),
+      ).toBe(2);
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_manifest_stale_entries_total",
+            { fallback: "fail" },
          ),
       ).toBe(1);
    });

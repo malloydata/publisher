@@ -99,6 +99,7 @@ import type {
    SerializedModel,
    WorkerToMainMessage,
 } from "./protocol";
+import type { PackageMaterializationConfig } from "../service/package_manifest";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
@@ -233,7 +234,7 @@ export interface LoadPackageOutcome {
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
-      materialization?: { schedule: string | null } | null;
+      materialization?: PackageMaterializationConfig | null;
    };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {

@@ -123,6 +123,32 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       return file;
    }
 
+   async function writeManifestWithFreshness(opts: {
+      builtAt: string;
+      freshnessWindowSeconds: number;
+      freshnessFallback?: "live" | "stale_ok" | "fail";
+   }): Promise<string> {
+      const file = path.join(tmpDir, `manifest-fresh-${Date.now()}.json`);
+      await fsp.writeFile(
+         file,
+         JSON.stringify({
+            builtAt: new Date().toISOString(),
+            strict: false,
+            entries: {
+               build123: {
+                  buildId: "build123",
+                  sourceName: "order_summary",
+                  physicalTableName: "main.order_summary_mz",
+                  connectionName: "duckdb",
+                  ...opts,
+               },
+            },
+         }),
+         "utf8",
+      );
+      return file;
+   }
+
    it("starts with no manifestLocation and serves live", async () => {
       expect((await getPackage()).manifestLocation ?? null).toBeNull();
       expect(await queryOrderSummaryStatus()).toBe(200);
@@ -167,6 +193,43 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(cleared.boundManifestUri ?? null).toBeNull();
          expect((await getPackage(true)).manifestLocation ?? null).toBeNull();
          expect(await queryOrderSummaryStatus()).toBe(200);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "binds a fresh entry but drops a stale one (serving live)",
+      async () => {
+         const hoursAgo = (h: number): string =>
+            new Date(Date.now() - h * 3_600_000).toISOString();
+
+         // Within the freshness window -> the table is bound.
+         const freshFile = await writeManifestWithFreshness({
+            builtAt: hoursAgo(1),
+            freshnessWindowSeconds: 24 * 3600,
+         });
+         const fresh = await (
+            await patchPackage({ manifestLocation: freshFile })
+         ).json();
+         expect(fresh.manifestBindingStatus).toBe("bound");
+         expect(fresh.manifestEntryCount).toBe(1);
+         expect(await queryOrderSummaryStatus()).toBe(200);
+
+         // Past the window with the default `live` fallback -> dropped from the
+         // binding so the source serves live (unbound, zero entries), and the
+         // package keeps serving.
+         const staleFile = await writeManifestWithFreshness({
+            builtAt: hoursAgo(48),
+            freshnessWindowSeconds: 24 * 3600,
+         });
+         const stale = await (
+            await patchPackage({ manifestLocation: staleFile })
+         ).json();
+         expect(stale.manifestBindingStatus).toBe("unbound");
+         expect(stale.manifestEntryCount).toBe(0);
+         expect(await queryOrderSummaryStatus()).toBe(200);
+
+         await patchPackage({ manifestLocation: null });
       },
       { timeout: 60_000 },
    );

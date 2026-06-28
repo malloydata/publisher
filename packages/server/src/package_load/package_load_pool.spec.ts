@@ -175,6 +175,39 @@ describe("PackageLoadPool (real worker)", () => {
       }
    });
 
+   it("carries the package materialization config (schedule + freshness) across the worker boundary", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({
+            name: "pkg",
+            materialization: {
+               schedule: "0 6 * * *",
+               freshness: { window: "24h", fallback: "stale_ok" },
+            },
+         }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "trivial.malloy"),
+         `source: nums is duckdb.sql("select 1 as a")`,
+      );
+
+      const { malloyConfig, duckdb } = await buildConfig();
+      try {
+         const outcome = await pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+         });
+         expect(outcome.packageMetadata.materialization).toEqual({
+            schedule: "0 6 * * *",
+            freshness: { window: "24h", fallback: "stale_ok" },
+         });
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("propagates a per-model compile failure in-band (not as a rejected Promise)", async () => {
       writeManifest(tempDir);
       fs.writeFileSync(

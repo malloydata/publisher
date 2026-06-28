@@ -78,6 +78,10 @@ const manifestBindCounter = lazyCounter(
    "publisher_materialization_manifest_bind_total",
    "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
 );
+const manifestStaleEntryCounter = lazyCounter(
+   "publisher_materialization_manifest_stale_entries_total",
+   "Materialized tables dropped from a bind because they were stale (older than the freshness window), so the source serves live. Label: fallback ('live'|'fail').",
+);
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
    "Wall-clock duration of building a single persist source.",
@@ -145,6 +149,17 @@ export function recordConnectionDigestSkipped(): void {
  */
 export function recordManifestBind(outcome: ManifestBindOutcome): void {
    manifestBindCounter().add(1, { outcome });
+}
+
+/**
+ * Record a materialized table dropped from a bind because it was stale, so the
+ * source falls back to serving live. The key operational signal that a package
+ * is serving live despite a materialized table existing; `fallback` separates
+ * the configured `live` policy from a `fail` policy that can't yet error per
+ * query and so degrades to live.
+ */
+export function recordManifestStaleEntry(fallback: "live" | "fail"): void {
+   manifestStaleEntryCounter().add(1, { fallback });
 }
 
 /** Record the wall-clock duration of building one persist source's table. */
