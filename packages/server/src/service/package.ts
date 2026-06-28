@@ -331,7 +331,16 @@ export class Package {
          explores: outcome.packageMetadata.explores,
          queryableSources: outcome.packageMetadata.queryableSources,
          manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
-         materialization: outcome.packageMetadata.materialization ?? null,
+         // Always surface a non-null `materialization` object once the package
+         // has loaded (schedule null when the manifest declares no policy). The
+         // control plane treats object-present as the authoritative "this is
+         // what the manifest says" signal and object-absent as "metadata not
+         // available this request" — so it must never be dropped to null on a
+         // successfully loaded package, or the CP can misread a transient
+         // absence as a schedule removal. See `parsePackageMaterialization`.
+         materialization: outcome.packageMetadata.materialization ?? {
+            schedule: null,
+         },
       };
 
       // Build live `Model`s from worker output. Any per-model compile
