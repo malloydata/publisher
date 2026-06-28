@@ -1340,6 +1340,13 @@ export class Environment {
             explores,
             queryableSources,
             manifestLocation,
+            // Carry the manifest-derived materialization policy through the
+            // PATCH. `setPackageMetadata` replaces the whole object, so omitting
+            // this wipes the in-memory `materialization` until the next reload —
+            // which makes a later getPackage report no schedule and lets the
+            // control plane misread the gap as a schedule removal. It is not a
+            // PATCH-editable field, so always preserve the existing value.
+            materialization: existing.materialization,
          });
 
          // Strict-reject, symmetric with the publish path

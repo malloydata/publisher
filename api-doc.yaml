@@ -2443,7 +2443,12 @@ components:
           description: |
             Package-level Malloy Persistence policy declared in
             malloy-publisher.json. The control plane reads it to drive scheduled
-            re-materialization. Null/absent = no package-level policy.
+            re-materialization. The object is present whenever the package has
+            loaded — with `schedule: null` when the manifest declares no
+            schedule — so the caller can treat object-present as the
+            authoritative manifest policy. Null/absent only when package
+            metadata is unavailable for this request (not loaded), which the
+            caller must treat as "unknown", not as a removal.
         manifestBindingStatus:
           type: string
           readOnly: true
@@ -2499,14 +2504,17 @@ components:
         Package-level Malloy Persistence policy from malloy-publisher.json's
         `materialization` block. Surfaced verbatim so the control plane can drive
         scheduled version-level re-materialization without re-reading the package
-        files.
+        files. The object is emitted whenever the package is loaded, even when no
+        policy is declared (all fields null), so its presence is an authoritative
+        "the manifest says this" signal rather than "policy missing".
       properties:
         schedule:
           type: ["string", "null"]
           description: >-
             5-field UNIX cron controlling how often the control plane
-            re-materializes this package's published versions. Null/absent = no
-            scheduled re-materialization (publish / on-demand only).
+            re-materializes this package's published versions. Null = no
+            scheduled re-materialization declared in the manifest (publish /
+            on-demand only).
 
     Model:
       type: object
