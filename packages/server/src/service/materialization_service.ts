@@ -560,8 +560,20 @@ export class MaterializationService {
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
+      // Index instructions by sourceID (the stable per-source handle) so the
+      // build no longer recomputes the buildId to find an instruction.
+      // Recomputing it here forced a caller's buildId to equal the publisher's
+      // content hash, so a caller that derives buildIds by any other scheme
+      // would have its sources silently skipped (the recomputed buildId would
+      // not match the instruction). buildId is treated as opaque, caller-assigned
+      // identity. A buildId index is kept as a fallback for instructions without
+      // a sourceID (e.g. standalone auto-run).
+      const bySourceID = new Map<string, BuildInstruction>();
       const byBuildId = new Map<string, BuildInstruction>();
       for (const instruction of instructions) {
+         if (instruction.sourceID) {
+            bySourceID.set(instruction.sourceID, instruction);
+         }
          byBuildId.set(instruction.buildId, instruction);
       }
 
@@ -587,8 +599,15 @@ export class MaterializationService {
          for (const persistSource of iterGraphSources(graph, sources)) {
             if (signal.aborted) throw new Error("Build cancelled");
 
+            // The manifest is keyed by the content buildId — what Malloy
+            // recomputes to resolve upstream persist references during SQL
+            // generation — independent of the instruction's identity buildId.
             const buildId = computeBuildId(persistSource, connectionDigests);
-            const instruction = byBuildId.get(buildId);
+            // Prefer sourceID matching (so the caller's buildId scheme stays
+            // opaque to the build); fall back to buildId for instructions
+            // without a sourceID (auto-run).
+            const instruction =
+               bySourceID.get(persistSource.sourceID) ?? byBuildId.get(buildId);
             if (!instruction) continue;
 
             const entry = await this.buildOneSource(
