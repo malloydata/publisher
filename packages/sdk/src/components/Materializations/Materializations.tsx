@@ -70,6 +70,14 @@ export default function Materializations({
       },
    });
 
+   // The build plan is a property of the compiled package (Package.buildPlan),
+   // not of a historical run, so fetch it from the package for the detail view.
+   const packageQuery = useQueryWithApiError({
+      queryKey: ["package", environmentName, packageName],
+      queryFn: () =>
+         apiClients.packages.getPackage(environmentName, packageName),
+   });
+
    const invalidateList = () =>
       queryClient.invalidateQueries({
          queryKey: ["materializations", environmentName, packageName],
@@ -114,11 +122,18 @@ export default function Materializations({
    });
 
    const deleteMaterialization = useMutationWithApiError({
-      mutationFn: (materialization: Materialization) =>
+      mutationFn: ({
+         materialization,
+         dropTables,
+      }: {
+         materialization: Materialization;
+         dropTables: boolean;
+      }) =>
          apiClients.materializations.deleteMaterialization(
             environmentName,
             packageName,
             materialization.id as string,
+            dropTables,
          ),
       onSuccess() {
          setNotificationMessage("Materialization deleted");
@@ -222,8 +237,11 @@ export default function Materializations({
                   onStop={(materialization) =>
                      stopMaterialization.mutate(materialization)
                   }
-                  onDelete={(materialization) =>
-                     deleteMaterialization.mutate(materialization)
+                  onDelete={(materialization, dropTables) =>
+                     deleteMaterialization.mutate({
+                        materialization,
+                        dropTables,
+                     })
                   }
                   onViewDetails={(materialization) =>
                      setSelectedId(materialization.id ?? null)
@@ -234,6 +252,7 @@ export default function Materializations({
 
          <MaterializationDetailDialog
             materialization={selected}
+            buildPlan={packageQuery.data?.data?.buildPlan ?? null}
             onClose={() => setSelectedId(null)}
          />
 

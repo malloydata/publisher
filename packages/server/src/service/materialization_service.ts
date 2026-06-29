@@ -1,12 +1,8 @@
 import type {
-   AtomicField,
-   BuildGraph as MalloyBuildGraph,
-   MalloyConfig,
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
-import { components } from "../api";
 import {
    BadRequestError,
    InvalidStateTransitionError,
@@ -15,10 +11,12 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import {
-   MaterializationRound,
+   MaterializationMode,
+   recordAutoLoadOutcome,
    recordDropTables,
-   recordMaterializationRound,
+   recordMaterializationRun,
    recordSourceBuildDuration,
+   recordSourcesOutcome,
 } from "../materialization_metrics";
 import {
    BuildInstruction,
@@ -32,14 +30,17 @@ import {
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
+import { errMessage } from "../utils";
+import {
+   CompiledBuildPlan,
+   compilePackageBuildPlan,
+   computeBuildId,
+   deriveAnnotationFields,
+   iterGraphSources,
+} from "./build_plan";
 import { EnvironmentStore } from "./environment_store";
-import { Model } from "./model";
-import { splitTablePath } from "./quoting";
+import { bareTableName, quoteIdentifier, quoteTablePath } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
-
-type WireBuildGraph = components["schemas"]["BuildGraph"];
-type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
-type WireColumn = components["schemas"]["Column"];
 
 /**
  * Length of the buildId prefix used when synthesizing staging table names.
@@ -54,63 +55,16 @@ export function stagingSuffix(buildId: string): string {
    return `_${buildId.substring(0, STAGING_BUILD_ID_LEN)}`;
 }
 
-/** Output columns of a persist source, degrading to [] if unavailable. */
-function deriveColumns(persistSource: PersistSource): WireColumn[] {
-   try {
-      return persistSource._explore.intrinsicFields
-         .filter((f) => f.isAtomicField())
-         .map((f) => ({
-            name: f.name,
-            type: String((f as AtomicField).type),
-         }));
-   } catch (err) {
-      logger.warn("Failed to derive columns for persist source", {
-         sourceID: persistSource.sourceID,
-         error: err instanceof Error ? err.message : String(err),
-      });
-      return [];
-   }
-}
-
-/** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
-function flattenDependsOn(node: {
-   dependsOn: { sourceID: string }[];
-}): string[] {
-   return node.dependsOn.map((d) => d.sourceID);
-}
-
-/**
- * The buildId for a persist source: a stable digest of its connection identity
- * and canonical SQL. Centralizes the (source, connectionDigests) call shape so
- * planning, self-instruction, and build all agree on the same id.
- */
-function computeBuildId(
-   source: PersistSource,
-   connectionDigests: Record<string, string>,
-): string {
-   return source.makeBuildId(
-      connectionDigests[source.connectionName],
-      source.getSQL(),
-   );
-}
-
 /**
  * Physical table name the publisher self-assigns in auto-run mode: the
  * `#@ persist name=<table>` value if present, else the Malloy source name.
  * The author owns quoting the `name=` value for the dialect.
  */
 function selfAssignTableName(persistSource: PersistSource): string {
-   try {
-      return (
-         persistSource.annotations.parseAsTag("@").tag.text("name") ||
-         persistSource.name
-      );
-   } catch {
-      return persistSource.name;
-   }
+   return deriveAnnotationFields(persistSource).name || persistSource.name;
 }
 
-/** Classify a thrown round error as cancelled (cooperative abort) or failed. */
+/** Classify a thrown build error as cancelled (cooperative abort) or failed. */
 function outcomeFor(
    _err: unknown,
    signal: AbortSignal | undefined,
@@ -119,41 +73,16 @@ function outcomeFor(
 }
 
 /**
- * Resolve a Map<name, Connection> for the names a step is about to touch.
- * The package's MalloyConfig caches each lookup, so repeated calls are cheap.
- * A failed lookup is logged and omitted; downstream code reports the missing
- * connection explicitly.
- */
-async function resolvePackageConnections(
-   pkg: { getMalloyConnection(name: string): Promise<MalloyConnection> },
-   names: Iterable<string>,
-): Promise<Map<string, MalloyConnection>> {
-   const map = new Map<string, MalloyConnection>();
-   const seen = new Set<string>();
-   for (const name of names) {
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
-      try {
-         map.set(name, await pkg.getMalloyConnection(name));
-      } catch (err) {
-         logger.warn(`Failed to resolve connection ${name}`, {
-            error: err instanceof Error ? err.message : String(err),
-         });
-      }
-   }
-   return map;
-}
-
-/**
- * Allowed status transitions for the two-round protocol. MANIFEST_FILE_READY,
- * FAILED, and CANCELLED are terminal.
+ * Allowed status transitions. The build runs without an intermediate
+ * plan-ready pause: PENDING advances straight to MANIFEST_ROWS_READY once the
+ * tables are built, then to MANIFEST_FILE_READY. MANIFEST_FILE_READY, FAILED,
+ * and CANCELLED are terminal.
  */
 const VALID_TRANSITIONS: Record<
    MaterializationStatus,
    MaterializationStatus[]
 > = {
-   PENDING: ["BUILD_PLAN_READY", "FAILED", "CANCELLED"],
-   BUILD_PLAN_READY: ["MANIFEST_ROWS_READY", "FAILED", "CANCELLED"],
+   PENDING: ["MANIFEST_ROWS_READY", "FAILED", "CANCELLED"],
    MANIFEST_ROWS_READY: ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"],
    MANIFEST_FILE_READY: [],
    FAILED: [],
@@ -161,14 +90,16 @@ const VALID_TRANSITIONS: Record<
 };
 
 /**
- * Orchestrates the two-round materialization protocol.
+ * Orchestrates single-call materialization builds.
  *
- * Round 1 (on create): compile the package, compute a build plan (per-source
- * buildId, columns, lineage inputs, connection capability) and pause at
- * BUILD_PLAN_READY without writing any tables. Round 2 (action=build): build
- * only the control-plane-instructed sources into their assigned physical
- * names and assemble the manifest, which is returned inline for the control
- * plane to persist.
+ * The build plan is a deterministic property of the compiled package
+ * (`Package.buildPlan`), so there is no separate plan round-trip. On create
+ * the publisher either auto-runs (self-assigns physical names from the
+ * `#@ persist name=` annotation and builds + auto-loads every persist source)
+ * or, when the caller supplies `buildInstructions` derived from
+ * `Package.buildPlan`, builds directly into the caller-assigned names without
+ * auto-loading the manifest. Both paths build in the background and return the
+ * PENDING record immediately.
  *
  * At most one active materialization per (environment, package) is enforced
  * by the DB-level unique index on `materializations.active_key` (see
@@ -210,8 +141,15 @@ export class MaterializationService {
          );
       }
       this.validateTransition(current.status, next);
-      logger.info("Materialization transition", {
+      // Terminal transitions are operationally interesting (info); the
+      // intermediate MANIFEST_ROWS_READY hop is routine bookkeeping (debug).
+      const terminal =
+         next === "MANIFEST_FILE_READY" ||
+         next === "FAILED" ||
+         next === "CANCELLED";
+      logger[terminal ? "info" : "debug"]("Materialization transition", {
          materializationId: id,
+         packageName: current.packageName,
          from: current.status,
          to: next,
       });
@@ -255,11 +193,19 @@ export class MaterializationService {
       return m;
    }
 
-   // ==================== ROUND 1: CREATE + PLAN ====================
+   // ==================== CREATE + BUILD ====================
 
    /**
-    * Create a materialization and start Round 1 (compile + plan) in the
-    * background. Returns the PENDING record immediately.
+    * Create a materialization and build it in the background. Returns the
+    * PENDING record immediately.
+    *
+    * Auto-run (default, no `buildInstructions`): self-assign physical names and
+    * build + auto-load every persist source. Orchestrated (`buildInstructions`
+    * present): build directly into the caller-assigned names from the package's
+    * build plan, without auto-loading the manifest. When `buildInstructions` is
+    * present it is validated synchronously against the package's compiled build
+    * plan so a bad instruction is rejected at create time rather than failing
+    * the background run.
     */
    async createMaterialization(
       environmentName: string,
@@ -267,7 +213,7 @@ export class MaterializationService {
       options: {
          forceRefresh?: boolean;
          sourceNames?: string[];
-         pauseBetweenPhases?: boolean;
+         buildInstructions?: BuildInstruction[];
       } = {},
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -276,24 +222,27 @@ export class MaterializationService {
          environmentName,
          false,
       );
-      await environment.getPackage(packageName, false);
+      const pkg = await environment.getPackage(packageName, false);
+
+      const buildInstructions = options.buildInstructions;
+      const orchestrated = buildInstructions !== undefined;
+      if (orchestrated) {
+         this.validateInstructions(pkg.getBuildPlan(), buildInstructions);
+      }
 
       const active = await this.repository.getActiveMaterialization(
          environmentId,
          packageName,
       );
       if (active) {
-         throw new MaterializationConflictError(
-            `Package ${packageName} already has an active materialization (${active.id})`,
-         );
+         throw this.activeConflict(packageName, active.id);
       }
 
-      const pauseBetweenPhases = options.pauseBetweenPhases ?? false;
       const forceRefresh = options.forceRefresh ?? false;
       const metadata = {
          forceRefresh,
          sourceNames: options.sourceNames ?? null,
-         pauseBetweenPhases,
+         mode: orchestrated ? "orchestrated" : "auto",
       };
 
       let created: Materialization;
@@ -310,112 +259,63 @@ export class MaterializationService {
                environmentId,
                packageName,
             );
-            throw new MaterializationConflictError(
-               winner
-                  ? `Package ${packageName} already has an active materialization (${winner.id})`
-                  : `Package ${packageName} already has an active materialization`,
-            );
+            throw this.activeConflict(packageName, winner?.id);
          }
          throw err;
       }
 
-      // Default (auto-run): compile, self-assign names, build, and auto-load in
-      // one pass. Opt-in two-round: pause at BUILD_PLAN_READY for the control
-      // plane to drive Round 2.
       this.runInBackground(created.id, (signal) =>
-         pauseBetweenPhases
-            ? this.runRound1(
-                 created.id,
-                 environmentName,
-                 packageName,
-                 options.sourceNames,
-                 signal,
-              )
-            : this.runAuto(
-                 created.id,
-                 environmentName,
-                 packageName,
-                 options.sourceNames,
-                 forceRefresh,
-                 signal,
-              ),
+         this.runBuild(
+            created.id,
+            environmentName,
+            packageName,
+            {
+               sourceNames: options.sourceNames,
+               forceRefresh,
+               buildInstructions,
+            },
+            signal,
+         ),
       );
 
       return created;
    }
 
-   private async runRound1(
-      id: string,
-      environmentName: string,
-      packageName: string,
-      sourceNames: string[] | undefined,
-      signal?: AbortSignal,
-   ): Promise<void> {
-      logger.info("Materialization Round 1: compile + plan", {
-         materializationId: id,
-         packageName,
-      });
-      const startedAt = Date.now();
-
-      try {
-         const environment = await this.environmentStore.getEnvironment(
-            environmentName,
-            false,
-         );
-         const pkg = await environment.getPackage(packageName, false);
-
-         const { graphs, sources, connectionDigests } =
-            await environment.withPackageLock(packageName, () =>
-               this.compilePackageBuildPlan(pkg, signal),
-            );
-
-         const buildPlan = this.deriveBuildPlan(
-            graphs,
-            sources,
-            connectionDigests,
-            sourceNames,
-         );
-
-         await this.transition(id, "BUILD_PLAN_READY", { buildPlan });
-         this.recordRound("round1", "success", startedAt);
-         logger.info("Materialization Round 1 complete", {
-            materializationId: id,
-            packageName,
-            sourceCount: Object.keys(buildPlan.sources).length,
-            durationMs: Date.now() - startedAt,
-         });
-      } catch (err) {
-         this.recordRound("round1", outcomeFor(err, signal), startedAt);
-         throw err;
-      }
-   }
-
-   // ==================== AUTO-RUN (DEFAULT) ====================
-
    /**
-    * Auto-run (default, pauseBetweenPhases=false). Compile + plan, then
-    * self-assign physical table names (the `#@ persist name=` value, else the
-    * source name) with realization=COPY, skip sources whose buildId is
-    * unchanged since the most recent successful manifest (unless forceRefresh),
-    * build the rest, assemble the manifest, and auto-load it into the package
-    * models so subsequent queries resolve to the materialized tables. No pause,
-    * no second round.
+    * Single-call build, shared by auto-run and orchestrated mode. Compiles the
+    * package build plan, derives the build instructions (self-assigned for
+    * auto-run; caller-supplied for orchestrated), builds the instructed sources
+    * into their physical tables, and commits the manifest. Auto-run additionally
+    * loads the fresh manifest into the package models; orchestrated leaves
+    * distribution to the caller.
     */
-   private async runAuto(
+   private async runBuild(
       id: string,
       environmentName: string,
       packageName: string,
-      sourceNames: string[] | undefined,
-      forceRefresh: boolean,
+      opts: {
+         sourceNames: string[] | undefined;
+         forceRefresh: boolean;
+         buildInstructions: BuildInstruction[] | undefined;
+      },
       signal: AbortSignal,
    ): Promise<void> {
-      logger.info("Materialization auto-run: compile + build + load", {
+      const orchestrated = opts.buildInstructions !== undefined;
+      const mode: MaterializationMode = orchestrated ? "orchestrated" : "auto";
+      logger.info("Materialization build started", {
          materializationId: id,
          packageName,
+         mode,
       });
       const startedAt = Date.now();
 
       try {
+         // Persist the run's start time so the UI can compute a duration
+         // (start -> now while in-flight, start -> completed once terminal).
+         await this.repository.updateMaterialization(id, {
+            startedAt: new Date(startedAt),
+         });
+
          const environmentId = await this.resolveEnvironmentId(environmentName);
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
@@ -424,31 +324,31 @@ export class MaterializationService {
          const pkg = await environment.getPackage(packageName, false);
 
          const compiled = await environment.withPackageLock(packageName, () =>
-            this.compilePackageBuildPlan(pkg, signal),
+            compilePackageBuildPlan(pkg, signal),
          );
 
-         const buildPlan = this.deriveBuildPlan(
-            compiled.graphs,
-            compiled.sources,
-            compiled.connectionDigests,
-            sourceNames,
-         );
-         await this.transition(id, "BUILD_PLAN_READY", { buildPlan });
-
-         // Skip-if-unchanged: reuse tables from the most recent successful
-         // manifest for sources whose buildId is unchanged, unless forceRefresh.
-         const priorEntries = forceRefresh
-            ? {}
-            : await this.getMostRecentManifestEntries(
-                 environmentId,
-                 packageName,
-                 id,
-              );
-         const { instructions, carried } = this.deriveSelfInstructions(
-            compiled,
-            sourceNames,
-            priorEntries,
-         );
+         let instructions: BuildInstruction[];
+         let carried: Record<string, ManifestEntry>;
+         if (orchestrated) {
+            instructions = opts.buildInstructions!;
+            carried = {};
+         } else {
+            // Skip-if-unchanged: reuse tables from the most recent successful
+            // manifest for sources whose buildId is unchanged, unless
+            // forceRefresh.
+            const priorEntries = opts.forceRefresh
+               ? {}
+               : await this.getMostRecentManifestEntries(
+                    environmentId,
+                    packageName,
+                    id,
+                 );
+            ({ instructions, carried } = this.deriveSelfInstructions(
+               compiled,
+               opts.sourceNames,
+               priorEntries,
+            ));
+         }
 
          const entries = await this.executeInstructedBuild(
             compiled,
@@ -457,28 +357,38 @@ export class MaterializationService {
             signal,
          );
 
+         const sourcesBuilt = instructions.length;
+         const sourcesReused = Object.keys(carried).length;
          const durationMs = Date.now() - startedAt;
          await this.commitManifest(id, entries, {
-            forceRefresh,
-            sourceNames: sourceNames ?? null,
-            pauseBetweenPhases: false,
-            sourcesBuilt: instructions.length,
-            sourcesReused: Object.keys(carried).length,
+            forceRefresh: opts.forceRefresh,
+            sourceNames: opts.sourceNames ?? null,
+            mode,
+            sourcesBuilt,
+            sourcesReused,
             durationMs,
          });
 
-         await this.autoLoadManifest(environment, packageName, entries);
+         // Auto-run owns distribution: load the fresh manifest into the package
+         // models so subsequent queries resolve to the materialized tables.
+         // Orchestrated leaves distribution to the caller (manifestLocation).
+         if (!orchestrated) {
+            await this.autoLoadManifest(environment, packageName, entries);
+         }
 
-         this.recordRound("auto", "success", startedAt);
-         logger.info("Materialization auto-run complete", {
+         recordSourcesOutcome("built", sourcesBuilt);
+         recordSourcesOutcome("reused", sourcesReused);
+         this.recordRun(mode, "success", startedAt);
+         logger.info("Materialization build complete", {
             materializationId: id,
             packageName,
-            sourcesBuilt: instructions.length,
-            sourcesReused: Object.keys(carried).length,
+            mode,
+            sourcesBuilt,
+            sourcesReused,
             durationMs,
          });
       } catch (err) {
-         this.recordRound("auto", outcomeFor(err, signal), startedAt);
+         this.recordRun(mode, outcomeFor(err, signal), startedAt);
          throw err;
       }
    }
@@ -491,11 +401,7 @@ export class MaterializationService {
     * rebuilt.
     */
    private deriveSelfInstructions(
-      compiled: {
-         graphs: MalloyBuildGraph[];
-         sources: Record<string, PersistSource>;
-         connectionDigests: Record<string, string>;
-      },
+      compiled: CompiledBuildPlan,
       sourceNames: string[] | undefined,
       priorEntries: Record<string, ManifestEntry>,
    ): {
@@ -508,35 +414,34 @@ export class MaterializationService {
       const seen = new Set<string>();
 
       for (const graph of compiled.graphs) {
-         for (const level of graph.nodes) {
-            for (const node of level) {
-               const persistSource = compiled.sources[node.sourceID];
-               if (!persistSource) continue;
-               if (include && !include.has(persistSource.name)) continue;
+         for (const persistSource of iterGraphSources(
+            graph,
+            compiled.sources,
+         )) {
+            if (include && !include.has(persistSource.name)) continue;
 
-               const buildId = computeBuildId(
-                  persistSource,
-                  compiled.connectionDigests,
-               );
-               if (seen.has(buildId)) continue;
-               seen.add(buildId);
+            const buildId = computeBuildId(
+               persistSource,
+               compiled.connectionDigests,
+            );
+            if (seen.has(buildId)) continue;
+            seen.add(buildId);
 
-               const prior = priorEntries[buildId];
-               if (prior && prior.physicalTableName) {
-                  carried[buildId] = prior;
-                  continue;
-               }
-
-               instructions.push({
-                  buildId,
-                  materializedTableId: `local-${buildId.substring(
-                     0,
-                     STAGING_BUILD_ID_LEN,
-                  )}`,
-                  physicalTableName: selfAssignTableName(persistSource),
-                  realization: "COPY",
-               });
+            const prior = priorEntries[buildId];
+            if (prior && prior.physicalTableName) {
+               carried[buildId] = prior;
+               continue;
             }
+
+            instructions.push({
+               buildId,
+               materializedTableId: `local-${buildId.substring(
+                  0,
+                  STAGING_BUILD_ID_LEN,
+               )}`,
+               physicalTableName: selfAssignTableName(persistSource),
+               realization: "COPY",
+            });
          }
       }
 
@@ -591,11 +496,13 @@ export class MaterializationService {
             packageName,
             manifestEntries,
          );
+         recordAutoLoadOutcome("success");
          logger.info("Auto-run: loaded manifest into package models", {
             packageName,
             entryCount: Object.keys(manifestEntries).length,
          });
       } catch (err) {
+         recordAutoLoadOutcome("failure");
          logger.warn("Auto-run: failed to load manifest into package models", {
             packageName,
             error: err instanceof Error ? err.message : String(err),
@@ -603,51 +510,21 @@ export class MaterializationService {
       }
    }
 
-   // ==================== ROUND 2: BUILD ====================
-
    /**
-    * Round 2. Validates the instructions against the stored build plan,
-    * transitions out of BUILD_PLAN_READY, and builds the instructed sources
-    * in the background. Returns the accepted record (202).
+    * Validate caller-supplied build instructions against the package's compiled
+    * build plan: every instructed buildId must be a planned source, and only
+    * COPY realization is supported. Throws when the package declares no persist
+    * source (no plan to build against).
     */
-   async buildMaterialization(
-      environmentName: string,
-      packageName: string,
-      id: string,
-      instructions: BuildInstruction[],
-   ): Promise<Materialization> {
-      const m = await this.getMaterialization(environmentName, packageName, id);
-
-      if (!m.pauseBetweenPhases) {
-         throw new InvalidStateTransitionError(
-            `Materialization ${id} is an auto-run materialization; action=build does not apply (set pauseBetweenPhases=true for the two-round flow)`,
-         );
-      }
-      if (m.status !== "BUILD_PLAN_READY") {
-         throw new InvalidStateTransitionError(
-            `Materialization ${id} is ${m.status}, expected BUILD_PLAN_READY`,
-         );
-      }
-      const plan = m.buildPlan;
-      if (!plan) {
-         throw new InvalidStateTransitionError(
-            `Materialization ${id} has no build plan`,
-         );
-      }
-
-      this.validateInstructions(plan, instructions);
-
-      this.runInBackground(id, (signal) =>
-         this.runRound2(id, environmentName, packageName, instructions, signal),
-      );
-
-      return m;
-   }
-
    private validateInstructions(
-      plan: BuildPlan,
+      plan: BuildPlan | null,
       instructions: BuildInstruction[],
    ): void {
+      if (!plan) {
+         throw new BadRequestError(
+            "Package has no persist sources; buildInstructions cannot be applied",
+         );
+      }
       const plannedBuildIds = new Set<string>();
       for (const source of Object.values(plan.sources)) {
          plannedBuildIds.add(source.buildId);
@@ -659,88 +536,44 @@ export class MaterializationService {
                `Instruction references unknown buildId '${instruction.buildId}'`,
             );
          }
-         // v0 is COPY-only; SNAPSHOT lands once clone semantics are defined.
+         // COPY-only for now; SNAPSHOT lands once clone semantics are defined.
          if (instruction.realization === "SNAPSHOT") {
             throw new BadRequestError(
-               "realization=SNAPSHOT is not supported in v0 (COPY only)",
+               "realization=SNAPSHOT is not supported (COPY only)",
             );
          }
       }
    }
 
-   private async runRound2(
-      id: string,
-      environmentName: string,
-      packageName: string,
-      instructions: BuildInstruction[],
-      signal: AbortSignal,
-   ): Promise<void> {
-      logger.info("Materialization Round 2: build", {
-         materializationId: id,
-         packageName,
-         sourceCount: instructions.length,
-      });
-      const startedAt = Date.now();
-
-      try {
-         const environment = await this.environmentStore.getEnvironment(
-            environmentName,
-            false,
-         );
-         const pkg = await environment.getPackage(packageName, false);
-
-         const compiled = await environment.withPackageLock(packageName, () =>
-            this.compilePackageBuildPlan(pkg, signal),
-         );
-
-         const entries = await this.executeInstructedBuild(
-            compiled,
-            instructions,
-            {},
-            signal,
-         );
-
-         const durationMs = Date.now() - startedAt;
-         await this.commitManifest(id, entries, {
-            sourcesBuilt: Object.keys(entries).length,
-            durationMs,
-         });
-
-         this.recordRound("round2", "success", startedAt);
-         logger.info("Materialization Round 2 complete", {
-            materializationId: id,
-            packageName,
-            sourcesBuilt: Object.keys(entries).length,
-            durationMs,
-         });
-      } catch (err) {
-         this.recordRound("round2", outcomeFor(err, signal), startedAt);
-         throw err;
-      }
-   }
-
    /**
-    * Shared build loop for both auto-run and Round 2. Seeds the manifest with
-    * carried-forward (reused) upstream entries so downstream references resolve,
-    * then builds each instructed source in dependency order. Returns the full
-    * entry map (carried + freshly built). The package was compiled by the
-    * caller; this runs outside the package lock.
+    * Shared build loop for both auto-run and orchestrated builds. Seeds the
+    * manifest with carried-forward (reused) upstream entries so downstream
+    * references resolve, then builds each instructed source in dependency
+    * order. Returns the full entry map (carried + freshly built). The package
+    * was compiled by the caller; this runs outside the package lock.
     */
    private async executeInstructedBuild(
-      compiled: {
-         graphs: MalloyBuildGraph[];
-         sources: Record<string, PersistSource>;
-         connectionDigests: Record<string, string>;
-         connections: Map<string, MalloyConnection>;
-      },
+      compiled: CompiledBuildPlan,
       instructions: BuildInstruction[],
       seedEntries: Record<string, ManifestEntry>,
       signal: AbortSignal,
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
+      // Index instructions by sourceID (the stable per-source handle) so the
+      // build no longer recomputes the buildId to find an instruction.
+      // Recomputing it here forced a caller's buildId to equal the publisher's
+      // content hash, so a caller that derives buildIds by any other scheme
+      // would have its sources silently skipped (the recomputed buildId would
+      // not match the instruction). buildId is treated as opaque, caller-assigned
+      // identity. A buildId index is kept as a fallback for instructions without
+      // a sourceID (e.g. standalone auto-run).
+      const bySourceID = new Map<string, BuildInstruction>();
       const byBuildId = new Map<string, BuildInstruction>();
       for (const instruction of instructions) {
+         if (instruction.sourceID) {
+            bySourceID.set(instruction.sourceID, instruction);
+         }
          byBuildId.set(instruction.buildId, instruction);
       }
 
@@ -763,25 +596,28 @@ export class MaterializationService {
                `Connection '${graph.connectionName}' not found`,
             );
          }
-         for (const level of graph.nodes) {
-            for (const node of level) {
-               if (signal.aborted) throw new Error("Build cancelled");
-               const persistSource = sources[node.sourceID];
-               if (!persistSource) continue;
+         for (const persistSource of iterGraphSources(graph, sources)) {
+            if (signal.aborted) throw new Error("Build cancelled");
 
-               const buildId = computeBuildId(persistSource, connectionDigests);
-               const instruction = byBuildId.get(buildId);
-               if (!instruction) continue;
+            // The manifest is keyed by the content buildId — what Malloy
+            // recomputes to resolve upstream persist references during SQL
+            // generation — independent of the instruction's identity buildId.
+            const buildId = computeBuildId(persistSource, connectionDigests);
+            // Prefer sourceID matching (so the caller's buildId scheme stays
+            // opaque to the build); fall back to buildId for instructions
+            // without a sourceID (auto-run).
+            const instruction =
+               bySourceID.get(persistSource.sourceID) ?? byBuildId.get(buildId);
+            if (!instruction) continue;
 
-               const entry = await this.buildOneSource(
-                  persistSource,
-                  instruction,
-                  connection,
-                  connectionDigests,
-                  manifest,
-               );
-               entries[buildId] = entry;
-            }
+            const entry = await this.buildOneSource(
+               persistSource,
+               instruction,
+               connection,
+               connectionDigests,
+               manifest,
+            );
+            entries[buildId] = entry;
          }
       }
 
@@ -807,44 +643,48 @@ export class MaterializationService {
          connectionDigests,
       });
 
-      const { bareName } = splitTablePath(physicalTableName);
+      const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(buildId)}`;
+      // The control plane sends the logical (unquoted) physical name; dialect-
+      // quote each identifier here so a container path or quote-requiring name
+      // (e.g. a hyphenated BigQuery project id) produces valid DDL. The manifest
+      // echoes the logical name (below) so the CP stays in logical-name space.
+      const dialect = persistSource.dialectName;
+      const quotedStaging = quoteTablePath(stagingTableName, dialect);
+      const quotedPhysical = quoteTablePath(physicalTableName, dialect);
+      const quotedBareName = quoteIdentifier(bareName, dialect);
 
       const startTime = performance.now();
-      await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
+      await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
       try {
          await connection.runSQL(
-            `CREATE TABLE ${stagingTableName} AS (${buildSQL})`,
+            `CREATE TABLE ${quotedStaging} AS (${buildSQL})`,
          );
-         await connection.runSQL(`DROP TABLE IF EXISTS ${physicalTableName}`);
+         await connection.runSQL(`DROP TABLE IF EXISTS ${quotedPhysical}`);
          await connection.runSQL(
-            `ALTER TABLE ${stagingTableName} RENAME TO ${bareName}`,
+            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
          );
       } catch (err) {
          try {
-            await connection.runSQL(`DROP TABLE IF EXISTS ${stagingTableName}`);
+            await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
          } catch (cleanupErr) {
             logger.warn(
-               "Round 2: failed to clean up staging table after a failed build; physical leak",
+               "Failed to clean up staging table after a failed build; physical leak",
                {
                   stagingTableName,
                   connectionName: persistSource.connectionName,
-                  cleanupError:
-                     cleanupErr instanceof Error
-                        ? cleanupErr.message
-                        : String(cleanupErr),
+                  cleanupError: errMessage(cleanupErr),
                },
             );
          }
          throw err;
       }
 
-      // Make this table visible to downstream sources built later this round.
+      // Make this table visible to downstream sources built later in this run.
       manifest.update(buildId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
       recordSourceBuildDuration(durationMs);
-      // Shared by auto-run and Round 2, so the message is path-neutral.
       logger.info(`Built materialized source ${persistSource.name}`, {
          physicalTableName,
          durationMs,
@@ -873,7 +713,6 @@ export class MaterializationService {
 
       const cancellable: MaterializationStatus[] = [
          "PENDING",
-         "BUILD_PLAN_READY",
          "MANIFEST_ROWS_READY",
       ];
       if (!cancellable.includes(m.status)) {
@@ -898,10 +737,11 @@ export class MaterializationService {
     * (MANIFEST_FILE_READY, FAILED, CANCELLED) can be deleted; an active run must
     * be stopped first.
     *
-    * By default this removes the publisher's record only — the control plane
-    * owns table GC. When `dropTables` is set, the publisher additionally drops
-    * the physical tables recorded in this run's manifest as a best-effort
-    * cleanup (a drop failure is logged, not fatal, so the record still deletes).
+    * By default this removes the publisher's record only — physical-table GC is
+    * the caller's responsibility. When `dropTables` is set, the publisher
+    * additionally drops the physical tables recorded in this run's manifest as a
+    * best-effort cleanup (a drop failure is logged, not fatal, so the record
+    * still deletes).
     */
    async deleteMaterialization(
       environmentName: string,
@@ -970,14 +810,23 @@ export class MaterializationService {
                connection = await pkg.getMalloyConnection(connectionName);
                connectionCache.set(connectionName, connection);
             }
+            // Dialect-quote from the live connection, the same way
+            // buildOneSource quoted at build time, so a name that built
+            // successfully also drops successfully (container paths, hyphenated
+            // BigQuery project ids, etc.).
+            const dialect = connection.dialectName;
             await connection.runSQL(
-               `DROP TABLE IF EXISTS ${physicalTableName}`,
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  physicalTableName,
+                  dialect,
+               )}`,
             );
             // A crash between staging-create and rename can leave the staging
             // table behind; clean it up too while we hold the connection.
             await connection.runSQL(
-               `DROP TABLE IF EXISTS ${physicalTableName}${stagingSuffix(
-                  entry.buildId,
+               `DROP TABLE IF EXISTS ${quoteTablePath(
+                  `${physicalTableName}${stagingSuffix(entry.buildId)}`,
+                  dialect,
                )}`,
             );
             recordDropTables("success");
@@ -992,16 +841,16 @@ export class MaterializationService {
                materializationId: m.id,
                physicalTableName,
                connectionName,
-               error: err instanceof Error ? err.message : String(err),
+               error: errMessage(err),
             });
          }
       }
    }
 
    /**
-    * Finalize a successful build: advance MANIFEST_ROWS_READY -> FILE_READY and
-    * persist the assembled manifest. Shared by auto-run and Round 2; the caller
-    * supplies the per-path metadata. The build itself happens before this.
+    * Finalize a successful build: advance to MANIFEST_ROWS_READY then
+    * MANIFEST_FILE_READY and persist the assembled manifest. The caller
+    * supplies the per-run metadata. The build itself happens before this.
     */
    private async commitManifest(
       id: string,
@@ -1021,125 +870,25 @@ export class MaterializationService {
       });
    }
 
-   // ==================== BUILD PLAN COMPILATION ====================
-
-   /**
-    * Compile every model in the package and collect the dependency-ordered
-    * build graphs, persist sources, connection digests, and resolved
-    * connections.
-    */
-   private async compilePackageBuildPlan(
-      pkg: {
-         getModelPaths(): string[];
-         getPackagePath(): string;
-         getMalloyConfig(): MalloyConfig;
-         getMalloyConnection(name: string): Promise<MalloyConnection>;
-      },
-      signal?: AbortSignal,
-   ): Promise<{
-      graphs: MalloyBuildGraph[];
-      sources: Record<string, PersistSource>;
-      connectionDigests: Record<string, string>;
-      connections: Map<string, MalloyConnection>;
-   }> {
-      const allGraphs: MalloyBuildGraph[] = [];
-      const allSources: Record<string, PersistSource> = {};
-
-      for (const modelPath of pkg.getModelPaths()) {
-         if (signal?.aborted) throw new Error("Build cancelled");
-
-         const { runtime, modelURL, importBaseURL } =
-            await Model.getModelRuntime(
-               pkg.getPackagePath(),
-               modelPath,
-               pkg.getMalloyConfig(),
-            );
-         const malloyModel = await runtime
-            .loadModel(modelURL, { importBaseURL })
-            .getModel();
-
-         // getBuildPlan() returns empty graphs for models with no #@ persist
-         // sources, so non-persist models are simply skipped below.
-         const buildPlan = malloyModel.getBuildPlan();
-         for (const msg of buildPlan.tagParseLog) {
-            logger.warn("Persist annotation issue", {
-               modelPath,
-               message: msg.message,
-               severity: msg.severity,
-            });
-         }
-         if (buildPlan.graphs.length === 0) continue;
-
-         allGraphs.push(...buildPlan.graphs);
-         for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
-            allSources[sourceID] = source;
-         }
-      }
-
-      const connections = await resolvePackageConnections(
-         pkg,
-         allGraphs.map((g) => g.connectionName),
-      );
-      const connectionDigests: Record<string, string> = {};
-      for (const graph of allGraphs) {
-         const conn = connections.get(graph.connectionName);
-         if (conn && !connectionDigests[graph.connectionName]) {
-            connectionDigests[graph.connectionName] = await conn.getDigest();
-         }
-      }
-
-      return {
-         graphs: allGraphs,
-         sources: allSources,
-         connectionDigests,
-         connections,
-      };
-   }
-
-   /** Project the Malloy build plan into the trimmed v0 wire BuildPlan. */
-   private deriveBuildPlan(
-      graphs: MalloyBuildGraph[],
-      sources: Record<string, PersistSource>,
-      connectionDigests: Record<string, string>,
-      sourceNames: string[] | undefined,
-   ): BuildPlan {
-      const include = sourceNames ? new Set(sourceNames) : null;
-
-      const wireGraphs: WireBuildGraph[] = graphs.map((graph) => ({
-         connectionName: graph.connectionName,
-         nodes: graph.nodes.map((level) =>
-            level.map((node) => ({
-               sourceID: node.sourceID,
-               dependsOn: flattenDependsOn(node),
-            })),
-         ),
-      }));
-
-      const wireSources: Record<string, WirePersistSourcePlan> = {};
-      for (const [sourceID, source] of Object.entries(sources)) {
-         if (include && !include.has(source.name)) continue;
-         wireSources[sourceID] = {
-            name: source.name,
-            sourceID: source.sourceID,
-            connectionName: source.connectionName,
-            dialect: source.dialectName,
-            buildId: computeBuildId(source, connectionDigests),
-            sql: source.getSQL(),
-            columns: deriveColumns(source),
-         };
-      }
-
-      return { graphs: wireGraphs, sources: wireSources };
-   }
-
    // ==================== HELPERS ====================
 
-   private recordRound(
-      round: MaterializationRound,
+   /** The single-active conflict error, with the winning run's id when known. */
+   private activeConflict(
+      packageName: string,
+      activeId?: string,
+   ): MaterializationConflictError {
+      const suffix = activeId ? ` (${activeId})` : "";
+      return new MaterializationConflictError(
+         `Package ${packageName} already has an active materialization${suffix}`,
+      );
+   }
+
+   private recordRun(
+      mode: MaterializationMode,
       outcome: "success" | "failed" | "cancelled",
       startedAtMs: number,
    ): void {
-      recordMaterializationRound(round, outcome, Date.now() - startedAtMs);
+      recordMaterializationRun(mode, outcome, Date.now() - startedAtMs);
    }
 
    private runInBackground(
@@ -1151,7 +900,7 @@ export class MaterializationService {
 
       run(abortController.signal)
          .catch(async (err) => {
-            const message = err instanceof Error ? err.message : String(err);
+            const message = errMessage(err);
             const next = abortController.signal.aborted
                ? "CANCELLED"
                : "FAILED";
@@ -1165,10 +914,7 @@ export class MaterializationService {
                logger.error("Failed to record materialization failure", {
                   materializationId: id,
                   originalError: message,
-                  transitionError:
-                     transitionErr instanceof Error
-                        ? transitionErr.message
-                        : String(transitionErr),
+                  transitionError: errMessage(transitionErr),
                });
             }
          })

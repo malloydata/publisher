@@ -2029,13 +2029,15 @@ paths:
       tags:
         - materializations
       operationId: create-materialization
-      summary: Create a materialization (Round 1)
+      summary: Create a materialization
       description: |
-        Starts Round 1 of the two-round build protocol: asynchronously compiles the package,
-        computes a build plan (per-source buildId, output columns, dependency/column lineage,
-        connection capability), and pauses at BUILD_PLAN_READY without writing any tables.
-        The control plane then issues Round 2 via
-        POST .../materializations/{materializationId}?action=build with build instructions.
+        Creates a materialization and starts building. Behavior depends on the request
+        body (see CreateMaterializationRequest):
+          * Orchestrated build — supply `buildInstructions`. The publisher builds directly
+            into the caller-assigned names derived from the package's already-compiled build
+            plan (read off `Package.buildPlan`). Returns the materialization already building.
+          * Auto-run (standalone, default) — omit `buildInstructions`; the publisher
+            self-assigns names and runs all phases in one pass.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -2123,11 +2125,7 @@ paths:
       description: |
         Performs an action on a materialization. The action is specified via
         the `action` query parameter:
-          * `build` - Round 2. Provide BuildInstructions (CP-assigned table id, physical
-            table name, and realization per source). Builds only the instructed sources into
-            the exact names provided and assembles the manifest. Valid only when the
-            materialization is at BUILD_PLAN_READY. Returns 202.
-          * `stop` - Cancels a PENDING, BUILD_PLAN_READY, or building materialization. Returns 200.
+          * `stop` - Cancels a PENDING or building materialization. Returns 200.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -2138,24 +2136,11 @@ paths:
           schema:
             type: string
             enum:
-              - build
               - stop
           description: Action to perform on the materialization
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/BuildInstructions"
       responses:
         "200":
           description: Materialization cancelled (action=stop)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Materialization"
-        "202":
-          description: Round 2 build accepted (action=build)
           content:
             application/json:
               schema:
@@ -2178,7 +2163,7 @@ paths:
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
         materialization record. By default this removes the publisher's record
-        only; the control plane owns table GC. Set dropTables=true to also drop
+        only; the caller owns table GC. Set dropTables=true to also drop
         the physical tables this run produced (from the materialization's
         manifest) as a best-effort cleanup.
       parameters:
@@ -2191,7 +2176,7 @@ paths:
           description: |
             When true, also drop the physical tables recorded in the
             materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the control plane owns table GC).
+            false (record-only delete; the caller owns table GC).
           schema:
             type: boolean
             default: false
@@ -2343,7 +2328,7 @@ components:
             its memory back-pressure limit and is rejecting new package loads and
             queries to stay under PUBLISHER_MAX_MEMORY_BYTES (see the memory
             governor). Already-loaded packages remain serviceable while throttled;
-            the control plane treats a throttled worker as unhealthy for new load.
+            callers can treat a throttled server as unhealthy for new load.
             Only reported when the memory governor is enabled.
         frozenConfig:
           type: boolean
@@ -2448,9 +2433,22 @@ components:
         manifestLocation:
           type: ["string", "null"]
           description: |
-            URI (gs:// or s3://) of the control-plane-computed manifest for this package.
-            On (re)load the worker reads it and binds persist references
+            URI (gs:// or s3://) of the externally-computed manifest for this package.
+            On (re)load the publisher reads it and binds persist references
             (buildId -> physicalTableName). Null = serve live.
+        materialization:
+          oneOf:
+            - $ref: "#/components/schemas/PackageMaterializationConfig"
+            - type: "null"
+          description: |
+            Package-level Malloy Persistence policy declared in
+            malloy-publisher.json. The control plane reads it to drive scheduled
+            re-materialization. The object is present whenever the package has
+            loaded — with `schedule: null` when the manifest declares no
+            schedule — so the caller can treat object-present as the
+            authoritative manifest policy. Null/absent only when package
+            metadata is unavailable for this request (not loaded), which the
+            caller must treat as "unknown", not as a removal.
         manifestBindingStatus:
           type: string
           readOnly: true
@@ -2459,14 +2457,14 @@ components:
             - bound
             - live_fallback
           description: >-
-            Server-computed, read-only: whether the control-plane build manifest
+            Server-computed, read-only: whether the configured build manifest
             is currently bound to this package's served models. `unbound` = no
             manifest configured, so the package serves live. `bound` = a manifest
             was fetched and applied, so persist sources route to their
             materialized physical tables. `live_fallback` = a `manifestLocation`
             is configured but the fetch/bind failed or timed out, so the package
             is serving live despite intending to be materialized-routed. Lets the
-            control plane confirm a worker actually bound a distributed manifest
+            caller confirm the publisher actually bound the configured manifest
             rather than inferring it from logs.
         manifestEntryCount:
           type: integer
@@ -2482,6 +2480,41 @@ components:
             served models. Usually equals `manifestLocation`, but can differ
             after an in-memory auto-load following a materialization build (no
             URI), in which case it is null. Null whenever the package is unbound.
+        buildPlan:
+          oneOf:
+            - $ref: "#/components/schemas/BuildPlan"
+            - type: "null"
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the persist build plan for this package
+            version (per-source buildId, output columns, build SQL, dependency
+            graphs), exposed as a deterministic property of the compiled package.
+            A caller reads it directly off the load/get-package response, assigns
+            physical names/identity per source, and issues a single build call
+            (see `CreateMaterializationRequest.buildInstructions`) — no separate
+            plan round-trip. The plan is a pure function of the compiled model +
+            connection config (no warehouse access), so it is stable for a given
+            (package version, connection config). Returned by default whenever the
+            package is compiled; null only when the package declares no persist
+            source.
+
+    PackageMaterializationConfig:
+      type: object
+      description: >-
+        Package-level Malloy Persistence policy from malloy-publisher.json's
+        `materialization` block. Surfaced verbatim so the control plane can drive
+        scheduled version-level re-materialization without re-reading the package
+        files. The object is emitted whenever the package is loaded, even when no
+        policy is declared (all fields null), so its presence is an authoritative
+        "the manifest says this" signal rather than "policy missing".
+      properties:
+        schedule:
+          type: ["string", "null"]
+          description: >-
+            5-field UNIX cron controlling how often the control plane
+            re-materializes this package's published versions. Null = no
+            scheduled re-materialization declared in the manifest (publish /
+            on-demand only).
 
     Model:
       type: object
@@ -2971,6 +3004,7 @@ components:
               duckdb,
               motherduck,
               ducklake,
+              publisher,
             ]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
@@ -2992,6 +3026,8 @@ components:
           $ref: "#/components/schemas/MotherDuckConnection"
         ducklakeConnection:
           $ref: "#/components/schemas/DucklakeConnection"
+        publisherConnection:
+          $ref: "#/components/schemas/PublisherConnection"
 
     ConnectionAttributes:
       type: object
@@ -3291,6 +3327,25 @@ components:
           type: string
           description: MotherDuck database name
 
+    PublisherConnection:
+      type: object
+      description: >
+        Malloy Publisher proxy connection. Proxies SQL to a remote Publisher
+        dataplane instead of connecting to a warehouse directly. The remote
+        dataplane owns authentication, access control, and read-only
+        enforcement.
+      properties:
+        connectionUri:
+          type: string
+          description: >
+            Full URI of the remote connection, e.g.
+            https://org.data.example.com/api/v0/environments/<env>/connections/<name>
+        accessToken:
+          type: string
+          description: Bearer token for the remote dataplane (user-scoped, short-lived)
+      required:
+        - connectionUri
+
     DuckdbConnection:
       type: object
       description: >
@@ -3527,20 +3582,25 @@ components:
 
     CreateMaterializationRequest:
       type: object
-      description:
-        Options for starting a materialization. Auto-run by default; opt into the
-        two-round control-plane-driven flow with pauseBetweenPhases.
+      description: >-
+        Options for starting a materialization. Two modes — (1) auto-run
+        (default), omit `buildInstructions` and the publisher self-assigns names
+        and runs all phases in one pass; (2) orchestrated build, supply
+        `buildInstructions` and the publisher builds directly into the
+        caller-assigned names from the package's already-compiled build plan
+        (read off `Package.buildPlan`).
       properties:
-        pauseBetweenPhases:
-          type: boolean
-          default: false
+        buildInstructions:
+          oneOf:
+            - $ref: "#/components/schemas/BuildInstructions"
+            - type: "null"
           description:
-            When false (default) the publisher runs all phases in one pass —
-            self-assigns table names (the "#@ persist name=" value, else the
-            source name), builds with realization=COPY, assembles the manifest,
-            and auto-loads it into the package models. When true it pauses at
-            BUILD_PLAN_READY for the control plane to send Round 2 build
-            instructions.
+            Orchestrated build. When present, the publisher creates the
+            materialization already building these caller-assigned sources
+            (table id, physical name, realization) into the exact names
+            provided — the caller derived these instructions from
+            `Package.buildPlan` up front. Omit for auto-run (the publisher
+            self-assigns names and builds all persist sources).
         forceRefresh:
           type: boolean
           default: false
@@ -3555,10 +3615,9 @@ components:
 
     MaterializationStatus:
       type: string
-      description: Phase-aware status of a two-round materialization run.
+      description: Phase-aware status of a materialization run.
       enum:
         - PENDING
-        - BUILD_PLAN_READY
         - MANIFEST_ROWS_READY
         - MANIFEST_FILE_READY
         - FAILED
@@ -3566,7 +3625,7 @@ components:
 
     Materialization:
       type: object
-      description: A record of one two-round materialization run for a package.
+      description: A record of one materialization run for a package.
       properties:
         id:
           type: string
@@ -3574,23 +3633,13 @@ components:
           type: string
         packageName:
           type: string
-        pauseBetweenPhases:
-          type: boolean
-          description:
-            Echoes the create-time flag. False (default) = auto-run all phases;
-            true = pause at BUILD_PLAN_READY for control-plane-driven Round 2.
         status:
           $ref: "#/components/schemas/MaterializationStatus"
-        buildPlan:
-          oneOf:
-            - $ref: "#/components/schemas/BuildPlan"
-            - type: "null"
-          description: Round 1 output. Null until status >= BUILD_PLAN_READY.
         manifest:
           oneOf:
             - $ref: "#/components/schemas/BuildManifest"
             - type: "null"
-          description: Round 2 output. Null until status = MANIFEST_FILE_READY.
+          description: Build output. Null until status = MANIFEST_FILE_READY.
         startedAt:
           type: ["string", "null"]
           format: date-time
@@ -3615,10 +3664,10 @@ components:
     BuildPlan:
       type: object
       description: |
-        Round 1 output. Mirrors Malloy's native build plan plus the minimal
-        per-source detail the control plane needs in v0 to assign
-        identity/naming/realization. Lineage, policy, and connection
-        capability are intentionally omitted until they carry real data.
+        The package's persist build plan. Mirrors Malloy's native build plan plus
+        the minimal per-source detail a caller needs to assign
+        identity/naming/realization. Lineage, policy, and connection capability
+        are intentionally omitted until they carry real data.
       required: [graphs, sources]
       properties:
         graphs:
@@ -3686,6 +3735,16 @@ components:
           description: Output schema of the source.
           items:
             $ref: "#/components/schemas/Column"
+        annotationFields:
+          type: object
+          additionalProperties:
+            type: string
+          description:
+            All key=value fields of the source's `#@ persist` annotation (e.g.
+            `name`, `realization`). The control plane uses `name` as the
+            materialized table name (it may carry a dialect container path like
+            `dataset.table`). Returned as the full set so new persist directives
+            need no publisher change.
 
     Realization:
       type: string
@@ -3694,7 +3753,7 @@ components:
 
     BuildInstructions:
       type: object
-      description: Round 2 input. Per-source instructions assigned by the control plane.
+      description: Build input. Per-source instructions assigned by the caller.
       required: [sources]
       properties:
         sources:
@@ -3718,21 +3777,25 @@ components:
         materializedTableId:
           type: string
           description:
-            CP-assigned surrogate id for the materialized table about to be
+            Caller-assigned surrogate id for the materialized table about to be
             produced.
         physicalTableName:
           type: string
           description:
-            Fully-qualified, dialect-quoted table name to create. The publisher
-            writes here verbatim.
+            Logical, fully-qualified (but unquoted) table name to create — an
+            optional dialect container path plus the table name, e.g.
+            `mydataset.engaged_events_<buildId>_v0`. The publisher dialect-quotes
+            each segment when it emits the DDL, so quote-requiring names (a
+            hyphenated BigQuery project id, a container path) are valid, and
+            echoes this logical name back in the manifest.
         realization:
           $ref: "#/components/schemas/Realization"
 
     BuildManifest:
       type: object
       description:
-        Round 2 output. Maps each buildId a build produced to its physical table.
-        Returned inline; the control plane persists it.
+        Build output. Maps each buildId a build produced to its physical table.
+        Returned inline; the caller persists it.
       properties:
         builtAt:
           type: string
@@ -3757,10 +3820,13 @@ components:
           type: string
         materializedTableId:
           type: string
-          description: Echoes the CP-assigned id from the BuildInstruction.
+          description: Echoes the caller-assigned id from the BuildInstruction.
         physicalTableName:
           type: string
-          description: Name of the materialized table.
+          description:
+            The logical (unquoted) name of the materialized table — echoes the
+            BuildInstruction's physicalTableName so the control plane persists
+            and matches on the same logical name it assigned.
         connectionName:
           type: string
         realization:

@@ -1,121 +1,163 @@
 /**
- * Centralized telemetry for the two-round materialization protocol.
+ * Centralized telemetry for materialization builds.
  *
- * Operators need to answer "are builds completing, how long do the two
- * rounds take, and where are they failing?" without grepping logs. The
- * counter carries `round` (`round1`|`round2`) and `outcome`
- * (`success`|`failed`|`cancelled`); the histogram carries `round` so a
- * dashboard can render Round 1 (compile+plan) vs Round 2 (build) latency
- * side by side.
+ * Operators need to answer "are builds completing, how long do they take, and
+ * where are they failing?" without grepping logs. The run counter carries
+ * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`failed`|`cancelled`);
+ * the run-duration histogram carries `mode` so a dashboard can render auto-run
+ * vs orchestrated build latency side by side.
  *
- * Lazy init for the same reason as {@link ./query_cap_metrics}: instruments
- * created before `setGlobalMeterProvider` bind to a NoOp meter
+ * Instruments are created lazily for the same reason as {@link ./query_cap_metrics}:
+ * one created before `setGlobalMeterProvider` binds to a NoOp meter
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { metrics, type Counter, type Histogram } from "@opentelemetry/api";
+import { type Counter, type Histogram } from "@opentelemetry/api";
+import { publisherMeter } from "./telemetry";
 
-export type MaterializationRound = "round1" | "round2" | "auto";
+export type MaterializationMode = "auto" | "orchestrated";
 export type MaterializationOutcome = "success" | "failed" | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 
-let roundCounter: Counter | null = null;
-let roundDuration: Histogram | null = null;
-let manifestBindCounter: Counter | null = null;
-let sourceBuildDuration: Histogram | null = null;
-let dropTablesCounter: Counter | null = null;
+const resetHooks: (() => void)[] = [];
 
-function ensureTelemetry(): { counter: Counter; duration: Histogram } {
-   if (roundCounter && roundDuration) {
-      return { counter: roundCounter, duration: roundDuration };
-   }
-   const meter = metrics.getMeter("publisher");
-   if (!roundCounter) {
-      roundCounter = meter.createCounter(
-         "publisher_materialization_rounds_total",
-         {
-            description:
-               "Materialization rounds completed. Labels: round ('round1'|'round2'|'auto'), outcome ('success'|'failed'|'cancelled').",
-         },
-      );
-   }
-   if (!roundDuration) {
-      roundDuration = meter.createHistogram(
-         "publisher_materialization_round_duration_ms",
-         {
-            description:
-               "Wall-clock duration of a materialization round. Label: round ('round1'|'round2'|'auto').",
-            unit: "ms",
-         },
-      );
-   }
-   return { counter: roundCounter, duration: roundDuration };
+/**
+ * A lazily-created instrument: built from the global meter on first use (so it
+ * binds to the real MeterProvider, not the NoOp default) and memoized. Each
+ * registers a reset hook so a test can swap in a fresh MeterProvider.
+ */
+function lazyCounter(name: string, description: string): () => Counter {
+   let instrument: Counter | null = null;
+   resetHooks.push(() => (instrument = null));
+   return () =>
+      (instrument ??= publisherMeter().createCounter(name, { description }));
 }
 
-/** Record the outcome and duration of a materialization round. */
-export function recordMaterializationRound(
-   round: MaterializationRound,
+function lazyHistogram(
+   name: string,
+   description: string,
+   unit: string,
+): () => Histogram {
+   let instrument: Histogram | null = null;
+   resetHooks.push(() => (instrument = null));
+   return () =>
+      (instrument ??= publisherMeter().createHistogram(name, {
+         description,
+         unit,
+      }));
+}
+
+const runCounter = lazyCounter(
+   "publisher_materialization_runs_total",
+   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'failed'|'cancelled').",
+);
+const runDuration = lazyHistogram(
+   "publisher_materialization_run_duration_ms",
+   "Wall-clock duration of a materialization build. Label: mode ('auto'|'orchestrated').",
+   "ms",
+);
+const sourcesCounter = lazyCounter(
+   "publisher_materialization_sources_total",
+   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
+);
+const buildPlanComputeDuration = lazyHistogram(
+   "publisher_materialization_build_plan_compute_duration_ms",
+   "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
+   "ms",
+);
+const autoLoadCounter = lazyCounter(
+   "publisher_materialization_auto_load_total",
+   "Auto-run manifest auto-load attempts. Label: outcome ('success'|'failure').",
+);
+const connectionDigestSkipCounter = lazyCounter(
+   "publisher_materialization_connection_digest_skipped_total",
+   "Connection digests skipped during build-plan compile because the connection did not resolve.",
+);
+const manifestBindCounter = lazyCounter(
+   "publisher_materialization_manifest_bind_total",
+   "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
+);
+const sourceBuildDuration = lazyHistogram(
+   "publisher_materialization_source_build_duration_ms",
+   "Wall-clock duration of building a single persist source.",
+   "ms",
+);
+const dropTablesCounter = lazyCounter(
+   "publisher_materialization_drop_tables_total",
+   "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
+);
+
+/** Record the outcome and duration of a materialization build. */
+export function recordMaterializationRun(
+   mode: MaterializationMode,
    outcome: MaterializationOutcome,
    durationMs: number,
 ): void {
-   const { counter, duration } = ensureTelemetry();
-   counter.add(1, { round, outcome });
-   duration.record(durationMs, { round });
+   runCounter().add(1, { mode, outcome });
+   runDuration().record(durationMs, { mode });
 }
 
 /**
- * Record a manifest-bind attempt (publisher binding a control-plane manifest to
- * a package at load). `timeout` is distinguished from `failure` so operators can
+ * Record how many persist sources a run built vs. reused (carried forward
+ * unchanged via skip-if-unchanged). Lets a dashboard show the reuse ratio,
+ * the main lever on materialization cost.
+ */
+export function recordSourcesOutcome(
+   outcome: "built" | "reused",
+   count: number,
+): void {
+   if (count <= 0) return;
+   sourcesCounter().add(count, { outcome });
+}
+
+/**
+ * Record the wall-clock cost of compiling a package's build plan
+ * (`Package.buildPlan`). This recompiles models at load, so it is worth
+ * tracking as a discrete cost separate from the build itself.
+ */
+export function recordBuildPlanComputeDuration(durationMs: number): void {
+   buildPlanComputeDuration().record(durationMs);
+}
+
+/**
+ * Record an auto-run manifest auto-load attempt. Auto-load is best-effort (a
+ * failure does not fail the run), so a failure here is otherwise invisible:
+ * the run is MANIFEST_FILE_READY but queries still resolve to the old tables.
+ */
+export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
+   autoLoadCounter().add(1, { outcome });
+}
+
+/**
+ * Record that a connection digest could not be computed during build-plan
+ * compilation because the connection failed to resolve. The resulting buildIds
+ * are computed without a digest, so this is a correctness signal, not just noise.
+ */
+export function recordConnectionDigestSkipped(): void {
+   connectionDigestSkipCounter().add(1);
+}
+
+/**
+ * Record a manifest-bind attempt (publisher binding a configured manifest to a
+ * package at load). `timeout` is distinguished from `failure` so operators can
  * tell an unreachable/slow manifest store from a malformed manifest.
  */
 export function recordManifestBind(outcome: ManifestBindOutcome): void {
-   if (!manifestBindCounter) {
-      manifestBindCounter = metrics
-         .getMeter("publisher")
-         .createCounter("publisher_materialization_manifest_bind_total", {
-            description:
-               "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
-         });
-   }
-   manifestBindCounter.add(1, { outcome });
+   manifestBindCounter().add(1, { outcome });
 }
 
 /** Record the wall-clock duration of building one persist source's table. */
 export function recordSourceBuildDuration(durationMs: number): void {
-   if (!sourceBuildDuration) {
-      sourceBuildDuration = metrics
-         .getMeter("publisher")
-         .createHistogram(
-            "publisher_materialization_source_build_duration_ms",
-            {
-               description:
-                  "Wall-clock duration of building a single persist source.",
-               unit: "ms",
-            },
-         );
-   }
-   sourceBuildDuration.record(durationMs);
+   sourceBuildDuration().record(durationMs);
 }
 
 /** Record a best-effort physical-table drop on materialization delete. */
 export function recordDropTables(outcome: "success" | "failure"): void {
-   if (!dropTablesCounter) {
-      dropTablesCounter = metrics
-         .getMeter("publisher")
-         .createCounter("publisher_materialization_drop_tables_total", {
-            description:
-               "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
-         });
-   }
-   dropTablesCounter.add(1, { outcome });
+   dropTablesCounter().add(1, { outcome });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */
 export function resetMaterializationTelemetryForTesting(): void {
-   roundCounter = null;
-   roundDuration = null;
-   manifestBindCounter = null;
-   sourceBuildDuration = null;
-   dropTablesCounter = null;
+   for (const reset of resetHooks) reset();
 }

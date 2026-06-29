@@ -16,7 +16,7 @@
  * duplicates the in-memory DB state and adds native-module load
  * latency to every worker spawn. Database probing (`readDatabases`)
  * stays on the main thread where it can reuse the package's existing
- * DuckDB connection (see PR #772).
+ * DuckDB connection.
  *
  * Boundary
  * --------
@@ -83,6 +83,7 @@ import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
+import { parsePackageMaterialization } from "../service/package_manifest";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -382,6 +383,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
    explores?: string[];
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
+   materialization?: { schedule: string | null } | null;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -391,6 +393,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
       explores?: string[];
       queryableSources?: unknown;
       manifestLocation?: unknown;
+      materialization?: unknown;
    };
    return {
       name: parsed.name,
@@ -407,6 +410,9 @@ async function readPackageMetadata(packagePath: string): Promise<{
          typeof parsed.manifestLocation === "string"
             ? parsed.manifestLocation
             : null,
+      // Package-level Malloy Persistence policy; surfaced to the control plane,
+      // which owns scheduling. Only `schedule` is read today.
+      materialization: parsePackageMaterialization(parsed.materialization),
    };
 }
 

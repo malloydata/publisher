@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/server",
    "description": "Malloy Publisher Server",
-   "version": "0.0.207",
+   "version": "0.0.209",
    "main": "dist/server.mjs",
    "bin": {
       "malloy-publisher": "dist/server.mjs"
@@ -41,6 +41,7 @@
       "@malloydata/db-duckdb": "^0.0.415",
       "@malloydata/db-mysql": "^0.0.415",
       "@malloydata/db-postgres": "^0.0.415",
+      "@malloydata/db-publisher": "^0.0.415",
       "@malloydata/db-snowflake": "^0.0.415",
       "@malloydata/db-trino": "^0.0.415",
       "@malloydata/malloy": "^0.0.415",

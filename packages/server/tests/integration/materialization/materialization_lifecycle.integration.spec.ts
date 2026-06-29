@@ -12,16 +12,9 @@ const PROJECT_NAME = "test-project";
 const PACKAGE_NAME = "persist-test";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
-/** Statuses from which no background round is in flight. */
-const SETTLED_STATUSES = [
-   "BUILD_PLAN_READY",
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-];
 const TERMINAL_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
-describe("Materialization REST API: auto-run + two-round (E2E)", () => {
+describe("Materialization REST API: single-call (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 
@@ -91,16 +84,13 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
       return `${baseUrl}${API}${p}`;
    }
 
-   // Most tests here exercise the control-plane two-round flow, so default to
-   // pauseBetweenPhases=true (pause at BUILD_PLAN_READY). The auto-run group
-   // overrides this with pauseBetweenPhases=false.
    async function createMaterialization(
       body: Record<string, unknown> = {},
    ): Promise<Response> {
       return fetch(url("/materializations"), {
          method: "POST",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ pauseBetweenPhases: true, ...body }),
+         body: JSON.stringify(body),
       });
    }
 
@@ -129,10 +119,8 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
       throw new Error(`Materialization ${id} did not reach the expected state`);
    }
 
-   const pollUntilSettled = (id: string) =>
-      pollUntil(id, (s) => SETTLED_STATUSES.includes(s));
-   const pollUntilTerminal = (id: string) =>
-      pollUntil(id, (s) => TERMINAL_STATUSES.includes(s));
+   const pollUntilTerminal = (id: string, timeoutMs = 90_000) =>
+      pollUntil(id, (s) => TERMINAL_STATUSES.includes(s), timeoutMs);
 
    /**
     * Drive a materialization to a terminal state and delete its record so it
@@ -142,9 +130,8 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
       const res = await fetch(url(`/materializations/${id}`));
       if (res.status !== 200) return;
 
-      // Let any in-flight round settle before acting on it.
-      const settled = await pollUntilSettled(id);
-      if (!TERMINAL_STATUSES.includes(settled.status as string)) {
+      const current = (await res.json()) as Record<string, unknown>;
+      if (!TERMINAL_STATUSES.includes(current.status as string)) {
          await fetch(url(`/materializations/${id}?action=stop`), {
             method: "POST",
          });
@@ -153,11 +140,12 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
       await fetch(url(`/materializations/${id}`), { method: "DELETE" });
    }
 
-   /** First planned source from a BUILD_PLAN_READY materialization. */
-   function firstPlannedSource(
-      materialization: Record<string, unknown>,
-   ): Record<string, unknown> {
-      const plan = materialization.buildPlan as Record<string, unknown>;
+   /** Read Package.buildPlan and return its first planned source. */
+   async function firstPlanSource(): Promise<Record<string, unknown>> {
+      const res = await fetch(url(""));
+      expect(res.status).toBe(200);
+      const pkg = (await res.json()) as Record<string, unknown>;
+      const plan = pkg.buildPlan as Record<string, unknown>;
       expect(plan).toBeDefined();
       const sources = plan.sources as Record<string, Record<string, unknown>>;
       const values = Object.values(sources);
@@ -165,29 +153,22 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
       return values[0];
    }
 
-   // ── Group A0: Auto-run lifecycle (default) ───────────────────────
+   // ── Group A: Auto-run lifecycle (default) ────────────────────────
 
    describe("auto-run lifecycle (default)", () => {
       it(
          "runs all phases on create, self-assigns names, and auto-loads",
          async () => {
-            // pauseBetweenPhases=false (default): the publisher runs compile +
-            // plan + build + load in one pass with no Round 2.
-            const createRes = await createMaterialization({
-               pauseBetweenPhases: false,
-            });
+            // No buildInstructions: the publisher compiles, self-assigns names,
+            // builds every persist source, and auto-loads in one pass.
+            const createRes = await createMaterialization();
             expect(createRes.status).toBe(201);
             const created = (await createRes.json()) as Record<string, unknown>;
             expect(created.status).toBe("PENDING");
-            expect(created.pauseBetweenPhases).toBe(false);
             const id = created.id as string;
 
             // It settles at MANIFEST_FILE_READY without any build instruction.
-            const built = await pollUntil(
-               id,
-               (s) => TERMINAL_STATUSES.includes(s),
-               90_000,
-            );
+            const built = await pollUntilTerminal(id);
             expect(built.status).toBe("MANIFEST_FILE_READY");
 
             // The manifest carries the self-assigned physical table name (from
@@ -213,59 +194,37 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
          },
          { timeout: 120_000 },
       );
+   });
 
-      it("rejects action=build on an auto-run materialization (409)", async () => {
-         // Force a pause so we can observe a BUILD_PLAN_READY record, but mark it
-         // auto-run via metadata by creating a real auto-run and racing build is
-         // flaky; instead assert the guard on a freshly created auto-run that we
-         // immediately try to build. Auto-run never needs Round 2.
-         const createRes = await createMaterialization({
-            pauseBetweenPhases: false,
-         });
-         expect(createRes.status).toBe(201);
-         const { id } = (await createRes.json()) as { id: string };
+   // ── Group B: Orchestrated single-call build ──────────────────────
 
-         // Drive to terminal so there is no in-flight round, then assert build
-         // is rejected (auto-run records never accept action=build).
-         await pollUntil(id, (s) => TERMINAL_STATUSES.includes(s), 90_000);
+   describe("orchestrated build (buildInstructions)", () => {
+      it(
+         "builds directly into caller-assigned names from Package.buildPlan",
+         async () => {
+            // Read the plan off the package, derive one caller-assigned
+            // instruction, and create the materialization already building it.
+            const source = await firstPlanSource();
+            expect(source.name).toBe("order_summary");
+            expect(typeof source.buildId).toBe("string");
 
-         const buildRes = await fetch(
-            url(`/materializations/${id}?action=build`),
-            {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
+            const physicalTableName = "order_summary_built";
+            const createRes = await createMaterialization({
+               buildInstructions: {
                   sources: [
                      {
-                        buildId: "x",
-                        materializedTableId: "mt",
-                        physicalTableName: "t",
+                        buildId: source.buildId,
+                        sourceID: source.sourceID,
+                        materializedTableId: "mt-order-summary",
+                        physicalTableName,
                         realization: "COPY",
                      },
                   ],
-               }),
-            },
-         );
-         expect(buildRes.status).toBe(409);
-
-         await fetch(url(`/materializations/${id}?dropTables=true`), {
-            method: "DELETE",
-         });
-      });
-   });
-
-   // ── Group A: Full two-round lifecycle (happy path) ────────────────
-
-   describe("full two-round lifecycle", () => {
-      it(
-         "plans (round 1), builds on control-plane instruction (round 2), then deletes",
-         async () => {
-            // Round 1: create kicks off compile + plan in the background.
-            const createRes = await createMaterialization();
+               },
+            });
             expect(createRes.status).toBe(201);
             const created = (await createRes.json()) as Record<string, unknown>;
             expect(created.status).toBe("PENDING");
-            expect(created.id).toBeDefined();
             const id = created.id as string;
 
             // List should include the new run.
@@ -274,49 +233,10 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
             const list = (await listRes.json()) as Record<string, unknown>[];
             expect(list.some((m) => m.id === id)).toBe(true);
 
-            // Round 1 completes at BUILD_PLAN_READY with a plan for our source.
-            const planned = await pollUntil(
-               id,
-               (s) => s === "BUILD_PLAN_READY" || TERMINAL_STATUSES.includes(s),
-            );
-            expect(planned.status).toBe("BUILD_PLAN_READY");
-            const source = firstPlannedSource(planned);
-            expect(source.name).toBe("order_summary");
-            expect(typeof source.buildId).toBe("string");
-
-            // Round 2: control plane instructs a COPY build into a physical name.
-            const physicalTableName = "order_summary_built";
-            const buildRes = await fetch(
-               url(`/materializations/${id}?action=build`),
-               {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                     sources: [
-                        {
-                           buildId: source.buildId,
-                           sourceID: source.sourceID,
-                           materializedTableId: "mt-order-summary",
-                           physicalTableName,
-                           realization: "COPY",
-                        },
-                     ],
-                  }),
-               },
-            );
-            expect(buildRes.status).toBe(202);
-
-            // Round 2 completes at MANIFEST_FILE_READY with an inline manifest.
-            const built = await pollUntil(
-               id,
-               (s) =>
-                  s === "MANIFEST_FILE_READY" ||
-                  s === "FAILED" ||
-                  s === "CANCELLED",
-            );
+            // Settles at MANIFEST_FILE_READY with the caller-assigned name.
+            const built = await pollUntilTerminal(id);
             expect(built.status).toBe("MANIFEST_FILE_READY");
             const manifest = built.manifest as Record<string, unknown>;
-            expect(manifest).toBeDefined();
             const entries = manifest.entries as Record<
                string,
                Record<string, unknown>
@@ -327,7 +247,7 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
             expect(entry.sourceName).toBe("order_summary");
 
             // A terminal materialization can be deleted; dropTables=true also
-            // drops the physical table this run produced in Round 2.
+            // drops the physical table this run produced.
             const deleteRes = await fetch(
                url(`/materializations/${id}?dropTables=true`),
                { method: "DELETE" },
@@ -340,9 +260,25 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
          },
          { timeout: 90_000 },
       );
+
+      it("rejects buildInstructions with an unknown buildId at create (400)", async () => {
+         const createRes = await createMaterialization({
+            buildInstructions: {
+               sources: [
+                  {
+                     buildId: "not-a-real-build-id",
+                     materializedTableId: "mt",
+                     physicalTableName: "t",
+                     realization: "COPY",
+                  },
+               ],
+            },
+         });
+         expect(createRes.status).toBe(400);
+      });
    });
 
-   // ── Group A1: Serve-time routing (the v0 payoff) ─────────────────
+   // ── Group C: Serve-time routing (the payoff) ─────────────────────
    //
    // Materialization only pays off if *served* queries scan the materialized
    // table instead of recomputing from the base table. The auto-run path builds
@@ -350,8 +286,7 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
    // process, so routing is provable in-process: capture the live SQL (scans the
    // base CSV), run an auto-run materialization, then assert both the executed
    // query SQL and the /compile preview SQL now scan the physical table and no
-   // longer touch the base CSV. The /compile half guards the parity fix
-   // (Environment.compileSource threads the package's bound manifest).
+   // longer touch the base CSV.
    describe("serve-time routing (auto-load)", () => {
       const MODEL_PATH = "persist_test.malloy";
       const QUERY = "run: order_summary -> { aggregate: c is count() }";
@@ -390,8 +325,6 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
          "routes served + compiled queries to the materialized table after auto-load",
          async () => {
             // Reset to live: a prior group may have left an in-memory binding.
-            // Auto-load never writes manifestLocation to publisher.json, so a
-            // reload re-reads the live model.
             await fetch(`${baseUrl}${API}?reload=true`);
 
             // Baseline: with nothing materialized, both paths recompute from the
@@ -401,16 +334,10 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
 
             // Build + auto-load in one pass (self-assigns physicalTableName =
             // "order_summary" from `#@ persist name="order_summary"`).
-            const createRes = await createMaterialization({
-               pauseBetweenPhases: false,
-            });
+            const createRes = await createMaterialization();
             expect(createRes.status).toBe(201);
             const { id } = (await createRes.json()) as { id: string };
-            const built = await pollUntil(
-               id,
-               (s) => TERMINAL_STATUSES.includes(s),
-               90_000,
-            );
+            const built = await pollUntilTerminal(id);
             expect(built.status).toBe("MANIFEST_FILE_READY");
 
             // The payoff: the served query now scans the materialized table and
@@ -436,25 +363,26 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
       );
    });
 
-   // ── Group B: State machine and error cases ───────────────────────
+   // ── Group D: State machine and error cases ───────────────────────
 
    describe("state machine and errors", () => {
-      it("stops a plan-ready materialization (-> CANCELLED)", async () => {
+      it("stops an in-flight materialization (-> CANCELLED)", async () => {
+         // Create and immediately stop while the background build is still
+         // starting (PENDING). Cooperative abort drives it to CANCELLED.
          const createRes = await createMaterialization();
          expect(createRes.status).toBe(201);
          const { id } = (await createRes.json()) as { id: string };
 
-         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
-
          const stopRes = await fetch(
             url(`/materializations/${id}?action=stop`),
-            {
-               method: "POST",
-            },
+            { method: "POST" },
          );
          expect(stopRes.status).toBe(200);
-         const stopped = (await stopRes.json()) as Record<string, unknown>;
-         expect(stopped.status).toBe("CANCELLED");
+
+         const settled = await pollUntilTerminal(id);
+         // The build may occasionally win the race and complete; either way it
+         // reaches a terminal state and stop returned 200.
+         expect(TERMINAL_STATUSES).toContain(settled.status as string);
 
          await cleanup(id);
       });
@@ -470,75 +398,12 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
          await cleanup(id);
       });
 
-      it("rejects building from a non-plan-ready state with 409", async () => {
-         const createRes = await createMaterialization();
-         expect(createRes.status).toBe(201);
-         const { id } = (await createRes.json()) as { id: string };
-
-         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
-         await fetch(url(`/materializations/${id}?action=stop`), {
-            method: "POST",
-         });
-         await pollUntil(id, (s) => s === "CANCELLED");
-
-         const buildRes = await fetch(
-            url(`/materializations/${id}?action=build`),
-            {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  sources: [
-                     {
-                        buildId: "deadbeef",
-                        materializedTableId: "mt",
-                        physicalTableName: "t",
-                        realization: "COPY",
-                     },
-                  ],
-               }),
-            },
-         );
-         expect(buildRes.status).toBe(409);
-
-         await fetch(url(`/materializations/${id}`), { method: "DELETE" });
-      });
-
-      it("rejects a build instruction with an unknown buildId (400)", async () => {
-         const createRes = await createMaterialization();
-         expect(createRes.status).toBe(201);
-         const { id } = (await createRes.json()) as { id: string };
-
-         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
-
-         const buildRes = await fetch(
-            url(`/materializations/${id}?action=build`),
-            {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  sources: [
-                     {
-                        buildId: "not-a-real-build-id",
-                        materializedTableId: "mt",
-                        physicalTableName: "t",
-                        realization: "COPY",
-                     },
-                  ],
-               }),
-            },
-         );
-         expect(buildRes.status).toBe(400);
-
-         await cleanup(id);
-      });
-
       it("rejects deleting a non-terminal materialization with 409", async () => {
          const createRes = await createMaterialization();
          expect(createRes.status).toBe(201);
          const { id } = (await createRes.json()) as { id: string };
 
-         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
-
+         // Delete immediately, while the background build is still PENDING.
          const deleteRes = await fetch(url(`/materializations/${id}`), {
             method: "DELETE",
          });
@@ -552,13 +417,9 @@ describe("Materialization REST API: auto-run + two-round (E2E)", () => {
          expect(createRes.status).toBe(201);
          const { id } = (await createRes.json()) as { id: string };
 
-         await pollUntil(id, (s) => s === "BUILD_PLAN_READY");
-
          const res = await fetch(
             url(`/materializations/${id}?action=frobnicate`),
-            {
-               method: "POST",
-            },
+            { method: "POST" },
          );
          expect(res.status).toBe(400);
 

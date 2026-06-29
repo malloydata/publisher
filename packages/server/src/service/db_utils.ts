@@ -594,6 +594,133 @@ async function getSchemasForDuckLake(
    }
 }
 
+/** Abort introspection requests that hang instead of holding the slot open. */
+const PUBLISHER_INTROSPECTION_TIMEOUT_MS = 60_000;
+
+/**
+ * Strip any userinfo (`user:pass@`) from a URL before it reaches a log or error
+ * message. `connectionUri` comes from a config file and may legitimately carry
+ * embedded credentials; the bearer token always travels in the header, never
+ * the URL, but this keeps any URL-embedded secret out of thrown messages too.
+ */
+function redactUrlCredentials(url: string): string {
+   try {
+      const parsed = new URL(url);
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString();
+   } catch {
+      // Non-absolute / unparseable: nothing to redact, return as-is.
+      return url;
+   }
+}
+
+/**
+ * Publisher proxy connections introspect against the remote dataplane, which
+ * exposes the same connection API as this server. Schema/table discovery is a
+ * GET passthrough — the remote owns the dialect-specific introspection and
+ * returns the same Schema/Table shapes, so we forward the response verbatim
+ * (no Malloy connection involved).
+ *
+ * URL contract: the request is the configured `connectionUri` with the
+ * introspection `pathSuffix` appended verbatim. `connectionUri` must point at
+ * the connection resource itself (`.../connections/<name>`), so this path and
+ * the data path (db-publisher's `PublisherConnection`) resolve against the same
+ * remote connection. Note the two halves derive their URL differently: the
+ * db-publisher client re-parses `connectionUri` and rebuilds it through its
+ * generated client, while this introspection path appends to it verbatim — the
+ * remote must serve both forms for a given `connectionUri`. Keep them pointed at
+ * the same connection resource so they stay in agreement.
+ */
+async function fetchFromPublisherDataplane<T>(
+   connection: ApiConnection,
+   pathSuffix: string,
+): Promise<T> {
+   const publisher = connection.publisherConnection;
+   // Type-narrowing guard only — the user-facing validation (with the
+   // actionable `Fix:` message) lives in validateConnectionShape, which every
+   // connection passes before it can be assembled and introspected here.
+   if (!publisher?.connectionUri) {
+      throw new Error(
+         `Publisher connection "${connection.name}" is missing connectionUri`,
+      );
+   }
+   const url = `${publisher.connectionUri.replace(/\/+$/, "")}${pathSuffix}`;
+   const headers: Record<string, string> = {};
+   if (publisher.accessToken) {
+      headers["Authorization"] = `Bearer ${publisher.accessToken}`;
+   }
+
+   let response: Response;
+   try {
+      response = await fetch(url, {
+         headers,
+         signal: AbortSignal.timeout(PUBLISHER_INTROSPECTION_TIMEOUT_MS),
+      });
+   } catch (error) {
+      // Network-level failure (DNS, connection refused, timeout) — no HTTP
+      // status. Surface it with the connection name, like the other
+      // introspectors, and never echo the token-bearing header.
+      const reason =
+         (error as Error)?.name === "TimeoutError"
+            ? `timed out after ${PUBLISHER_INTROSPECTION_TIMEOUT_MS}ms`
+            : (error as Error).message;
+      throw new Error(
+         `Publisher dataplane request to ${redactUrlCredentials(url)} failed ` +
+            `for connection "${connection.name}": ${reason}`,
+      );
+   }
+
+   if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(
+         `Publisher dataplane request to ${redactUrlCredentials(url)} failed ` +
+            `(${response.status}): ${body.slice(0, 200)}`,
+      );
+   }
+   return (await response.json()) as T;
+}
+
+async function getSchemasForPublisher(
+   connection: ApiConnection,
+): Promise<ApiSchema[]> {
+   return fetchFromPublisherDataplane<ApiSchema[]>(connection, "/schemas");
+}
+
+async function listTablesForPublisher(
+   connection: ApiConnection,
+   schemaName: string,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   const tables = await fetchFromPublisherDataplane<ApiTable[]>(
+      connection,
+      `/schemas/${encodeURIComponent(schemaName)}/tables`,
+   );
+   if (!tableNames) {
+      return tables;
+   }
+   // `tableNames` is a bare-table-name filter (see listTablesForBigQuery). The
+   // remote's `resource` is dotted and its qualification depends on the remote
+   // dialect ("<schema>.<table>" or "<catalog>.<schema>.<table>"), so match the
+   // bare name (last segment) as well as the schema-stripped and full forms. An
+   // unrecognized shape still matches on the full resource rather than being
+   // silently dropped.
+   const allowed = new Set(tableNames);
+   const prefix = `${schemaName}.`;
+   return tables.filter((table) => {
+      const resource = table.resource ?? "";
+      const schemaStripped = resource.startsWith(prefix)
+         ? resource.slice(prefix.length)
+         : resource;
+      const bareName = resource.slice(resource.lastIndexOf(".") + 1);
+      return (
+         allowed.has(bareName) ||
+         allowed.has(schemaStripped) ||
+         allowed.has(resource)
+      );
+   });
+}
+
 export async function getSchemasForConnection(
    connection: ApiConnection,
    malloyConnection: Connection,
@@ -617,6 +744,8 @@ export async function getSchemasForConnection(
          return getSchemasForMotherDuck(connection, malloyConnection);
       case "ducklake":
          return getSchemasForDuckLake(connection, malloyConnection);
+      case "publisher":
+         return getSchemasForPublisher(connection);
       default:
          throw new Error(`Unsupported connection type: ${connection.type}`);
    }
@@ -929,6 +1058,8 @@ export async function listTablesForSchema(
             malloyConnection,
             tableNames,
          );
+      case "publisher":
+         return listTablesForPublisher(connection, schemaName, tableNames);
       default:
          throw new Error(`Unsupported connection type: ${connection.type}`);
    }
@@ -946,7 +1077,20 @@ async function listTablesForBigQuery(
 ): Promise<ApiTable[]> {
    try {
       const bigquery = createBigQueryClient(connection);
-      const dataset = bigquery.dataset(schemaName);
+      // A 3-segment table reference ("project.dataset.table") reaches here with a
+      // project-qualified schema ("project.dataset"). bigquery.dataset() takes a
+      // BARE dataset id plus an optional projectId, so passing "project.dataset" as
+      // the id resolves to a non-existent dataset in the client's default project —
+      // the dataset's tables never list, so the orphan sweep can't see (and reclaim)
+      // those tables. Split the project off the last dot. (Domain-scoped project ids
+      // like "domain.com:project" keep their dots/colon since we split on the last.)
+      const lastDot = schemaName.lastIndexOf(".");
+      const dataset =
+         lastDot === -1
+            ? bigquery.dataset(schemaName)
+            : bigquery.dataset(schemaName.slice(lastDot + 1), {
+                 projectId: schemaName.slice(0, lastDot),
+              });
       const [tables] = await dataset.getTables();
 
       let names = tables

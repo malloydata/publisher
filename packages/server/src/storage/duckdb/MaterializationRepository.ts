@@ -1,6 +1,5 @@
 import {
    BuildManifestResult,
-   BuildPlan,
    Materialization,
    MaterializationStatus,
    MaterializationUpdate,
@@ -16,7 +15,6 @@ const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
 /** Non-terminal statuses count as "active" for the single-active guard. */
 const ACTIVE_STATUSES: readonly MaterializationStatus[] = [
    "PENDING",
-   "BUILD_PLAN_READY",
    "MANIFEST_ROWS_READY",
 ];
 
@@ -40,8 +38,9 @@ export class DuplicateActiveMaterializationError extends Error {
 /**
  * DuckDB-backed repository for package materializations.
  *
- * A Materialization tracks a single build run for an (environment, package) pair
- * through its lifecycle: PENDING -> RUNNING -> SUCCESS | FAILED | CANCELLED.
+ * A Materialization tracks a single build run for an (environment, package)
+ * pair through its lifecycle: PENDING -> MANIFEST_ROWS_READY ->
+ * MANIFEST_FILE_READY, or -> FAILED | CANCELLED.
  */
 export class MaterializationRepository {
    constructor(private db: DuckDBConnection) {}
@@ -114,8 +113,8 @@ export class MaterializationRepository {
 
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, build_plan, manifest, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
             RETURNING *`,
             [
                id,
@@ -181,12 +180,6 @@ export class MaterializationRepository {
             updates.metadata ? JSON.stringify(updates.metadata) : null,
          );
       }
-      if (updates.buildPlan !== undefined) {
-         setClauses.push(`build_plan = ?`);
-         params.push(
-            updates.buildPlan ? JSON.stringify(updates.buildPlan) : null,
-         );
-      }
       if (updates.manifest !== undefined) {
          setClauses.push(`manifest = ?`);
          params.push(
@@ -237,9 +230,7 @@ export class MaterializationRepository {
          id: row.id as string,
          environmentId: row.environment_id as string,
          packageName: row.package_name as string,
-         pauseBetweenPhases: metadata?.pauseBetweenPhases === true,
          status: row.status as MaterializationStatus,
-         buildPlan: parseJsonColumn<BuildPlan>(row.build_plan),
          manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
          metadata,
          startedAt: row.started_at ? new Date(row.started_at as string) : null,

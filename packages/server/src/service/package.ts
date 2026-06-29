@@ -12,7 +12,7 @@ import {
    MalloyError,
    SourceDef,
 } from "@malloydata/malloy";
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
@@ -28,10 +28,13 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { formatDuration, logger } from "../logger";
+import { recordBuildPlanComputeDuration } from "../materialization_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest } from "../storage/DatabaseInterface";
-import { ignoreDotfiles } from "../utils";
+import { BuildManifest, BuildPlan } from "../storage/DatabaseInterface";
+import { errMessage, ignoreDotfiles } from "../utils";
+import { computePackageBuildPlan } from "./build_plan";
 import { Model } from "./model";
+import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
@@ -67,7 +70,14 @@ export class Package {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
-   private static meter = metrics.getMeter("publisher");
+   // The package's persist build plan: a deterministic property of the compiled
+   // package (per-source buildId, columns, build SQL, dependency graphs),
+   // computed once at load from the live (unbound) models so it is stable for a
+   // given (package version, connection config). Null when the package declares
+   // no persist source. Surfaced read-only on getPackageMetadata() so a caller
+   // can derive build instructions without a separate plan round-trip.
+   private buildPlan: BuildPlan | null = null;
+   private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
       {
@@ -321,6 +331,16 @@ export class Package {
          explores: outcome.packageMetadata.explores,
          queryableSources: outcome.packageMetadata.queryableSources,
          manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
+         // Always surface a non-null `materialization` object once the package
+         // has loaded (schedule null when the manifest declares no policy). The
+         // control plane treats object-present as the authoritative "this is
+         // what the manifest says" signal and object-absent as "metadata not
+         // available this request" — so it must never be dropped to null on a
+         // successfully loaded package, or the CP can misread a transient
+         // absence as a schedule removal. See `parsePackageMaterialization`.
+         materialization: outcome.packageMetadata.materialization ?? {
+            schedule: null,
+         },
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -350,9 +370,19 @@ export class Package {
          );
          // Validate renderer tags on the main thread (the renderer is too heavy
          // to load inside the pure-CPU package-load worker). A misconfigured tag
-         // throws a ModelCompilationError (424), aborting the whole load like any
-         // other per-model compile error above.
+         // is logged as a warning naming the target; it does not fail the load.
          await model.validateRenderTags();
+         // Reject unquoted `#@ persist name=` annotations the same way: an
+         // unquoted name is dropped from the build plan, so the source would
+         // publish but never materialize. Scan the raw `.malloy` source (the
+         // ground truth for quoting); throws a ModelCompilationError (424).
+         if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+            const modelSource = await fs.readFile(
+               path.join(packagePath, sm.modelPath),
+               "utf-8",
+            );
+            assertPersistNamesQuoted(modelSource, sm.modelPath);
+         }
          models.set(sm.modelPath, model);
       }
 
@@ -377,6 +407,26 @@ export class Package {
          malloyConfig,
       );
 
+      // Compute the persist build plan off the live (unbound) models, before the
+      // caller binds any configured manifest, so the surfaced plan reflects the
+      // canonical build (not the manifest-rewritten SQL). Best-effort: a plan
+      // failure is logged, not fatal — the package still serves; the plan is
+      // just absent. Recompiles the models (duplicate schema RPCs vs the worker
+      // compile); accepted for now.
+      try {
+         const buildPlanStart = Date.now();
+         pkg.buildPlan = await computePackageBuildPlan(pkg);
+         recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
+      } catch (err) {
+         logger.warn(
+            `Failed to compute build plan for package ${packageName}`,
+            {
+               packageName,
+               error: errMessage(err),
+            },
+         );
+      }
+
       // Fail-safe at load: a bad explores entry doesn't fail the package
       // (its models still load and listModels hides the unmatched entry — it
       // never falls back to listing everything). Warn so the misconfig is
@@ -395,6 +445,16 @@ export class Package {
 
    public getPackageName(): string {
       return this.packageName;
+   }
+
+   /**
+    * The package's persist build plan (per-source buildId, columns, build SQL,
+    * dependency graphs), or null when the package declares no persist source.
+    * A deterministic property of the compiled package; callers derive build
+    * instructions from it for an orchestrated materialization.
+    */
+   public getBuildPlan(): BuildPlan | null {
+      return this.buildPlan;
    }
 
    public getPackageMetadata(): ApiPackage {
@@ -418,6 +478,7 @@ export class Package {
          manifestBindingStatus: this.manifestBindingStatus,
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
+         buildPlan: this.buildPlan,
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -669,9 +730,10 @@ export class Package {
                { buildManifest },
             );
             // Validate renderer tags here too (loadViaWorker does it for the
-            // create path). Reload keeps per-model placeholders rather than
-            // aborting the whole package, so a render-tag error is recorded as
-            // this model's compilationError instead of thrown.
+            // create path). Render-tag findings are logged as warnings inside
+            // validateRenderTags and never throw. The catch is defensive: an
+            // unexpected internal failure is recorded as this model's
+            // compilationError rather than aborting the whole reload.
             try {
                await model.validateRenderTags();
                nextModels.set(sm.modelPath, model);

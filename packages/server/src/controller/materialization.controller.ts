@@ -20,18 +20,20 @@ export class MaterializationController {
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
       sourceNames?: string[];
-      pauseBetweenPhases?: boolean;
+      buildInstructions?: BuildInstruction[];
    } {
       const result: {
          forceRefresh?: boolean;
          sourceNames?: string[];
-         pauseBetweenPhases?: boolean;
+         buildInstructions?: BuildInstruction[];
       } = {};
-      if (body.pauseBetweenPhases !== undefined) {
-         if (typeof body.pauseBetweenPhases !== "boolean") {
-            throw new BadRequestError("pauseBetweenPhases must be a boolean");
-         }
-         result.pauseBetweenPhases = body.pauseBetweenPhases;
+      if (
+         body.buildInstructions !== undefined &&
+         body.buildInstructions !== null
+      ) {
+         result.buildInstructions = this.validateBuildInstructions(
+            body.buildInstructions,
+         );
       }
       if (body.forceRefresh !== undefined) {
          if (typeof body.forceRefresh !== "boolean") {
@@ -53,30 +55,24 @@ export class MaterializationController {
       return result;
    }
 
-   async buildMaterialization(
-      environmentName: string,
-      packageName: string,
-      materializationId: string,
-      body: Record<string, unknown>,
-   ) {
-      return this.materializationService.buildMaterialization(
-         environmentName,
-         packageName,
-         materializationId,
-         this.validateBuildBody(body),
-      );
-   }
-
-   private validateBuildBody(
-      body: Record<string, unknown>,
-   ): BuildInstruction[] {
-      const sources = body.sources;
+   /**
+    * Validate the orchestrated `buildInstructions` payload (BuildInstructions:
+    * `{ sources: BuildInstruction[] }`) and flatten it to the instruction list
+    * the service consumes.
+    */
+   private validateBuildInstructions(raw: unknown): BuildInstruction[] {
+      if (typeof raw !== "object" || raw === null) {
+         throw new BadRequestError("buildInstructions must be an object");
+      }
+      const sources = (raw as Record<string, unknown>).sources;
       if (!Array.isArray(sources) || sources.length === 0) {
          throw new BadRequestError(
-            "build requires a non-empty 'sources' array of BuildInstruction",
+            "buildInstructions requires a non-empty 'sources' array of BuildInstruction",
          );
       }
-      return sources.map((raw) => this.validateInstruction(raw));
+      return sources.map((instruction) =>
+         this.validateInstruction(instruction),
+      );
    }
 
    private validateInstruction(raw: unknown): BuildInstruction {

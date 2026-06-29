@@ -1,4 +1,4 @@
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 
 import type { MemoryGovernorConfig } from "../config";
 import { logger } from "../logger";
@@ -58,7 +58,7 @@ export class PackageMemoryGovernor {
    private lastSampledRss = 0;
    private lastSampledAt: number | null = null;
    private readonly backpressureActivationsCounter: ReturnType<
-      ReturnType<typeof metrics.getMeter>["createCounter"]
+      ReturnType<typeof publisherMeter>["createCounter"]
    >;
 
    constructor(config: MemoryGovernorConfig, rssSampler?: RssSampler) {
@@ -71,7 +71,7 @@ export class PackageMemoryGovernor {
          config.maxMemoryBytes * config.lowWaterFraction,
       );
 
-      const meter = metrics.getMeter("publisher");
+      const meter = publisherMeter();
 
       // Periodic gauge: current process RSS in bytes.
       meter
