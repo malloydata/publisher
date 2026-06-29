@@ -80,6 +80,12 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { ModelCompilationError } from "../errors";
+import {
+   classifySchemaFetchError,
+   connectionFailureToError,
+   isInfrastructureFailure,
+   type SchemaFetchFailure,
+} from "./connection_error";
 import { logger } from "../logger";
 import type {
    ConnectionMetadataRequest,
@@ -166,6 +172,14 @@ interface JobContext {
    resolve: (result: LoadPackageResult) => void;
    reject: (err: Error) => void;
    timeout: ReturnType<typeof setTimeout>;
+   /**
+    * Set when a schema-fetch RPC for this job hit an infrastructure
+    * failure (expired token, unreachable data plane). The worker keeps
+    * compiling and returns a cascade of derivative "X is not defined"
+    * errors; `completeJob`/`errorJob` discard that and fail the load with
+    * this single connection diagnostic instead. First failure wins.
+    */
+   connectionFailure?: SchemaFetchFailure;
 }
 
 interface QueuedJob {
@@ -610,7 +624,16 @@ export class PackageLoadPool {
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      ctx.resolve(msg);
+      if (ctx.connectionFailure) {
+         // A connection failed to introspect a schema for an infra reason
+         // (expired token, unreachable data plane). The worker compiled on
+         // anyway and the result is a cascade of derivative "X is not
+         // defined" errors that bury the real cause — discard it and fail
+         // the whole load with one clear connection diagnostic instead.
+         ctx.reject(connectionFailureToError(ctx.connectionFailure));
+      } else {
+         ctx.resolve(msg);
+      }
       // Worker is idle now — give it the next queued job (if any).
       this.tryDispatch();
    }
@@ -620,8 +643,66 @@ export class PackageLoadPool {
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      ctx.reject(deserializeError(msg.error));
+      // Prefer a recorded connection failure: it's the root cause, whereas a
+      // whole-package error raised after a failed schema fetch is downstream.
+      ctx.reject(
+         ctx.connectionFailure
+            ? connectionFailureToError(ctx.connectionFailure)
+            : deserializeError(msg.error),
+      );
       this.tryDispatch();
+   }
+
+   /**
+    * Scan a schema-fetch `errors` map (keyed by table key) for the first
+    * infrastructure failure and record it on the job. No-op once one is
+    * recorded (first failure wins) or if every error is a genuine model
+    * problem (not_found / unrecognized), which is left to compile normally.
+    */
+   private noteInfraFailureFromErrors(
+      ctx: JobContext,
+      connectionName: string,
+      errors: Record<string, string> | undefined,
+      tables: Record<string, string>,
+   ): void {
+      if (ctx.connectionFailure || !errors) return;
+      for (const [tableKey, message] of Object.entries(errors)) {
+         const { kind, status } = classifySchemaFetchError(message);
+         if (isInfrastructureFailure(kind)) {
+            ctx.connectionFailure = {
+               kind,
+               status,
+               connection: connectionName,
+               target: tables[tableKey] ?? tableKey,
+               rawMessage: message,
+            };
+            return;
+         }
+      }
+   }
+
+   /**
+    * Same as above for a single error string (SQL schema, thrown schema
+    * fetch, or a connection-resolution failure). `target` is omitted for
+    * connection-resolution failures, where no specific table/SQL is in hand.
+    */
+   private noteInfraFailureFromMessage(
+      ctx: JobContext,
+      connectionName: string,
+      target: string | undefined,
+      message: string,
+   ): void {
+      if (ctx.connectionFailure) return;
+      const { kind, status } = classifySchemaFetchError(message);
+      if (isInfrastructureFailure(kind)) {
+         ctx.connectionFailure = {
+            kind,
+            status,
+            connection: connectionName,
+            target,
+            rawMessage: message,
+         };
+      }
    }
 
    /** Fail a job out-of-band (timeout, worker exit). */
@@ -670,6 +751,22 @@ export class PackageLoadPool {
             },
          });
       } catch (error) {
+         // The connection can fail to RESOLVE for the same infra reasons a
+         // schema fetch can — and for some connections it fails here FIRST.
+         // `@malloydata/db-publisher`'s `PublisherConnection.create()` eagerly
+         // calls `getConnection()` + `test()` against the data plane, so an
+         // expired token (401) / unreachable plane (5xx) throws out of
+         // `lookupConnection` BEFORE any `fetchSchemaForTables`. Classify it
+         // here too, else the worker compiles on with an unresolved connection
+         // and the load resolves with the misleading "X is not defined"
+         // cascade instead of one clear connection diagnostic. No specific
+         // table is in hand yet, so the diagnostic is connection-level.
+         this.noteInfraFailureFromMessage(
+            ctx,
+            msg.connectionName,
+            undefined,
+            error instanceof Error ? error.message : String(error),
+         );
          reply({
             type: "rpc-error",
             requestId: msg.requestId,
@@ -706,6 +803,16 @@ export class PackageLoadPool {
             msg.tables,
             buildFetchOptions(msg.options),
          );
+         // An expired token / unreachable data plane comes back here as a
+         // per-table error STRING (Malloy's BaseConnection catches the
+         // connection's throw into result.errors). Record it so the load
+         // fails with one clear diagnostic instead of the compile cascade.
+         this.noteInfraFailureFromErrors(
+            ctx,
+            msg.connectionName,
+            result.errors,
+            msg.tables,
+         );
          reply({
             type: "schema-for-tables-response",
             requestId: msg.requestId,
@@ -714,6 +821,14 @@ export class PackageLoadPool {
             errors: result.errors,
          });
       } catch (error) {
+         // Some connections throw straight out of fetchSchemaForTables;
+         // classify that too before forwarding the rpc-error.
+         this.noteInfraFailureFromMessage(
+            ctx,
+            msg.connectionName,
+            Object.values(msg.tables)[0] ?? "table schema",
+            error instanceof Error ? error.message : String(error),
+         );
          reply({
             type: "rpc-error",
             requestId: msg.requestId,
@@ -753,6 +868,14 @@ export class PackageLoadPool {
             buildFetchOptions(msg.options),
          );
          if (result.error !== undefined) {
+            // SQL-source introspection (`conn.sql(...)`) fails the same lossy
+            // way as table introspection — classify before it cascades.
+            this.noteInfraFailureFromMessage(
+               ctx,
+               msg.connectionName,
+               sqlTargetLabel(msg.sentence),
+               result.error,
+            );
             reply({
                type: "schema-for-sql-response",
                requestId: msg.requestId,
@@ -768,6 +891,12 @@ export class PackageLoadPool {
             });
          }
       } catch (error) {
+         this.noteInfraFailureFromMessage(
+            ctx,
+            msg.connectionName,
+            sqlTargetLabel(msg.sentence),
+            error instanceof Error ? error.message : String(error),
+         );
          reply({
             type: "rpc-error",
             requestId: msg.requestId,
@@ -812,6 +941,21 @@ export class PackageLoadPool {
          });
       }
    }
+}
+
+/**
+ * A short, human-readable label for an inline SQL source, used in the
+ * connection diagnostic. The full SELECT can be huge; collapse whitespace
+ * and truncate so the message stays a single readable line.
+ */
+function sqlTargetLabel(sentence: unknown): string {
+   const selectStr = (sentence as { selectStr?: unknown } | null | undefined)
+      ?.selectStr;
+   if (typeof selectStr === "string" && selectStr.trim().length > 0) {
+      const oneLine = selectStr.replace(/\s+/g, " ").trim();
+      return `SQL query (${oneLine.length > 60 ? `${oneLine.slice(0, 57)}...` : oneLine})`;
+   }
+   return "an inline SQL query";
 }
 
 function buildFetchOptions(options: {

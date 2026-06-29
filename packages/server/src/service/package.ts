@@ -23,6 +23,8 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import {
+   ConnectionAuthError,
+   ConnectionError,
    ModelCompilationError,
    PackageNotFoundError,
    ServiceUnavailableError,
@@ -287,9 +289,11 @@ export class Package {
             // (shutting down, worker spawn failed, worker crashed,
             // RPC timeout) and the client should retry. Real Malloy
             // compile errors deserialised by the pool still carry
-            // their MalloyError / ModelCompilationError identity —
-            // let those bubble untouched so they keep their 4xx
-            // mapping in `errors.ts`.
+            // their MalloyError / ModelCompilationError identity, and a
+            // schema-introspection auth/transport failure surfaces as a
+            // ConnectionAuthError / ConnectionError — let all of those
+            // bubble untouched so they keep their 4xx/5xx mapping in
+            // `errors.ts` (424 / 422 / 502), not a misleading 503.
             const realError =
                err instanceof Error
                   ? err
@@ -298,7 +302,9 @@ export class Package {
                     );
             if (
                realError instanceof MalloyError ||
-               realError instanceof ModelCompilationError
+               realError instanceof ModelCompilationError ||
+               realError instanceof ConnectionAuthError ||
+               realError instanceof ConnectionError
             ) {
                throw realError;
             }
@@ -694,7 +700,9 @@ export class Package {
                : new Error(`Package-load worker pool failure: ${String(err)}`);
          if (
             realError instanceof MalloyError ||
-            realError instanceof ModelCompilationError
+            realError instanceof ModelCompilationError ||
+            realError instanceof ConnectionAuthError ||
+            realError instanceof ConnectionError
          ) {
             throw realError;
          }
