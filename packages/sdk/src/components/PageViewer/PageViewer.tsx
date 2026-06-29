@@ -33,6 +33,12 @@ function parsePageResource(resourceUri: string) {
  * runtime postMessages `{ type: "publisher:resize", height }` as content
  * height changes; we listen and resize the iframe to match so embedded
  * dashboards don't get a nested scrollbar.
+ *
+ * Full-screen apps (e.g. slide decks) can opt out of content-height sizing
+ * with `<meta name="publisher:fit" content="viewport">`, surfaced as
+ * `Page.fit === "viewport"`. The iframe then fills the available viewport
+ * height (matching the standalone view) instead of collapsing to the page's
+ * near-zero reported content height.
  */
 export default function PageViewer({ resourceUri }: PageViewerProps) {
    const { server, apiClients } = useServer();
@@ -57,9 +63,14 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
       queryFn: () => apiClients.pages.listPages(environmentName, packageName),
       enabled: !!parsed,
    });
-   const title =
-      pagesQuery.data?.data?.find((p) => p.path === pagePath)?.title ??
-      pagePath;
+   const pageMeta = pagesQuery.data?.data?.find((p) => p.path === pagePath);
+   const title = pageMeta?.title ?? pagePath;
+   // Full-screen apps opt in via <meta name="publisher:fit" content="viewport">
+   // (surfaced as Page.fit by the /pages listing). In fill mode the iframe fills
+   // the available viewport height instead of being sized to the page's reported
+   // content height: a viewport-filling deck has ~no content height to report,
+   // so the default auto-size would clip it. Ordinary pages keep auto-sizing.
+   const fillViewport = pageMeta?.fit === "viewport";
 
    const iframeRef = useRef<HTMLIFrameElement | null>(null);
    // Start small so the iframe doesn't pre-commit space before the first
@@ -68,6 +79,10 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
    const [iframeHeight, setIframeHeight] = useState<number>(120);
 
    useEffect(() => {
+      // Fill mode pins the iframe to 100%, so content-height resize messages are
+      // irrelevant; skip subscribing (and the per-message re-renders) until the
+      // page is in content-height mode.
+      if (fillViewport) return;
       function onMessage(e: MessageEvent) {
          if (!isPublisherResizeMessage(e.data)) return;
          if (e.source !== iframeRef.current?.contentWindow) return;
@@ -77,7 +92,7 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
       }
       window.addEventListener("message", onMessage);
       return () => window.removeEventListener("message", onMessage);
-   }, []);
+   }, [fillViewport]);
 
    if (!parsed) {
       return (
@@ -99,12 +114,23 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
    }
 
    return (
-      <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+      <Box
+         sx={{
+            p: 3,
+            // Fill mode fills the available height of PageViewer's ancestor, so
+            // it must render inside a height-constrained container. The Publisher
+            // app provides one (MainPage's 100dvh flex chain); an SDK consumer
+            // embedding PageViewer should give it a bounded-height parent.
+            ...(fillViewport
+               ? { height: "100%", display: "flex", flexDirection: "column" }
+               : { maxWidth: 1200, mx: "auto" }),
+         }}
+      >
          <Stack
             direction="row"
             alignItems="baseline"
             spacing={1}
-            sx={{ mb: 1 }}
+            sx={{ mb: 1, flexShrink: 0 }}
          >
             <Typography
                variant="h6"
@@ -140,6 +166,11 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
                borderRadius: 1.5,
                overflow: "hidden",
                backgroundColor: "background.paper",
+               // Fill mode: grow to consume the remaining viewport height (the
+               // SPA gives PageViewer a 100dvh flex ancestor) so the iframe
+               // below can be 100% tall. minHeight:0 lets this flex child
+               // actually shrink/grow instead of overflowing its parent.
+               ...(fillViewport ? { flex: 1, minHeight: 0 } : {}),
             }}
          >
             <iframe
@@ -154,7 +185,10 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
                style={{
                   display: "block",
                   width: "100%",
-                  height: iframeHeight,
+                  // Fill mode pins the iframe to the available height so the
+                  // deck's own 100vh resolves against a real viewport. Otherwise
+                  // track the content height reported via publisher:resize.
+                  height: fillViewport ? "100%" : iframeHeight,
                   border: 0,
                }}
             />
