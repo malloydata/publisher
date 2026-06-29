@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { generateKeyPairSync } from "crypto";
 import { components } from "../api";
 import {
@@ -166,5 +166,186 @@ describe("normalizeSnowflakePrivateKey", () => {
       const result = normalizeSnowflakePrivateKey(singleLine);
       expect(result.startsWith("-----BEGIN PRIVATE KEY-----\n")).toBe(true);
       expect(result.endsWith("-----END PRIVATE KEY-----\n")).toBe(true);
+   });
+});
+
+describe("assembleEnvironmentConnections — publisher", () => {
+   const validBase: ApiConnection = {
+      name: "analytics",
+      type: "publisher",
+      publisherConnection: {
+         connectionUri:
+            "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+         accessToken: "jwt-token",
+      },
+   };
+
+   // publisher connections are default-deny (SSRF gate); these assembly tests
+   // exercise the enabled path, so opt in for the block and restore after.
+   const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+   beforeEach(() => {
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+   });
+   afterEach(() => {
+      if (priorFlag === undefined) {
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+      } else {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
+      }
+   });
+
+   it("emits a publisher core entry proxying to the remote dataplane", () => {
+      const { pojo } = assembleEnvironmentConnections([validBase]);
+
+      const entry = pojo.connections["analytics"];
+      expect(entry.is).toBe("publisher");
+      expect(entry.connectionUri).toBe(
+         "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+      );
+      expect(entry.accessToken).toBe("jwt-token");
+   });
+
+   it("does not populate static connection attributes (dialect is resolved at runtime)", () => {
+      const { apiConnections } = assembleEnvironmentConnections([validBase]);
+      expect(apiConnections).toHaveLength(1);
+      expect(apiConnections[0].attributes).toBeUndefined();
+   });
+
+   it("assembles without an accessToken (optional)", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: {
+            connectionUri:
+               "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+         },
+      };
+      const { pojo } = assembleEnvironmentConnections([conn]);
+      const entry = pojo.connections["analytics"];
+      expect(entry.is).toBe("publisher");
+      expect(entry.accessToken).toBeUndefined();
+   });
+
+   it("rejects a publisher connection missing connectionUri with an actionable error", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection:
+            {} as components["schemas"]["PublisherConnection"],
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid publisher connection 'analytics': missing connectionUri.",
+      );
+   });
+
+   it("rejects a publisher connection missing the publisherConnection block", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid publisher connection 'analytics': missing connectionUri.",
+      );
+   });
+
+   it("rejects a publisher connection whose connectionUri is not a valid URL", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: { connectionUri: "not a url" },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid publisher connection 'analytics': connectionUri is not a valid URL.",
+      );
+   });
+
+   it("rejects a publisher connection whose connectionUri uses a non-http(s) scheme", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: { connectionUri: "file:///etc/passwd" },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "connectionUri must use http or https (got 'file:')",
+      );
+   });
+
+   it("does not echo a credential-bearing connectionUri in the validation error", () => {
+      const conn: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         // Userinfo present but the URI is otherwise malformed (space in host)
+         // so it fails to parse and must not be reflected back verbatim.
+         publisherConnection: {
+            connectionUri: "https://user:s3cret@bad host/connections/x",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "connectionUri is not a valid URL",
+      );
+      expect(() => assembleEnvironmentConnections([conn])).not.toThrow(
+         /s3cret/,
+      );
+   });
+
+   it("still rejects the reserved 'duckdb' name for a publisher connection", () => {
+      const conn: ApiConnection = {
+         name: "duckdb",
+         type: "publisher",
+         publisherConnection: { connectionUri: "https://x/connections/duckdb" },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Connection name 'duckdb' is reserved",
+      );
+   });
+
+   it("still rejects a publisher connection with no name", () => {
+      const conn = {
+         type: "publisher",
+         publisherConnection: { connectionUri: "https://x/connections/y" },
+      } as ApiConnection;
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Invalid connection configuration. No name.",
+      );
+   });
+
+   describe("SSRF gate (PUBLISHER_ALLOW_PROXY_CONNECTIONS)", () => {
+      it("denies a valid publisher connection when the flag is unset (default-deny)", () => {
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         expect(() => assembleEnvironmentConnections([validBase])).toThrow(
+            "Publisher proxy connection 'analytics' is disabled in this deployment",
+         );
+      });
+
+      it("error names the env var to flip", () => {
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         expect(() => assembleEnvironmentConnections([validBase])).toThrow(
+            "Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true",
+         );
+      });
+
+      it("denies for any non-'true' value (fail-closed)", () => {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "1";
+         expect(() => assembleEnvironmentConnections([validBase])).toThrow(
+            "is disabled in this deployment",
+         );
+      });
+
+      it("gate fires before the connectionUri shape check", () => {
+         // A publisher connection missing connectionUri still surfaces the
+         // disabled error first when the gate is closed — the type is refused
+         // outright, not validated.
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         const conn: ApiConnection = { name: "analytics", type: "publisher" };
+         expect(() => assembleEnvironmentConnections([conn])).toThrow(
+            "is disabled in this deployment",
+         );
+      });
+
+      it("allows a valid publisher connection when the flag is 'true'", () => {
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+         const { pojo } = assembleEnvironmentConnections([validBase]);
+         expect(pojo.connections["analytics"].is).toBe("publisher");
+      });
    });
 });

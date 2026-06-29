@@ -18,7 +18,6 @@ import * as environmentCommands from "./commands/environments.js";
 import * as packageCommands from "./commands/packages.js";
 import * as connectionCommands from "./commands/connections.js";
 import * as materializationCommands from "./commands/materializations.js";
-import * as manifestCommands from "./commands/manifests.js";
 import * as modelCommands from "./commands/models.js";
 import * as notebookCommands from "./commands/notebooks.js";
 import * as databaseCommands from "./commands/databases.js";
@@ -237,21 +236,10 @@ program
             name,
           );
           break;
-        case "manifest":
-          if (!options.environment || !options.package) {
-            logError("--environment and --package are required");
-            process.exit(1);
-          }
-          await manifestCommands.getManifest(
-            client,
-            options.environment,
-            options.package,
-          );
-          break;
         default:
           logError(`Unknown resource: ${resource}`);
           logOutput(
-            "Valid types: environment, package, connection, materialization, model, notebook, manifest",
+            "Valid types: environment, package, connection, materialization, model, notebook",
           );
           process.exit(1);
       }
@@ -380,6 +368,10 @@ program
     "Environment name (required for package/connection)",
   )
   .option("--package <n>", "Package name")
+  .option(
+    "--drop-tables",
+    "Also drop the materialized tables (materialization only)",
+  )
   .action(async (resource, name, options) => {
     try {
       const client = getClient();
@@ -420,6 +412,7 @@ program
             options.environment,
             options.package,
             name,
+            options.dropTables === true,
           );
           break;
         default:
@@ -432,24 +425,23 @@ program
     }
   });
 
-// The standalone action verbs below (materialize / stop-materialization /
-// reload-manifest) always require --environment and --package, so they use
+// The standalone action verbs below (materialize / stop-materialization)
+// always require --environment and --package, so they use
 // Commander's requiredOption(). The verb-first switch commands above multiplex
 // resources with differing requirements (e.g. `list environment` needs no
 // --package), so they validate manually inside each case instead.
 
-// MATERIALIZE COMMAND (create + start a materialization build)
+// MATERIALIZE COMMAND (auto-run: compile, build every persist source, and
+// auto-load the resulting manifest)
 program
   .command("materialize")
-  .description("Create and start a materialization build for a package")
+  .description(
+    "Materialize a package: compile, build all persist sources, and auto-load the manifest",
+  )
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
   .option("--force-refresh", "Rebuild all sources, ignoring existing build IDs")
-  .option(
-    "--auto-load-manifest",
-    "Reload the manifest after a successful build",
-  )
-  .option("--wait", "Poll until the build reaches a terminal state")
+  .option("--wait", "Poll until the run settles (build complete or failed)")
   .option(
     "--timeout <seconds>",
     "With --wait, seconds to wait before giving up (default 120)",
@@ -472,7 +464,6 @@ program
         options.package,
         {
           forceRefresh: options.forceRefresh,
-          autoLoadManifest: options.autoLoadManifest,
           wait: options.wait,
           timeoutMs: timeoutSec !== undefined ? timeoutSec * 1000 : undefined,
           pollIntervalMs: pollSec !== undefined ? pollSec * 1000 : undefined,
@@ -498,26 +489,6 @@ program
         options.environment,
         options.package,
         id,
-      );
-    } catch (error: any) {
-      logError("Command failed", error);
-      process.exit(1);
-    }
-  });
-
-// RELOAD-MANIFEST COMMAND
-program
-  .command("reload-manifest")
-  .description("Reload the build manifest and recompile a package's models")
-  .requiredOption("--environment <n>", "Environment name")
-  .requiredOption("--package <n>", "Package name")
-  .action(async (options) => {
-    try {
-      const client = getClient();
-      await manifestCommands.reloadManifest(
-        client,
-        options.environment,
-        options.package,
       );
     } catch (error: any) {
       logError("Command failed", error);

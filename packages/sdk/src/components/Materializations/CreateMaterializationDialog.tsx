@@ -14,10 +14,7 @@ import {
 import { useState } from "react";
 
 type CreateMaterializationDialogProps = {
-   onSubmit: (opts: {
-      forceRefresh: boolean;
-      autoLoadManifest: boolean;
-   }) => Promise<unknown>;
+   onSubmit: (opts: { forceRefresh: boolean }) => Promise<unknown>;
    isSubmitting: boolean;
    disabled?: boolean;
    disabledReason?: string;
@@ -31,13 +28,12 @@ export default function CreateMaterializationDialog({
 }: CreateMaterializationDialogProps) {
    const [open, setOpen] = useState(false);
    const [forceRefresh, setForceRefresh] = useState(false);
-   const [autoLoadManifest, setAutoLoadManifest] = useState(true);
 
    const handleClose = () => setOpen(false);
 
    const handleRun = async () => {
       try {
-         await onSubmit({ forceRefresh, autoLoadManifest });
+         await onSubmit({ forceRefresh });
          setOpen(false);
       } catch {
          // The mutation surfaces the error through the caller's Snackbar;
@@ -79,8 +75,9 @@ export default function CreateMaterializationDialog({
             </DialogTitle>
             <DialogContent>
                <DialogContentText sx={{ mb: 2 }}>
-                  Build every persist source in this package and write the
-                  results to the configured connection.
+                  Materialize every persist source in this package: compile,
+                  build the tables, and load them so queries serve from the
+                  materialized tables.
                </DialogContentText>
                <FormGroup>
                   <FormControlLabel
@@ -94,17 +91,6 @@ export default function CreateMaterializationDialog({
                      }
                      label="Force refresh (rebuild even if unchanged)"
                   />
-                  <FormControlLabel
-                     control={
-                        <Switch
-                           checked={autoLoadManifest}
-                           onChange={(event) =>
-                              setAutoLoadManifest(event.target.checked)
-                           }
-                        />
-                     }
-                     label="Auto-load manifest after build"
-                  />
                </FormGroup>
             </DialogContent>
             <DialogActions>
@@ -114,7 +100,7 @@ export default function CreateMaterializationDialog({
                   loading={isSubmitting}
                   onClick={handleRun}
                >
-                  Run
+                  Materialize
                </Button>
             </DialogActions>
          </Dialog>

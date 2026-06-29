@@ -5,10 +5,9 @@
  * package-load worker (`package_load/package_load_worker.ts`, which runs in a
  * separate bundle and serializes the result over the worker protocol) need to
  * walk a `ModelDef` and produce the same `sources` / `queries` shapes plus the
- * `#(filter)` `filterMap`. These two call sites used to carry byte-for-byte
- * copies of this logic; keeping them in lockstep by hand was a standing hazard
- * (a change to one silently diverged from the other). This module is the single
- * source of truth — the two callers differ only in how they type the result
+ * `#(filter)` `filterMap`. This module is the single source of truth for that
+ * walk so the two call sites can't drift out of lockstep — the two callers
+ * differ only in how they type the result
  * (generated API types vs. worker wire types — structurally identical, so each
  * casts at its boundary) and in how they report a filter parse failure (the
  * service logs a warning; the worker has no logger and stays silent), which is

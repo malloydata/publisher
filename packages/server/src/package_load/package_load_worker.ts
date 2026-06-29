@@ -16,7 +16,7 @@
  * duplicates the in-memory DB state and adds native-module load
  * latency to every worker spawn. Database probing (`readDatabases`)
  * stays on the main thread where it can reuse the package's existing
- * DuckDB connection (see PR #772).
+ * DuckDB connection.
  *
  * Boundary
  * --------
@@ -75,6 +75,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import {
    MODEL_FILE_SUFFIX,
+   normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
@@ -83,6 +84,7 @@ import { validateRenderTags } from "@malloydata/render-validator";
 import { ModelCompilationError } from "../errors";
 import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
+import { parsePackageMaterialization } from "../service/package_manifest";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -376,16 +378,43 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 // stays decoupled from the main-thread service module graph)
 // ──────────────────────────────────────────────────────────────────────
 
-async function readPackageMetadata(
-   packagePath: string,
-): Promise<{ name?: string; description?: string }> {
+async function readPackageMetadata(packagePath: string): Promise<{
+   name?: string;
+   description?: string;
+   explores?: string[];
+   queryableSources?: "declared" | "all";
+   manifestLocation?: string | null;
+   materialization?: { schedule: string | null } | null;
+}> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
    const parsed = JSON.parse(contents) as {
       name?: string;
       description?: string;
+      explores?: string[];
+      queryableSources?: unknown;
+      manifestLocation?: unknown;
+      materialization?: unknown;
    };
-   return { name: parsed.name, description: parsed.description };
+   return {
+      name: parsed.name,
+      description: parsed.description,
+      explores: Array.isArray(parsed.explores)
+         ? parsed.explores.map(normalizeModelPath)
+         : undefined,
+      // Default + invalid fall back to "declared" (fail-safe: queryable ==
+      // discoverable). Only an explicit "all" opts out of the query boundary.
+      queryableSources: parsed.queryableSources === "all" ? "all" : "declared",
+      // URI (gs://, s3://, file://, or local path) of the control-plane-computed
+      // build manifest. The main thread fetches + binds it after load.
+      manifestLocation:
+         typeof parsed.manifestLocation === "string"
+            ? parsed.manifestLocation
+            : null,
+      // Package-level Malloy Persistence policy; surfaced to the control plane,
+      // which owns scheduling. Only `schedule` is read today.
+      materialization: parsePackageMaterialization(parsed.materialization),
+   };
 }
 
 async function listPackageFiles(packagePath: string): Promise<string[]> {
@@ -400,6 +429,18 @@ function filterModelPaths(allRelative: string[]): string[] {
       (p) => p.endsWith(MODEL_FILE_SUFFIX) || p.endsWith(NOTEBOOK_FILE_SUFFIX),
    );
 }
+
+// `normalizeModelPath` (shared, from ../constants) runs here at parse time so
+// the keys stored in Package.models are already normalized, and the API
+// publish/update path normalizes its `explores` input through the same helper —
+// so on-disk and API-written manifests share one representation.
+
+// explores validation is intentionally NOT done here. The worker is the
+// shared load path (startup, reload, AND publish), but the policy differs by
+// context — strict-reject at publish, warn-and-fail-safe at load — so it lives
+// on the main thread (see Package.getInvalidExplores / loadViaWorker and the
+// publish path in package.controller). An unmatched entry simply lists nothing
+// (listModels filters by set membership), which is the fail-safe outcome.
 
 // ──────────────────────────────────────────────────────────────────────
 // Model compile (mirrors service/model.ts but produces SerializedModel)
@@ -623,6 +664,10 @@ async function compileMalloyModel(
       modelDef,
       modelInfo: modelDefToModelInfo(modelDef),
       sourceInfos,
+      // `sources`/`queries` ship complete (authorize + filter enforcement and
+      // join resolution read the full set); the Model's discovery accessors
+      // filter them down to the export closure (`modelDef.exports`) to match
+      // `modelInfo`/`sourceInfos`.
       sources,
       queries,
       filterMap: Array.from(filterMap.entries()),
@@ -868,6 +913,7 @@ async function loadPackage(
 
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
          compileOneModel(job, malloyConfig, modelPath),

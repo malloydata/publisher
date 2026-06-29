@@ -20,16 +20,11 @@ import {
    MalloySQLStatementType,
 } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
 import { components } from "../api";
-import { deserializeError } from "../package_load/package_load_pool";
-import type {
-   SerializedModel,
-   SerializedNotebookCell,
-} from "../package_load/protocol";
 import {
    getDefaultQueryRowLimit,
    getMaxQueryRows,
@@ -42,11 +37,23 @@ import {
    BadRequestError,
    ModelCompilationError,
    ModelNotFoundError,
+   NotQueryableError,
    PayloadTooLargeError,
 } from "../errors";
 import { logger } from "../logger";
+import { deserializeError } from "../package_load/package_load_pool";
+import type {
+   SerializedModel,
+   SerializedNotebookCell,
+} from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
+import { modelAnnotations } from "./annotations";
+import {
+   collectAuthorizeExprs,
+   evaluateAuthorize,
+   validateAuthorizeProbes,
+} from "./authorize";
 import {
    buildFilterClause,
    FilterValidationError,
@@ -54,21 +61,16 @@ import {
    type FilterDefinition,
    type FilterParams,
 } from "./filter";
-import {
-   collectAuthorizeExprs,
-   evaluateAuthorize,
-   validateAuthorizeProbes,
-} from "./authorize";
-import { modelAnnotations } from "./annotations";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
-import {
-   extractQueriesFromModelDef,
-   extractSourcesFromModelDef,
-} from "./source_extraction";
 import {
    assertWithinModelResponseLimits,
    resolveModelQueryRowLimit,
 } from "./model_limits";
+import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
+import {
+   extractQueriesFromModelDef,
+   extractSourcesFromModelDef,
+} from "./source_extraction";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -101,6 +103,18 @@ interface RunnableNotebookCell {
    queryInfo?: Malloy.QueryInfo;
 }
 
+/**
+ * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
+ * query string. Escapes backslashes and backticks (in that order) so a name
+ * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
+ * contains an embedded backtick cannot break out of the quotes. Mirrors
+ * malloy's internal `identifierCode` / `escapeIdentifier` (to_stable.ts), which
+ * is not exported.
+ */
+function quoteMalloyIdentifier(name: string | undefined): string {
+   return "`" + (name ?? "").replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
+}
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -123,7 +137,22 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
-   private meter = metrics.getMeter("publisher");
+   /** Whether discovery accessors curate to the `export {}` closure. Pushed
+    *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
+    *  true only when the package declares `explores` in publisher.json.
+    *  Defaults to false (legacy listings) so a Model created outside a
+    *  Package matches pre-opt-in behavior. */
+   private discoveryCurationEnabled = false;
+   /** Per-package query-boundary policy, pushed down by the owning Package
+    *  (see `Package.applyQueryBoundaryToModels`). Defaults are inert (mode
+    *  "all" / not declared) so a Model created outside a Package — or before
+    *  the policy is applied — never spuriously denies. */
+   private queryBoundary: {
+      mode: "declared" | "all";
+      exploresDeclared: boolean;
+      isQueryEntryPoint: boolean;
+   } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
+   private meter = publisherMeter();
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
       {
@@ -302,7 +331,8 @@ export class Model {
 
    /**
     * Gate ad-hoc compile/query text by the named source it targets. Resolves the
-    * source from surface syntax (`extractSourceName`) and applies the gate. An
+    * source from surface syntax (`extractRunTargetSourceName`) and applies the
+    * gate. An
     * unnamed/inline source resolves to `undefined`, so only the model-wide
     * file-level gate applies — the same top-level-only boundary as the query
     * path's early gate. Used by the `/compile` path, which has no runnable to
@@ -312,7 +342,7 @@ export class Model {
       text: string,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.assertAuthorized(this.extractSourceName(text), givens);
+      await this.assertAuthorized(extractRunTargetSourceName(text), givens);
    }
 
    /**
@@ -362,21 +392,6 @@ export class Model {
     * Best-effort extraction of a source name from an ad-hoc Malloy query string.
     * Matches patterns like `run: source_name -> ...` or `source_name -> ...`.
     */
-   private extractSourceName(query?: string): string | undefined {
-      if (!query) return undefined;
-      // Match a bare `\w+` identifier or a backtick-quoted Malloy identifier
-      // (e.g. `gated-source`, which needs quoting for the hyphen). Quoted names
-      // must be recognized here too, or the early schema-oracle gate would miss
-      // a gated source with a quoted name and let a denied caller probe its
-      // columns via a pre-compilation field error. The quoted capture returns
-      // the inner name (no backticks), matching how sources are keyed.
-      const runMatch = query.match(/run\s*:\s*(?:`([^`]+)`|(\w+))\s*->/);
-      const arrowMatch = query.match(/^\s*(?:`([^`]+)`|(\w+))\s*->/m);
-      return (
-         runMatch?.[1] ?? runMatch?.[2] ?? arrowMatch?.[1] ?? arrowMatch?.[2]
-      );
-   }
-
    /**
     * Resolve the run target of an ad-hoc query to the model-defined source
     * whose filters apply, following source-derivation declarations so that a
@@ -386,17 +401,10 @@ export class Model {
     * from a protected source.
     */
    private resolveFilterSource(query?: string): string | undefined {
-      const target = this.extractSourceName(query);
+      const target = extractRunTargetSourceName(query);
       if (!target || !query) return undefined;
 
-      // Map each ad-hoc source name to the base it derives from
-      // (`source: NAME is BASE ...` → NAME → BASE).
-      const aliasOf = new Map<string, string>();
-      const declRe = /source\s*:\s*(\w+)\s+is\s+(\w+)/g;
-      let match: RegExpExecArray | null;
-      while ((match = declRe.exec(query)) !== null) {
-         aliasOf.set(match[1], match[2]);
-      }
+      const aliasOf = buildSourceAliasMap(query);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;
@@ -585,6 +593,7 @@ export class Model {
       _packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
+      options?: { buildManifest?: BuildManifest["entries"] },
    ): Model {
       const modelDef = data.modelDef as ModelDef | undefined;
       const modelInfo = data.modelInfo as Malloy.ModelInfo | undefined;
@@ -624,7 +633,10 @@ export class Model {
          );
       }
 
-      const runtime = makeHydrationRuntime(malloyConfig);
+      const runtime = makeHydrationRuntime(
+         malloyConfig,
+         options?.buildManifest,
+      );
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
@@ -688,16 +700,332 @@ export class Model {
       return this.modelType;
    }
 
+   /**
+    * Restrict a list of named objects to the model's re-export closure
+    * (`modelDef.exports`) for discovery. This mirrors what Malloy's stable
+    * `modelDefToModelInfo` already does for `modelInfo`/`sourceInfos` (and what
+    * the app renders), so the publisher-extracted `sources`/`queries` stay
+    * consistent with `modelInfo` within a single response. A model with no
+    * `export { … }` has `exports` = all top-level names, so this is a no-op
+    * there. Only active when the package declares `explores` (see
+    * `discoveryCurationEnabled`). `this.sources`/`this.queries` stay complete so
+    * #(authorize)/filter enforcement and join/extend resolution are unaffected.
+    * Whether a non-exported source is also non-*queryable* depends on the
+    * package's `queryableSources` policy — see {@link assertQueryBoundaryEarly}.
+    */
+   private curateForDiscovery<T extends { name?: string }>(
+      items: T[] | undefined,
+   ): T[] | undefined {
+      if (!items) return items;
+      if (!this.discoveryCurationEnabled) return items;
+      const exports = this.modelDef?.exports;
+      if (!Array.isArray(exports)) return items;
+      const exported = new Set(exports);
+      return items.filter(
+         (item) => item.name !== undefined && exported.has(item.name),
+      );
+   }
+
+   /** Set by the owning Package; see {@link curateForDiscovery}. */
+   public setDiscoveryCuration(enabled: boolean): void {
+      this.discoveryCurationEnabled = enabled;
+   }
+
    public getSources(): ApiSource[] | undefined {
-      return this.sources;
+      return this.curateForDiscovery(this.sources);
    }
 
    public getSourceInfos(): Malloy.SourceInfo[] | undefined {
-      return this.sourceInfos;
+      return this.curateForDiscovery(this.sourceInfos);
    }
 
    public getQueries(): ApiQuery[] | undefined {
-      return this.queries;
+      return this.curateForDiscovery(this.queries);
+   }
+
+   /**
+    * True when this is an import-only model: it imports other files but
+    * declares and re-exports nothing of its own, so `modelDef.exports` is
+    * empty and its discovery surface lists no sources or queries. Legitimate
+    * as plumbing, but confusing when the model is *listed* — the page renders
+    * blank. Used by the load-time warning (Package.emptyDiscoveryWarnings);
+    * the fix is to re-export what should be visible (`export { name }`).
+    */
+   public hasEmptyDiscoverySurface(): boolean {
+      // No curation (no `explores`) ⇒ legacy listings include imported sources.
+      if (!this.discoveryCurationEnabled) return false;
+      if (this.modelType !== "model" || !this.modelDef) return false;
+      const exports = this.modelDef.exports;
+      if (!Array.isArray(exports) || exports.length > 0) return false;
+      return (this.modelDef.imports?.length ?? 0) > 0;
+   }
+
+   /** Set by the owning Package; see {@link assertQueryBoundaryEarly}. */
+   public setQueryBoundary(policy: {
+      mode: "declared" | "all";
+      exploresDeclared: boolean;
+      isQueryEntryPoint: boolean;
+   }): void {
+      this.queryBoundary = policy;
+   }
+
+   /**
+    * Query boundary, step 1 of 2 — the PRE-compilation gate. Enforces the rule
+    * "queryable == discoverable": a source is a valid top-level query target
+    * only if it is in the package's discovery surface (`explores` files +
+    * their `export {}` closure). This is the *what* axis (identity-free);
+    * `#(authorize)` is the orthogonal *who* axis, and both must pass. Denials
+    * are a generic 404 ({@link NotQueryableError}) so a hidden target is
+    * indistinguishable from a non-existent one. Inert unless `explores` is
+    * declared AND mode is "declared" (the default). Notebooks are exempt
+    * (always public) and never call this.
+    *
+    * This step runs before compilation so a denied target can't be probed via
+    * compile errors (schema oracle), and it only POSITIVELY denies — explicit
+    * names it can check, and ad-hoc text whose surface-resolved target is a
+    * model-declared non-curated source. Anything it can't pin returns
+    * "deferred" for {@link assertQueryBoundaryCompiled} to settle against the
+    * compiled run target. "cleared" admissions (explicit curated names) skip
+    * the backstop: an exported named query may read hidden sources internally —
+    * that is the author's deliberate exposure, and re-deriving its source from
+    * the compiled query must not re-deny it.
+    */
+   public assertQueryBoundaryEarly(
+      sourceName?: string,
+      queryName?: string,
+      query?: string,
+   ): "cleared" | "deferred" {
+      // Notebooks are always public — they can't be explores and are never
+      // gated by the boundary, even when reached via the /compile path.
+      if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return "cleared";
+      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
+      // boundary is discovery-only; everything compiled stays queryable.
+      if (mode === "all" || !exploresDeclared) return "cleared";
+
+      // File-level: a non-`explores` model file is not a query entry point.
+      // This is the robust line — the file is named by the request URL, so
+      // there is nothing to resolve and nothing to evade.
+      if (!isQueryEntryPoint) {
+         throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
+      }
+
+      const curatedSources = this.curatedSourceNames();
+      const curatedQueries = new Set(
+         (this.getQueries() ?? []).map((q) => q.name).filter(Boolean),
+      );
+
+      // A named query/view is an author-exported entry point (the author chose
+      // to expose it, even if it reads hidden sources internally) — admit it on
+      // its own name, or on the explicitly-named curated source it runs against.
+      if (queryName && !query) {
+         // The exported-query fast-path admits a *pure* named query (`run: q`)
+         // on its own name. It must NOT fire when a source is also named: a
+         // request is `run: <sourceName>-><queryName>`, so a hidden source
+         // could otherwise be reached via a view whose name happens to collide
+         // with an exported top-level query (and clearing skips the compiled
+         // backstop). With a source prefix, only the named source's curation
+         // gates the request.
+         if (!sourceName && curatedQueries.has(queryName)) return "cleared";
+         if (sourceName && curatedSources.has(sourceName)) return "cleared";
+         throw new NotQueryableError(`No queryable query "${queryName}".`);
+      }
+
+      // An explicitly-named source: admit iff curated.
+      if (sourceName) {
+         if (curatedSources.has(sourceName)) return "cleared";
+         throw new NotQueryableError(`No queryable source "${sourceName}".`);
+      }
+
+      // Ad-hoc text: positively deny only a surface-resolved target that is a
+      // model-declared source outside the curated surface (and doesn't derive
+      // from a curated one) — pre-compile, so its compile errors can't leak
+      // schema. Everything else (inline derivations, multi-statement, forms
+      // the regex can't read) defers to the compiled backstop.
+      if (query) {
+         const target = extractRunTargetSourceName(query);
+         if (
+            target &&
+            !curatedSources.has(target) &&
+            !this.derivesFromCurated(target, query) &&
+            this.sources?.some((s) => s.name === target)
+         ) {
+            throw new NotQueryableError(`No queryable source "${target}".`);
+         }
+      }
+      return "deferred";
+   }
+
+   /**
+    * Query boundary, step 2 of 2 — the POST-compilation backstop for
+    * "deferred" admissions. `compiledSource` is the run target read off the
+    * compiled query's `structRef` (see
+    * {@link resolveAuthorizeSourceFromRunnable}) — the source Malloy actually
+    * executes, surviving named-query indirection, multi-statement forms (the
+    * LAST `run:` wins), and derivation. This inspects compiler *output* only;
+    * compilation itself is never altered or restricted.
+    *
+    * Admit iff the compiled target is curated, or is an ad-hoc alias that
+    * derives from a curated source (`source: x is customers extend { … }` →
+    * `run: x` — composing over a queryable source is itself queryable). FAIL
+    * CLOSED otherwise, including when the target can't be resolved at all.
+    * (Raw inline `conn.sql(...)` never reaches here on the query path —
+    * restricted-mode compilation rejects it first.)
+    */
+   public assertQueryBoundaryCompiled(
+      compiledSource: string | undefined,
+      query?: string,
+   ): void {
+      // Notebooks are always public (mirrors assertQueryBoundaryEarly).
+      if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return;
+      const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      if (!isQueryEntryPoint) {
+         throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
+      }
+      if (compiledSource) {
+         if (this.curatedSourceNames().has(compiledSource)) return;
+         if (query && this.derivesFromCurated(compiledSource, query)) return;
+      }
+      throw new NotQueryableError("Query target is not queryable.");
+   }
+
+   /**
+    * The /compile-path wrapper: resolve the compiled run target from the
+    * materializer and apply the boundary backstop. No-ops when the boundary is
+    * inert, so the resolution work is skipped for unaffected packages.
+    */
+   public async assertQueryBoundaryForRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      query?: string,
+   ): Promise<void> {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      this.assertQueryBoundaryCompiled(
+         await this.resolveAuthorizeSourceFromRunnable(runnable),
+         query,
+      );
+   }
+
+   /** Source names in the export-curated discovery surface (= the directly
+    *  queryable set under the "declared" boundary). */
+   private curatedSourceNames(): Set<string> {
+      return new Set(
+         (this.getSources() ?? [])
+            .map((s) => s.name)
+            .filter((n): n is string => n !== undefined),
+      );
+   }
+
+   /** True if `name` reaches a curated source by walking the ad-hoc text's
+    *  `source: NAME is BASE` derivation declarations — composition over a
+    *  queryable source is itself queryable. */
+   private derivesFromCurated(name: string, query: string): boolean {
+      const curated = this.curatedSourceNames();
+      const aliasOf = buildSourceAliasMap(query);
+      let current: string | undefined = name;
+      const seen = new Set<string>();
+      while (current && !seen.has(current)) {
+         if (curated.has(current)) return true;
+         seen.add(current);
+         current = aliasOf.get(current);
+      }
+      return false;
+   }
+
+   /**
+    * Compile-time renderer-tag validation, run on the main thread.
+    *
+    * The renderer (`@malloydata/render`) is a large solid-js bundle that mutates
+    * DOM globals at import; loading it inside the package-load worker isolate
+    * destabilizes that thread (it is deliberately kept pure-CPU). So validation
+    * runs here, after the worker has hydrated this Model, where the renderer is
+    * already used at query time (see query.controller.ts / execute_query_tool.ts).
+    *
+    * Prepares each annotated top-level named query (`run: <name>`) and each
+    * annotated source view (`run: <source> -> <view>`) compile-only -- no
+    * execution -- to get a stable result schema, then runs the renderer's
+    * headless `validateRenderTags`. Targets with no annotations carry no render
+    * tags, so they are skipped without compiling. Any error-severity finding
+    * (e.g. a child-only `# big_value { sparkline=... }` placed on a view with no
+    * activating big_value) is logged as a warning naming the offending target;
+    * it does not fail the package load. Such a tag still renders as
+    * "[object Object]" at query time, so the warning is the operator-facing
+    * signal. Lower-severity findings are left for the query-time `renderLogs`
+    * surface.
+    */
+   public async validateRenderTags(): Promise<void> {
+      const mm = this.modelMaterializer;
+      if (!mm) {
+         return;
+      }
+      // Dynamic import (like execute_query_tool.ts): the renderer is heavy and
+      // mutates DOM globals on load, so only pull it in when there's a model to
+      // validate.
+      const { validateRenderTags } = await import(
+         "@malloydata/render-validator"
+      );
+
+      // Renderable targets: top-level named queries and every view declared on a
+      // source. Source views are where render tags like `# big_value` usually
+      // live, and they are NOT in `this.queries`.
+      const targets: { label: string; queryString: string }[] = [];
+      for (const query of this.queries ?? []) {
+         // Only an annotated, named query can carry a render tag to validate;
+         // skip the rest rather than compiling every query in the package.
+         if (!query.name || !query.annotations?.length) {
+            continue;
+         }
+         // Quote the identifier (see quoteMalloyIdentifier) so a name needing
+         // Malloy quoting still lexes and cannot break out of the quotes.
+         targets.push({
+            label: query.name,
+            queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
+         });
+      }
+      for (const source of this.sources ?? []) {
+         for (const view of source.views ?? []) {
+            // Render tags live on the view's own or inherited annotations, not
+            // via source-to-view inheritance, so an unannotated view has
+            // nothing to validate and need not be compiled. (A model-level
+            // `##` tag is the one case this gate doesn't reach, but those are
+            // theme/config, not the child-only chart tags this guards against.)
+            if (!view.annotations?.length) {
+               continue;
+            }
+            // Quote both identifiers (see quoteMalloyIdentifier): an unquoted
+            // name like `gated-source` fails to lex, and the catch below would
+            // then silently skip the very view this is meant to validate.
+            targets.push({
+               label: `${source.name} -> ${view.name}`,
+               queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,
+            });
+         }
+      }
+
+      for (const target of targets) {
+         let result: Malloy.Result;
+         try {
+            const prepared = await mm
+               .loadQuery(target.queryString)
+               .getPreparedResult();
+            result = prepared.toStableResult();
+         } catch {
+            // A view/query that fails to prepare is reported by the normal
+            // compile path; don't mask that with a render-tag error.
+            continue;
+         }
+         const errors = validateRenderTags(result).filter(
+            (log) => log.severity === "error",
+         );
+         if (errors.length > 0) {
+            logger.warn(
+               `Invalid renderer configuration on '${target.label}': ${errors
+                  .map((e) => e.message)
+                  .join("; ")}`,
+            );
+         }
+      }
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
@@ -770,6 +1098,18 @@ export class Model {
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
+      // Query boundary FIRST (the *what* axis): reject a target that isn't in
+      // the package's queryable surface with a generic 404, before authorize
+      // (the *who* axis) and before compilation — so a non-queryable source is
+      // indistinguishable from a non-existent one and can't be probed.
+      // "deferred" means the early gate couldn't pin the target; the compiled
+      // backstop below settles it against the source the query actually runs.
+      const boundary = this.assertQueryBoundaryEarly(
+         sourceName,
+         queryName,
+         query,
+      );
+
       // Early fast-path authorize gate (before loadQuery). Resolve the source
       // from surface syntax; gate if it names one. This runs BEFORE compilation
       // so the gate can't be used as a schema oracle — without it, a denied
@@ -783,7 +1123,7 @@ export class Model {
          (queryName
             ? this.queries?.find((q) => q.name === queryName)?.sourceName
             : undefined) ||
-         this.extractSourceName(query);
+         extractRunTargetSourceName(query);
       if (earlySource) {
          await this.assertAuthorized(earlySource, givens ?? {});
       }
@@ -886,6 +1226,16 @@ export class Model {
       // AccessDeniedError stays a 403; independent of bypassFilters.
       const compiledSource =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
+
+      // Boundary backstop (the *what* axis, 404) BEFORE the authorize gate
+      // (the *who* axis, 403): settle "deferred" early-gate admissions against
+      // the compiled run target. Skipped for "cleared" admissions — an
+      // explicitly-named exported query may read hidden sources internally
+      // (the author's deliberate exposure), and must not be re-denied here.
+      if (boundary === "deferred") {
+         this.assertQueryBoundaryCompiled(compiledSource, query);
+      }
+
       // Run unless it's the redundant re-probe of the exact named source the
       // early gate already cleared. When compiledSource is unknown/unresolved,
       // this still runs and assertAuthorized applies the model-wide file-level
@@ -994,8 +1344,11 @@ export class Model {
          sourceInfos: this.getSourceInfos()?.map((sourceInfo) =>
             JSON.stringify(sourceInfo),
          ),
-         sources: this.sources,
-         queries: this.queries,
+         // Discovery surface: an explore lists only its export closure
+         // (getSources/getQueries curate); `this.sources` stays complete for
+         // enforcement and resolution.
+         sources: this.getSources(),
+         queries: this.getQueries(),
          givens: this.givens,
       } as ApiCompiledModel;
    }
@@ -1051,6 +1404,10 @@ export class Model {
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
          modelInfo: JSON.stringify(this.modelInfo ?? {}),
+         // Raw-notebook view is uncurated (complete `this.sources`/`this.queries`,
+         // not the export-filtered `getSources`/`getQueries`): notebooks can't be
+         // imported, so their in-file sources have no internal/import-only role to
+         // hide — they're always public. Model files curate; notebooks don't.
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,
@@ -1120,7 +1477,7 @@ export class Model {
 
             // If filters need to be applied, rebuild the query with a refinement
             if (!bypassFilters && cell.modelMaterializer) {
-               const effectiveSource = this.extractSourceName(cell.text);
+               const effectiveSource = extractRunTargetSourceName(cell.text);
                if (effectiveSource) {
                   const filters = this.getFilters(effectiveSource);
                   if (filters.length > 0) {
@@ -1534,6 +1891,7 @@ type HydrationMaterializer = ModelMaterializer & {
 
 function makeHydrationRuntime(
    malloyConfig: ModelConnectionInput,
+   buildManifest?: BuildManifest["entries"],
 ): HydrationRuntime {
    const urlReader = new HackyDataStylesAccumulator(URL_READER);
    const config =
@@ -1546,7 +1904,19 @@ function makeHydrationRuntime(
               );
               return c;
            })();
-   return new Runtime({ urlReader, config }) as HydrationRuntime;
+   // Thread the package's bound build manifest into the *serve* runtime. Malloy
+   // substitutes a persisted source for its materialized table at query
+   // (getSQL) time, gated on `prepareResultOptions.buildManifest`; without this
+   // the hydrated model always recomputes from the base tables even though the
+   // manifest was bound at load. `strict: false` keeps serving live for any
+   // source whose buildId is absent from the manifest.
+   return new Runtime({
+      urlReader,
+      config,
+      buildManifest: buildManifest
+         ? { entries: buildManifest, strict: false }
+         : undefined,
+   }) as HydrationRuntime;
 }
 
 /**

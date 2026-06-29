@@ -1,4 +1,5 @@
 import { BadRequestError } from "../errors";
+import { BuildInstruction } from "../storage/DatabaseInterface";
 import { MaterializationService } from "../service/materialization_service";
 
 export class MaterializationController {
@@ -9,44 +10,107 @@ export class MaterializationController {
       packageName: string,
       body: Record<string, unknown>,
    ) {
-      const options = this.validateCreateBody(body);
       return this.materializationService.createMaterialization(
          environmentName,
          packageName,
-         options,
+         this.validateCreateBody(body),
       );
    }
 
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
-      autoLoadManifest?: boolean;
+      sourceNames?: string[];
+      buildInstructions?: BuildInstruction[];
    } {
-      const result: { forceRefresh?: boolean; autoLoadManifest?: boolean } = {};
+      const result: {
+         forceRefresh?: boolean;
+         sourceNames?: string[];
+         buildInstructions?: BuildInstruction[];
+      } = {};
+      if (
+         body.buildInstructions !== undefined &&
+         body.buildInstructions !== null
+      ) {
+         result.buildInstructions = this.validateBuildInstructions(
+            body.buildInstructions,
+         );
+      }
       if (body.forceRefresh !== undefined) {
          if (typeof body.forceRefresh !== "boolean") {
             throw new BadRequestError("forceRefresh must be a boolean");
          }
          result.forceRefresh = body.forceRefresh;
       }
-      if (body.autoLoadManifest !== undefined) {
-         if (typeof body.autoLoadManifest !== "boolean") {
-            throw new BadRequestError("autoLoadManifest must be a boolean");
+      if (body.sourceNames !== undefined) {
+         if (
+            !Array.isArray(body.sourceNames) ||
+            body.sourceNames.some((n) => typeof n !== "string")
+         ) {
+            throw new BadRequestError(
+               "sourceNames must be an array of strings",
+            );
          }
-         result.autoLoadManifest = body.autoLoadManifest;
+         result.sourceNames = body.sourceNames as string[];
       }
       return result;
    }
 
-   async startMaterialization(
-      environmentName: string,
-      packageName: string,
-      materializationId: string,
-   ) {
-      return this.materializationService.startMaterialization(
-         environmentName,
-         packageName,
-         materializationId,
+   /**
+    * Validate the orchestrated `buildInstructions` payload (BuildInstructions:
+    * `{ sources: BuildInstruction[] }`) and flatten it to the instruction list
+    * the service consumes.
+    */
+   private validateBuildInstructions(raw: unknown): BuildInstruction[] {
+      if (typeof raw !== "object" || raw === null) {
+         throw new BadRequestError("buildInstructions must be an object");
+      }
+      const sources = (raw as Record<string, unknown>).sources;
+      if (!Array.isArray(sources) || sources.length === 0) {
+         throw new BadRequestError(
+            "buildInstructions requires a non-empty 'sources' array of BuildInstruction",
+         );
+      }
+      return sources.map((instruction) =>
+         this.validateInstruction(instruction),
       );
+   }
+
+   private validateInstruction(raw: unknown): BuildInstruction {
+      if (typeof raw !== "object" || raw === null) {
+         throw new BadRequestError("Each build instruction must be an object");
+      }
+      const instruction = raw as Record<string, unknown>;
+      const required = [
+         "buildId",
+         "materializedTableId",
+         "physicalTableName",
+         "realization",
+      ] as const;
+      for (const field of required) {
+         if (typeof instruction[field] !== "string") {
+            throw new BadRequestError(
+               `Build instruction is missing required string field '${field}'`,
+            );
+         }
+      }
+      if (
+         instruction.realization !== "COPY" &&
+         instruction.realization !== "SNAPSHOT"
+      ) {
+         throw new BadRequestError(
+            "Build instruction 'realization' must be COPY or SNAPSHOT",
+         );
+      }
+      return {
+         buildId: instruction.buildId as string,
+         sourceID:
+            typeof instruction.sourceID === "string"
+               ? instruction.sourceID
+               : undefined,
+         materializedTableId: instruction.materializedTableId as string,
+         physicalTableName: instruction.physicalTableName as string,
+         realization: instruction.realization,
+      };
    }
 
    async stopMaterialization(
@@ -89,37 +153,13 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
+      options: { dropTables?: boolean } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,
          packageName,
          materializationId,
-      );
-   }
-
-   async teardownPackage(
-      environmentName: string,
-      packageName: string,
-      body: Record<string, unknown>,
-   ) {
-      const options = this.validateTeardownBody(body);
-      return this.materializationService.teardownPackage(
-         environmentName,
-         packageName,
          options,
       );
-   }
-
-   private validateTeardownBody(body: Record<string, unknown>): {
-      dryRun?: boolean;
-   } {
-      const options: { dryRun?: boolean } = {};
-      if (body.dryRun !== undefined) {
-         if (typeof body.dryRun !== "boolean") {
-            throw new BadRequestError("dryRun must be a boolean");
-         }
-         options.dryRun = body.dryRun;
-      }
-      return options;
    }
 }

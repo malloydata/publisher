@@ -27,6 +27,7 @@ import {
    isTerminalStatus,
    parseMetadata,
    statusColor,
+   statusLabel,
 } from "./utils";
 
 type MaterializationRunsListProps = {
@@ -34,7 +35,7 @@ type MaterializationRunsListProps = {
    mutable: boolean;
    isMutating: boolean;
    onStop: (materialization: Materialization) => void;
-   onDelete: (materialization: Materialization) => void;
+   onDelete: (materialization: Materialization, dropTables: boolean) => void;
    onViewDetails: (materialization: Materialization) => void;
 };
 
@@ -98,7 +99,7 @@ function MaterializationRow({
    mutable: boolean;
    isMutating: boolean;
    onStop: (materialization: Materialization) => void;
-   onDelete: (materialization: Materialization) => void;
+   onDelete: (materialization: Materialization, dropTables: boolean) => void;
    onViewDetails: (materialization: Materialization) => void;
 }) {
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
@@ -107,8 +108,8 @@ function MaterializationRow({
 
    const meta = parseMetadata(materialization);
    const sourcesLabel =
-      meta.sourcesBuilt !== undefined || meta.sourcesSkipped !== undefined
-         ? `${meta.sourcesBuilt ?? 0} built, ${meta.sourcesSkipped ?? 0} skipped`
+      meta.sourcesBuilt !== undefined || meta.sourcesReused !== undefined
+         ? `${meta.sourcesBuilt ?? 0} built, ${meta.sourcesReused ?? 0} reused`
          : "-";
    const active = isActiveStatus(materialization.status);
    const terminal = isTerminalStatus(materialization.status);
@@ -141,7 +142,7 @@ function MaterializationRow({
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                <Chip
                   size="small"
-                  label={materialization.status ?? "UNKNOWN"}
+                  label={statusLabel(materialization.status)}
                   color={statusColor(materialization.status)}
                   variant={active ? "filled" : "outlined"}
                />
@@ -201,7 +202,9 @@ function MaterializationRow({
                            materialization={materialization}
                            isMutating={isMutating}
                            onCloseDialog={handleMenuClose}
-                           onDelete={() => onDelete(materialization)}
+                           onDelete={(dropTables) =>
+                              onDelete(materialization, dropTables)
+                           }
                         />
                      )}
                   </Menu>

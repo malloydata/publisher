@@ -1,4 +1,5 @@
-import { metrics, type Counter } from "@opentelemetry/api";
+import { type Counter } from "@opentelemetry/api";
+import { publisherMeter } from "./telemetry";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 
 import { getMaxConcurrentQueries } from "./config";
@@ -30,7 +31,7 @@ function ensureConcurrencyTelemetry(): Counter {
    if (queryConcurrencyRejectionsCounter && concurrencyTelemetryInitialized) {
       return queryConcurrencyRejectionsCounter;
    }
-   const meter = metrics.getMeter("publisher");
+   const meter = publisherMeter();
    queryConcurrencyRejectionsCounter = meter.createCounter(
       "publisher_query_concurrency_rejections_total",
       {

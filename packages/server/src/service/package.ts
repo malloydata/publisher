@@ -12,7 +12,7 @@ import {
    MalloyError,
    SourceDef,
 } from "@malloydata/malloy";
-import { metrics } from "@opentelemetry/api";
+import { publisherMeter } from "../telemetry";
 import recursive from "recursive-readdir";
 import { components } from "../api";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
@@ -28,10 +28,13 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { formatDuration, logger } from "../logger";
+import { recordBuildPlanComputeDuration } from "../materialization_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest } from "../storage/DatabaseInterface";
-import { ignoreDotfiles } from "../utils";
+import { BuildManifest, BuildPlan } from "../storage/DatabaseInterface";
+import { errMessage, ignoreDotfiles } from "../utils";
+import { computePackageBuildPlan } from "./build_plan";
 import { Model } from "./model";
+import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
@@ -48,8 +51,6 @@ type PackageConnectionInput =
    | Map<string, Connection>
    | (() => MalloyConfig);
 
-const ENABLE_LIST_MODEL_COMPILATION = true;
-
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -58,7 +59,25 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private malloyConfig: MalloyConfig;
-   private static meter = metrics.getMeter("publisher");
+   // Build-manifest binding state (Malloy Persistence v0). When bound, these
+   // entries (buildId -> { tableName }) are what served queries use to route
+   // persist sources to their materialized physical tables; they are also reused
+   // by the /compile preview so previewed SQL matches executed SQL. Surfaced on
+   // /status (via getPackageMetadata) so the control plane can confirm a worker
+   // actually bound the distributed manifest instead of inferring it from logs.
+   private buildManifestEntries: BuildManifest["entries"] | undefined;
+   private manifestBindingStatus: "unbound" | "bound" | "live_fallback" =
+      "unbound";
+   private manifestEntryCount = 0;
+   private boundManifestUri: string | null = null;
+   // The package's persist build plan: a deterministic property of the compiled
+   // package (per-source buildId, columns, build SQL, dependency graphs),
+   // computed once at load from the live (unbound) models so it is stable for a
+   // given (package version, connection config). Null when the package declares
+   // no persist source. Surfaced read-only on getPackageMetadata() so a caller
+   // can derive build instructions without a separate plan round-trip.
+   private buildPlan: BuildPlan | null = null;
+   private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
       {
@@ -83,6 +102,64 @@ export class Package {
       this.databases = databases;
       this.models = models;
       this.malloyConfig = malloyConfig;
+      this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
+   }
+
+   /**
+    * Push the discovery-curation policy down onto each Model. Curation (file
+    * listing via `explores` and within-file `export {}` filtering) is enabled
+    * only when `explores` is declared in publisher.json — absent/empty
+    * `explores` preserves legacy listings. Re-derived on reload and metadata
+    * PATCH (the inputs can change there).
+    */
+   /** True when the package opts into curated discovery via a non-empty
+    *  `explores`. Single source of truth so the curation/boundary/listing
+    *  derivations can't drift out of sync. */
+   private exploresDeclared(): boolean {
+      const explores = this.packageMetadata.explores;
+      return !!(explores && explores.length > 0);
+   }
+
+   /** The declared explore set, or null when discovery is uncurated. */
+   private exploreSet(): Set<string> | null {
+      const explores = this.packageMetadata.explores;
+      return explores && explores.length > 0 ? new Set(explores) : null;
+   }
+
+   private applyDiscoveryPolicyToModels(): void {
+      const curationEnabled = this.exploresDeclared();
+      for (const model of this.models.values()) {
+         model.setDiscoveryCuration(curationEnabled);
+      }
+   }
+
+   /**
+    * Push the package-level query-boundary policy down onto each Model so the
+    * query chokepoints can enforce it without a back-reference to the Package:
+    * `Model.getQueryResults` (the HTTP query route and the MCP tool) and the
+    * `/compile` path (via `assertQueryBoundaryForRunnable`). Derived once here
+    * (and on reload) rather than per query: the policy only changes when the
+    * manifest is (re)read.
+    *
+    * Policy: queryable == discoverable. The boundary is inert unless `explores`
+    * is declared (no curated surface ⇒ nothing to restrict) AND
+    * `queryableSources` is "declared" (the default; "all" decouples the axes).
+    * When active, a model file is a query entry point only if it is listed in
+    * `explores`; within-file curation (`export {}`) is read off each Model.
+    */
+   private applyQueryBoundaryToModels(): void {
+      const exploresDeclared = this.exploresDeclared();
+      const exploreSet = this.exploreSet();
+      const mode =
+         this.packageMetadata.queryableSources === "all" ? "all" : "declared";
+      for (const [modelPath, model] of this.models) {
+         model.setQueryBoundary({
+            mode,
+            exploresDeclared,
+            isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
+         });
+      }
    }
 
    static async create(
@@ -251,6 +328,19 @@ export class Package {
          name: outcome.packageMetadata.name,
          description: outcome.packageMetadata.description,
          resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}`,
+         explores: outcome.packageMetadata.explores,
+         queryableSources: outcome.packageMetadata.queryableSources,
+         manifestLocation: outcome.packageMetadata.manifestLocation ?? null,
+         // Always surface a non-null `materialization` object once the package
+         // has loaded (schedule null when the manifest declares no policy). The
+         // control plane treats object-present as the authoritative "this is
+         // what the manifest says" signal and object-absent as "metadata not
+         // available this request" — so it must never be dropped to null on a
+         // successfully loaded package, or the CP can misread a transient
+         // absence as a schedule removal. See `parsePackageMaterialization`.
+         materialization: outcome.packageMetadata.materialization ?? {
+            schedule: null,
+         },
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -272,10 +362,28 @@ export class Package {
             // cleans the package directory.
             throw err;
          }
-         models.set(
-            sm.modelPath,
-            Model.fromSerialized(packageName, packagePath, malloyConfig, sm),
+         const model = Model.fromSerialized(
+            packageName,
+            packagePath,
+            malloyConfig,
+            sm,
          );
+         // Validate renderer tags on the main thread (the renderer is too heavy
+         // to load inside the pure-CPU package-load worker). A misconfigured tag
+         // is logged as a warning naming the target; it does not fail the load.
+         await model.validateRenderTags();
+         // Reject unquoted `#@ persist name=` annotations the same way: an
+         // unquoted name is dropped from the build plan, so the source would
+         // publish but never materialize. Scan the raw `.malloy` source (the
+         // ground truth for quoting); throws a ModelCompilationError (424).
+         if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+            const modelSource = await fs.readFile(
+               path.join(packagePath, sm.modelPath),
+               "utf-8",
+            );
+            assertPersistNamesQuoted(modelSource, sm.modelPath);
+         }
+         models.set(sm.modelPath, model);
       }
 
       const endTime = performance.now();
@@ -289,7 +397,7 @@ export class Package {
          duration: formatDuration(executionTime),
       });
 
-      return new Package(
+      const pkg = new Package(
          environmentName,
          packageName,
          packagePath,
@@ -298,14 +406,224 @@ export class Package {
          models,
          malloyConfig,
       );
+
+      // Compute the persist build plan off the live (unbound) models, before the
+      // caller binds any configured manifest, so the surfaced plan reflects the
+      // canonical build (not the manifest-rewritten SQL). Best-effort: a plan
+      // failure is logged, not fatal — the package still serves; the plan is
+      // just absent. Recompiles the models (duplicate schema RPCs vs the worker
+      // compile); accepted for now.
+      try {
+         const buildPlanStart = Date.now();
+         pkg.buildPlan = await computePackageBuildPlan(pkg);
+         recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
+      } catch (err) {
+         logger.warn(
+            `Failed to compute build plan for package ${packageName}`,
+            {
+               packageName,
+               error: errMessage(err),
+            },
+         );
+      }
+
+      // Fail-safe at load: a bad explores entry doesn't fail the package
+      // (its models still load and listModels hides the unmatched entry — it
+      // never falls back to listing everything). Warn so the misconfig is
+      // visible; the publish path rejects it outright (see package.controller).
+      const invalidMsg = pkg.formatInvalidExplores();
+      if (invalidMsg) {
+         logger.warn(`Package ${packageName} has invalid explores`, {
+            packageName,
+            detail: invalidMsg,
+         });
+      }
+      pkg.logEmptyDiscoveryWarnings();
+
+      return pkg;
    }
 
    public getPackageName(): string {
       return this.packageName;
    }
 
+   /**
+    * The package's persist build plan (per-source buildId, columns, build SQL,
+    * dependency graphs), or null when the package declares no persist source.
+    * A deterministic property of the compiled package; callers derive build
+    * instructions from it for an orchestrated materialization.
+    */
+   public getBuildPlan(): BuildPlan | null {
+      return this.buildPlan;
+   }
+
    public getPackageMetadata(): ApiPackage {
-      return this.packageMetadata;
+      // Overlay the server-computed fields onto the stored metadata: the
+      // explores misconfig warnings (loading is fail-safe — the package still
+      // serves with the bad entry hidden — so this is the only non-log signal
+      // that it's broken) and the manifest-binding state (so /status reflects
+      // whether persist sources are actually routed to materialized tables).
+      // Always returns a copy so these overlays never mutate the stored
+      // metadata; the binding fields are authoritative from the private state.
+      //
+      // `name` is the registered package name (the environment's identity for
+      // this package), not the value read from the package's own manifest —
+      // those can differ (e.g. a package installed under a different name than
+      // its publisher.json declares). `listPackages` already overrides it to
+      // the registered name; surfacing it here keeps the single-package GET
+      // consistent without relying on a returned-reference mutation.
+      const metadata: ApiPackage = {
+         ...this.packageMetadata,
+         name: this.packageName,
+         manifestBindingStatus: this.manifestBindingStatus,
+         manifestEntryCount: this.manifestEntryCount,
+         boundManifestUri: this.boundManifestUri,
+         buildPlan: this.buildPlan,
+      };
+      const warnings = this.exploreWarnings();
+      if (warnings.length > 0) {
+         metadata.exploresWarnings = warnings;
+      }
+      return metadata;
+   }
+
+   /**
+    * The currently-bound build-manifest entries (buildId -> { tableName }), or
+    * undefined when the package is serving live. Reused by the /compile preview
+    * so previewed SQL gets the same persist-source -> physical-table routing as
+    * execution.
+    */
+   public getBuildManifestEntries(): BuildManifest["entries"] | undefined {
+      return this.buildManifestEntries;
+   }
+
+   /**
+    * Record the URI whose manifest is currently bound to the served models. May
+    * differ from `manifestLocation` after an in-memory auto-load following a
+    * materialization build (no URI), in which case it stays null.
+    */
+   public setBoundManifestUri(uri: string | null): void {
+      this.boundManifestUri = uri;
+   }
+
+   /**
+    * Mark that a configured `manifestLocation` could not be fetched/bound, so
+    * the package is serving live despite intending to be materialized-routed.
+    */
+   public markManifestBindFailed(): void {
+      this.manifestBindingStatus = "live_fallback";
+   }
+
+   /**
+    * Store the entries applied by the latest (re)bind for reuse (/compile) and
+    * observability (/status). An empty map means the manifest was cleared, so
+    * the package reverts to live (unbound).
+    */
+   private recordManifestBinding(
+      buildManifest: BuildManifest["entries"],
+   ): void {
+      const count = Object.keys(buildManifest).length;
+      this.buildManifestEntries = count > 0 ? buildManifest : undefined;
+      this.manifestEntryCount = count;
+      this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
+      if (count === 0) {
+         this.boundManifestUri = null;
+      }
+   }
+
+   /**
+    * Declared `explores` (publisher.json) that don't resolve to a real
+    * `.malloy` model in this package, each with an actionable reason. Empty
+    * when explores is absent/empty or every entry resolves.
+    *
+    * The listing already fails safe — a non-resolving entry matches no model in
+    * `listModels`, so it hides rather than exposes. This surfaces *why*, so the
+    * load path can warn and the publish path can reject (see package.controller).
+    */
+   public getInvalidExplores(
+      exploresOverride?: string[],
+   ): { entry: string; reason: string }[] {
+      const declared = exploresOverride ?? this.packageMetadata.explores;
+      if (!declared || declared.length === 0) return [];
+      const malloyModels = new Set(
+         Array.from(this.models.keys()).filter((p) =>
+            p.endsWith(MODEL_FILE_SUFFIX),
+         ),
+      );
+      const problems: { entry: string; reason: string }[] = [];
+      for (const entry of declared) {
+         if (entry.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+            problems.push({
+               entry,
+               reason:
+                  `notebooks are always public and cannot be explores. ` +
+                  `Fix: remove it, and list a ${MODEL_FILE_SUFFIX} model file instead.`,
+            });
+         } else if (!malloyModels.has(entry)) {
+            problems.push({
+               entry,
+               reason:
+                  `file not found in the package. Fix: list a ${MODEL_FILE_SUFFIX} ` +
+                  `file relative to the package root (e.g. "index.malloy").`,
+            });
+         }
+      }
+      return problems;
+   }
+
+   /** One actionable message per invalid entry (empty when all resolve). */
+   public exploreWarnings(exploresOverride?: string[]): string[] {
+      return this.getInvalidExplores(exploresOverride).map(
+         (p) =>
+            `Invalid explores entry '${p.entry}' in ${PACKAGE_MANIFEST_NAME}: ${p.reason}`,
+      );
+   }
+
+   /**
+    * The {@link exploreWarnings} joined into one string, or "" if none.
+    * Newline-separated so multiple invalid entries stay one-per-line in the
+    * 400 message rather than running together.
+    */
+   public formatInvalidExplores(exploresOverride?: string[]): string {
+      return this.exploreWarnings(exploresOverride).join("\n");
+   }
+
+   /**
+    * One message per LISTED model whose discovery surface is empty because it
+    * is import-only (imports other files, declares/re-exports nothing). Such a
+    * model renders a blank page, which reads as broken; the fix is an explicit
+    * re-export. Log-only (see loadViaWorker/reloadAllModels) — deliberately
+    * NOT part of exploreWarnings, which is strict-at-publish: import-only
+    * files are a legitimate pattern and must not block a publish. Hidden
+    * (non-listed) models are skipped — nobody browses them, so an empty
+    * surface there is just normal plumbing.
+    */
+   public emptyDiscoveryWarnings(): string[] {
+      const exploreSet = this.exploreSet();
+      const warnings: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         if (exploreSet && !exploreSet.has(modelPath)) continue;
+         if (model.hasEmptyDiscoverySurface()) {
+            warnings.push(
+               `Model "${modelPath}" is listed but exposes nothing: it only ` +
+                  `imports other files and re-exports none of their sources. ` +
+                  `Add e.g. 'export { source_name }' to surface sources on ` +
+                  `this model.`,
+            );
+         }
+      }
+      return warnings;
+   }
+
+   /** Log {@link emptyDiscoveryWarnings}; shared by load and reload. */
+   private logEmptyDiscoveryWarnings(): void {
+      for (const warning of this.emptyDiscoveryWarnings()) {
+         logger.warn(`Package ${this.packageName} has a blank-looking model`, {
+            packageName: this.packageName,
+            detail: warning,
+         });
+      }
    }
 
    public listDatabases(): ApiDatabase[] {
@@ -404,18 +722,68 @@ export class Package {
                ),
             );
          } else {
-            nextModels.set(
-               sm.modelPath,
-               Model.fromSerialized(
-                  this.packageName,
-                  this.packagePath,
-                  this.malloyConfig,
-                  sm,
-               ),
+            const model = Model.fromSerialized(
+               this.packageName,
+               this.packagePath,
+               this.malloyConfig,
+               sm,
+               { buildManifest },
             );
+            // Validate renderer tags here too (loadViaWorker does it for the
+            // create path). Render-tag findings are logged as warnings inside
+            // validateRenderTags and never throw. The catch is defensive: an
+            // unexpected internal failure is recorded as this model's
+            // compilationError rather than aborting the whole reload.
+            try {
+               await model.validateRenderTags();
+               nextModels.set(sm.modelPath, model);
+            } catch (renderErr) {
+               const err =
+                  renderErr instanceof Error
+                     ? renderErr
+                     : new Error(String(renderErr));
+               logger.warn("Render-tag validation failed during reload", {
+                  packageName: this.packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+               nextModels.set(
+                  sm.modelPath,
+                  Model.fromCompilationError(
+                     this.packageName,
+                     sm.modelPath,
+                     sm.modelType,
+                     err,
+                  ),
+               );
+            }
          }
       }
       this.models = nextModels;
+      // A reload re-reads publisher.json in the worker; pick up any change to
+      // the explore set and query-boundary mode so listModels()/the gate
+      // reflect edited explores without a full Package.create.
+      this.packageMetadata.explores = outcome.packageMetadata.explores;
+      this.packageMetadata.queryableSources =
+         outcome.packageMetadata.queryableSources;
+      this.packageMetadata.manifestLocation =
+         outcome.packageMetadata.manifestLocation ?? null;
+      this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
+      // Remember what we just bound so /compile can route identically and
+      // /status can report the binding. An empty map reverts to live (unbound).
+      this.recordManifestBinding(buildManifest);
+      // Re-run the fail-safe warning against the refreshed model set: an edit
+      // to publisher.json that introduces a bad entry should surface in the
+      // logs on reload too, not only at initial load (loadViaWorker).
+      const invalidMsg = this.formatInvalidExplores();
+      if (invalidMsg) {
+         logger.warn(`Package ${this.packageName} has invalid explores`, {
+            packageName: this.packageName,
+            detail: invalidMsg,
+         });
+      }
+      this.logEmptyDiscoveryWarnings();
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
@@ -427,22 +795,27 @@ export class Package {
    }
 
    public async listModels(): Promise<ApiModel[]> {
+      // When `explores` is declared in publisher.json, only those models
+      // form the public surface; every other .malloy file still compiles for
+      // import/join resolution but is hidden from the listing. Absent/empty →
+      // every model is listed (backward-compatible default). Notebooks are
+      // unaffected (see listNotebooks) — they are always public.
+      const exploreSet = this.exploreSet();
       const values = await Promise.all(
          Array.from(this.models.keys())
             .filter((modelPath) => {
-               return modelPath.endsWith(MODEL_FILE_SUFFIX);
+               if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
+               return exploreSet ? exploreSet.has(modelPath) : true;
             })
             .map(async (modelPath) => {
                let error: string | undefined;
-               if (ENABLE_LIST_MODEL_COMPILATION) {
-                  try {
-                     await this.models.get(modelPath)?.getModel();
-                  } catch (modelError) {
-                     error =
-                        modelError instanceof Error
-                           ? modelError.message
-                           : undefined;
-                  }
+               try {
+                  await this.models.get(modelPath)?.getModel();
+               } catch (modelError) {
+                  error =
+                     modelError instanceof Error
+                        ? modelError.message
+                        : undefined;
                }
                return {
                   environmentName: this.environmentName,
@@ -462,10 +835,7 @@ export class Package {
                return modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
             })
             .map(async (modelPath) => {
-               let error: Error | undefined;
-               if (ENABLE_LIST_MODEL_COMPILATION) {
-                  error = this.models.get(modelPath)?.getNotebookError();
-               }
+               const error = this.models.get(modelPath)?.getNotebookError();
                return {
                   environmentName: this.environmentName,
                   packageName: this.packageName,
@@ -632,5 +1002,7 @@ export class Package {
 
    public setPackageMetadata(packageMetadata: ApiPackage) {
       this.packageMetadata = packageMetadata;
+      this.applyDiscoveryPolicyToModels();
+      this.applyQueryBoundaryToModels();
    }
 }

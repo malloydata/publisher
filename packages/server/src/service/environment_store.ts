@@ -452,25 +452,6 @@ export class EnvironmentStore {
          dbEnvironment = await repository.createEnvironment(environmentData);
       }
 
-      // Initialize DuckLake manifest storage if configured on the environment.
-      const materializationStorage = environment.metadata
-         ?.materializationStorage as
-         | { catalogUrl?: string; dataPath?: string }
-         | undefined;
-      if (
-         materializationStorage?.catalogUrl &&
-         materializationStorage?.dataPath
-      ) {
-         await this.storageManager.initializeDuckLakeForEnvironment(
-            dbEnvironment.id,
-            dbEnvironment.name,
-            {
-               catalogUrl: materializationStorage.catalogUrl,
-               dataPath: materializationStorage.dataPath,
-            },
-         );
-      }
-
       return dbEnvironment;
    }
 
@@ -938,10 +919,6 @@ export class EnvironmentStore {
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
-      if (environment.materializationStorage !== undefined) {
-         newEnvironment.metadata.materializationStorage =
-            environment.materializationStorage;
-      }
 
       this.environments.set(environmentName, newEnvironment);
 
