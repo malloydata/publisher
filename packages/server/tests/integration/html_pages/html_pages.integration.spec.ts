@@ -66,6 +66,7 @@ interface PageItem {
    packageName?: string;
    path?: string;
    title?: string;
+   fit?: "viewport";
 }
 
 // Creating a symlink that escapes the package needs privileges the Windows CI
@@ -322,7 +323,17 @@ describe("In-package HTML data apps (E2E)", () => {
       const paths = pages.map((p) => p.path).sort();
       // Only HTML files under public/ are listed; the toEqual pins the exact
       // set, so non-public files (manifest, models, data) can't appear.
-      expect(paths).toEqual(["index.html", "sub/page2.html"]);
+      expect(paths).toEqual([
+         "barehtml.html",
+         "bodymeta.html",
+         "fitcomment.html",
+         "index.html",
+         "nohead.html",
+         "notfit.html",
+         "slides.html",
+         "sub/page2.html",
+         "unterminated.html",
+      ]);
 
       const index = pages.find((p) => p.path === "index.html");
       expect(index?.title).toBe("Carrier Dashboard");
@@ -330,6 +341,57 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(index?.resource).toBe(
          `/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/index.html`,
       );
+   });
+
+   it("surfaces fit=viewport only for pages that opt in via <meta name=publisher:fit>", async () => {
+      const res = await fetch(apiUrl("/pages"));
+      expect(res.status).toBe(200);
+      const pages = (await res.json()) as PageItem[];
+
+      // slides.html opts in with <meta name="publisher:fit" content="viewport">
+      // (alongside a standard charset + viewport meta) → fill the embedded viewer.
+      expect(pages.find((p) => p.path === "slides.html")?.fit).toBe("viewport");
+
+      // fitcomment.html has a real <meta publisher:fit> AFTER a comment that
+      // contains the literal "<body>"; stripping comments before locating the
+      // </head>/<body> boundary must keep that literal from truncating the scan
+      // and hiding the real tag (it must still opt in).
+      expect(pages.find((p) => p.path === "fitcomment.html")?.fit).toBe(
+         "viewport",
+      );
+
+      // notfit.html carries the STANDARD <meta name="viewport"> (device-width),
+      // a decoy <meta data-name="publisher:fit"> in <head>, and the real tag as
+      // text in a <body> comment. None is a genuine <head> name=publisher:fit,
+      // so it must NOT be mistaken for an opt-in.
+      expect(pages.find((p) => p.path === "notfit.html")?.fit).toBeUndefined();
+
+      // A page with no relevant meta keeps content-height auto-sizing (the
+      // field is omitted, never `null`/`"content"`).
+      expect(pages.find((p) => p.path === "index.html")?.fit).toBeUndefined();
+
+      // nohead.html omits the optional </head> end tag and shows the tag in a
+      // <body> comment; the scan stops at <body>, so it must NOT opt in.
+      expect(pages.find((p) => p.path === "nohead.html")?.fit).toBeUndefined();
+
+      // barehtml.html omits BOTH </head> and <body> and shows the tag only in
+      // an HTML comment; comment-stripping must keep it from opting in.
+      expect(
+         pages.find((p) => p.path === "barehtml.html")?.fit,
+      ).toBeUndefined();
+
+      // bodymeta.html has a REAL (uncommented) <meta publisher:fit> but in
+      // <body> and omits </head>, so the head-only scan must stop at <body>
+      // and not opt in (locks the <body> boundary).
+      expect(
+         pages.find((p) => p.path === "bodymeta.html")?.fit,
+      ).toBeUndefined();
+
+      // unterminated.html wraps the tag in a comment with no closing -->; the
+      // unterminated-comment strip must still keep it from opting in.
+      expect(
+         pages.find((p) => p.path === "unterminated.html")?.fit,
+      ).toBeUndefined();
    });
 
    it("400s a malformed environment/package name on /pages", async () => {

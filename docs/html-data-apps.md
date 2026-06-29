@@ -260,6 +260,31 @@ The stream is `GET /api/v0/environments/<env>/packages/<pkg>/events`. It emits a
 connects and reports `mode: disabled`, and no reloads fire, which is the expected
 production posture.
 
+## Full-screen apps in the page viewer
+
+When you open a page from inside the Publisher app (the package's Pages list), it
+is shown in an iframe wrapped in light chrome (a title and an "open standalone"
+link). By default that iframe is sized to the page's content height: the page's
+runtime measures how tall its content actually is and the viewer matches it, so
+an ordinary dashboard never gets a nested scrollbar.
+
+A full-screen app, such as a slide deck that sizes itself to `100vh`, has no
+content height to measure, so the default sizing would clip it. Declare that the
+page should fill the viewer instead with a single meta tag in the `<head>`:
+
+```html
+<meta name="publisher:fit" content="viewport" />
+```
+
+The viewer then makes the iframe fill the available height, so the page's own
+`100vh` resolves against the real viewport and looks the same as it does opened
+standalone. Because the viewer reads this tag from the page's markup, it works
+even for a page that does not load `publisher.js`. The tag must sit near the top
+of `<head>` (within the first 4KB, the same window the title is read from). Pages
+without it keep content-height sizing, so marking one app full-screen does not
+affect any other page, and opening a page directly at
+`/environments/<env>/packages/<pkg>/<file>` is unaffected either way.
+
 ## Listing a package's pages
 
 `GET /api/v0/environments/<env>/packages/<pkg>/pages` returns the package's HTML
@@ -276,9 +301,12 @@ pages, which the Publisher app uses to show what a package offers. Each entry is
 
 `resource` is the root-relative URL to open the page (note it is not under
 `/api/v0`), `path` is the file's path within `public/`, and `title` is taken from
-the page's `<title>` tag, falling back to `path`. The listing covers `.html` and
-`.htm` files up to three directories deep and is empty for a package with no
-`public/` directory.
+the page's `<title>` tag, falling back to `path`. An entry also carries
+`fit: "viewport"` when the page opts into filling the viewer with
+`<meta name="publisher:fit" content="viewport">` (see
+[Full-screen apps in the page viewer](#full-screen-apps-in-the-page-viewer)), and
+omits the field otherwise. The listing covers `.html` and `.htm` files up to
+three directories deep and is empty for a package with no `public/` directory.
 
 ## The package manifest
 

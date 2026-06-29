@@ -2571,6 +2571,16 @@ components:
           description:
             Title extracted from the file's <title> tag, or the path if
             not present
+        fit:
+          type: string
+          enum:
+            - viewport
+          description:
+            Layout hint read from a <meta name="publisher:fit"> tag in the
+            page <head>. "viewport" tells the embedded page viewer to fill the
+            available height instead of auto-sizing to the page's content
+            height, for full-screen apps like slide decks. Omitted for ordinary
+            content pages, which keep content-height auto-sizing.
 
     RawNotebook:
       type: object

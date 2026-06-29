@@ -491,7 +491,32 @@ type PageItem = {
    packageName: string;
    path: string;
    title: string;
+   fit?: "viewport";
 };
+
+// The spots in an HTML head where a "<meta ...>" literal would NOT be a live
+// tag: HTML comments (terminated or unterminated) and raw-text/RCDATA elements
+// (script/style/title/textarea). One alternation so a single .replace covers
+// them all (and so the fixpoint loop below applies one self-referential
+// replace, which is the complete-sanitization shape CodeQL recognizes).
+const NON_TAG_TEXT_PATTERN =
+   /<!--[\s\S]*?-->|<!--[\s\S]*$|<(script|style|title|textarea)\b[\s\S]*?<\/\1\s*>/gi;
+
+// Remove those matches until the string stops changing. A single pass is
+// incomplete because removing one match can splice the surrounding text into a
+// new one (CWE-116), so re-apply the same pattern to its own output until a
+// fixpoint. Each pass only deletes, so the string strictly shrinks and the loop
+// terminates, bounded by the input length (callers pass at most the first 4KB).
+function stripNonTagText(input: string): string {
+   let current = input;
+   let previous: string;
+   do {
+      previous = current;
+      current = current.replace(NON_TAG_TEXT_PATTERN, "");
+   } while (current !== previous);
+   return current;
+}
+
 async function listPackagePages(
    environmentName: string,
    packageName: string,
@@ -539,8 +564,9 @@ async function listPackagePages(
             (entry.name.endsWith(".html") || entry.name.endsWith(".htm"))
          ) {
             const rel = path.relative(publicRoot, full).replace(/\\/g, "/");
-            // Cheap title extraction: read first 4KB and grep for <title>.
+            // Cheap metadata extraction: read first 4KB and grep the <head>.
             let title = rel;
+            let fit: "viewport" | undefined;
             try {
                const fh = await fs.open(full, "r");
                try {
@@ -549,6 +575,33 @@ async function listPackagePages(
                   const head = buf.slice(0, bytesRead).toString("utf8");
                   const m = head.match(/<title[^>]*>([^<]+)<\/title>/i);
                   if (m) title = m[1].trim();
+                  // Full-screen apps (e.g. slide decks) opt into a viewport-fill
+                  // embed with <meta name="publisher:fit" content="viewport">.
+                  // FIRST strip the spots where the literal string is NOT a live
+                  // tag (comments, script/style/title/textarea), THEN look at the
+                  // <head> region only (up to </head> or <body>). Order matters:
+                  // stripping before locating the boundary keeps a literal
+                  // "<body>"/"</head>" inside a comment or <script> from
+                  // truncating the scan and hiding a real tag. What's left and
+                  // matches is a genuine <meta> the browser would honor too, so a
+                  // documented/commented example or a string in a code block
+                  // can't opt the page in. Match by name (attribute order/quoting
+                  // vary), then confirm content="viewport"; the [\s"'] before
+                  // `name` keeps `data-name="publisher:fit"` out. Like the title,
+                  // the tag must sit within the first 4KB.
+                  const cleaned = stripNonTagText(head);
+                  const headEnd = cleaned.search(/<\/head\s*>|<body[\s>]/i);
+                  const headTags =
+                     headEnd === -1 ? cleaned : cleaned.slice(0, headEnd);
+                  const fitMeta = headTags.match(
+                     /<meta\b[^>]*[\s"']name\s*=\s*["']publisher:fit["'][^>]*>/i,
+                  );
+                  if (
+                     fitMeta &&
+                     /\bcontent\s*=\s*["']\s*viewport\s*["']/i.test(fitMeta[0])
+                  ) {
+                     fit = "viewport";
+                  }
                } finally {
                   await fh.close();
                }
@@ -560,6 +613,7 @@ async function listPackagePages(
                packageName,
                path: rel,
                title,
+               fit,
             });
          }
       }
