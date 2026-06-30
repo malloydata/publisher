@@ -39,7 +39,14 @@ function startEchoServer(): Promise<{
    close: () => Promise<void>;
 }> {
    return new Promise((resolve, reject) => {
+      // Track accepted sockets so close() can force them down. server.close()
+      // alone only stops accepting and then waits for open connections to end;
+      // a lingering forwarded socket would otherwise hang teardown (and the
+      // afterEach hook) until the test timeout, especially under --serial CI.
+      const sockets = new Set<net.Socket>();
       const server = net.createServer((socket) => {
+         sockets.add(socket);
+         socket.on("close", () => sockets.delete(socket));
          socket.pipe(socket);
       });
       server.on("error", reject);
@@ -48,9 +55,10 @@ function startEchoServer(): Promise<{
          resolve({
             port: addr.port,
             close: () =>
-               new Promise((res, rej) =>
-                  server.close((err) => (err ? rej(err) : res())),
-               ),
+               new Promise((res, rej) => {
+                  for (const s of sockets) s.destroy();
+                  server.close((err) => (err ? rej(err) : res()));
+               }),
          });
       });
    });
@@ -69,9 +77,17 @@ function startSshServer(opts: {
    close: () => Promise<void>;
 }> {
    return new Promise((resolve, reject) => {
+      // Track live client connections and forwarded destination sockets so
+      // close() can force them down; otherwise a lingering forwarded socket
+      // keeps sshd.close() (and the afterEach hook) hanging until the test
+      // timeout, which is what made the tunnel tests flake under --serial CI.
+      const clients = new Set<SshServerConnection>();
+      const destSockets = new Set<net.Socket>();
       const sshd = new SshServer(
          { hostKeys: [hostPrivatePem] },
          (client: SshServerConnection) => {
+            clients.add(client);
+            client.on("close", () => clients.delete(client));
             client.on("authentication", (ctx) => {
                if (opts.rejectAuth) {
                   ctx.reject();
@@ -101,6 +117,8 @@ function startSshServer(opts: {
                         dest.on("error", () => channel.destroy());
                      },
                   );
+                  destSockets.add(dest);
+                  dest.on("close", () => destSockets.delete(dest));
                   dest.on("error", () => channel.destroy());
                });
             });
@@ -126,7 +144,12 @@ function startSshServer(opts: {
          resolve({
             port: addr.port,
             hostKeyBase64,
-            close: () => new Promise((res) => sshd.close(() => res())),
+            close: () =>
+               new Promise((res) => {
+                  for (const s of destSockets) s.destroy();
+                  for (const c of clients) c.end();
+                  sshd.close(() => res());
+               }),
          });
       });
    });
