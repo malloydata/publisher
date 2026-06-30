@@ -172,6 +172,21 @@ function connectAndSend(port: number, message: string): Promise<string> {
    });
 }
 
+// Best-effort, time-bounded teardown. Destroying every ssh2/socket handle is
+// reliable locally but a lingering graceful close can still stall on some CI
+// platforms (Bun + ssh2 on Linux/Windows), which would hang the afterEach hook
+// until the 100s test timeout. The assertions have already run by teardown, so
+// cap each close and move on rather than block.
+function closeQuietly(close: () => Promise<void>, ms = 3000): Promise<void> {
+   return Promise.race([
+      close().catch(() => {}),
+      new Promise<void>((resolve) => {
+         const timer = setTimeout(resolve, ms);
+         (timer as unknown as { unref?: () => void }).unref?.();
+      }),
+   ]);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("openProxy — SSH tunnel", () => {
@@ -188,8 +203,8 @@ describe("openProxy — SSH tunnel", () => {
    });
 
    afterEach(async () => {
-      await echoServer.close();
-      await sshServer.close();
+      await closeQuietly(() => echoServer.close());
+      await closeQuietly(() => sshServer.close());
    });
 
    it("round-trips bytes through the tunnel", async () => {
@@ -211,7 +226,7 @@ describe("openProxy — SSH tunnel", () => {
          const reply = await connectAndSend(ep.port, "hello-proxy");
          expect(reply).toContain("hello-proxy");
       } finally {
-         await ep.close();
+         await closeQuietly(() => ep.close());
       }
    });
 
@@ -237,7 +252,7 @@ describe("openProxy — SSH tunnel", () => {
          const reply = await connectAndSend(ep.port, "known-hosts-line");
          expect(reply).toContain("known-hosts-line");
       } finally {
-         await ep.close();
+         await closeQuietly(() => ep.close());
       }
    });
 
@@ -306,7 +321,7 @@ describe("openProxy — SSH tunnel", () => {
             const reply = await connectAndSend(ep.port, "allow-unknown");
             expect(reply).toContain("allow-unknown");
          } finally {
-            await ep.close();
+            await closeQuietly(() => ep.close());
          }
       } finally {
          delete process.env.PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY;
