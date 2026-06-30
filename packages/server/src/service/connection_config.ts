@@ -291,6 +291,18 @@ function validateConnectionShape(connection: ApiConnection): void {
             `Connection proxy on '${connection.name}' has type 'ssh' but no 'ssh' config object.`,
          );
       }
+      // The tunnel forwards to an explicit host:port; the connectionString form
+      // can't be rewritten to the local endpoint and would otherwise silently
+      // tunnel to the bastion's own :5432. Require discrete host/port at load.
+      if (
+         !connection.postgresConnection?.host ||
+         !connection.postgresConnection?.port
+      ) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' requires explicit host and port on the ` +
+               `postgres connection; the connectionString form is not supported with a proxy.`,
+         );
+      }
    }
 
    switch (connection.type) {

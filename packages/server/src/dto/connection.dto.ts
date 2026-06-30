@@ -1,10 +1,12 @@
 import { Type } from "class-transformer";
 import {
+   IsDefined,
    IsEnum,
    IsArray,
    IsNumber,
    IsOptional,
    IsString,
+   ValidateIf,
    ValidateNested,
 } from "class-validator";
 import "reflect-metadata";
@@ -226,7 +228,10 @@ export class ConnectionProxyDto {
    @IsEnum(["ssh"])
    type!: "ssh";
 
-   @IsOptional()
+   // ssh config is required for the ssh proxy type (the only type today); keep
+   // the conditional so a future proxy type isn't forced to supply `ssh`.
+   @ValidateIf((o) => o.type === "ssh")
+   @IsDefined()
    @ValidateNested()
    @Type(() => SshProxyConfigDto)
    ssh?: SshProxyConfigDto;

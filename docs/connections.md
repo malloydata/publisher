@@ -85,6 +85,60 @@ server uses the token as configured and does not refresh it, so a long-running
 CLI/extension today; re-issue the token and restart if queries start failing
 auth.
 
+## Reaching a database through an SSH bastion (`proxy`)
+
+Any TCP database connection (postgres today) can carry an optional `proxy` block to
+reach a database that is only routable from inside a private network. The server opens
+an SSH connection to the bastion, stands up a local `127.0.0.1` forward, and points the
+driver at it — the driver is unchanged. A bastion is for **reachability** into a private
+VPC; it is not an IP-restriction mechanism (restrict the database directly for that).
+
+> **Disabled by default.** Like `publisher` connections, a proxy makes the server open
+> an outbound connection to a tenant-configured host — an SSRF surface in a hosted
+> deployment. It is gated by the **same** flag: set `PUBLISHER_ALLOW_PROXY_CONNECTIONS=true`
+> on the server process. With the flag unset, a proxied connection fails at config load.
+
+```json
+{
+  "name": "pg-via-bastion",
+  "type": "postgres",
+  "postgresConnection": {
+    "host": "db.internal.vpc",
+    "port": 5432,
+    "databaseName": "analytics",
+    "userName": "readonly",
+    "password": "<secret>"
+  },
+  "proxy": {
+    "type": "ssh",
+    "ssh": {
+      "host": "bastion.example.com",
+      "port": 22,
+      "username": "ec2-user",
+      "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…\n-----END OPENSSH PRIVATE KEY-----",
+      "hostKey": "bastion.example.com ssh-ed25519 AAAA…"
+    }
+  }
+}
+```
+
+- `postgresConnection.host`/`port` — the database address **as reachable from the
+  bastion** (the in-VPC host). The connectionString form is not supported with a proxy.
+- `proxy.ssh.host`/`port`/`username` — the bastion (jump host). The local forward port is
+  chosen automatically; you never specify it.
+- `proxy.ssh.privateKey` (+ optional `privateKeyPass`) — the customer generates the
+  keypair, authorizes their own public key on the bastion, and provides the private key
+  here. Public-key auth only.
+- `proxy.ssh.hostKey` — the bastion's host public key, pinned and verified on every
+  connect (fail-closed). Get it with `ssh-keyscan <bastion>` and paste a line of the
+  output (or just the base64 blob). **Hashed** `known_hosts` entries (lines starting
+  `|1|`) are not supported — use the unhashed `ssh-keyscan` output. If `hostKey` is
+  omitted the tunnel is refused unless `PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true` (intended
+  for local dev only).
+
+When the gate is enabled, a tenant can point `proxy.ssh.host` at any reachable host — the
+same SSRF class as `publisher` connections — so enable it deliberately.
+
 ## Example: mixed connections
 
 ```json

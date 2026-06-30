@@ -3116,7 +3116,9 @@ components:
           type: string
           description: |
             Expected bastion host public key, as an OpenSSH known_hosts line or its
-            base64 blob (e.g. from ssh-keyscan). If absent the tunnel is refused unless
+            base64 blob (e.g. from `ssh-keyscan <bastion>`). Hashed known_hosts entries
+            (lines beginning `|1|`) are not supported — use the unhashed ssh-keyscan
+            output. If absent the tunnel is refused unless
             PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true is set — see proxy.ts.
 
     ConnectionAttributes:

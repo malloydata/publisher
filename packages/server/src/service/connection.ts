@@ -1087,10 +1087,10 @@ export function buildEnvironmentMalloyConfig(
                            `Only 'postgres' is implemented.`,
                      );
                   }
-                  // Fail closed: the proxy must forward to an explicit DB host/
-                  // port. The connectionString form is rejected because we cannot
-                  // safely rewrite its host to the local endpoint, and falling
-                  // back to localhost:5432 would tunnel to the bastion itself.
+                  // validateConnectionShape already enforces explicit host/port
+                  // at config load (the connectionString form can't be tunneled);
+                  // this is a defense-in-depth guard for any path that reaches
+                  // lookup without that validation.
                   const pgConfig = metadata.apiConnection.postgresConnection;
                   if (!pgConfig?.host || !pgConfig?.port) {
                      throw new Error(
