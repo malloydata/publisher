@@ -229,6 +229,27 @@ describe("deriveBuildPlan", () => {
 
       expect(Object.keys(plan.sources)).toEqual(["a@m"]);
    });
+
+   it("carries the per-source package-relative modelPath", () => {
+      const a = fakeSource({ name: "a", buildId: "bid-a" });
+      const b = fakeSource({ name: "b", buildId: "bid-b" });
+      const plan = deriveBuildPlan(
+         [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "a@m", dependsOn: [] }]],
+            },
+         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         { "a@m": a, "b@m": b },
+         { duckdb: "dig" },
+         undefined,
+         { "a@m": "rollup.malloy" },
+      );
+
+      // Mapped source gets its model path; an unmapped source stays undefined.
+      expect(plan.sources["a@m"].modelPath).toBe("rollup.malloy");
+      expect(plan.sources["b@m"].modelPath).toBeUndefined();
+   });
 });
 
 describe("compilePackageBuildPlan", () => {

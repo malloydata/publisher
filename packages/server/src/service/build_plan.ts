@@ -42,6 +42,13 @@ export interface CompiledBuildPlan {
    sources: Record<string, PersistSource>;
    connectionDigests: Record<string, string>;
    connections: Map<string, MalloyConnection>;
+   /**
+    * sourceID -> the package-relative path of the `.malloy` model that declares
+    * the source (the only place that mapping is known, since a sourceID's
+    * embedded modelURL is an absolute `file://` path with no package boundary).
+    * Optional so existing fixtures/callers that don't track it still typecheck.
+    */
+   sourceModelPaths?: Record<string, string>;
 }
 
 /** Output columns of a persist source, degrading to [] if unavailable. */
@@ -192,6 +199,7 @@ export async function compilePackageBuildPlan(
 ): Promise<CompiledBuildPlan> {
    const allGraphs: MalloyBuildGraph[] = [];
    const allSources: Record<string, PersistSource> = {};
+   const sourceModelPaths: Record<string, string> = {};
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -225,6 +233,7 @@ export async function compilePackageBuildPlan(
       allGraphs.push(...buildPlan.graphs);
       for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
          allSources[sourceID] = source;
+         sourceModelPaths[sourceID] = modelPath;
       }
    }
 
@@ -256,6 +265,7 @@ export async function compilePackageBuildPlan(
       sources: allSources,
       connectionDigests,
       connections,
+      sourceModelPaths,
    };
 }
 
@@ -265,6 +275,7 @@ export function deriveBuildPlan(
    sources: Record<string, PersistSource>,
    connectionDigests: Record<string, string>,
    sourceNames?: string[],
+   sourceModelPaths?: Record<string, string>,
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
@@ -290,6 +301,7 @@ export function deriveBuildPlan(
          sql: source.getSQL(),
          columns: deriveColumns(source),
          annotationFields: deriveAnnotationFields(source),
+         modelPath: sourceModelPaths?.[sourceID],
       };
    }
 
@@ -313,5 +325,7 @@ export async function computePackageBuildPlan(
       compiled.graphs,
       compiled.sources,
       compiled.connectionDigests,
+      undefined,
+      compiled.sourceModelPaths,
    );
 }
