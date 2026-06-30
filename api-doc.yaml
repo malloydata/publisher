@@ -3073,6 +3073,51 @@ components:
           $ref: "#/components/schemas/DucklakeConnection"
         publisherConnection:
           $ref: "#/components/schemas/PublisherConnection"
+        proxy:
+          $ref: "#/components/schemas/ConnectionProxy"
+
+    ConnectionProxy:
+      type: object
+      description: Optional proxy (e.g. SSH tunnel) that the publisher opens before connecting to the database
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [ssh]
+          description: Proxy type; currently only "ssh" is supported
+        ssh:
+          $ref: "#/components/schemas/SshProxyConfig"
+
+    SshProxyConfig:
+      type: object
+      description: Configuration for an SSH bastion tunnel
+      required:
+        - host
+        - username
+        - privateKey
+      properties:
+        host:
+          type: string
+          description: SSH bastion hostname or IP address
+        port:
+          type: integer
+          description: SSH bastion port (default 22)
+        username:
+          type: string
+          description: SSH username
+        privateKey:
+          type: string
+          description: PEM-encoded SSH private key
+        privateKeyPass:
+          type: string
+          description: Passphrase for the private key, if encrypted
+        hostKey:
+          type: string
+          description: |
+            Expected bastion host public key, as an OpenSSH known_hosts line or its
+            base64 blob (e.g. from ssh-keyscan). If absent the tunnel is refused unless
+            PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true is set — see proxy.ts.
 
     ConnectionAttributes:
       type: object

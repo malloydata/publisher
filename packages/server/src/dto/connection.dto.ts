@@ -199,6 +199,39 @@ export class DuckdbConnectionDto {
    attachedDatabases?: AttachedDatabase[];
 }
 
+export class SshProxyConfigDto {
+   @IsString()
+   host!: string;
+
+   @IsOptional()
+   @IsNumber()
+   port?: number;
+
+   @IsString()
+   username!: string;
+
+   @IsString()
+   privateKey!: string;
+
+   @IsOptional()
+   @IsString()
+   privateKeyPass?: string;
+
+   @IsOptional()
+   @IsString()
+   hostKey?: string;
+}
+
+export class ConnectionProxyDto {
+   @IsEnum(["ssh"])
+   type!: "ssh";
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => SshProxyConfigDto)
+   ssh?: SshProxyConfigDto;
+}
+
 export class ConnectionDto implements ApiConnection {
    @IsOptional()
    @IsString()
@@ -256,4 +289,9 @@ export class ConnectionDto implements ApiConnection {
    @ValidateNested()
    @Type(() => DuckdbConnectionDto)
    duckdbConnection?: DuckdbConnectionDto;
+
+   @IsOptional()
+   @ValidateNested()
+   @Type(() => ConnectionProxyDto)
+   proxy?: ConnectionProxyDto;
 }

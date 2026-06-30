@@ -22,6 +22,7 @@ export type EnvironmentConnectionMetadata = {
    isDuckLake: boolean;
    databasePath?: string;
    workingDirectory: string;
+   proxy?: ApiConnection["proxy"];
 };
 
 export type AssembledEnvironmentConnections = {
@@ -445,6 +446,7 @@ export function assembleEnvironmentConnections(
          isDuckLake,
          databasePath,
          workingDirectory: environmentPath,
+         proxy: connection.proxy,
       });
 
       switch (connection.type) {
