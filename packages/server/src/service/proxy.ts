@@ -85,6 +85,10 @@ function openSshProxy(
       let localPort = 0;
       let server: net.Server | undefined;
       let settled = false;
+      // Track accepted local sockets so close() can force them down. Relying on
+      // server.close() alone waits for in-flight sockets to drain, which can
+      // hang teardown indefinitely if a forwarded socket lingers.
+      const sockets = new Set<net.Socket>();
 
       function fail(err: Error): void {
          if (settled) return;
@@ -136,6 +140,8 @@ function openSshProxy(
 
       client.on("ready", () => {
          server = net.createServer((socket) => {
+            sockets.add(socket);
+            socket.on("close", () => sockets.delete(socket));
             // Buffer incoming data immediately so we don't lose bytes that
             // arrive before the forwardOut channel is open (relevant in Bun
             // where resume() doesn't re-emit already-buffered data).
@@ -200,6 +206,9 @@ function openSshProxy(
                port: localPort,
                close(): Promise<void> {
                   return new Promise((res) => {
+                     // Force-destroy live forwarded sockets first so server.close()
+                     // doesn't wait on them (which would hang teardown).
+                     for (const s of sockets) s.destroy();
                      server!.close(() => {
                         client.end();
                         res();

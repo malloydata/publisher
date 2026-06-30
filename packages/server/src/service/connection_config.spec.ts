@@ -366,7 +366,8 @@ describe("SSH proxy gate (PUBLISHER_ALLOW_PROXY_CONNECTIONS)", () => {
          ssh: {
             host: "bastion.example.com",
             username: "ec2-user",
-            privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----",
+            privateKey:
+               "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----",
          },
       },
    };
