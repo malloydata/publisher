@@ -143,6 +143,15 @@ function openSshProxy(
                      socket.destroy(err);
                      return;
                   }
+                  // The local socket may have closed while forwardOut was still
+                  // opening the channel; if so, tear the channel down instead of
+                  // attaching it to a dead socket (which would leak the remote
+                  // connection). The rest of this callback is synchronous, so no
+                  // close can slip in between this check and the listeners below.
+                  if (socket.destroyed) {
+                     channel.destroy();
+                     return;
+                  }
                   // Flush buffered data, then switch to live forwarding.
                   for (const chunk of earlyData) {
                      channel.write(chunk);

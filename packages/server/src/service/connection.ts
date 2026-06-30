@@ -1087,14 +1087,22 @@ export function buildEnvironmentMalloyConfig(
                            `Only 'postgres' is implemented.`,
                      );
                   }
+                  // Fail closed: the proxy must forward to an explicit DB host/
+                  // port. The connectionString form is rejected because we cannot
+                  // safely rewrite its host to the local endpoint, and falling
+                  // back to localhost:5432 would tunnel to the bastion itself.
+                  const pgConfig = metadata.apiConnection.postgresConnection;
+                  if (!pgConfig?.host || !pgConfig?.port) {
+                     throw new Error(
+                        `SSH proxy for connection '${name}' requires explicit host and ` +
+                           `port on the postgres connection; the connectionString form ` +
+                           `is not supported with a proxy.`,
+                     );
+                  }
                   connectionPromise = (async () => {
                      const endpoint = await openProxy(metadata.proxy!, {
-                        host:
-                           metadata.apiConnection.postgresConnection?.host ??
-                           "localhost",
-                        port:
-                           metadata.apiConnection.postgresConnection?.port ??
-                           5432,
+                        host: pgConfig.host!,
+                        port: pgConfig.port!,
                      });
                      proxyEndpoints.set(name!, endpoint);
                      return buildProxiedPostgresConnection(metadata, endpoint);
@@ -1154,17 +1162,22 @@ export function buildEnvironmentMalloyConfig(
                const connection = await promise;
                await connection.close();
             }),
-            // Close proxy tunnels after DB connections so the tunnel is still
-            // alive during any in-flight connection.close() drains.
-            ...[...proxyEndpoints.values()].map((ep) => ep.close()),
          ]);
+         // Close proxy tunnels only AFTER the build promises above have settled:
+         // openProxy may still be in flight during a teardown race, and the
+         // endpoint is registered inside that promise — capturing the map
+         // earlier would miss it and leak the tunnel. Closing after the DB
+         // connections also keeps the tunnel alive while they drain.
+         const endpointResults = await Promise.allSettled(
+            [...proxyEndpoints.values()].map((ep) => ep.close()),
+         );
          duckLakeCache.clear();
          snowflakeJwtCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
          proxyEndpoints.clear();
 
-         const failures = closeResults.filter(
+         const failures = [...closeResults, ...endpointResults].filter(
             (result): result is PromiseRejectedResult =>
                result.status === "rejected",
          );
