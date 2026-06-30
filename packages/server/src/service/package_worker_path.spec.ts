@@ -316,6 +316,17 @@ source: gated is duckdb.sql("select 1 as id")`,
                   m.includes("nums -> card"),
             ),
          ).toBe(true);
+         // The same finding rides the package response (non-fatal) so the
+         // control plane / UI can surface it without scraping logs.
+         const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(
+            responseWarnings.some(
+               (w) =>
+                  w.model === "bad_render.malloy" &&
+                  w.target === "nums -> card" &&
+                  w.severity === "error",
+            ),
+         ).toBe(true);
       } finally {
          warnSpy.mockRestore();
          await duckdb.close();
@@ -337,6 +348,8 @@ source: gated is duckdb.sql("select 1 as id")`,
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.getModelPaths()).toEqual(["good_render.malloy"]);
+         // A clean package omits the warnings field entirely.
+         expect(pkg.getPackageMetadata().warnings).toBeUndefined();
       } finally {
          await duckdb.close();
       }
@@ -449,6 +462,14 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(
             warnings.some((m) => m.includes("Invalid renderer configuration")),
          ).toBe(true);
+         // The notebook finding also rides the package response (not just logs).
+         const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(
+            responseWarnings.some(
+               (w) =>
+                  w.model === "bad_render.malloynb" && w.severity === "error",
+            ),
+         ).toBe(true);
       } finally {
          warnSpy.mockRestore();
          await duckdb.close();
@@ -499,8 +520,90 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(
             warnings.some((m) => m.includes("Invalid renderer configuration")),
          ).toBe(true);
+         // Reload refreshes the response-level warnings too.
+         const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(responseWarnings.some((w) => w.model === "m.malloy")).toBe(
+            true,
+         );
       } finally {
          warnSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
+
+   it("clears render-tag warnings on reload when a bad tag is fixed (bad -> clean)", async () => {
+      writeManifest();
+      // Start BAD so the package loads with a warning.
+      fs.writeFileSync(
+         path.join(tempDir, "m.malloy"),
+         `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some(
+               (w) => w.model === "m.malloy",
+            ),
+         ).toBe(true);
+
+         // Fix the tag, then reload: renderTagWarnings is rebuilt from scratch,
+         // so the stale finding must disappear (field omitted when empty).
+         fs.writeFileSync(
+            path.join(tempDir, "m.malloy"),
+            `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # bar_chart
+  view: chart is { group_by: a; aggregate: total }
+}`,
+         );
+         await pkg.reloadAllModels({});
+
+         expect(pkg.getPackageMetadata().warnings).toBeUndefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("aggregates render-tag warnings from multiple models, each tagged with its own path", async () => {
+      writeManifest();
+      const badModel = (view: string) =>
+         `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: ${view} is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`;
+      fs.writeFileSync(path.join(tempDir, "a.malloy"), badModel("card_a"));
+      fs.writeFileSync(path.join(tempDir, "b.malloy"), badModel("card_b"));
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
+         const models = new Set(responseWarnings.map((w) => w.model));
+         expect(models.has("a.malloy")).toBe(true);
+         expect(models.has("b.malloy")).toBe(true);
+         expect(models.size).toBe(2);
+         // The message field is carried through, not just model/target/severity.
+         expect(
+            responseWarnings.every((w) => (w.message ?? "").length > 0),
+         ).toBe(true);
+      } finally {
          await duckdb.close();
       }
    });

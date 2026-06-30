@@ -115,6 +115,18 @@ function quoteMalloyIdentifier(name: string | undefined): string {
    return "`" + (name ?? "").replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
 }
 
+/**
+ * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an
+ * error-severity issue that affects only how a field renders, never whether the
+ * model compiles or a query runs. `target` is the query or view it sits on
+ * (e.g. `by_carrier` or `flights -> by_carrier`).
+ */
+export interface RenderTagWarning {
+   target: string;
+   message: string;
+   severity: "error" | "warn";
+}
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -952,12 +964,13 @@ export class Model {
     * it does not fail the package load. Such a tag still renders as
     * "[object Object]" at query time, so the warning is the operator-facing
     * signal. Lower-severity findings are left for the query-time `renderLogs`
-    * surface.
+    * surface. The findings are returned so the owning Package can surface them
+    * as non-fatal `warnings` on its response.
     */
-   public async validateRenderTags(): Promise<void> {
+   public async validateRenderTags(): Promise<RenderTagWarning[]> {
       const mm = this.modelMaterializer;
       if (!mm) {
-         return;
+         return [];
       }
       // Dynamic import (like execute_query_tool.ts): the renderer is heavy and
       // mutates DOM globals on load, so only pull it in when there's a model to
@@ -1003,6 +1016,7 @@ export class Model {
          }
       }
 
+      const findings: RenderTagWarning[] = [];
       for (const target of targets) {
          let result: Malloy.Result;
          try {
@@ -1024,8 +1038,16 @@ export class Model {
                   .map((e) => e.message)
                   .join("; ")}`,
             );
+            for (const e of errors) {
+               findings.push({
+                  target: target.label,
+                  message: e.message,
+                  severity: "error",
+               });
+            }
          }
       }
+      return findings;
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
