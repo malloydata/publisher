@@ -3755,6 +3755,14 @@ components:
             materialized table name (it may carry a dialect container path like
             `dataset.table`). Returned as the full set so new persist directives
             need no publisher change.
+        modelPath:
+          type: string
+          description:
+            Package-relative path of the `.malloy` model that declares this
+            source (e.g. `order_rollup.malloy`). The source's sourceID embeds an
+            absolute `file://` modelURL with no package boundary, so this is the
+            only place the relative path is exposed; callers use it to deep-link
+            the source back to its model.
 
     Realization:
       type: string
