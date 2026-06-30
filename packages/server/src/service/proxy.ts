@@ -5,6 +5,15 @@
  * types (mysql, trino, …) only need a new `openProxy` branch — the caller
  * interface is unchanged.
  *
+ * # Operator opt-in
+ *
+ * The proxy feature is default-deny (SSRF surface). Set
+ *
+ *   PUBLISHER_ALLOW_SSH_PROXY=true
+ *
+ * to enable it. This is a separate gate from PUBLISHER_ALLOW_PROXY_CONNECTIONS
+ * (which controls the publisher HTTP multi-hop type).
+ *
  * # Host-key policy
  *
  * Publisher is fail-closed by default: if `ssh.hostKey` is absent the tunnel

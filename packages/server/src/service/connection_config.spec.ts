@@ -349,3 +349,100 @@ describe("assembleEnvironmentConnections — publisher", () => {
       });
    });
 });
+
+describe("SSH proxy gate (PUBLISHER_ALLOW_SSH_PROXY)", () => {
+   const validSshProxy: ApiConnection = {
+      name: "pg-via-bastion",
+      type: "postgres",
+      postgresConnection: {
+         host: "127.0.0.1",
+         port: 5432,
+         databaseName: "mydb",
+         userName: "user",
+         password: "pass",
+      },
+      proxy: {
+         type: "ssh",
+         ssh: {
+            host: "bastion.example.com",
+            username: "ec2-user",
+            privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----",
+         },
+      },
+   };
+
+   const priorFlag = process.env.PUBLISHER_ALLOW_SSH_PROXY;
+   beforeEach(() => {
+      delete process.env.PUBLISHER_ALLOW_SSH_PROXY;
+   });
+   afterEach(() => {
+      if (priorFlag === undefined) {
+         delete process.env.PUBLISHER_ALLOW_SSH_PROXY;
+      } else {
+         process.env.PUBLISHER_ALLOW_SSH_PROXY = priorFlag;
+      }
+   });
+
+   it("rejects a postgres connection with an ssh proxy when the flag is unset (default-deny)", () => {
+      expect(() => assembleEnvironmentConnections([validSshProxy])).toThrow(
+         "PUBLISHER_ALLOW_SSH_PROXY=true",
+      );
+   });
+
+   it("error message names the env var to flip", () => {
+      expect(() => assembleEnvironmentConnections([validSshProxy])).toThrow(
+         "Connection proxy on 'pg-via-bastion' is disabled in this deployment",
+      );
+   });
+
+   it("allows a postgres+ssh-proxy connection when the flag is 'true'", () => {
+      process.env.PUBLISHER_ALLOW_SSH_PROXY = "true";
+      const { pojo } = assembleEnvironmentConnections([validSshProxy]);
+      expect(pojo.connections["pg-via-bastion"].is).toBe("postgres");
+   });
+
+   it("rejects a non-postgres (bigquery) connection with a proxy even when the flag is set", () => {
+      process.env.PUBLISHER_ALLOW_SSH_PROXY = "true";
+      const conn: ApiConnection = {
+         name: "bq-via-bastion",
+         type: "bigquery",
+         bigqueryConnection: {
+            serviceAccountKeyJson: JSON.stringify({
+               type: "service_account",
+               project_id: "proj",
+               private_key: "key",
+               client_email: "sa@proj.iam.gserviceaccount.com",
+            }),
+         },
+         proxy: {
+            type: "ssh",
+            ssh: {
+               host: "bastion.example.com",
+               username: "ec2-user",
+               privateKey: "key",
+            },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Connection proxy is not supported for type 'bigquery' (only 'postgres' today)",
+      );
+   });
+
+   it("rejects an ssh proxy with no ssh config object even when the flag is set", () => {
+      process.env.PUBLISHER_ALLOW_SSH_PROXY = "true";
+      const conn: ApiConnection = {
+         name: "pg-no-ssh-config",
+         type: "postgres",
+         postgresConnection: {
+            host: "127.0.0.1",
+            databaseName: "mydb",
+         },
+         proxy: {
+            type: "ssh",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Connection proxy on 'pg-no-ssh-config' has type 'ssh' but no 'ssh' config object",
+      );
+   });
+});
