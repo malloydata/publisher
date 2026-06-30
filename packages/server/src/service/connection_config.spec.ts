@@ -350,7 +350,7 @@ describe("assembleEnvironmentConnections — publisher", () => {
    });
 });
 
-describe("SSH proxy gate (PUBLISHER_ALLOW_SSH_PROXY)", () => {
+describe("SSH proxy gate (PUBLISHER_ALLOW_PROXY_CONNECTIONS)", () => {
    const validSshProxy: ApiConnection = {
       name: "pg-via-bastion",
       type: "postgres",
@@ -371,21 +371,21 @@ describe("SSH proxy gate (PUBLISHER_ALLOW_SSH_PROXY)", () => {
       },
    };
 
-   const priorFlag = process.env.PUBLISHER_ALLOW_SSH_PROXY;
+   const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
    beforeEach(() => {
-      delete process.env.PUBLISHER_ALLOW_SSH_PROXY;
+      delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
    });
    afterEach(() => {
       if (priorFlag === undefined) {
-         delete process.env.PUBLISHER_ALLOW_SSH_PROXY;
+         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
       } else {
-         process.env.PUBLISHER_ALLOW_SSH_PROXY = priorFlag;
+         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
       }
    });
 
    it("rejects a postgres connection with an ssh proxy when the flag is unset (default-deny)", () => {
       expect(() => assembleEnvironmentConnections([validSshProxy])).toThrow(
-         "PUBLISHER_ALLOW_SSH_PROXY=true",
+         "PUBLISHER_ALLOW_PROXY_CONNECTIONS=true",
       );
    });
 
@@ -396,13 +396,13 @@ describe("SSH proxy gate (PUBLISHER_ALLOW_SSH_PROXY)", () => {
    });
 
    it("allows a postgres+ssh-proxy connection when the flag is 'true'", () => {
-      process.env.PUBLISHER_ALLOW_SSH_PROXY = "true";
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
       const { pojo } = assembleEnvironmentConnections([validSshProxy]);
       expect(pojo.connections["pg-via-bastion"].is).toBe("postgres");
    });
 
    it("rejects a non-postgres (bigquery) connection with a proxy even when the flag is set", () => {
-      process.env.PUBLISHER_ALLOW_SSH_PROXY = "true";
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
       const conn: ApiConnection = {
          name: "bq-via-bastion",
          type: "bigquery",
@@ -429,7 +429,7 @@ describe("SSH proxy gate (PUBLISHER_ALLOW_SSH_PROXY)", () => {
    });
 
    it("rejects an ssh proxy with no ssh config object even when the flag is set", () => {
-      process.env.PUBLISHER_ALLOW_SSH_PROXY = "true";
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
       const conn: ApiConnection = {
          name: "pg-no-ssh-config",
          type: "postgres",

@@ -3078,7 +3078,7 @@ components:
 
     ConnectionProxy:
       type: object
-      description: "Optional proxy (e.g. SSH tunnel) that the publisher opens before connecting to the database. Proxied connections require the operator to set PUBLISHER_ALLOW_SSH_PROXY=true; default-deny."
+      description: "Optional proxy (e.g. SSH tunnel) that the publisher opens before connecting to the database. Proxied connections require the operator to set PUBLISHER_ALLOW_PROXY_CONNECTIONS=true; default-deny."
       required:
         - type
       properties:

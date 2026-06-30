@@ -9,10 +9,10 @@
  *
  * The proxy feature is default-deny (SSRF surface). Set
  *
- *   PUBLISHER_ALLOW_SSH_PROXY=true
+ *   PUBLISHER_ALLOW_PROXY_CONNECTIONS=true
  *
- * to enable it. This is a separate gate from PUBLISHER_ALLOW_PROXY_CONNECTIONS
- * (which controls the publisher HTTP multi-hop type).
+ * to enable it — the same gate that permits the publisher HTTP multi-hop type,
+ * since both are the server making tenant-controlled outbound connections.
  *
  * # Host-key policy
  *
