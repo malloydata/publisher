@@ -292,8 +292,17 @@ function validateConnectionShape(connection: ApiConnection): void {
          );
       }
       // The tunnel forwards to an explicit host:port; the connectionString form
-      // can't be rewritten to the local endpoint and would otherwise silently
-      // tunnel to the bastion's own :5432. Require discrete host/port at load.
+      // can't be rewritten to the local endpoint. Reject it outright when a
+      // proxy is set — normal postgres gives connectionString precedence over
+      // host/port, so a config carrying BOTH would silently tunnel to
+      // host/port and ignore the connectionString, connecting to a different
+      // database than the operator configured. Require discrete host/port.
+      if (connection.postgresConnection?.connectionString) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' does not support the connectionString form; ` +
+               `provide discrete host and port instead (the tunnel forwards to an explicit endpoint).`,
+         );
+      }
       if (
          !connection.postgresConnection?.host ||
          !connection.postgresConnection?.port

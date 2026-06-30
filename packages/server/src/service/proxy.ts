@@ -39,6 +39,7 @@ export interface ProxyEndpoint {
 }
 
 const SSH_CONNECT_TIMEOUT_MS = 15_000;
+const SSH_KEEPALIVE_INTERVAL_MS = 15_000;
 
 /**
  * Extract the base64 wire-format key from a stored hostKey, accepting any of:
@@ -105,6 +106,12 @@ function openSshProxy(
          privateKey: ssh.privateKey,
          ...(ssh.privateKeyPass ? { passphrase: ssh.privateKeyPass } : {}),
          readyTimeout: SSH_CONNECT_TIMEOUT_MS,
+         // Send SSH-level keepalives so an idle tunnel isn't silently reaped by
+         // Cloud NAT / bastion ClientAlive / stateful-firewall idle timeouts —
+         // which would otherwise only surface as a confusing pg error on the
+         // next query. 3 missed (~45s) before ssh2 considers the link dead.
+         keepaliveInterval: SSH_KEEPALIVE_INTERVAL_MS,
+         keepaliveCountMax: 3,
          hostVerifier: ((key: Buffer): boolean => {
             // `key` is the raw Buffer of the host's public key.
             const presented = key.toString("base64");
@@ -173,8 +180,11 @@ function openSshProxy(
                   }
                   earlyData.length = 0;
                   socket.removeAllListeners("data");
-                  socket.on("data", (chunk: Buffer) => channel.write(chunk));
-                  channel.on("data", (chunk: Buffer) => socket.write(chunk));
+                  // pipe() honors backpressure (pauses the source when the
+                  // destination's buffer is full) — unlike a raw on('data') =>
+                  // write() which would buffer unbounded on a slow peer.
+                  socket.pipe(channel);
+                  channel.pipe(socket);
                   socket.on("error", () => channel.destroy());
                   channel.on("error", () => socket.destroy());
                   // Propagate teardown both ways so neither side is left
