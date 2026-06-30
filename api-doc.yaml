@@ -3053,6 +3053,8 @@ components:
             ]
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
+        proxy:
+          $ref: "#/components/schemas/ConnectionProxy"
         postgresConnection:
           $ref: "#/components/schemas/PostgresConnection"
         bigqueryConnection:
@@ -3073,25 +3075,32 @@ components:
           $ref: "#/components/schemas/DucklakeConnection"
         publisherConnection:
           $ref: "#/components/schemas/PublisherConnection"
-        proxy:
-          $ref: "#/components/schemas/ConnectionProxy"
 
     ConnectionProxy:
       type: object
-      description: "Optional proxy (e.g. SSH tunnel) that the publisher opens before connecting to the database. Proxied connections require the operator to set PUBLISHER_ALLOW_PROXY_CONNECTIONS=true; default-deny."
+      description:
+        Optional network proxy through which the connection is reached. Applies to
+        any connection type whose database is not directly reachable (e.g. behind a
+        bastion). The proxy is established below the driver, so the driver connects
+        to a local endpoint transparently. Modeled as a discriminated union on
+        `type` so additional proxy mechanisms can be added later. Proxied
+        connections are default-deny — the operator must set
+        PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.
       required:
         - type
       properties:
         type:
           type: string
           enum: [ssh]
-          description: Proxy type; currently only "ssh" is supported
+          description: Proxy mechanism. Currently only SSH local port-forwarding.
         ssh:
           $ref: "#/components/schemas/SshProxyConfig"
 
     SshProxyConfig:
       type: object
-      description: Configuration for an SSH bastion tunnel
+      description:
+        SSH bastion / jump-host config for reaching a database inside a private
+        network via an SSH local port-forward. Authentication is public-key only.
       required:
         - host
         - username
@@ -3099,27 +3108,32 @@ components:
       properties:
         host:
           type: string
-          description: SSH bastion hostname or IP address
+          description: Bastion hostname or IP address (the SSH jump host)
         port:
           type: integer
-          description: SSH bastion port (default 22)
+          default: 22
+          description: Bastion SSH port (defaults to 22)
         username:
           type: string
-          description: SSH username
+          description: SSH username on the bastion
         privateKey:
           type: string
-          description: PEM-encoded SSH private key
+          description:
+            PEM-encoded SSH private key used to authenticate to the bastion. The
+            customer authorizes the matching public key in the bastion's
+            authorized_keys; public-key auth only.
         privateKeyPass:
           type: string
-          description: Passphrase for the private key, if encrypted
+          description: Passphrase for the encrypted private key, if any.
         hostKey:
           type: string
           description: |
-            Expected bastion host public key, as an OpenSSH known_hosts line or its
-            base64 blob (e.g. from `ssh-keyscan <bastion>`). Hashed known_hosts entries
-            (lines beginning `|1|`) are not supported — use the unhashed ssh-keyscan
-            output. If absent the tunnel is refused unless
-            PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true is set — see proxy.ts.
+            Pinned bastion host public key, as an OpenSSH known_hosts line or its
+            base64 blob (e.g. from `ssh-keyscan <bastion>`), verified on every
+            connect. Hashed known_hosts entries (lines beginning `|1|`) are not
+            supported — use the unhashed ssh-keyscan output. A missing or mismatched
+            host key fails the connection closed, unless
+            PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true is set.
 
     ConnectionAttributes:
       type: object
