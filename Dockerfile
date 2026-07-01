@@ -111,6 +111,17 @@ ARG DUCKDB_VERSION=1.5.3
 ENV NODE_ENV=production
 ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 RUN mkdir -p /etc/publisher
+
+# Trust the Amazon RDS root CAs so Postgres->RDS connections verify the server
+# certificate out of the box. Node/Bun ignore the OS trust store and use their
+# own bundled CA set, so NODE_EXTRA_CA_CERTS is the load-bearing knob (it appends
+# to that set). Fetched at build (curl is in base-deps) rather than vendored, so
+# there is no committed cert to keep fresh: a CA rotation is picked up on the next
+# image build/release, and every consumer of this image (the worker, the
+# SSH-bastion connection path) inherits the trust anchor without re-mounting a CA.
+RUN curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    -o /etc/ssl/certs/rds-global-bundle.pem
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/rds-global-bundle.pem
 # Declare the runtime ports so `docker run -P` and Docker Desktop's
 # port-preview surface them. The server already listens on all three (REST on
 # 4000, core MCP on 4040, agent MCP on 4041); this just makes them discoverable.
