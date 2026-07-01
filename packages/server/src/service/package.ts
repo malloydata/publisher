@@ -40,6 +40,7 @@ type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiNotebook = components["schemas"]["Notebook"];
 export type ApiPackage = components["schemas"]["Package"];
+type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -77,6 +78,12 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
+   // Non-fatal render-tag findings aggregated across the package's models (each
+   // tagged with its model path), surfaced read-only on
+   // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
+   // tag does not fail the load (see Model.validateRenderTags); this is the
+   // response-level signal that a tag is misconfigured.
+   private renderTagWarnings: ApiPackageWarning[] = [];
    private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -350,6 +357,7 @@ export class Package {
       // placeholders instead; that branch goes through a different
       // hydration path.)
       const models = new Map<string, Model>();
+      const renderTagWarnings: ApiPackageWarning[] = [];
       for (const sm of outcome.models) {
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
@@ -371,7 +379,10 @@ export class Package {
          // Validate renderer tags on the main thread (the renderer is too heavy
          // to load inside the pure-CPU package-load worker). A misconfigured tag
          // is logged as a warning naming the target; it does not fail the load.
-         await model.validateRenderTags();
+         // The findings also ride the package response as non-fatal `warnings`.
+         for (const w of await model.validateRenderTags()) {
+            renderTagWarnings.push({ model: sm.modelPath, ...w });
+         }
          // Reject unquoted `#@ persist name=` annotations the same way: an
          // unquoted name is dropped from the build plan, so the source would
          // publish but never materialize. Scan the raw `.malloy` source (the
@@ -406,6 +417,7 @@ export class Package {
          models,
          malloyConfig,
       );
+      pkg.renderTagWarnings = renderTagWarnings;
 
       // Compute the persist build plan off the live (unbound) models, before the
       // caller binds any configured manifest, so the surfaced plan reflects the
@@ -483,6 +495,9 @@ export class Package {
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
+      }
+      if (this.renderTagWarnings.length > 0) {
+         metadata.warnings = [...this.renderTagWarnings];
       }
       return metadata;
    }
@@ -704,6 +719,7 @@ export class Package {
       }
 
       const nextModels = new Map<string, Model>();
+      const renderTagWarnings: ApiPackageWarning[] = [];
       for (const sm of outcome.models) {
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
@@ -735,7 +751,9 @@ export class Package {
             // unexpected internal failure is recorded as this model's
             // compilationError rather than aborting the whole reload.
             try {
-               await model.validateRenderTags();
+               for (const w of await model.validateRenderTags()) {
+                  renderTagWarnings.push({ model: sm.modelPath, ...w });
+               }
                nextModels.set(sm.modelPath, model);
             } catch (renderErr) {
                const err =
@@ -760,6 +778,7 @@ export class Package {
          }
       }
       this.models = nextModels;
+      this.renderTagWarnings = renderTagWarnings;
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
       // reflect edited explores without a full Package.create.

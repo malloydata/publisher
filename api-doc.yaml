@@ -2413,6 +2413,41 @@ components:
             fail-safe — the unresolved entry simply lists nothing rather than
             exposing everything — so this is the signal that a package is
             misconfigured; publishing such a package is rejected.
+        warnings:
+          type: array
+          readOnly: true
+          description: >-
+            Non-fatal render-tag findings collected when the package loaded: a
+            render annotation (e.g. `# big_value` or `# currency`) misconfigured
+            for the field it sits on, so it renders as "[object Object]" or an
+            inline error at query time but does not stop the model compiling or
+            the package loading. Server-computed and read-only: ignored on
+            create/update requests and only returned in responses. Present only
+            when there are such findings.
+          items:
+            type: object
+            properties:
+              model:
+                type: string
+                description: >-
+                  Package-relative path of the model the finding is on.
+              target:
+                type: string
+                description: >-
+                  The query or view the finding sits on, e.g. `by_carrier` or
+                  `flights -> by_carrier`.
+              message:
+                type: string
+                description: The render validator's description of the problem.
+              severity:
+                type: string
+                enum:
+                  - error
+                  - warn
+                description: >-
+                  Finding severity. Currently only `error`-severity render
+                  findings are surfaced here; lower-severity findings remain on
+                  the query-time `renderLogs` surface.
         queryableSources:
           type: string
           enum:
