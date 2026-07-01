@@ -93,10 +93,12 @@ an SSH connection to the bastion, stands up a local `127.0.0.1` forward, and poi
 driver at it — the driver is unchanged. A bastion is for **reachability** into a private
 VPC; it is not an IP-restriction mechanism (restrict the database directly for that).
 
-> **Disabled by default.** Like `publisher` connections, a proxy makes the server open
-> an outbound connection to a tenant-configured host — an SSRF surface in a hosted
-> deployment. It is gated by the **same** flag: set `PUBLISHER_ALLOW_PROXY_CONNECTIONS=true`
-> on the server process. With the flag unset, a proxied connection fails at config load.
+> **Authorization & trust.** A proxy makes the server open an outbound SSH tunnel to a
+> tenant-configured bastion, so it is authorized by whoever configures the connection. It
+> is **not** behind an env-flag gate, and is deliberately kept separate from the
+> `publisher` type's `PUBLISHER_ALLOW_PROXY_CONNECTIONS` (that flag is about
+> publisher-to-publisher HTTP proxying, a different decision). The trust control is
+> **host-key pinning** (below), which is fail-closed.
 
 ```json
 {

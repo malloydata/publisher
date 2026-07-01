@@ -260,25 +260,16 @@ function buildDuckdbEntry(
 
 function validateConnectionShape(connection: ApiConnection): void {
    if (connection.proxy) {
-      // Connection proxies make THIS server open an outbound connection to a
-      // tenant-configured host (SSH bastion -> DB) — the same tenant-controlled
-      // outbound / SSRF surface as the `publisher` type below, so it shares the
-      // same operator gate: a single PUBLISHER_ALLOW_PROXY_CONNECTIONS decision
-      // covers every connection that makes the server reach a configured
-      // endpoint. Default-deny / fail-closed at this single choke point
-      // (validateConnectionShape runs before any connection is assembled,
-      // queried, or introspected). Fine for local --watch-env authoring.
+      // A connection proxy makes THIS server open an outbound SSH tunnel to a
+      // tenant-configured bastion. It's a normal connection capability,
+      // authorized by whoever configures the connection — deliberately NOT gated
+      // by an env flag, and kept separate from the `publisher` HTTP multi-hop
+      // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
+      // publisher-to-publisher proxying, a distinct operator decision). Host-key
+      // pinning is fail-closed at connect time (see openProxy).
       if (connection.proxy.type !== "ssh") {
          throw new Error(
             `Connection '${connection.name}' has an unsupported proxy type '${connection.proxy.type}'. Only 'ssh' is supported.`,
-         );
-      }
-      if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
-         throw new Error(
-            `Connection proxy on '${connection.name}' is disabled in this deployment. ` +
-               `A proxy makes the server open an outbound SSH tunnel to a configured bastion, ` +
-               `which is only appropriate for local --watch-env authoring. ` +
-               `Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable it.`,
          );
       }
       if (connection.type !== "postgres") {

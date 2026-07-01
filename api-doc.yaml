@@ -3085,9 +3085,9 @@ components:
         any connection type whose database is not directly reachable (e.g. behind a
         bastion). The proxy is established below the driver, so the driver connects
         to a local endpoint transparently. Modeled as a discriminated union on
-        `type` so additional proxy mechanisms can be added later. Proxied
-        connections are default-deny — the operator must set
-        PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.
+        `type` so additional proxy mechanisms can be added later. The trust
+        control is host-key pinning (fail-closed); a proxy is authorized by
+        whoever configures the connection, not by an env-flag gate.
       required:
         - type
       properties:

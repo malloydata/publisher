@@ -5,14 +5,11 @@
  * types (mysql, trino, …) only need a new `openProxy` branch — the caller
  * interface is unchanged.
  *
- * # Operator opt-in
- *
- * The proxy feature is default-deny (SSRF surface). Set
- *
- *   PUBLISHER_ALLOW_PROXY_CONNECTIONS=true
- *
- * to enable it — the same gate that permits the publisher HTTP multi-hop type,
- * since both are the server making tenant-controlled outbound connections.
+ * A connection proxy is a normal connection capability (authorized by whoever
+ * configures the connection); it is intentionally NOT behind an env-flag gate,
+ * and is kept separate from the `publisher` HTTP multi-hop type's
+ * PUBLISHER_ALLOW_PROXY_CONNECTIONS gate. The trust boundary is host-key pinning
+ * (below), which is fail-closed.
  *
  * # Host-key policy
  *
