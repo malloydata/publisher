@@ -85,6 +85,73 @@ server uses the token as configured and does not refresh it, so a long-running
 CLI/extension today; re-issue the token and restart if queries start failing
 auth.
 
+## Reaching a database through an SSH bastion (`proxy`)
+
+Any TCP database connection (postgres today) can carry an optional `proxy` block to
+reach a database that is only routable from inside a private network. The server opens
+an SSH connection to the bastion, stands up a local `127.0.0.1` forward, and points the
+driver at it — the driver is unchanged. A bastion is for **reachability** into a private
+VPC; it is not an IP-restriction mechanism (restrict the database directly for that).
+
+> **Authorization & trust.** A proxy makes the server open an outbound SSH tunnel to a
+> tenant-configured bastion, so it is authorized by whoever configures the connection. It
+> is **not** behind an env-flag gate, and is deliberately kept separate from the
+> `publisher` type's `PUBLISHER_ALLOW_PROXY_CONNECTIONS` (that flag is about
+> publisher-to-publisher HTTP proxying, a different decision). The trust control is
+> **host-key pinning** (below), which is fail-closed.
+
+```json
+{
+  "name": "pg-via-bastion",
+  "type": "postgres",
+  "postgresConnection": {
+    "host": "db.internal.vpc",
+    "port": 5432,
+    "databaseName": "analytics",
+    "userName": "readonly",
+    "password": "<secret>"
+  },
+  "proxy": {
+    "type": "ssh",
+    "ssh": {
+      "host": "bastion.example.com",
+      "port": 22,
+      "username": "ec2-user",
+      "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…\n-----END OPENSSH PRIVATE KEY-----",
+      "hostKey": "bastion.example.com ssh-ed25519 AAAA…"
+    }
+  }
+}
+```
+
+- `postgresConnection.host`/`port` — the database address **as reachable from the
+  bastion** (the in-VPC host). The connectionString form is not supported with a proxy.
+- `proxy.ssh.host`/`port`/`username` — the bastion (jump host). The local forward port is
+  chosen automatically; you never specify it.
+- `proxy.ssh.privateKey` (+ optional `privateKeyPass`) — the customer generates the
+  keypair, authorizes their own public key on the bastion, and provides the private key
+  here. Public-key auth only.
+- `proxy.ssh.hostKey` — the bastion's host public key, pinned and verified on every
+  connect (fail-closed). Get it with `ssh-keyscan <bastion>` and paste a line of the
+  output (or just the base64 blob). Both plain and hashed (`|1|…`, from `ssh-keyscan -H`)
+  lines work — only the key blob is compared, never the hostname. If `hostKey` is
+  omitted the tunnel is refused unless `PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true` (intended
+  for local dev only).
+
+A proxy makes the server open an outbound SSH tunnel to a tenant-configured host, so
+connection configuration is the authorization boundary, and host-key pinning is the trust
+control on the tunnel itself.
+
+### TLS to the database through the tunnel
+
+The `pg` driver honors `PGSSLMODE` on a proxied connection just as on a direct one (it reads
+it from the environment). One limitation: the driver connects to the local forward endpoint
+(`127.0.0.1`), not the real database host, so full verification (`sslmode=verify-full`)
+fails the certificate **hostname** check even when the CA is trusted. Use
+`sslmode=no-verify` through a tunnel — the SSH transport is already encrypted and the
+bastion→DB leg is inside the private network — until per-connection `servername` support
+lands (see malloydata/malloy#2960).
+
 ## Example: mixed connections
 
 ```json

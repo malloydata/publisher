@@ -349,3 +349,119 @@ describe("assembleEnvironmentConnections — publisher", () => {
       });
    });
 });
+
+describe("SSH proxy validation", () => {
+   const validSshProxy: ApiConnection = {
+      name: "pg-via-bastion",
+      type: "postgres",
+      postgresConnection: {
+         host: "127.0.0.1",
+         port: 5432,
+         databaseName: "mydb",
+         userName: "user",
+         password: "pass",
+      },
+      proxy: {
+         type: "ssh",
+         ssh: {
+            host: "bastion.example.com",
+            username: "ec2-user",
+            privateKey:
+               "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----",
+         },
+      },
+   };
+
+   it("allows a postgres+ssh-proxy connection with no env flag required", () => {
+      // The SSH proxy is a normal connection capability — deliberately NOT gated
+      // by PUBLISHER_ALLOW_PROXY_CONNECTIONS (that flag is for the `publisher`
+      // HTTP multi-hop type). Prove it assembles with the flag unset.
+      const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+      delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+      try {
+         const { pojo } = assembleEnvironmentConnections([validSshProxy]);
+         expect(pojo.connections["pg-via-bastion"].is).toBe("postgres");
+      } finally {
+         if (priorFlag === undefined) {
+            delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         } else {
+            process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
+         }
+      }
+   });
+
+   it("rejects a non-postgres (bigquery) connection with a proxy", () => {
+      const conn: ApiConnection = {
+         name: "bq-via-bastion",
+         type: "bigquery",
+         bigqueryConnection: {
+            serviceAccountKeyJson: JSON.stringify({
+               type: "service_account",
+               project_id: "proj",
+               private_key: "key",
+               client_email: "sa@proj.iam.gserviceaccount.com",
+            }),
+         },
+         proxy: {
+            type: "ssh",
+            ssh: {
+               host: "bastion.example.com",
+               username: "ec2-user",
+               privateKey: "key",
+            },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Connection proxy is not supported for type 'bigquery' (only 'postgres' today)",
+      );
+   });
+
+   it("rejects an ssh proxy with no ssh config object", () => {
+      const conn: ApiConnection = {
+         name: "pg-no-ssh-config",
+         type: "postgres",
+         postgresConnection: {
+            host: "127.0.0.1",
+            databaseName: "mydb",
+         },
+         proxy: {
+            type: "ssh",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Connection proxy on 'pg-no-ssh-config' has type 'ssh' but no 'ssh' config object",
+      );
+   });
+
+   it("rejects a proxied postgres connection that also carries a connectionString", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         name: "pg-with-connstring",
+         postgresConnection: {
+            connectionString: "postgresql://real-db.example.com:5432/mydb",
+            host: "127.0.0.1",
+            port: 5432,
+            databaseName: "mydb",
+         },
+      };
+      // The tunnel forwards to host/port; a connectionString would be silently
+      // ignored and could point at a different database, so it's rejected.
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "does not support the connectionString form",
+      );
+   });
+
+   it("rejects a proxied postgres connection missing explicit host/port", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         name: "pg-no-host-port",
+         postgresConnection: {
+            databaseName: "mydb",
+            userName: "user",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "requires explicit host and port",
+      );
+   });
+});

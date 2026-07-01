@@ -22,6 +22,7 @@ export type EnvironmentConnectionMetadata = {
    isDuckLake: boolean;
    databasePath?: string;
    workingDirectory: string;
+   proxy?: ApiConnection["proxy"];
 };
 
 export type AssembledEnvironmentConnections = {
@@ -258,6 +259,52 @@ function buildDuckdbEntry(
 }
 
 function validateConnectionShape(connection: ApiConnection): void {
+   if (connection.proxy) {
+      // A connection proxy makes THIS server open an outbound SSH tunnel to a
+      // tenant-configured bastion. It's a normal connection capability,
+      // authorized by whoever configures the connection — deliberately NOT gated
+      // by an env flag, and kept separate from the `publisher` HTTP multi-hop
+      // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
+      // publisher-to-publisher proxying, a distinct operator decision). Host-key
+      // pinning is fail-closed at connect time (see openProxy).
+      if (connection.proxy.type !== "ssh") {
+         throw new Error(
+            `Connection '${connection.name}' has an unsupported proxy type '${connection.proxy.type}'. Only 'ssh' is supported.`,
+         );
+      }
+      if (connection.type !== "postgres") {
+         throw new Error(
+            `Connection proxy is not supported for type '${connection.type}' (only 'postgres' today).`,
+         );
+      }
+      if (!connection.proxy.ssh) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' has type 'ssh' but no 'ssh' config object.`,
+         );
+      }
+      // The tunnel forwards to an explicit host:port; the connectionString form
+      // can't be rewritten to the local endpoint. Reject it outright when a
+      // proxy is set — normal postgres gives connectionString precedence over
+      // host/port, so a config carrying BOTH would silently tunnel to
+      // host/port and ignore the connectionString, connecting to a different
+      // database than the operator configured. Require discrete host/port.
+      if (connection.postgresConnection?.connectionString) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' does not support the connectionString form; ` +
+               `provide discrete host and port instead (the tunnel forwards to an explicit endpoint).`,
+         );
+      }
+      if (
+         !connection.postgresConnection?.host ||
+         !connection.postgresConnection?.port
+      ) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' requires explicit host and port on the ` +
+               `postgres connection; the connectionString form is not supported with a proxy.`,
+         );
+      }
+   }
+
    switch (connection.type) {
       case "postgres":
       case "mysql":
@@ -445,6 +492,7 @@ export function assembleEnvironmentConnections(
          isDuckLake,
          databasePath,
          workingDirectory: environmentPath,
+         proxy: connection.proxy,
       });
 
       switch (connection.type) {
