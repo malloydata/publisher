@@ -1104,8 +1104,21 @@ export function buildEnvironmentMalloyConfig(
                         host: pgConfig.host!,
                         port: pgConfig.port!,
                      });
-                     proxyEndpoints.set(name!, endpoint);
-                     return buildProxiedPostgresConnection(metadata, endpoint);
+                     try {
+                        const connection = buildProxiedPostgresConnection(
+                           metadata,
+                           endpoint,
+                        );
+                        // Register only after the build succeeds: a throw between
+                        // openProxy and here would otherwise leave an orphaned
+                        // tunnel in proxyEndpoints that a retry can't reach (the
+                        // outer .catch evicts the cache but not the endpoint).
+                        proxyEndpoints.set(name!, endpoint);
+                        return connection;
+                     } catch (err) {
+                        await endpoint.close().catch(() => {});
+                        throw err;
+                     }
                   })();
                   // Drop a rejected build from the cache so a later lookup can
                   // retry, rather than replaying a transient SSH failure (bastion

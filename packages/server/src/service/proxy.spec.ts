@@ -256,6 +256,33 @@ describe("openProxy — SSH tunnel", () => {
       }
    });
 
+   it("accepts a hashed (|1|) known_hosts line — the hash only obscures the hostname", async () => {
+      // `ssh-keyscan -H` output hashes the hostname (`|1|salt|hash`) but leaves
+      // the key blob in the clear; the verifier extracts the blob token and never
+      // matches hostnames, so hashed lines work the same as unhashed ones.
+      const hashedLine = `|1|dNQdBg9dg8u7Vw8vq3B0uZ3example=|kZ2exampleHashValue0000000= ssh-rsa ${sshServer.hostKeyBase64}`;
+      const ep = await openProxy(
+         {
+            type: "ssh",
+            ssh: {
+               host: "127.0.0.1",
+               port: sshServer.port,
+               username: "testuser",
+               privateKey: clientPrivatePem,
+               hostKey: hashedLine,
+            },
+         },
+         { host: "127.0.0.1", port: echoServer.port },
+      );
+
+      try {
+         const reply = await connectAndSend(ep.port, "hashed-line");
+         expect(reply).toContain("hashed-line");
+      } finally {
+         await closeQuietly(() => ep.close());
+      }
+   });
+
    it("rejects when hostKey does not match", async () => {
       const wrongKey = Buffer.alloc(32, 0xff).toString("base64");
 

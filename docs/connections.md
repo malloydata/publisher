@@ -133,8 +133,8 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
   here. Public-key auth only.
 - `proxy.ssh.hostKey` — the bastion's host public key, pinned and verified on every
   connect (fail-closed). Get it with `ssh-keyscan <bastion>` and paste a line of the
-  output (or just the base64 blob). **Hashed** `known_hosts` entries (lines starting
-  `|1|`) are not supported — use the unhashed `ssh-keyscan` output. If `hostKey` is
+  output (or just the base64 blob). Both plain and hashed (`|1|…`, from `ssh-keyscan -H`)
+  lines work — only the key blob is compared, never the hostname. If `hostKey` is
   omitted the tunnel is refused unless `PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true` (intended
   for local dev only).
 

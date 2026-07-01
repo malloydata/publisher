@@ -3132,8 +3132,8 @@ components:
           description: |
             Pinned bastion host public key, as an OpenSSH known_hosts line or its
             base64 blob (e.g. from `ssh-keyscan <bastion>`), verified on every
-            connect. Hashed known_hosts entries (lines beginning `|1|`) are not
-            supported — use the unhashed ssh-keyscan output. A missing or mismatched
+            connect. Plain and hashed (`|1|…`) known_hosts lines both work — only
+            the key blob is compared, never the hostname. A missing or mismatched
             host key fails the connection closed, unless
             PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true is set.
 
