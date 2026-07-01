@@ -138,8 +138,19 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
   omitted the tunnel is refused unless `PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true` (intended
   for local dev only).
 
-When the gate is enabled, a tenant can point `proxy.ssh.host` at any reachable host — the
-same SSRF class as `publisher` connections — so enable it deliberately.
+A proxy makes the server open an outbound SSH tunnel to a tenant-configured host, so
+connection configuration is the authorization boundary, and host-key pinning is the trust
+control on the tunnel itself.
+
+### TLS to the database through the tunnel
+
+The `pg` driver honors `PGSSLMODE` on a proxied connection just as on a direct one (it reads
+it from the environment). One limitation: the driver connects to the local forward endpoint
+(`127.0.0.1`), not the real database host, so full verification (`sslmode=verify-full`)
+fails the certificate **hostname** check even when the CA is trusted. Use
+`sslmode=no-verify` through a tunnel — the SSH transport is already encrypted and the
+bastion→DB leg is inside the private network — until per-connection `servername` support
+lands (see malloydata/malloy#2960).
 
 ## Example: mixed connections
 
