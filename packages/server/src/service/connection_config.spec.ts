@@ -446,4 +446,38 @@ describe("SSH proxy gate (PUBLISHER_ALLOW_PROXY_CONNECTIONS)", () => {
          "Connection proxy on 'pg-no-ssh-config' has type 'ssh' but no 'ssh' config object",
       );
    });
+
+   it("rejects a proxied postgres connection that also carries a connectionString", () => {
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         name: "pg-with-connstring",
+         postgresConnection: {
+            connectionString: "postgresql://real-db.example.com:5432/mydb",
+            host: "127.0.0.1",
+            port: 5432,
+            databaseName: "mydb",
+         },
+      };
+      // The tunnel forwards to host/port; a connectionString would be silently
+      // ignored and could point at a different database, so it's rejected.
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "does not support the connectionString form",
+      );
+   });
+
+   it("rejects a proxied postgres connection missing explicit host/port", () => {
+      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         name: "pg-no-host-port",
+         postgresConnection: {
+            databaseName: "mydb",
+            userName: "user",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "requires explicit host and port",
+      );
+   });
 });

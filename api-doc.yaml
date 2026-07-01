@@ -394,6 +394,8 @@ paths:
             schema:
               type: object
               properties:
+                proxy:
+                  $ref: "#/components/schemas/ConnectionProxy"
                 postgresConnection:
                   $ref: "#/components/schemas/PostgresConnection"
                 mysqlConnection:

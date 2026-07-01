@@ -1107,6 +1107,16 @@ export function buildEnvironmentMalloyConfig(
                      proxyEndpoints.set(name!, endpoint);
                      return buildProxiedPostgresConnection(metadata, endpoint);
                   })();
+                  // Drop a rejected build from the cache so a later lookup can
+                  // retry, rather than replaying a transient SSH failure (bastion
+                  // restart, network blip) until the environment is rebuilt.
+                  connectionPromise.catch(() => {
+                     if (
+                        proxyConnectionCache.get(name!) === connectionPromise
+                     ) {
+                        proxyConnectionCache.delete(name!);
+                     }
+                  });
                   proxyConnectionCache.set(name!, connectionPromise);
                }
                return connectionPromise;
