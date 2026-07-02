@@ -925,6 +925,44 @@ function buildSnowflakePrivateKeyConnection(
    });
 }
 
+// TLS mode for a proxied postgres connection, as `pg` connectionString query
+// params. @malloydata/db-postgres exposes no ssl config, but it forwards a
+// connectionString straight to pg — which parses sslmode. The tunnel terminates
+// at 127.0.0.1, so pg's hostname check can't apply: `verify-ca` validates the
+// cert chain against the trusted CA bundle (NODE_EXTRA_CA_CERTS, e.g. the baked
+// Amazon RDS roots) WITHOUT the hostname; `no-verify` encrypts without checking;
+// `disable` uses no TLS. Full verify-full through a tunnel needs a servername
+// override (a raw ssl object) — awaits an upstream passthrough (malloydata/malloy#2960).
+export function buildProxiedSslQuery(name: string, sslmode?: string): string {
+   const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+   // Default: encrypt (no-verify) so a force-SSL target (the common RDS case)
+   // isn't rejected for plaintext. Operators opt up to verify-ca when the
+   // target's CA is in the trust bundle, or down to disable for non-TLS DBs.
+   const mode = sslmode ?? "no-verify";
+   switch (mode) {
+      case "disable":
+         // Explicit: with no sslmode in the connectionString, pg falls back to
+         // the PGSSLMODE env (set on the non-proxied path), which would verify
+         // and fail the 127.0.0.1 hostname check. Force plaintext explicitly.
+         return "?sslmode=disable";
+      case "no-verify":
+         return "?sslmode=no-verify";
+      case "verify-ca":
+         // Env-set backstop; validateConnectionShape does the readable-file check
+         // at config load (so a bad bundle fails fast instead of at connect time).
+         if (!caBundle) {
+            throw new Error(
+               `Connection proxy on '${name}' uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset). Add the CA bundle to the image or use sslmode 'no-verify'.`,
+            );
+         }
+         return `?uselibpqcompat=true&sslmode=verify-ca&sslrootcert=${encodeURIComponent(caBundle)}`;
+      default:
+         throw new Error(
+            `Connection proxy on '${name}' has unsupported sslmode '${mode}' (expected disable | no-verify | verify-ca).`,
+         );
+   }
+}
+
 function buildProxiedPostgresConnection(
    metadata: EnvironmentConnectionMetadata,
    endpoint: ProxyEndpoint,
@@ -936,13 +974,20 @@ function buildProxiedPostgresConnection(
          `Proxied connection '${name}' has type 'postgres' but no postgresConnection config.`,
       );
    }
+   // Build a connectionString to the LOCAL tunnel endpoint carrying the TLS mode.
+   // This is NOT the tenant's connectionString (rejected in validateConnectionShape
+   // because it can't be tunneled) — we construct it ourselves and it targets
+   // 127.0.0.1:<localport>, so there's no ambiguity about where it connects.
+   const enc = encodeURIComponent;
+   const auth = pg.userName
+      ? `${enc(pg.userName)}${pg.password ? `:${enc(pg.password)}` : ""}@`
+      : "";
+   const db = pg.databaseName ? `/${enc(pg.databaseName)}` : "";
+   const ssl = buildProxiedSslQuery(name, pg.sslmode);
+   const connectionString = `postgresql://${auth}${endpoint.host}:${endpoint.port}${db}${ssl}`;
    return new PooledPostgresConnection({
       name,
-      host: endpoint.host,
-      port: endpoint.port,
-      username: pg.userName,
-      password: pg.password,
-      databaseName: pg.databaseName,
+      connectionString,
       // Pool sizing mirrors buildSnowflakePrivateKeyConnection.
       poolMin: 1,
       poolMax: 20,

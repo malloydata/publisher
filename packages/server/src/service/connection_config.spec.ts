@@ -464,4 +464,142 @@ describe("SSH proxy validation", () => {
          "requires explicit host and port",
       );
    });
+
+   it("accepts a multi-line hostKey and sslmode=no-verify", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         postgresConnection: {
+            ...validSshProxy.postgresConnection!,
+            sslmode: "no-verify",
+         },
+         proxy: {
+            type: "ssh",
+            ssh: {
+               ...validSshProxy.proxy!.ssh!,
+               hostKey:
+                  "bastion ssh-ed25519 AAAAdecoy\nbastion ssh-rsa AAAAreal",
+            },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).not.toThrow();
+   });
+
+   it("rejects a hostKey that parses to zero keys (comment/blank only) — fail-closed at config load", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         proxy: {
+            type: "ssh",
+            ssh: {
+               ...validSshProxy.proxy!.ssh!,
+               hostKey: "# ssh-keyscan bastion timed out\n   \n",
+            },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "no usable host-key line",
+      );
+   });
+
+   it("rejects a whitespace-only hostKey (must not silently connect unpinned)", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         proxy: {
+            type: "ssh",
+            ssh: {
+               ...validSshProxy.proxy!.ssh!,
+               hostKey: "   ",
+            },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "no usable host-key line",
+      );
+   });
+
+   it("treats an empty-string hostKey as unpinned (omission-equivalent)", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         proxy: {
+            type: "ssh",
+            ssh: { ...validSshProxy.proxy!.ssh!, hostKey: "" },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).not.toThrow();
+   });
+
+   it("rejects an unsupported sslmode", () => {
+      const conn = {
+         ...validSshProxy,
+         postgresConnection: {
+            ...validSshProxy.postgresConnection!,
+            sslmode: "require",
+         },
+      } as unknown as ApiConnection;
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "unsupported sslmode 'require'",
+      );
+   });
+
+   it("rejects an empty-string sslmode at config load (not deferred to connect)", () => {
+      const conn = {
+         ...validSshProxy,
+         postgresConnection: {
+            ...validSshProxy.postgresConnection!,
+            sslmode: "",
+         },
+      } as unknown as ApiConnection;
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "unsupported sslmode",
+      );
+   });
+
+   it("rejects sslmode=verify-ca when no CA bundle is available", () => {
+      const prior = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         const conn: ApiConnection = {
+            ...validSshProxy,
+            postgresConnection: {
+               ...validSshProxy.postgresConnection!,
+               sslmode: "verify-ca",
+            },
+         };
+         expect(() => assembleEnvironmentConnections([conn])).toThrow(
+            "verify-ca",
+         );
+      } finally {
+         if (prior !== undefined) process.env.NODE_EXTRA_CA_CERTS = prior;
+      }
+   });
+
+   it("rejects sslmode set on a non-proxied connection (silent-ignore footgun)", () => {
+      const conn: ApiConnection = {
+         name: "pg-direct",
+         type: "postgres",
+         postgresConnection: {
+            host: "db.example.com",
+            port: 5432,
+            databaseName: "mydb",
+            userName: "user",
+            password: "pass",
+            sslmode: "verify-ca",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "only supported for proxied connections",
+      );
+   });
+
+   it("rejects a proxied database name with URI-reserved characters", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         postgresConnection: {
+            ...validSshProxy.postgresConnection!,
+            databaseName: "sales@prod",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "URI-reserved characters",
+      );
+   });
 });

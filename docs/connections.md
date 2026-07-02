@@ -97,8 +97,8 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 > tenant-configured bastion, so it is authorized by whoever configures the connection. It
 > is **not** behind an env-flag gate, and is deliberately kept separate from the
 > `publisher` type's `PUBLISHER_ALLOW_PROXY_CONNECTIONS` (that flag is about
-> publisher-to-publisher HTTP proxying, a different decision). The trust control is
-> **host-key pinning** (below), which is fail-closed.
+> publisher-to-publisher HTTP proxying, a different decision). Optional **host-key
+> pinning** (below) adds a fail-closed trust control on the tunnel.
 
 ```json
 {
@@ -131,26 +131,36 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 - `proxy.ssh.privateKey` (+ optional `privateKeyPass`) — the customer generates the
   keypair, authorizes their own public key on the bastion, and provides the private key
   here. Public-key auth only.
-- `proxy.ssh.hostKey` — the bastion's host public key, pinned and verified on every
-  connect (fail-closed). Get it with `ssh-keyscan <bastion>` and paste a line of the
-  output (or just the base64 blob). Both plain and hashed (`|1|…`, from `ssh-keyscan -H`)
-  lines work — only the key blob is compared, never the hostname. If `hostKey` is
-  omitted the tunnel is refused unless `PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true` (intended
-  for local dev only).
+- `proxy.ssh.hostKey` — **optional** pinned bastion host public key(s), verified on every
+  connect (fail-closed on mismatch). Provide one or more OpenSSH `known_hosts` lines (or
+  bare base64 blobs), one per line; a load-balanced/HA bastion presents a different key per
+  backend, so list every backend's key and any listed key is accepted. Both plain and
+  hashed (`|1|…`, from `ssh-keyscan -H`) lines work — only the key blob is compared, never
+  the hostname. **When omitted, the tunnel connects without host-key verification** (the
+  self-service default, matching mainstream BI tools); the SSH transport is still
+  encrypted, but an unpinned publisher→bastion hop is exposed to MITM — mitigated by the
+  customer allowlisting our egress on the bastion's inbound SSH.
 
 A proxy makes the server open an outbound SSH tunnel to a tenant-configured host, so
-connection configuration is the authorization boundary, and host-key pinning is the trust
-control on the tunnel itself.
+connection configuration is the authorization boundary; host-key pinning is an optional,
+additional trust control on the tunnel itself.
 
 ### TLS to the database through the tunnel
 
-The `pg` driver honors `PGSSLMODE` on a proxied connection just as on a direct one (it reads
-it from the environment). One limitation: the driver connects to the local forward endpoint
-(`127.0.0.1`), not the real database host, so full verification (`sslmode=verify-full`)
-fails the certificate **hostname** check even when the CA is trusted. Use
-`sslmode=no-verify` through a tunnel — the SSH transport is already encrypted and the
-bastion→DB leg is inside the private network — until per-connection `servername` support
-lands (see malloydata/malloy#2960).
+A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
+(the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
+local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
+**hostname** can't be checked. The supported modes:
+
+- `no-verify` (**default** when a proxy is set) — encrypt without verifying. Chosen as the
+  default so a force-SSL target (the common RDS case) isn't rejected for plaintext.
+- `verify-ca` — validate the server cert **chain** against the trusted CA bundle
+  (`NODE_EXTRA_CA_CERTS`, e.g. the baked Amazon RDS roots) while skipping the hostname
+  check. Fails if no CA bundle is available.
+- `disable` — no TLS.
+
+Full verification (`verify-full`) can't work through the tunnel until per-connection
+`servername` override lands (see malloydata/malloy#2960).
 
 ## Example: mixed connections
 
