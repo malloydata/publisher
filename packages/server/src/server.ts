@@ -20,6 +20,7 @@ import {
    BadRequestError,
    internalErrorToHttpError,
    NotImplementedError,
+   ServiceUnavailableError,
 } from "./errors";
 import {
    drainingGuard,
@@ -38,6 +39,7 @@ import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
+import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
 import { startAgentMcpServer } from "./mcp/agent_server";
 import { registerLegacyRoutes } from "./server-old";
@@ -45,6 +47,7 @@ import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationService } from "./service/materialization_service";
 import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
+import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 
 export { normalizeQueryArray } from "./query_param_utils";
@@ -207,6 +210,8 @@ const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
 );
+const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
+const themeController = new ThemeController(themeStore, SERVER_ROOT);
 
 export const mcpApp = express();
 
@@ -722,9 +727,61 @@ app.get(
 app.get(`${API_PREFIX}/status`, async (_req, res) => {
    try {
       const status = await environmentStore.getStatus();
-      res.status(200).json(status);
+      // Compose theme onto the status response so the SDK can read both
+      // in one round trip on app boot. ThemeStore is the source of truth;
+      // publisher.config.json is only a boot seed (see ThemeStore). The
+      // field is always present (an empty object means "no overrides
+      // yet"), so the OpenAPI shape and the runtime payload agree.
+      // The theme here is cosmetic, so during the brief window before storage
+      // initializes report no overrides rather than 500 an endpoint the
+      // control plane polls for serving state (themeStore.get() throws until
+      // storage is ready). GET /theme, the editor's authoritative load, is
+      // answered with 503 during that window instead.
+      const theme = environmentStore.storageManager.isInitialized()
+         ? await themeStore.get()
+         : undefined;
+      res.status(200).json({ ...status, theme: theme ?? {} });
    } catch (error) {
       logger.error("Error getting status", { error });
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
+
+app.get(`${API_PREFIX}/theme`, async (_req, res) => {
+   try {
+      if (!environmentStore.storageManager.isInitialized()) {
+         // Storage is still initializing. Answer 503 (not 200 with an empty
+         // theme) so the Theme Editor's load stays in an error state and
+         // never adopts {} as the authoritative saved baseline, which would
+         // let a subsequent edit auto-save {} over the real persisted theme.
+         throw new ServiceUnavailableError(
+            "Theme storage is still initializing. Retry shortly.",
+         );
+      }
+      res.status(200).json(await themeController.getTheme());
+   } catch (error) {
+      logger.error("Error getting theme", { error });
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
+
+app.put(`${API_PREFIX}/theme`, async (req, res) => {
+   try {
+      res.status(200).json(await themeController.putTheme(req.body));
+   } catch (error) {
+      logger.error("Error saving theme", { error });
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+});
+
+app.delete(`${API_PREFIX}/theme`, async (_req, res) => {
+   try {
+      res.status(200).json(await themeController.resetTheme());
+   } catch (error) {
+      logger.error("Error resetting theme", { error });
       const { json, status } = internalErrorToHttpError(error as Error);
       res.status(status).json(json);
    }

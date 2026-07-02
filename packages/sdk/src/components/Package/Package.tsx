@@ -447,7 +447,7 @@ function PackageItemRow({
          onKeyDown={interactive ? handleKeyDown : undefined}
          role={interactive ? "button" : undefined}
          tabIndex={interactive ? 0 : undefined}
-         sx={{
+         sx={(theme) => ({
             display: "flex",
             alignItems: "center",
             gap: 1.5,
@@ -458,7 +458,12 @@ function PackageItemRow({
             borderRadius: 1.5,
             transition: "background-color 0.1s",
             "&:hover": interactive
-               ? { backgroundColor: "grey.100" }
+               ? {
+                    backgroundColor:
+                       theme.palette.mode === "dark"
+                          ? "rgba(255, 255, 255, 0.08)"
+                          : "grey.100",
+                 }
                : undefined,
             "&:focus-visible": interactive
                ? {
@@ -467,7 +472,7 @@ function PackageItemRow({
                     outlineOffset: 2,
                  }
                : undefined,
-         }}
+         })}
       >
          <Box
             sx={{

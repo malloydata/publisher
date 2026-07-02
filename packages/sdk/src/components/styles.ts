@@ -40,21 +40,21 @@ export const StyledCardMedia = styled(CardMedia)({
 });
 
 // New clean notebook styles
-export const CleanNotebookContainer = styled("div")({
-   backgroundColor: "#ffffff",
+export const CleanNotebookContainer = styled("div")(({ theme }) => ({
+   backgroundColor: theme.palette.background.default,
    padding: "0 8px 0px 8px",
    borderRadius: "12px",
    boxShadow: "none",
    border: "none",
    maxWidth: "1200px",
    margin: "0 auto",
-});
+}));
 
-export const CleanNotebookHeader = styled("div")({
+export const CleanNotebookHeader = styled("div")(({ theme }) => ({
    marginBottom: "40px",
    paddingBottom: "24px",
-   borderBottom: "1px solid #f0f0f0",
-});
+   borderBottom: `1px solid ${theme.palette.divider}`,
+}));
 
 export const CleanNotebookSection = styled("div")({
    marginBottom: "48px",
@@ -82,27 +82,28 @@ export const CleanMetricCard = styled("div")({
    marginBottom: "0",
 });
 
-export const CleanCodeBlock = styled("div")({
-   backgroundColor: "#f8f9fa",
+export const CleanCodeBlock = styled("div")(({ theme }) => ({
+   backgroundColor: theme.palette.mode === "dark" ? "#1e293b" : "#f8f9fa",
    padding: "16px",
    borderRadius: "8px",
-   border: "1px solid #e9ecef",
+   border: `1px solid ${theme.palette.divider}`,
    fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
    fontSize: "13px",
    lineHeight: "1.5",
    overflowX: "auto",
-});
+   color: theme.palette.text.primary,
+}));
 
-export const CleanActionBar = styled("div")({
-   backgroundColor: "#f8f9fa",
+export const CleanActionBar = styled("div")(({ theme }) => ({
+   backgroundColor: theme.palette.mode === "dark" ? "#1e293b" : "#f8f9fa",
    padding: "12px 16px",
    borderRadius: "8px",
-   border: "1px solid #e9ecef",
+   border: `1px solid ${theme.palette.divider}`,
    marginBottom: "16px",
    display: "flex",
    justifyContent: "space-between",
    alignItems: "center",
-});
+}));
 
 export const StyledExplorerPage = styled("div")({
    height: "100%",
@@ -129,18 +130,18 @@ export const StyledExplorerPanel = styled("div")({
 });
 
 // Package page styles
-export const PackageCard = styled(Card)({
-   backgroundColor: "#ffffff",
+export const PackageCard = styled(Card)(({ theme }) => ({
+   backgroundColor: theme.palette.background.paper,
    padding: "24px",
    borderRadius: "8px",
-   border: "1px solid #f0f0f0",
+   border: `1px solid ${theme.palette.divider}`,
    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
    height: "100%",
    transition: "box-shadow 0.2s ease-in-out",
    "&:hover": {
       boxShadow: "0 2px 6px rgba(0, 0, 0, 0.08)",
    },
-});
+}));
 
 export const PackageCardContent = styled(CardContent)({
    padding: "0",

@@ -617,12 +617,15 @@ const malloySQLTMGrammar = {
    },
 };
 
-const THEME = "github-light";
+const LIGHT_THEME = "github-light";
+const DARK_THEME = "github-dark";
 
 // Lazy, cached highlighter factory. The heavy Shiki WASM engine, grammars, and
 // themes are only pulled into the module graph the first time `highlight()` is
 // actually called, so consumers that import the SDK but never render Malloy
-// code don't pay for the ~600KB Oniguruma WASM chunk.
+// code don't pay for the ~600KB Oniguruma WASM chunk. Both light and dark
+// themes are loaded together so the mode toggle doesn't trigger a second
+// network round-trip on first switch.
 let highlighterPromise: Promise<HighlighterCore> | undefined;
 
 function getHighlighter(): Promise<HighlighterCore> {
@@ -635,6 +638,7 @@ function getHighlighter(): Promise<HighlighterCore> {
             { default: langJson },
             { default: langTypescript },
             { default: themeGithubLight },
+            { default: themeGithubDark },
          ] = await Promise.all([
             import("shiki/core"),
             import("shiki/engine/oniguruma"),
@@ -642,11 +646,12 @@ function getHighlighter(): Promise<HighlighterCore> {
             import("@shikijs/langs/json"),
             import("@shikijs/langs/typescript"),
             import("@shikijs/themes/github-light"),
+            import("@shikijs/themes/github-dark"),
          ]);
 
          return createHighlighterCore({
             engine: createOnigurumaEngine(import("shiki/wasm")),
-            themes: [themeGithubLight],
+            themes: [themeGithubLight, themeGithubDark],
             langs: [
                langSql,
                langJson,
@@ -670,10 +675,19 @@ function getHighlighter(): Promise<HighlighterCore> {
    return highlighterPromise;
 }
 
-export async function highlight(code: string, lang: string): Promise<string> {
+/**
+ * Render `code` (of language `lang`) to HTML with shiki's syntax
+ * highlighter. `mode` controls which github theme is used so the code
+ * block blends with the page chrome on both light and dark surfaces.
+ */
+export async function highlight(
+   code: string,
+   lang: string,
+   mode: "light" | "dark" = "light",
+): Promise<string> {
    const highlighter = await getHighlighter();
    return highlighter.codeToHtml(code, {
       lang: lang,
-      theme: THEME,
+      theme: mode === "dark" ? DARK_THEME : LIGHT_THEME,
    });
 }
