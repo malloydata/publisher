@@ -3190,8 +3190,9 @@ components:
             chain against the trusted CA bundle (e.g. the baked Amazon RDS roots)
             without the hostname, `no-verify` encrypts without verifying, and
             `disable` uses no TLS. Defaults to `no-verify` when a proxy is set (so
-            a force-SSL target isn't rejected for plaintext); ignored on the
-            non-proxied path, which uses the server's PGSSLMODE.
+            a force-SSL target isn't rejected for plaintext). Only valid on a
+            proxied connection — a direct connection uses the deployment PGSSLMODE
+            and rejects this field.
 
     MysqlConnection:
       type: object

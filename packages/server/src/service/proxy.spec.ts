@@ -300,7 +300,7 @@ describe("openProxy — SSH tunnel", () => {
             },
             { host: "127.0.0.1", port: echoServer.port },
          ),
-      ).rejects.toThrow(/host-key mismatch/i);
+      ).rejects.toThrow(/host-key verification failed/i);
    });
 
    it("connects when hostKey is absent — unpinned self-service default", async () => {
@@ -355,6 +355,29 @@ describe("openProxy — SSH tunnel", () => {
       }
    });
 
+   it("fails closed when hostKey is set but parses to zero keys (comment/blank only)", async () => {
+      // A set-but-degenerate pin must NOT fall through to the unpinned branch —
+      // the security boundary is gated on hostKey being configured, not on it
+      // parsing to >=1 key. (Config load rejects this earlier; this guards the
+      // boundary itself.)
+      const commentOnly = "# ssh-keyscan bastion.example.com timed out\n   \n";
+      await expect(
+         openProxy(
+            {
+               type: "ssh",
+               ssh: {
+                  host: "127.0.0.1",
+                  port: sshServer.port,
+                  username: "testuser",
+                  privateKey: clientPrivatePem,
+                  hostKey: commentOnly,
+               },
+            },
+            { host: "127.0.0.1", port: echoServer.port },
+         ),
+      ).rejects.toThrow(/host-key verification failed/i);
+   });
+
    it("rejects a multi-line hostKey when none of the listed keys match", async () => {
       const decoy1 = Buffer.alloc(32, 0xff).toString("base64");
       const decoy2 = Buffer.alloc(32, 0xaa).toString("base64");
@@ -376,7 +399,7 @@ describe("openProxy — SSH tunnel", () => {
             },
             { host: "127.0.0.1", port: echoServer.port },
          ),
-      ).rejects.toThrow(/host-key mismatch/i);
+      ).rejects.toThrow(/host-key verification failed/i);
    });
 
    it("rejects for unsupported proxy type", async () => {

@@ -948,6 +948,8 @@ export function buildProxiedSslQuery(name: string, sslmode?: string): string {
       case "no-verify":
          return "?sslmode=no-verify";
       case "verify-ca":
+         // Env-set backstop; validateConnectionShape does the readable-file check
+         // at config load (so a bad bundle fails fast instead of at connect time).
          if (!caBundle) {
             throw new Error(
                `Connection proxy on '${name}' uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset). Add the CA bundle to the image or use sslmode 'no-verify'.`,

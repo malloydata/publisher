@@ -1,9 +1,17 @@
 import { createPrivateKey } from "crypto";
+import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { parseHostKeys } from "./proxy";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
+
+// TLS modes accepted on a proxied postgres connection. Canonical here (rather
+// than in connection.ts, which imports this module) so both the config-load
+// validator and the connect-time builder derive from one list. Mirrors the
+// `sslmode` enum in api-doc.yaml.
+export const PROXIED_SSLMODES = ["disable", "no-verify", "verify-ca"] as const;
 
 export type CoreConnectionEntry = {
    is: string;
@@ -265,8 +273,11 @@ function validateConnectionShape(connection: ApiConnection): void {
       // authorized by whoever configures the connection — deliberately NOT gated
       // by an env flag, and kept separate from the `publisher` HTTP multi-hop
       // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
-      // publisher-to-publisher proxying, a distinct operator decision). Host-key
-      // pinning is fail-closed at connect time (see openProxy).
+      // publisher-to-publisher proxying, a distinct operator decision). Optional
+      // host-key pinning is fail-closed at connect time when configured (see
+      // openProxy); the proxy-specific fields are validated up front below so a
+      // permanent misconfig fails at config load, not by repeatedly dialing the
+      // tenant's bastion at query time.
       if (connection.proxy.type !== "ssh") {
          throw new Error(
             `Connection '${connection.name}' has an unsupported proxy type '${connection.proxy.type}'. Only 'ssh' is supported.`,
@@ -303,6 +314,69 @@ function validateConnectionShape(connection: ApiConnection): void {
                `postgres connection; the connectionString form is not supported with a proxy.`,
          );
       }
+
+      // hostKey is optional (absent => connect unpinned), but a hostKey that is
+      // PRESENT yet parses to zero keys — only blank lines or `#` comments, e.g.
+      // a paste that grabbed just ssh-keyscan's `# host:port ...` header — is a
+      // misconfigured pin, not a licence to connect unverified. Reject it here so
+      // the operator gets a config error instead of a silently unpinned tunnel.
+      const hostKey = connection.proxy.ssh?.hostKey;
+      if (hostKey?.trim() && parseHostKeys(hostKey).size === 0) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' has a hostKey with no usable host-key line ` +
+               `(only blanks/comments). Provide an OpenSSH known_hosts line or base64 blob, or omit ` +
+               `hostKey to connect unpinned.`,
+         );
+      }
+
+      // Validate the proxied TLS mode up front. The tunnel is dialed lazily on
+      // first lookup and a failed build is retried on every subsequent query, so
+      // a permanent sslmode misconfig left to throw at connect time would re-dial
+      // the tenant's bastion indefinitely. Fail at config load instead.
+      const sslmode = connection.postgresConnection?.sslmode;
+      if (sslmode) {
+         if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
+            throw new Error(
+               `Connection proxy on '${connection.name}' has unsupported sslmode '${sslmode}' ` +
+                  `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
+            );
+         }
+         if (sslmode === "verify-ca") {
+            const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+            if (!caBundle || !existsSync(caBundle)) {
+               throw new Error(
+                  `Connection proxy on '${connection.name}' uses sslmode 'verify-ca' but no readable ` +
+                     `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
+                     `Add the CA bundle to the image or use sslmode 'no-verify'.`,
+               );
+            }
+         }
+      }
+
+      // The proxied path builds a connectionString to the local tunnel endpoint;
+      // pg decodes the database path with decodeURI, which leaves URI-reserved
+      // characters percent-encoded — so a db name containing them would resolve
+      // to the wrong database. Reject it clearly rather than failing later with a
+      // confusing "database does not exist". (user/password use decodeURIComponent
+      // on parse and round-trip fine.)
+      const dbName = connection.postgresConnection?.databaseName;
+      if (dbName && decodeURI(encodeURIComponent(dbName)) !== dbName) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' has a database name with characters that can't ` +
+               `be carried over a proxied connection (${JSON.stringify(dbName)}). Use a database name ` +
+               `without URI-reserved characters (; , / ? : @ & = + $ #).`,
+         );
+      }
+   }
+
+   // sslmode is only honored on the proxied path (the direct path builds TLS from
+   // the deployment PGSSLMODE). Reject it on a non-proxied connection so a tenant
+   // who sets it doesn't silently get a different TLS posture than they asked for.
+   if (!connection.proxy && connection.postgresConnection?.sslmode) {
+      throw new Error(
+         `Connection '${connection.name}' sets postgresConnection.sslmode but has no proxy; sslmode is ` +
+            `only supported for proxied connections (direct connections use the deployment PGSSLMODE).`,
+      );
    }
 
    switch (connection.type) {
