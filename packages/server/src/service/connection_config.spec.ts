@@ -500,6 +500,33 @@ describe("SSH proxy validation", () => {
       );
    });
 
+   it("rejects a whitespace-only hostKey (must not silently connect unpinned)", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         proxy: {
+            type: "ssh",
+            ssh: {
+               ...validSshProxy.proxy!.ssh!,
+               hostKey: "   ",
+            },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "no usable host-key line",
+      );
+   });
+
+   it("treats an empty-string hostKey as unpinned (omission-equivalent)", () => {
+      const conn: ApiConnection = {
+         ...validSshProxy,
+         proxy: {
+            type: "ssh",
+            ssh: { ...validSshProxy.proxy!.ssh!, hostKey: "" },
+         },
+      };
+      expect(() => assembleEnvironmentConnections([conn])).not.toThrow();
+   });
+
    it("rejects an unsupported sslmode", () => {
       const conn = {
          ...validSshProxy,

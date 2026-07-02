@@ -124,12 +124,13 @@ function openSshProxy(
          hostVerifier: ((key: Buffer): boolean => {
             // `key` is the raw Buffer of the host's public key.
             const presented = key.toString("base64");
-            // "Pinned" is gated on hostKey being CONFIGURED, not on it parsing to
-            // ≥1 key: a set-but-degenerate hostKey (only blanks/comments) must
-            // fail closed, never fall through to the unpinned branch. Config load
-            // (validateConnectionShape) already rejects that case; this is the
-            // security-boundary backstop for any path that reaches here directly.
-            if (ssh.hostKey?.trim()) {
+            // "Pinned" is gated on hostKey being a non-empty value, not on it
+            // parsing to ≥1 key: a set-but-degenerate hostKey (only whitespace,
+            // blanks, or comments) must fail closed, never fall through to the
+            // unpinned branch. Config load (validateConnectionShape) already
+            // rejects that case; this is the security-boundary backstop for any
+            // path that reaches here directly. ("" is the unpinned signal.)
+            if (ssh.hostKey) {
                // Fail-closed, accepting any listed key — an LB/HA bastion presents
                // a different host key per backend.
                const pinned = parseHostKeys(ssh.hostKey);

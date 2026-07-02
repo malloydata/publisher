@@ -315,13 +315,15 @@ function validateConnectionShape(connection: ApiConnection): void {
          );
       }
 
-      // hostKey is optional (absent => connect unpinned), but a hostKey that is
-      // PRESENT yet parses to zero keys — only blank lines or `#` comments, e.g.
-      // a paste that grabbed just ssh-keyscan's `# host:port ...` header — is a
-      // misconfigured pin, not a licence to connect unverified. Reject it here so
-      // the operator gets a config error instead of a silently unpinned tunnel.
+      // hostKey is optional (omitted or empty string => connect unpinned), but a
+      // non-empty hostKey that parses to zero keys — only blank lines, whitespace,
+      // or `#` comments, e.g. a paste that grabbed just ssh-keyscan's
+      // `# host:port ...` header — is a misconfigured pin, not a licence to
+      // connect unverified. Reject it here so the operator gets a config error
+      // instead of a silently unpinned tunnel. (Truthiness, not trim(): "" is the
+      // unpinned signal; "   " is a non-empty value that must yield a key.)
       const hostKey = connection.proxy.ssh?.hostKey;
-      if (hostKey?.trim() && parseHostKeys(hostKey).size === 0) {
+      if (hostKey && parseHostKeys(hostKey).size === 0) {
          throw new Error(
             `Connection proxy on '${connection.name}' has a hostKey with no usable host-key line ` +
                `(only blanks/comments). Provide an OpenSSH known_hosts line or base64 blob, or omit ` +
