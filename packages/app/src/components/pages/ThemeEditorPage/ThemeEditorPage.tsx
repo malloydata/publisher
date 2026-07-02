@@ -129,7 +129,7 @@ export default function ThemeEditorPage() {
 
    const saveMutation = useMutation({
       mutationFn: async (theme: Theme) => {
-         const res = await apiClients.publisher.putTheme(theme);
+         const res = await apiClients.publisher.updateTheme(theme);
          return res.data as Theme;
       },
       // onSuccess / onError handled per-call so the closure can compare
@@ -140,7 +140,22 @@ export default function ThemeEditorPage() {
 
    const resetMutation = useMutation({
       mutationFn: async () => {
-         const res = await apiClients.publisher.resetTheme();
+         // Run the DELETE after any in-flight or queued save settles, so the
+         // reset is the last write to reach the server. onMutate below bumps
+         // saveGenRef, which drops still-queued saves before they PUT; this
+         // chain additionally waits out a save that is already on the wire so
+         // its PUT can't land after the DELETE and re-persist the cleared
+         // theme.
+         const runDelete = saveChainRef.current
+            .catch(() => {})
+            .then(() => apiClients.publisher.deleteTheme());
+         // Keep the chain a Promise<void> so later saves queue behind the
+         // DELETE too; swallow errors here (handled via the await below).
+         saveChainRef.current = runDelete.then(
+            () => {},
+            () => {},
+         );
+         const res = await runDelete;
          return res.data as Theme;
       },
       onMutate: () => {
@@ -191,6 +206,11 @@ export default function ThemeEditorPage() {
          saveChainRef.current = saveChainRef.current
             .catch(() => {})
             .then(async () => {
+               // Skip a superseded save BEFORE it hits the network. Reset and
+               // each newer save bump saveGenRef, so a PUT queued behind an
+               // in-flight save that a Reset has since superseded never fires
+               // and can't clobber the Reset's DELETE on the server.
+               if (saveGenRef.current !== myGen) return;
                try {
                   const saved = await saveMutation.mutateAsync(themeToSave);
                   if (saveGenRef.current !== myGen) return;

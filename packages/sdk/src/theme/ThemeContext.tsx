@@ -16,9 +16,8 @@ interface ThemeContextValue {
     * {@link resolveTheme}, not in this array. Exposed so per-chart renderers
     * can append a per-chart override and re-run {@link resolveTheme} without
     * losing that instance baseline. The merge accepts any number of
-    * lower-precedence layers, so an environment-level layer (already merged
-    * server-side onto `Environment.theme`) can be fed in here later without
-    * changing the merge.
+    * lower-precedence layers, so a per-environment layer can be fed in here
+    * later (once the server wires it through) without changing the merge.
     */
    layers: Array<Theme | undefined>;
    /**

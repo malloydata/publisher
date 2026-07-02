@@ -100,10 +100,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Theme"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
     put:
       tags:
         - publisher
-      operationId: put-theme
+      operationId: update-theme
       summary: Save the instance theme
       description: |
         Persists the supplied theme as the new instance theme. Returns the saved
@@ -121,14 +127,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Theme"
-        "403":
-          description: Theme editing is disabled because frozenConfig is true.
         "400":
-          description: Payload was empty or all fields were malformed.
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
     delete:
       tags:
         - publisher
-      operationId: reset-theme
+      operationId: delete-theme
       summary: Reset the instance theme to the boot seed or default
       description: |
         Drops the saved theme from the server. The next GET returns either the
@@ -141,8 +153,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Theme"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Theme editing is disabled because frozenConfig is true.
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /environments:
     get:
       tags:
@@ -2400,15 +2418,16 @@ components:
             true, all mutation operations are disabled.
         theme:
           $ref: "#/components/schemas/Theme"
-          description: Instance-wide default theme. Per-environment overrides are
-            applied on each Environment.theme.
+          description: Instance-wide default theme for the Malloy renderer and the
+            Publisher app shell.
 
     Theme:
       type: object
       description: Visual theme applied to Malloy renderer output (chart palette,
         fonts, table chrome) and to the Publisher app shell. Cascade order is
-        instance → environment → per-chart Malloy annotation, with later layers
-        overriding earlier ones for the keys they set.
+        instance → per-chart Malloy annotation, with later layers overriding
+        earlier ones for the keys they set. (A per-environment layer is reserved
+        but not yet applied by the client.)
       properties:
         defaultMode:
           type: string
@@ -2543,9 +2562,9 @@ components:
             $ref: "#/components/schemas/Package"
         theme:
           $ref: "#/components/schemas/Theme"
-          description: Resolved theme for this environment (instance default merged
-            with the environment-level override). The client applies this theme
-            while viewing packages inside this environment.
+          description: Reserved for a per-environment theme override. Not yet
+            populated by the server or applied by the client; viewers currently
+            use the instance-level theme only.
 
     Package:
       type: object

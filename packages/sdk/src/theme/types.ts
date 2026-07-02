@@ -11,7 +11,7 @@ export type ThemeMode = "light" | "dark";
  * `buildTableCssVars`, `buildVegaThemeOverride`, and
  * `buildMalloyExplicitTheme` never have to branch on mode themselves.
  *
- * The five `palette.*` colour keys are stored per-mode on the raw Theme
+ * The seven `palette.*` colour keys are stored per-mode on the raw Theme
  * (one of light/dark per field) and collapse to the active mode here.
  * The five "derived" fields (border, pinnedBorder, valueColor,
  * foreground, axisFaint) are computed once from the resolved mode so

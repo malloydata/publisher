@@ -87,3 +87,57 @@ test.describe("theming — light/dark/auto toggle", () => {
       expect(label).toMatch(/Auto mode/i);
    });
 });
+
+test.describe("theming — allowUserToggle and frozenConfig", () => {
+   test("allowUserToggle:false hides the viewer mode toggle", async ({
+      page,
+   }) => {
+      // Serve a status payload whose theme disables the viewer toggle. The
+      // header toggle is gated on theme.allowUserToggle, so it should not
+      // render at all.
+      await page.route("**/api/v0/status", async (route) => {
+         const res = await route.fetch();
+         const body = await res.json();
+         await route.fulfill({
+            response: res,
+            json: {
+               ...body,
+               theme: { ...(body.theme ?? {}), allowUserToggle: false },
+            },
+         });
+      });
+      await gotoHome(page);
+      await expect(
+         page.getByRole("heading", { name: "Publisher", level: 1 }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: TOGGLE_NAME })).toHaveCount(
+         0,
+      );
+   });
+
+   test("frozenConfig renders the Theme Editor read-only", async ({ page }) => {
+      // Serve a frozen status so the editor should show its read-only warning
+      // and disable every mutation control.
+      await page.route("**/api/v0/status", async (route) => {
+         const res = await route.fetch();
+         const body = await res.json();
+         await route.fulfill({
+            response: res,
+            json: { ...body, frozenConfig: true },
+         });
+      });
+      await page.goto("/settings/theme");
+
+      await expect(
+         page.getByText(/can.?t be edited from this page/i),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("button", { name: /Reset to defaults/i }),
+      ).toBeDisabled();
+      await expect(
+         page
+            .getByRole("group", { name: /Edit colors for mode/i })
+            .getByRole("button", { name: "Light mode" }),
+      ).toBeDisabled();
+   });
+});

@@ -308,13 +308,13 @@ The publisher exports OpenTelemetry metrics (under the `publisher` meter) so the
 
 Publisher renders charts, tables, and dashboard tiles with a light/dark theme. You can change it in three places, from broadest to narrowest:
 
-1. The config file `publisher.config.json`, at the instance level and optionally overridden per environment under `environments[].theme`.
+1. The config file `publisher.config.json`, at the instance level.
 2. The in-app Theme Editor at `/settings/theme`, which lets an operator iterate against the live UI.
 3. Per-chart `# theme.*` annotations inside a `.malloy` file, for one-off styling on a single view.
 
-These cascade: defaults → instance config → environment config → editor (per environment) → annotation. Each layer only overrides the keys it sets.
+These cascade: defaults → instance config → editor → per-chart annotation. Each layer only overrides the keys it sets. (A per-environment layer is reserved but not yet applied.)
 
-The Theme Editor writes to a runtime store (SQLite, persisted alongside other server state). It's blocked when `publisher.config.json` has `frozenConfig: true`, the same way every other runtime mutation is.
+The Theme Editor writes to a runtime store (DuckDB, persisted alongside other server state). It's blocked when `publisher.config.json` has `frozenConfig: true`, the same way every other runtime mutation is.
 
 Theme object shape:
 

@@ -77,12 +77,14 @@ type ApiConnection = components["schemas"]["Connection"];
 export type Theme = components["schemas"]["Theme"];
 
 /**
- * Palette colour keys that have separate light/dark variants.
- * Kept in sync with `packages/sdk/src/theme/keys.ts` (the SDK uses its
- * own copy because the dependency arrow points server → SDK via the
- * generated API types, not the other way).
+ * Palette colour keys that have separate light/dark variants. Hand-copied
+ * from `packages/sdk/src/theme/keys.ts`: the server and the SDK are
+ * intentionally decoupled (neither imports the other; their only shared
+ * contract is api-doc.yaml), so the list lives in both. The parity test
+ * `theme_key_parity.spec.ts` fails if the two copies or the api-doc
+ * Theme.palette schema drift apart. Exported so that test can import it.
  */
-const PER_MODE_COLOR_KEYS = [
+export const PER_MODE_COLOR_KEYS = [
    "background",
    "tableHeader",
    "tableHeaderBackground",
@@ -556,7 +558,17 @@ export function sanitizeTheme(
       }
    }
    if ("allowUserToggle" in obj) {
-      theme.allowUserToggle = Boolean(obj.allowUserToggle);
+      const value = obj.allowUserToggle;
+      if (typeof value === "boolean") {
+         theme.allowUserToggle = value;
+      } else {
+         // Don't coerce: Boolean("false") is true, so a stray string would
+         // silently invert the operator's intent. Match defaultMode above
+         // and warn + ignore instead.
+         logger.warn(
+            `Invalid "theme.allowUserToggle" in ${context}: expected a boolean (got ${JSON.stringify(value)}). Ignoring field.`,
+         );
+      }
    }
    if ("palette" in obj && obj.palette && typeof obj.palette === "object") {
       const palette = obj.palette as Record<string, unknown>;
@@ -774,6 +786,11 @@ export const getProcessedPublisherConfig = (
          continue;
       }
 
+      // Per-environment theme override: computed here (the instance default
+      // merged with this environment's theme) but NOT yet wired through.
+      // addEnvironment() drops this field, so the live Environment never
+      // carries it and no viewer applies it today; only the instance-level
+      // theme is applied. Kept for the planned per-environment follow-up.
       const envTheme = sanitizeTheme(
          (environment as { theme?: unknown }).theme,
          `environment "${environment.name}"`,

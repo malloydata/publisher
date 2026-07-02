@@ -20,6 +20,7 @@ import {
    BadRequestError,
    internalErrorToHttpError,
    NotImplementedError,
+   ServiceUnavailableError,
 } from "./errors";
 import {
    drainingGuard,
@@ -731,7 +732,14 @@ app.get(`${API_PREFIX}/status`, async (_req, res) => {
       // publisher.config.json is only a boot seed (see ThemeStore). The
       // field is always present (an empty object means "no overrides
       // yet"), so the OpenAPI shape and the runtime payload agree.
-      const theme = await themeStore.get();
+      // The theme here is cosmetic, so during the brief window before storage
+      // initializes report no overrides rather than 500 an endpoint the
+      // control plane polls for serving state (themeStore.get() throws until
+      // storage is ready). GET /theme, the editor's authoritative load, is
+      // answered with 503 during that window instead.
+      const theme = environmentStore.storageManager.isInitialized()
+         ? await themeStore.get()
+         : undefined;
       res.status(200).json({ ...status, theme: theme ?? {} });
    } catch (error) {
       logger.error("Error getting status", { error });
@@ -742,6 +750,15 @@ app.get(`${API_PREFIX}/status`, async (_req, res) => {
 
 app.get(`${API_PREFIX}/theme`, async (_req, res) => {
    try {
+      if (!environmentStore.storageManager.isInitialized()) {
+         // Storage is still initializing. Answer 503 (not 200 with an empty
+         // theme) so the Theme Editor's load stays in an error state and
+         // never adopts {} as the authoritative saved baseline, which would
+         // let a subsequent edit auto-save {} over the real persisted theme.
+         throw new ServiceUnavailableError(
+            "Theme storage is still initializing. Retry shortly.",
+         );
+      }
       res.status(200).json(await themeController.getTheme());
    } catch (error) {
       logger.error("Error getting theme", { error });
