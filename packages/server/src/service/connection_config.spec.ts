@@ -540,6 +540,19 @@ describe("SSH proxy validation", () => {
       );
    });
 
+   it("rejects an empty-string sslmode at config load (not deferred to connect)", () => {
+      const conn = {
+         ...validSshProxy,
+         postgresConnection: {
+            ...validSshProxy.postgresConnection!,
+            sslmode: "",
+         },
+      } as unknown as ApiConnection;
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "unsupported sslmode",
+      );
+   });
+
    it("rejects sslmode=verify-ca when no CA bundle is available", () => {
       const prior = process.env.NODE_EXTRA_CA_CERTS;
       delete process.env.NODE_EXTRA_CA_CERTS;

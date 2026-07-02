@@ -335,8 +335,11 @@ function validateConnectionShape(connection: ApiConnection): void {
       // first lookup and a failed build is retried on every subsequent query, so
       // a permanent sslmode misconfig left to throw at connect time would re-dial
       // the tenant's bastion indefinitely. Fail at config load instead.
+      // `!= null` (not truthiness) so a present-but-empty sslmode ("") is caught
+      // here as unsupported rather than slipping through to fail at tunnel-build;
+      // null/undefined mean unset (server applies the default).
       const sslmode = connection.postgresConnection?.sslmode;
-      if (sslmode) {
+      if (sslmode != null) {
          if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
             throw new Error(
                `Connection proxy on '${connection.name}' has unsupported sslmode '${sslmode}' ` +
