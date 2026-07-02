@@ -11,9 +11,14 @@ interface ThemeContextValue {
    /** Theme resolved from {@link layers} + {@link mode}. Used by the app shell. */
    theme: ResolvedTheme;
    /**
-    * Raw layers in cascade order. Exposed so per-chart renderers can append
-    * a per-chart override and re-run {@link resolveTheme} without losing the
-    * instance/environment baseline.
+    * Raw base layers in cascade order. Today this holds only the
+    * instance-level theme from `/status`; the built-in defaults live inside
+    * {@link resolveTheme}, not in this array. Exposed so per-chart renderers
+    * can append a per-chart override and re-run {@link resolveTheme} without
+    * losing that instance baseline. The merge accepts any number of
+    * lower-precedence layers, so an environment-level layer (already merged
+    * server-side onto `Environment.theme`) can be fed in here later without
+    * changing the merge.
     */
    layers: Array<Theme | undefined>;
    /**

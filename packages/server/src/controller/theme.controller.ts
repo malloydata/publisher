@@ -27,6 +27,18 @@ export class ThemeController {
       return theme ?? {};
    };
 
+   /**
+    * PUT persists the supplied theme verbatim, including a literal `{}`.
+    * An empty `{}` is an intentional "clear all overrides" save: it writes
+    * an (empty) row so the boot seed from publisher.config.json's `theme`
+    * block is suppressed on subsequent loads. This deliberately differs
+    * from DELETE (resetTheme), which drops the row and lets that config
+    * seed re-apply. Note the persisted `"{}"` sanitizes back to `undefined`
+    * on reload (sanitizeTheme returns undefined for `{}`), but the row
+    * still exists, so the seed stays suppressed. This PUT-`{}` path is not
+    * reachable from the Theme Editor UI today (its clear affordance is the
+    * Reset button, which calls DELETE); it exists only via the API.
+    */
    putTheme = async (body: unknown): Promise<ApiTheme> => {
       if (isPublisherConfigFrozen(this.serverRoot)) {
          throw new FrozenConfigError(
@@ -52,6 +64,13 @@ export class ThemeController {
       return saved;
    };
 
+   /**
+    * DELETE drops the persisted row so the next load re-seeds from
+    * publisher.config.json's `theme` block (or ends up unthemed if the
+    * config defines none). Contrast with PUT `{}`, which persists an empty
+    * row and thereby suppresses that seed instead of restoring it. See
+    * putTheme for the full divergence.
+    */
    resetTheme = async (): Promise<ApiTheme> => {
       if (isPublisherConfigFrozen(this.serverRoot)) {
          throw new FrozenConfigError(

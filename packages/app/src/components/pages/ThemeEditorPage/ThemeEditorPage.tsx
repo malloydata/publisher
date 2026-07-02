@@ -72,6 +72,13 @@ export default function ThemeEditorPage() {
    // onSuccess) if the ref has advanced past it. This prevents an
    // in-flight save from stomping a subsequent reset's setQueryData.
    const saveGenRef = useRef(0);
+   // Serializes overlapping auto-saves so their PUTs settle in issue
+   // order. Each save chains off the previous one's promise; because
+   // every PUT is a full snapshot, chaining makes the last-issued draft
+   // the last to land, so the DB can't end up behind the editor cache
+   // even if the network would otherwise deliver two in-flight PUTs out
+   // of order.
+   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
    // Reset goes through a confirm dialog so the operator doesn't wipe
    // hand-tuned colours with an accidental click.
    const [confirmResetOpen, setConfirmResetOpen] = useState(false);
@@ -174,22 +181,31 @@ export default function ThemeEditorPage() {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
          const myGen = ++saveGenRef.current;
-         saveMutation.mutate(draft, {
-            onSuccess: (saved) => {
-               if (saveGenRef.current !== myGen) return;
-               queryClient.setQueryData(["theme"], saved);
-               queryClient.invalidateQueries({ queryKey: ["status"] });
-               setSnackbar("Saved");
-            },
-            onError: (err: unknown) => {
-               if (saveGenRef.current !== myGen) return;
-               setSnackbar(
-                  err instanceof Error
-                     ? `Save failed: ${err.message}`
-                     : "Save failed",
-               );
-            },
-         });
+         // Serialize saves: chain each PUT after the previous one settles
+         // so two overlapping auto-saves reach the server in issue order.
+         // The gen guard below still protects the client cache, but
+         // ThemeStore.set full-replaces in arrival order, so without this
+         // chain a reordered PUT could leave the DB on the older draft
+         // while the editor cache shows the newer one and says "Saved".
+         const themeToSave = draft;
+         saveChainRef.current = saveChainRef.current
+            .catch(() => {})
+            .then(async () => {
+               try {
+                  const saved = await saveMutation.mutateAsync(themeToSave);
+                  if (saveGenRef.current !== myGen) return;
+                  queryClient.setQueryData(["theme"], saved);
+                  queryClient.invalidateQueries({ queryKey: ["status"] });
+                  setSnackbar("Saved");
+               } catch (err: unknown) {
+                  if (saveGenRef.current !== myGen) return;
+                  setSnackbar(
+                     err instanceof Error
+                        ? `Save failed: ${err.message}`
+                        : "Save failed",
+                  );
+               }
+            });
       }, AUTO_SAVE_DELAY_MS);
       return () => {
          if (debounceRef.current) clearTimeout(debounceRef.current);

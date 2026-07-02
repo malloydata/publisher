@@ -1,9 +1,13 @@
 /**
  * The set of palette colour keys that have separate light and dark
- * variants. Owned here so the schema, sanitizer, renderer integration,
- * and editor all agree on a single list. Adding a new per-mode colour
- * is a one-line change in this file plus the matching schema/default
- * entries.
+ * variants. This is the SDK-side canonical list, consumed by the
+ * annotation reader (readChartAnnotations) and the theme resolver
+ * (resolveTheme). The config sanitizer and JSON schema live server-side
+ * (packages/server/src/config.ts) and keep their own in-sync copy,
+ * because the dependency arrow points server -> SDK via the generated
+ * API types, not the other way. Adding a new per-mode colour means
+ * updating both this list and the server copy, plus the matching
+ * schema/default entries.
  *
  * Non-per-mode fields (series palette, font.family, font.size,
  * defaultMode, allowUserToggle) are intentionally absent. Operators
