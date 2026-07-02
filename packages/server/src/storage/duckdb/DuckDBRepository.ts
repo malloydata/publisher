@@ -1,16 +1,15 @@
 import {
    Connection,
    Environment,
-   ManifestEntry,
    Materialization,
    MaterializationStatus,
+   MaterializationUpdate,
    Package,
    ResourceRepository,
 } from "../DatabaseInterface";
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { EnvironmentRepository } from "./EnvironmentRepository";
-import { ManifestRepository } from "./ManifestRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
 
@@ -19,14 +18,12 @@ export class DuckDBRepository implements ResourceRepository {
    private packageRepo: PackageRepository;
    private connectionRepo: ConnectionRepository;
    private materializationRepo: MaterializationRepository;
-   private manifestRepo: ManifestRepository;
 
    constructor(public db: DuckDBConnection) {
       this.environmentRepo = new EnvironmentRepository(db);
       this.packageRepo = new PackageRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
       this.materializationRepo = new MaterializationRepository(db);
-      this.manifestRepo = new ManifestRepository(db);
    }
 
    // ==================== ENVIRONMENTS ====================
@@ -57,7 +54,6 @@ export class DuckDBRepository implements ResourceRepository {
    }
 
    async deleteEnvironment(id: string): Promise<void> {
-      await this.manifestRepo.deleteEntriesByEnvironmentId(id);
       await this.materializationRepo.deleteByEnvironmentId(id);
       await this.connectionRepo.deleteConnectionsByEnvironmentId(id);
       await this.packageRepo.deletePackagesByEnvironmentId(id);
@@ -97,10 +93,6 @@ export class DuckDBRepository implements ResourceRepository {
    async deletePackage(id: string): Promise<void> {
       const pkg = await this.packageRepo.getPackageById(id);
       if (pkg) {
-         await this.manifestRepo.deleteEntriesByPackage(
-            pkg.environmentId,
-            pkg.name,
-         );
          await this.materializationRepo.deleteByPackage(
             pkg.environmentId,
             pkg.name,
@@ -188,37 +180,12 @@ export class DuckDBRepository implements ResourceRepository {
 
    async updateMaterialization(
       id: string,
-      updates: {
-         status?: MaterializationStatus;
-         startedAt?: Date;
-         completedAt?: Date;
-         error?: string | null;
-         metadata?: Record<string, unknown> | null;
-      },
+      updates: MaterializationUpdate,
    ): Promise<Materialization> {
       return this.materializationRepo.update(id, updates);
    }
 
    async deleteMaterialization(id: string): Promise<void> {
       return this.materializationRepo.deleteById(id);
-   }
-
-   // ==================== BUILD MANIFESTS ====================
-
-   async listManifestEntries(
-      environmentId: string,
-      packageName: string,
-   ): Promise<ManifestEntry[]> {
-      return this.manifestRepo.listEntries(environmentId, packageName);
-   }
-
-   async upsertManifestEntry(
-      entry: Omit<ManifestEntry, "id" | "createdAt" | "updatedAt">,
-   ): Promise<ManifestEntry> {
-      return this.manifestRepo.upsertEntry(entry);
-   }
-
-   async deleteManifestEntry(id: string): Promise<void> {
-      return this.manifestRepo.deleteEntry(id);
    }
 }

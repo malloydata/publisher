@@ -2,9 +2,12 @@ import ClearIcon from "@mui/icons-material/Clear";
 import {
    Autocomplete,
    Checkbox,
+   FormControl,
    FormControlLabel,
+   FormHelperText,
    IconButton,
    InputAdornment,
+   Stack,
    TextField,
 } from "@mui/material";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
@@ -14,6 +17,7 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import { Given } from "../../client";
 import { GivenValue } from "../../hooks/useGivensForm";
+import { renderGivenDefault } from "./utils";
 
 dayjs.extend(utc);
 
@@ -58,28 +62,80 @@ function annotationHelperText(given: Given): string | undefined {
  * Renders an input widget appropriate for the declared given type.
  * Unknown / unrecognized types fall back to a plain text input.
  *
- * For text-based inputs (string, number, filter, default), a clear (×)
- * adornment appears when the field has a value. DatePicker, Checkbox, and
- * multi-Autocomplete have their own native clear affordances.
+ * Three states, distinguished so a deliberate empty/false override is not
+ * confused with "use the model default":
+ *   - unset (`value === undefined`) → the given is omitted from the request and
+ *     the server applies the model default. Text widgets show the default as a
+ *     ghost placeholder; the boolean checkbox reflects the default's value.
+ *   - explicit override (any concrete value, INCLUDING `""` and `false`) → sent
+ *     verbatim. A clear (×) affordance appears whenever a value is overridden —
+ *     including an empty string — so typing the field empty (a deliberate `""`)
+ *     is distinguishable from unset by the × being present.
+ *   - revert → the × affordance calls `onChange(null)`, which drops the override
+ *     (useGivensForm deletes the key) and returns the widget to its unset state.
+ *
+ * A given's model default (if any) is also surfaced as an always-visible
+ * `Default: …` helper line on every widget — including the boolean checkbox,
+ * which gets a wrapping FormControl for the slot.
  */
 export function GivenInput({ given, value, onChange }: GivenInputProps) {
    const label = given.name ?? "";
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
+   const defaultDisplay = renderGivenDefault(type, given.default);
+   // Always-visible default caption. Test `=== undefined`, not truthiness: an
+   // explicit empty-string default (`is ''`) renders as "" and must still show
+   // (as `(empty)`), not be mistaken for "no default".
+   const defaultLine =
+      defaultDisplay !== undefined
+         ? `Default: ${defaultDisplay === "" ? "(empty)" : defaultDisplay}`
+         : undefined;
+   // Render annotation and default on separate lines via an explicit <br/>
+   // rather than a \n + `white-space: pre-line`: the latter doesn't reach the
+   // TextField nested inside MUI's DatePicker, so the date helper ran together.
+   // A ReactNode helperText works uniformly across every widget.
+   const helperNode =
+      helperText || defaultLine ? (
+         <>
+            {helperText}
+            {helperText && defaultLine ? <br /> : null}
+            {defaultLine}
+         </>
+      ) : undefined;
 
    if (type === "boolean") {
-      const checked = value === true;
-      // Checkbox wrapped in FormControlLabel — no helperText slot available.
+      // Three states for a boolean. When unset, reflect the model DEFAULT so the
+      // box shows what the query will actually run with (not a misleading
+      // unchecked). A toggle is an explicit true/false override; the revert (×)
+      // — shown only when overridden — drops the override back to the default.
+      const isOverridden = typeof value === "boolean";
+      const defaultChecked = given.default?.trim() === "true";
+      const checked = isOverridden ? value : defaultChecked;
       return (
-         <FormControlLabel
-            control={
-               <Checkbox
-                  checked={checked}
-                  onChange={(e) => onChange(e.target.checked)}
+         <FormControl>
+            <Stack direction="row" alignItems="center">
+               <FormControlLabel
+                  control={
+                     <Checkbox
+                        checked={checked}
+                        onChange={(e) => onChange(e.target.checked)}
+                     />
+                  }
+                  label={label}
                />
-            }
-            label={label}
-         />
+               {isOverridden && (
+                  <IconButton
+                     size="small"
+                     aria-label="clear value"
+                     onClick={() => onChange(null)}
+                     edge="end"
+                  >
+                     <ClearIcon fontSize="small" />
+                  </IconButton>
+               )}
+            </Stack>
+            {helperNode && <FormHelperText>{helperNode}</FormHelperText>}
+         </FormControl>
       );
    }
 
@@ -94,7 +150,8 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                const v = e.target.value;
                onChange(v === "" ? null : Number(v));
             }}
-            helperText={helperText}
+            placeholder={defaultDisplay}
+            helperText={helperNode}
             slotProps={{
                input: {
                   endAdornment: num !== "" && (
@@ -110,6 +167,8 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
 
    if (type === "date" || type === "timestamp" || type === "timestamptz") {
       const dateValue = value instanceof Date ? dayjs.utc(value) : null;
+      // The date picker shows a format mask, not a placeholder, so the default
+      // rides on the shared helper line.
       return (
          <LocalizationProvider dateAdapter={AdapterDayjs}>
             <DatePicker
@@ -117,7 +176,11 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                value={dateValue}
                onChange={(next) => onChange(next ? next.toDate() : null)}
                slotProps={{
-                  textField: { fullWidth: true, size: "small", helperText },
+                  textField: {
+                     fullWidth: true,
+                     size: "small",
+                     helperText: helperNode,
+                  },
                   field: { clearable: true, onClear: () => onChange(null) },
                }}
             />
@@ -141,7 +204,8 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
                   {...params}
                   label={label}
                   size="small"
-                  helperText={helperText}
+                  placeholder={list.length === 0 ? defaultDisplay : undefined}
+                  helperText={helperNode}
                />
             )}
             fullWidth
@@ -149,21 +213,28 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
       );
    }
 
-   // Default: string, filter<...>, or unknown types — plain text input
+   // Default: string, filter<...>, or unknown types — plain text input.
+   // An empty field is a deliberate `""` override, NOT a revert: typing the
+   // field empty sends "" (so gates like `$region != ''` are expressible). Only
+   // the × reverts to the model default. The default ghost shows just for the
+   // unset state, so an empty override (× present, no ghost) reads differently.
    const str = typeof value === "string" ? value : "";
+   const isOverridden = value !== undefined && value !== null;
    return (
       <TextField
          label={label}
          value={str}
-         onChange={(e) => {
-            const v = e.target.value;
-            onChange(v === "" ? null : v);
-         }}
-         placeholder={type.startsWith("filter<") ? type : undefined}
-         helperText={helperText}
+         onChange={(e) => onChange(e.target.value)}
+         placeholder={
+            isOverridden
+               ? undefined
+               : (defaultDisplay ??
+                 (type.startsWith("filter<") ? type : undefined))
+         }
+         helperText={helperNode}
          slotProps={{
             input: {
-               endAdornment: str !== "" && (
+               endAdornment: isOverridden && (
                   <ClearAdornment onClear={() => onChange(null)} />
                ),
             },

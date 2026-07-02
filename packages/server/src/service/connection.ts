@@ -6,7 +6,14 @@ import "@malloydata/db-duckdb/native";
 import "@malloydata/db-mysql";
 import type { MySQLConnection } from "@malloydata/db-mysql";
 import "@malloydata/db-postgres";
-import type { PostgresConnection } from "@malloydata/db-postgres";
+import {
+   PooledPostgresConnection,
+   type PostgresConnection,
+} from "@malloydata/db-postgres";
+// Registers the "publisher" connection type (proxies SQL to a remote Publisher
+// dataplane). No live-class branch is needed in lookupConnection — the default
+// path resolves it through the registry like any other registered type.
+import "@malloydata/db-publisher";
 import {
    buildPoolOptions,
    SnowflakeConnection,
@@ -37,6 +44,7 @@ import {
    normalizeSnowflakePrivateKey,
 } from "./connection_config";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
+import { openProxy, type ProxyEndpoint } from "./proxy";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -917,6 +925,30 @@ function buildSnowflakePrivateKeyConnection(
    });
 }
 
+function buildProxiedPostgresConnection(
+   metadata: EnvironmentConnectionMetadata,
+   endpoint: ProxyEndpoint,
+): PooledPostgresConnection {
+   const name = metadata.apiConnection.name!;
+   const pg = metadata.apiConnection.postgresConnection;
+   if (!pg) {
+      throw new Error(
+         `Proxied connection '${name}' has type 'postgres' but no postgresConnection config.`,
+      );
+   }
+   return new PooledPostgresConnection({
+      name,
+      host: endpoint.host,
+      port: endpoint.port,
+      username: pg.userName,
+      password: pg.password,
+      databaseName: pg.databaseName,
+      // Pool sizing mirrors buildSnowflakePrivateKeyConnection.
+      poolMin: 1,
+      poolMax: 20,
+   });
+}
+
 function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
@@ -983,6 +1015,11 @@ export function buildEnvironmentMalloyConfig(
    const duckLakeCache = new Map<string, Promise<DuckLakeConnection>>();
    const snowflakeJwtCache = new Map<string, Promise<SnowflakeConnection>>();
    const azureDuckDBCache = new Map<string, Promise<AzureDuckDBConnection>>();
+   const proxyConnectionCache = new Map<
+      string,
+      Promise<PooledPostgresConnection>
+   >();
+   const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
@@ -1040,6 +1077,64 @@ export function buildEnvironmentMalloyConfig(
                return connection;
             }
 
+            if (metadata?.proxy) {
+               let connectionPromise = proxyConnectionCache.get(name!);
+               if (!connectionPromise) {
+                  const connType = metadata.apiConnection.type;
+                  if (connType !== "postgres") {
+                     throw new Error(
+                        `SSH proxy is not yet supported for connection type '${connType}'. ` +
+                           `Only 'postgres' is implemented.`,
+                     );
+                  }
+                  // validateConnectionShape already enforces explicit host/port
+                  // at config load (the connectionString form can't be tunneled);
+                  // this is a defense-in-depth guard for any path that reaches
+                  // lookup without that validation.
+                  const pgConfig = metadata.apiConnection.postgresConnection;
+                  if (!pgConfig?.host || !pgConfig?.port) {
+                     throw new Error(
+                        `SSH proxy for connection '${name}' requires explicit host and ` +
+                           `port on the postgres connection; the connectionString form ` +
+                           `is not supported with a proxy.`,
+                     );
+                  }
+                  connectionPromise = (async () => {
+                     const endpoint = await openProxy(metadata.proxy!, {
+                        host: pgConfig.host!,
+                        port: pgConfig.port!,
+                     });
+                     try {
+                        const connection = buildProxiedPostgresConnection(
+                           metadata,
+                           endpoint,
+                        );
+                        // Register only after the build succeeds: a throw between
+                        // openProxy and here would otherwise leave an orphaned
+                        // tunnel in proxyEndpoints that a retry can't reach (the
+                        // outer .catch evicts the cache but not the endpoint).
+                        proxyEndpoints.set(name!, endpoint);
+                        return connection;
+                     } catch (err) {
+                        await endpoint.close().catch(() => {});
+                        throw err;
+                     }
+                  })();
+                  // Drop a rejected build from the cache so a later lookup can
+                  // retry, rather than replaying a transient SSH failure (bastion
+                  // restart, network blip) until the environment is rebuilt.
+                  connectionPromise.catch(() => {
+                     if (
+                        proxyConnectionCache.get(name!) === connectionPromise
+                     ) {
+                        proxyConnectionCache.delete(name!);
+                     }
+                  });
+                  proxyConnectionCache.set(name!, connectionPromise);
+               }
+               return connectionPromise;
+            }
+
             if (metadata?.hasSnowflakePrivateKey) {
                let connectionPromise = snowflakeJwtCache.get(name!);
                if (!connectionPromise) {
@@ -1082,19 +1177,30 @@ export function buildEnvironmentMalloyConfig(
             ...duckLakeCache.values(),
             ...snowflakeJwtCache.values(),
             ...azureDuckDBCache.values(),
+            ...proxyConnectionCache.values(),
          ];
          const closeResults = await Promise.allSettled([
-            malloyConfig.releaseConnections(),
+            malloyConfig.shutdown("close"),
             ...wrapperPromises.map(async (promise) => {
                const connection = await promise;
                await connection.close();
             }),
          ]);
+         // Close proxy tunnels only AFTER the build promises above have settled:
+         // openProxy may still be in flight during a teardown race, and the
+         // endpoint is registered inside that promise — capturing the map
+         // earlier would miss it and leak the tunnel. Closing after the DB
+         // connections also keeps the tunnel alive while they drain.
+         const endpointResults = await Promise.allSettled(
+            [...proxyEndpoints.values()].map((ep) => ep.close()),
+         );
          duckLakeCache.clear();
          snowflakeJwtCache.clear();
          azureDuckDBCache.clear();
+         proxyConnectionCache.clear();
+         proxyEndpoints.clear();
 
-         const failures = closeResults.filter(
+         const failures = [...closeResults, ...endpointResults].filter(
             (result): result is PromiseRejectedResult =>
                result.status === "rejected",
          );

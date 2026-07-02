@@ -67,6 +67,15 @@ describe("DuckDB Attached Databases", () => {
          expect(result.rows.length).toBeGreaterThan(0);
       });
 
+      it("should load aws extension for cloud storage", async () => {
+         await connection.runSQL("INSTALL aws;");
+         await connection.runSQL("LOAD aws;");
+         const result = await connection.runSQL(
+            "SELECT * FROM duckdb_extensions() WHERE extension_name = 'aws';",
+         );
+         expect(result.rows.length).toBeGreaterThan(0);
+      });
+
       it("should load postgres extension", async () => {
          await connection.runSQL("INSTALL postgres;");
          await connection.runSQL("LOAD postgres;");
@@ -144,6 +153,108 @@ describe("DuckDB Attached Databases", () => {
             }
             throw error;
          }
+      });
+
+      // The connection/storage layers INSTALL/LOAD these at runtime (cloud
+      // attach, the per-package sandbox, the materialization catalog). This
+      // asserts the DuckDB engine we resolve -- Malloy's @duckdb/node-api or
+      // our own npm pin, whichever this connection uses -- can install AND load
+      // every one of them, so a version bump that drops support for any is
+      // caught here rather than at runtime.
+      it("loads every core runtime DuckDB extension (httpfs, aws, azure, postgres, ducklake)", async () => {
+         // INSTALL name -> the name it registers as in duckdb_extensions().
+         const required: Array<{ install: string; registered: string }> = [
+            { install: "httpfs", registered: "httpfs" },
+            { install: "aws", registered: "aws" },
+            { install: "azure", registered: "azure" },
+            { install: "postgres", registered: "postgres_scanner" },
+            { install: "ducklake", registered: "ducklake" },
+         ];
+
+         for (const { install, registered } of required) {
+            await connection.runSQL(`INSTALL ${install};`);
+            await connection.runSQL(`LOAD ${install};`);
+
+            const result = await connection.runSQL(
+               `SELECT loaded, installed FROM duckdb_extensions() WHERE extension_name = '${registered}';`,
+            );
+            const row = result.rows[0] as
+               | { loaded: boolean; installed: boolean }
+               | undefined;
+
+            expect(
+               row,
+               `extension '${install}' (registered '${registered}') not present after INSTALL/LOAD`,
+            ).toBeDefined();
+            expect(
+               row?.installed,
+               `extension '${install}' is not installed`,
+            ).toBe(true);
+            expect(
+               row?.loaded,
+               `extension '${install}' is installed but not loaded`,
+            ).toBe(true);
+         }
+      });
+
+      it("loads every community runtime DuckDB extension (bigquery, snowflake) where the platform supports it", async () => {
+         // bigquery and snowflake come from the DuckDB community repository.
+         // Unlike the core extensions they are platform-dependent: snowflake in
+         // particular relies on a native ADBC driver not available on every
+         // OS/arch (e.g. the Windows runner). When one can't load on this
+         // platform, log it and continue rather than failing -- the goal is to
+         // confirm that *where supported*, the resolved DuckDB engine loads it.
+         //
+         // The earlier per-extension tests already INSTALL these, so here we
+         // only LOAD. We deliberately avoid `FORCE INSTALL`: re-installing an
+         // extension that's already in the shared on-disk cache makes DuckDB
+         // move/overwrite the file, which races and fails on Windows
+         // ("Could not move file: Access is denied.").
+         const community = ["bigquery", "snowflake"];
+
+         for (const ext of community) {
+            try {
+               await connection.runSQL(`INSTALL '${ext}' FROM community;`);
+               await connection.runSQL(`LOAD ${ext};`);
+            } catch (error) {
+               const message =
+                  error instanceof Error ? error.message : String(error);
+               console.warn(
+                  `community extension '${ext}' not available on this platform; skipping: ${message}`,
+               );
+               continue;
+            }
+
+            const result = await connection.runSQL(
+               `SELECT loaded, installed FROM duckdb_extensions() WHERE extension_name = '${ext}';`,
+            );
+            const row = result.rows[0] as
+               | { loaded: boolean; installed: boolean }
+               | undefined;
+
+            // INSTALL/LOAD reported success above, so the extension should now
+            // report loaded. If the engine reports otherwise on this platform,
+            // log it rather than failing -- community extensions are best-effort
+            // and the connection layer tolerates the same.
+            if (!row?.loaded) {
+               console.warn(
+                  `community extension '${ext}' reported success but is not loaded on this platform; skipping assertion`,
+               );
+            }
+         }
+
+         // The suite still asserts something concrete: at least one community
+         // extension loads on every supported platform (bigquery is broadly
+         // available; snowflake depends on a native driver). This catches a
+         // total community-repo breakage without being brittle per-platform.
+         const loaded = await connection.runSQL(
+            "SELECT count(*) AS n FROM duckdb_extensions() WHERE loaded AND extension_name IN ('bigquery', 'snowflake');",
+         );
+         const n = Number((loaded.rows[0] as { n: number | bigint }).n);
+         expect(
+            n,
+            "expected at least one community extension (bigquery/snowflake) to load",
+         ).toBeGreaterThan(0);
       });
    });
 

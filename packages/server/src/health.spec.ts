@@ -1,7 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   spyOn,
+} from "bun:test";
 import { Server } from "http";
 import { performGracefulShutdownAfterDrain } from "./health";
 import { logger } from "./logger";
+import { __setPackageLoadPoolForTests } from "./package_load/package_load_pool";
 
 // Regression test for the graceful-shutdown ordering bug that caused
 //   [winston] Attempt to write logs with no transports: {"message":"Waiting 50 seconds..."}
@@ -15,6 +24,18 @@ import { logger } from "./logger";
 describe("performGracefulShutdownAfterDrain: shutdown ordering", () => {
    const originalExit = process.exit;
    let callOrder: string[];
+
+   afterAll(async () => {
+      // performGracefulShutdownAfterDrain drains the package-load worker pool
+      // via getPackageLoadPool().shutdown() — which lazily CREATES the global
+      // singleton and leaves it installed in its shut-down state. In prod the
+      // process exits right after, so that's fine; in this shared test process
+      // it poisons every later spec that touches the worker path
+      // (Package.create → "PackageLoadPool is shutting down"), with failures
+      // that come and go with bun's platform-dependent file order. Reset the
+      // singleton so the next user lazily creates a fresh pool.
+      await __setPackageLoadPoolForTests(null);
+   });
 
    beforeEach(() => {
       callOrder = [];
@@ -39,6 +60,18 @@ describe("performGracefulShutdownAfterDrain: shutdown ordering", () => {
 
    afterEach(() => {
       process.exit = originalExit;
+   });
+
+   // performGracefulShutdownAfterDrain lazily creates and shuts down the
+   // module-level PackageLoadPool singleton. If we leave that shut-down
+   // pool installed, sibling specs that run later in the same Bun process
+   // (e.g. package.spec.ts, package_race.spec.ts) inherit a dead pool and
+   // fail with "PackageLoadPool is shutting down". Reset the singleton so
+   // the next getPackageLoadPool() spins up a fresh one. The leaked-pool
+   // ordering is filesystem-readdir dependent, which is why it only
+   // surfaced on Linux CI.
+   afterAll(async () => {
+      await __setPackageLoadPoolForTests(null);
    });
 
    const fakeServer = (): Server => ({ listening: false }) as unknown as Server;

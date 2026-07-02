@@ -54,8 +54,7 @@
  *   - **Job timeout.** `PACKAGE_LOAD_JOB_TIMEOUT_MS` (default 120s) caps a
  *     single package load. On timeout we **terminate the worker** and
  *     reject the caller — we do not silently fall back, and we do not
- *     leave a zombie compile burning CPU on the worker (that's the
- *     exact scenario PR-#767's job-timeout-without-terminate had).
+ *     leave a zombie compile burning CPU on the worker.
  *
  * Schema-fetch RPC routing
  * ------------------------
@@ -67,7 +66,6 @@
  *   it resolves.
  */
 import type {
-   Annotation,
    FetchSchemaOptions,
    InfoConnection,
    LookupConnection,
@@ -229,7 +227,14 @@ export interface LoadPackageJob {
  * don't allocate a Map for models the caller never looks at.
  */
 export interface LoadPackageOutcome {
-   packageMetadata: { name?: string; description?: string };
+   packageMetadata: {
+      name?: string;
+      description?: string;
+      explores?: string[];
+      queryableSources?: "declared" | "all";
+      manifestLocation?: string | null;
+      materialization?: { schedule: string | null } | null;
+   };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {
          modelDef?: ModelDef;
@@ -811,14 +816,10 @@ export class PackageLoadPool {
 
 function buildFetchOptions(options: {
    refreshTimestamp?: number;
-   modelAnnotation?: Annotation;
 }): FetchSchemaOptions {
    const out: FetchSchemaOptions = {};
    if (options.refreshTimestamp !== undefined) {
       out.refreshTimestamp = options.refreshTimestamp;
-   }
-   if (options.modelAnnotation !== undefined) {
-      out.modelAnnotation = options.modelAnnotation;
    }
    return out;
 }

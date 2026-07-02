@@ -47,13 +47,4 @@ export class StorageManager {
          deleteConnection: async (): Promise<void> => {},
       };
    }
-
-   getManifestStore() {
-      return {
-         getManifest: async () => ({ entries: {}, strict: false }),
-         writeEntry: async () => {},
-         deleteEntry: async () => {},
-         listEntries: async () => [],
-      };
-   }
 }

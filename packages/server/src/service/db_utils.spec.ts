@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 
 // Stub the missing optional dependency so db_utils.ts can be imported
 mock.module("@azure/identity", () => ({
@@ -7,8 +7,16 @@ mock.module("@azure/identity", () => ({
 mock.module("@azure/storage-blob", () => ({
    ContainerClient: class {},
 }));
+// Records bigquery.dataset() calls so tests can assert how a (possibly
+// project-qualified) schema name is split into datasetId + projectId.
+const bqDatasetCalls: Array<{ id: string; options?: unknown }> = [];
 mock.module("@google-cloud/bigquery", () => ({
-   BigQuery: class {},
+   BigQuery: class {
+      dataset(id: string, options?: unknown) {
+         bqDatasetCalls.push({ id, options });
+         return { getTables: async () => [[]] };
+      }
+   },
 }));
 
 import { Connection } from "@malloydata/malloy";
@@ -871,5 +879,207 @@ describe("extractErrorDataFromError", () => {
       const result = extractErrorDataFromError(err);
       expect(result.error).toBe("fail");
       expect(result.task).toEqual({ id: 1 });
+   });
+});
+
+// ---------------------------------------------------------------------------
+// publisher proxy introspection
+//
+// The remote dataplane is the oracle for introspection correctness and is not
+// simulated here. These tests cover only this server's own logic: the request
+// URL it builds, the auth header, the bare-name table filter, and how it
+// surfaces a non-ok / unreachable dataplane (credentials redacted from errors).
+// ---------------------------------------------------------------------------
+describe("publisher proxy introspection", () => {
+   const realFetch = globalThis.fetch;
+   let lastRequest:
+      | { url: string; headers: Record<string, string> }
+      | undefined;
+
+   function stubFetch(
+      payload: unknown,
+      init: { ok?: boolean; status?: number; body?: string } = {},
+   ) {
+      lastRequest = undefined;
+      const ok = init.ok ?? true;
+      globalThis.fetch = (async (url: unknown, opts?: RequestInit) => {
+         lastRequest = {
+            url: String(url),
+            headers: (opts?.headers as Record<string, string>) ?? {},
+         };
+         return {
+            ok,
+            status: init.status ?? (ok ? 200 : 500),
+            json: async () => payload,
+            text: async () => init.body ?? "",
+         } as Response;
+      }) as typeof fetch;
+   }
+
+   afterEach(() => {
+      globalThis.fetch = realFetch;
+   });
+
+   const conn: ApiConnection = {
+      name: "analytics",
+      type: "publisher",
+      publisherConnection: {
+         connectionUri:
+            "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+         accessToken: "jwt-token",
+      },
+   };
+   // No malloyConnection is used for the publisher path.
+   const noConn = undefined as unknown as Connection;
+
+   it("forwards GET /schemas to the connectionUri with a bearer token", async () => {
+      const schemas = [{ name: "main", isHidden: false, isDefault: true }];
+      stubFetch(schemas);
+      const result = await getSchemasForConnection(conn, noConn);
+
+      expect(lastRequest?.url).toBe(
+         "https://org.data.example.com/api/v0/environments/proj/connections/analytics/schemas",
+      );
+      expect(lastRequest?.headers["Authorization"]).toBe("Bearer jwt-token");
+      expect(result).toEqual(schemas);
+   });
+
+   it("omits the Authorization header when no accessToken is configured", async () => {
+      const tokenless: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: {
+            connectionUri:
+               "https://org.data.example.com/api/v0/environments/proj/connections/analytics",
+         },
+      };
+      stubFetch([]);
+      await getSchemasForConnection(tokenless, noConn);
+      expect(lastRequest?.headers["Authorization"]).toBeUndefined();
+   });
+
+   it("forwards GET /schemas/<schema>/tables and returns all tables when unfiltered", async () => {
+      const tables = [
+         { resource: "main.orders" },
+         { resource: "main.customers" },
+      ];
+      stubFetch(tables);
+      const result = await listTablesForSchema(conn, "main", noConn);
+
+      expect(lastRequest?.url).toBe(
+         "https://org.data.example.com/api/v0/environments/proj/connections/analytics/schemas/main/tables",
+      );
+      expect(result).toEqual(tables);
+   });
+
+   it("URL-encodes the schema name in the tables path", async () => {
+      stubFetch([]);
+      await listTablesForSchema(conn, "weird schema/name", noConn);
+      expect(lastRequest?.url).toContain(
+         "/schemas/weird%20schema%2Fname/tables",
+      );
+   });
+
+   it("filters by bare table name across schema- and catalog-qualified resources", async () => {
+      const tables = [
+         { resource: "main.orders" }, // "<schema>.<table>"
+         { resource: "cat.main.customers" }, // "<catalog>.<schema>.<table>"
+         { resource: "main.events" },
+      ];
+      stubFetch(tables);
+      const result = await listTablesForSchema(conn, "main", noConn, [
+         "orders",
+         "customers",
+      ]);
+      expect(result.map((t) => t.resource)).toEqual([
+         "main.orders",
+         "cat.main.customers",
+      ]);
+   });
+
+   it("returns an empty list when the filter matches nothing (not all rows)", async () => {
+      stubFetch([{ resource: "main.orders" }]);
+      const result = await listTablesForSchema(conn, "main", noConn, [
+         "nonexistent",
+      ]);
+      expect(result).toEqual([]);
+   });
+
+   it("throws an actionable error on a non-ok dataplane response", async () => {
+      stubFetch(null, { ok: false, status: 403, body: "forbidden" });
+      await expect(getSchemasForConnection(conn, noConn)).rejects.toThrow(
+         "failed (403): forbidden",
+      );
+   });
+
+   it("redacts URL-embedded credentials from error messages", async () => {
+      const withCreds: ApiConnection = {
+         name: "analytics",
+         type: "publisher",
+         publisherConnection: {
+            connectionUri:
+               "https://user:secret@org.data.example.com/api/v0/environments/proj/connections/analytics",
+         },
+      };
+      stubFetch(null, { ok: false, status: 500, body: "boom" });
+      await expect(getSchemasForConnection(withCreds, noConn)).rejects.toThrow(
+         /Publisher dataplane request to https:\/\/org\.data\.example\.com.*failed \(500\)/,
+      );
+      await expect(
+         getSchemasForConnection(withCreds, noConn),
+      ).rejects.not.toThrow(/secret/);
+   });
+
+   it("surfaces a network-level failure with the connection name and no token", async () => {
+      globalThis.fetch = (async () => {
+         throw new Error("ECONNREFUSED");
+      }) as unknown as typeof fetch;
+      await expect(getSchemasForConnection(conn, noConn)).rejects.toThrow(
+         'failed for connection "analytics": ECONNREFUSED',
+      );
+   });
+});
+
+// ---------------------------------------------------------------------------
+// listTablesForSchema — bigquery (project-qualified dataset)
+// ---------------------------------------------------------------------------
+describe("listTablesForSchema bigquery", () => {
+   const bqConnection = {
+      name: "bq",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "default-proj",
+         serviceAccountKeyJson: JSON.stringify({ project_id: "default-proj" }),
+      },
+   } as unknown as ApiConnection;
+   const malloyConn = {} as unknown as Connection;
+
+   it("splits a project-qualified schema into a bare dataset id + projectId", async () => {
+      bqDatasetCalls.length = 0;
+      await listTablesForSchema(bqConnection, "myproj.myds", malloyConn);
+      expect(bqDatasetCalls).toHaveLength(1);
+      expect(bqDatasetCalls[0]?.id).toBe("myds");
+      expect(bqDatasetCalls[0]?.options).toEqual({ projectId: "myproj" });
+   });
+
+   it("splits on the last dot so domain-scoped project ids survive", async () => {
+      bqDatasetCalls.length = 0;
+      await listTablesForSchema(
+         bqConnection,
+         "domain.com:proj.myds",
+         malloyConn,
+      );
+      expect(bqDatasetCalls[0]?.id).toBe("myds");
+      expect(bqDatasetCalls[0]?.options).toEqual({
+         projectId: "domain.com:proj",
+      });
+   });
+
+   it("passes a bare dataset name through unqualified", async () => {
+      bqDatasetCalls.length = 0;
+      await listTablesForSchema(bqConnection, "myds", malloyConn);
+      expect(bqDatasetCalls).toHaveLength(1);
+      expect(bqDatasetCalls[0]?.id).toBe("myds");
+      expect(bqDatasetCalls[0]?.options).toBeUndefined();
    });
 });

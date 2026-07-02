@@ -8,7 +8,6 @@ import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { AddressInfo } from "net";
 import * as path from "path";
-import { ParsedQs } from "qs";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
@@ -35,19 +34,20 @@ import {
 import { logger, loggerMiddleware } from "./logger";
 
 import { getMemoryGovernorConfig } from "./config";
+import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
-import { ManifestController } from "./controller/manifest.controller";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { startAgentMcpServer } from "./mcp/agent_server";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
-import { ManifestService } from "./service/manifest_service";
 import { MaterializationService } from "./service/materialization_service";
 import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
+import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 
 export { normalizeQueryArray } from "./query_param_utils";
 
@@ -86,6 +86,14 @@ function parseArgs() {
          i++;
       } else if (arg === "--init") {
          process.env.INITIALIZE_STORAGE = "true";
+      } else if (arg === "--watch-env" && args[i + 1]) {
+         // Append (don't overwrite) so multiple --watch-env flags compose
+         // and so an explicit env var pre-set still wins.
+         const existing = process.env.PUBLISHER_WATCH || "";
+         process.env.PUBLISHER_WATCH = existing
+            ? `${existing},${args[i + 1]}`
+            : args[i + 1];
+         i++;
       } else if (arg === "--help" || arg === "-h") {
          console.log("Malloy Publisher Server");
          console.log("");
@@ -116,6 +124,21 @@ function parseArgs() {
          console.log(
             "  --init                 Initialize the storage (default: false)",
          );
+         console.log(
+            "  --watch-env <name>     Enable dev-mode watch for the named environment.",
+         );
+         console.log(
+            "                         Mounts local-dir packages in-place (symlink, not",
+         );
+         console.log(
+            "                         copy) so source-edit live reload works. A comma-",
+         );
+         console.log(
+            "                         separated PUBLISHER_WATCH mounts all listed envs in",
+         );
+         console.log(
+            "                         place, but only the first one auto-reloads.",
+         );
          console.log("  --help, -h             Show this help message");
          process.exit(0);
       }
@@ -126,9 +149,7 @@ function parseArgs() {
    // this — the user told us where to look. Skip in NODE_ENV=test as a
    // belt-and-suspenders so any spec that ends up evaluating this
    // module doesn't accidentally pin the EnvironmentStore to the
-   // bundled malloy-samples config; query-param helpers have been
-   // moved to `./query_param_utils` precisely so unit specs no longer
-   // need to import this module at all.
+   // bundled malloy-samples config.
    if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
@@ -140,6 +161,7 @@ parseArgs();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+const AGENT_MCP_PORT = Number(process.env.AGENT_MCP_PORT || 4041);
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
@@ -165,7 +187,6 @@ app.use(httpMetricsMiddleware);
 // chase OOMKills before checking the obvious config.
 checkHeapConfiguration();
 const environmentStore = new EnvironmentStore(SERVER_ROOT);
-const manifestService = new ManifestService(environmentStore);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
@@ -180,23 +201,13 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
-const packageController = new PackageController(
-   environmentStore,
-   manifestService,
-);
+const packageController = new PackageController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
-const materializationService = new MaterializationService(
-   environmentStore,
-   manifestService,
-);
+const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
-);
-const manifestController = new ManifestController(
-   environmentStore,
-   manifestService,
 );
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore, SERVER_ROOT);
@@ -289,6 +300,344 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
    }
 });
 
+// ---------------------------------------------------------------------------
+// In-package HTML data apps
+// ---------------------------------------------------------------------------
+// These routes must come before the SPA catch-all and (in dev) the Vite proxy
+// so that:
+//   - `/sdk/publisher.js`     → Publisher runtime helper
+//   - `/environments/<env>/packages/<pkg>/<file.ext>` → static file from
+//                                                       inside the package dir
+//   - `/api/v0/.../events`    → live-reload SSE (registered in API routes
+//                                below; this comment is the cross-reference)
+
+// Serve the runtime helper that in-package HTML pages load via
+// <script src="/sdk/publisher.js">. Path resolved once at module load.
+const PUBLISHER_RUNTIME_PATH = path.join(
+   path.dirname(__filename_esm),
+   "runtime",
+   "publisher.js",
+);
+app.get("/sdk/publisher.js", (_req, res) => {
+   res.type("application/javascript");
+   // Short cache so live edits during local dev show up quickly. In
+   // production this file is content-stable per release.
+   res.setHeader("cache-control", "public, max-age=60");
+   res.setHeader("X-Content-Type-Options", "nosniff");
+   res.sendFile(PUBLISHER_RUNTIME_PATH, (err) => {
+      if (err) {
+         logger.error("Failed to send publisher.js runtime", { error: err });
+         if (!res.headersSent) res.status(500).end();
+      }
+   });
+});
+
+// Serve files from inside a package directory at
+//   /environments/<env>/packages/<pkg>/<relative-path>
+//
+// This route fully owns its prefix — it does NOT fall through to the SPA on
+// missing files, because doing so would mask 404s (and in dev mode the SPA
+// catch-all errors out before it can reply). Behavior:
+//   - `/environments/<env>/packages/<pkg>`      → 302 to `…/<pkg>/`
+//   - `/environments/<env>/packages/<pkg>/`     → serve `<pkgRoot>/public/index.html`
+//   - `/environments/<env>/packages/<pkg>/foo/` → serve `<pkgRoot>/public/foo/index.html`
+//   - `/environments/<env>/packages/<pkg>/<file>` → serve `<pkgRoot>/public/<file>`, or 404
+// Only the package's `public/` directory is web-served. Models, data files, and
+// the publisher.json manifest live outside it and are never reachable here, so
+// nothing can be downloaded around the per-model #(authorize) and query
+// controls. The data stays reachable through the permission-checked query path.
+
+async function serveFromPackage(
+   req: express.Request,
+   res: express.Response,
+): Promise<void> {
+   const subPathRaw = (req.params as Record<string, string>)["0"] ?? "";
+   try {
+      const environment = await environmentStore.getEnvironment(
+         req.params.environmentName,
+         false,
+      );
+      const pkg = await environment.getPackage(req.params.packageName, false);
+      // Only the package's public/ directory is web-served. Models, data, and
+      // the publisher.json manifest live outside it and are never reachable
+      // through this route. This single directory boundary is the whole
+      // access-control story for static files.
+      const publicRoot = path.join(pkg.getPackagePath(), "public");
+
+      // Directory-style fallback: empty path or trailing slash → look for
+      // index.html within that directory.
+      let subPath = subPathRaw;
+      if (subPath === "" || subPath.endsWith("/")) {
+         subPath = subPath + "index.html";
+      }
+
+      // Resolve the requested file under public/ and reject anything that
+      // escapes it (`..`, encoded traversal) before touching the disk.
+      // safeJoinUnderRoot is the shared lexical-containment primitive (it throws
+      // BadRequestError on escape, surfaced as 400 by the outer catch); the
+      // realpath check below additionally catches symlinks inside public/ that
+      // point outward (403).
+      const fullPath = safeJoinUnderRoot(publicRoot, subPath);
+
+      // Containment check via realpath against the resolved public/ root.
+      // Catches symlinks inside public/ that point out (e.g. a malicious
+      // package shipping `public/leak -> /etc/passwd`), and tolerates the
+      // package root itself being a symlink (how watch-mode in-place mount
+      // works): realpath resolves it transparently and legitimate accesses
+      // inside public/ stay within realPublicRoot. Missing public/ dir or
+      // missing file: realpath throws ENOENT and we 404 cleanly instead of
+      // leaking via Express's default error handler.
+      const fsp = await import("fs/promises");
+      let realPublicRoot: string;
+      let realFullPath: string;
+      try {
+         realPublicRoot = await fsp.realpath(publicRoot);
+         realFullPath = await fsp.realpath(fullPath);
+      } catch {
+         if (!res.headersSent) {
+            // Generic 404 with no reflected request input (avoids reflecting
+            // user-controlled path/package name into the response body).
+            res.status(404).end();
+         }
+         return;
+      }
+      const rel = path.relative(realPublicRoot, realFullPath);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) {
+         res.status(403).end();
+         return;
+      }
+
+      // Framing policy only applies to HTML documents — setting it on CSS/JS/
+      // image assets is meaningless and needlessly strips their default
+      // SAMEORIGIN protection. Embeddability defaults to "*" so same-tenant
+      // embeds work out of the box, and is overridable via PUBLISHER_FRAME_ANCESTORS.
+      const ext = path.extname(realFullPath).toLowerCase();
+      if (ext === ".html" || ext === ".htm") {
+         const frameAncestors = process.env.PUBLISHER_FRAME_ANCESTORS || "*";
+         res.setHeader(
+            "Content-Security-Policy",
+            `frame-ancestors ${frameAncestors}`,
+         );
+         res.removeHeader("X-Frame-Options");
+      }
+      // Never let a served asset be MIME-sniffed into a different content type.
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.sendFile(realFullPath, (err) => {
+         if (err) {
+            // Own the 404 instead of letting Express fall through to a
+            // catch-all that may error.
+            if (!res.headersSent) {
+               // Generic 404, no reflected request input (see above).
+               res.status(404).end();
+            }
+         }
+      });
+   } catch (e) {
+      // Map service errors to their real status — a bad package name is a 400,
+      // memory back-pressure is a 503 — rather than flattening everything to
+      // 404. A genuine missing file is already handled by the realpath/sendFile
+      // 404 paths above; this catch only sees service-layer failures.
+      if (!res.headersSent) {
+         const { json, status } = internalErrorToHttpError(e as Error);
+         res.status(status).json(json);
+      }
+   }
+}
+
+// `/environments/<env>/packages/<pkg>` (no trailing slash, no path) redirect so
+// relative URLs in the served HTML resolve as expected. Express's default loose
+// matching also catches the trailing-slash form here, so only redirect URLs that
+// don't already end with `/`.
+//
+// Build the target from the validated route params and the parsed query, not
+// from the raw request URL, so it is always this same canonical, same-origin
+// path with a trailing slash. That removes any open-redirect / header-injection
+// surface from user-controlled input, with the slash placed before any query
+// string (e.g. ?embed_token=...).
+app.get(
+   "/environments/:environmentName/packages/:packageName",
+   (req, res, next) => {
+      if (req.path.endsWith("/")) return next();
+      const canonical =
+         `/environments/${encodeURIComponent(req.params.environmentName)}` +
+         `/packages/${encodeURIComponent(req.params.packageName)}/`;
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(req.query)) {
+         if (Array.isArray(value)) {
+            for (const v of value) query.append(key, String(v));
+         } else if (value !== undefined) {
+            query.append(key, String(value));
+         }
+      }
+      const qs = query.toString();
+      res.redirect(308, qs ? `${canonical}?${qs}` : canonical);
+   },
+);
+
+app.get(
+   "/environments/:environmentName/packages/:packageName/*",
+   serveFromPackage,
+);
+
+// List the static HTML pages bundled inside a package. Used by the SPA's
+// package-detail view to surface a clickable list, and by anyone who wants
+// to discover pages programmatically without scraping the directory.
+//
+// Returns a `Page[]` (see api-doc.yaml) — each item carries the relative
+// `path`, the `packageName`, the page `title` (from its <title> tag), and a
+// `resource` URL. `resource` is the root-relative static-serve URL (NOT under
+// `${API_PREFIX}`) because pages are static assets served off the server root,
+// unlike API resources such as `Package.resource`.
+// Recursive depth is capped to keep this cheap for huge package directories.
+const PAGES_DEPTH_CAP = 3;
+type PageItem = {
+   resource: string;
+   packageName: string;
+   path: string;
+   title: string;
+   fit?: "viewport";
+};
+
+// The spots in an HTML head where a "<meta ...>" literal would NOT be a live
+// tag: HTML comments (terminated or unterminated) and raw-text/RCDATA elements
+// (script/style/title/textarea). One alternation so a single .replace covers
+// them all (and so the fixpoint loop below applies one self-referential
+// replace, which is the complete-sanitization shape CodeQL recognizes).
+const NON_TAG_TEXT_PATTERN =
+   /<!--[\s\S]*?-->|<!--[\s\S]*$|<(script|style|title|textarea)\b[\s\S]*?<\/\1\s*>/gi;
+
+// Remove those matches until the string stops changing. A single pass is
+// incomplete because removing one match can splice the surrounding text into a
+// new one (CWE-116), so re-apply the same pattern to its own output until a
+// fixpoint. Each pass only deletes, so the string strictly shrinks and the loop
+// terminates, bounded by the input length (callers pass at most the first 4KB).
+function stripNonTagText(input: string): string {
+   let current = input;
+   let previous: string;
+   do {
+      previous = current;
+      current = current.replace(NON_TAG_TEXT_PATTERN, "");
+   } while (current !== previous);
+   return current;
+}
+
+async function listPackagePages(
+   environmentName: string,
+   packageName: string,
+   publicRoot: string,
+): Promise<PageItem[]> {
+   const fs = await import("fs/promises");
+   const out: PageItem[] = [];
+
+   // Resolve the public/ root once and reject any entry whose realpath escapes
+   // it. Same containment defense as serveFromPackage: catches symlinks inside
+   // public/ pointing outside (e.g. `public/leak -> ../report.malloy`) before we
+   // open and read the target's first 4KB for title extraction. A package with
+   // no public/ dir fails realpath here and yields an empty list.
+   let realPublicRoot: string;
+   try {
+      realPublicRoot = await fs.realpath(publicRoot);
+   } catch {
+      return out;
+   }
+
+   async function walk(dir: string, depth: number) {
+      if (depth > PAGES_DEPTH_CAP) return;
+      let entries: import("fs").Dirent[];
+      try {
+         entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+         return;
+      }
+      for (const entry of entries) {
+         if (entry.name.startsWith(".") || entry.name === "node_modules")
+            continue;
+         const full = path.join(dir, entry.name);
+         let realFull: string;
+         try {
+            realFull = await fs.realpath(full);
+         } catch {
+            continue;
+         }
+         const contained = path.relative(realPublicRoot, realFull);
+         if (contained.startsWith("..") || path.isAbsolute(contained)) continue;
+         if (entry.isDirectory()) {
+            await walk(full, depth + 1);
+         } else if (
+            entry.isFile() &&
+            (entry.name.endsWith(".html") || entry.name.endsWith(".htm"))
+         ) {
+            const rel = path.relative(publicRoot, full).replace(/\\/g, "/");
+            // Cheap metadata extraction: read first 4KB and grep the <head>.
+            let title = rel;
+            let fit: "viewport" | undefined;
+            try {
+               const fh = await fs.open(full, "r");
+               try {
+                  const buf = Buffer.alloc(4096);
+                  const { bytesRead } = await fh.read(buf, 0, 4096, 0);
+                  const head = buf.slice(0, bytesRead).toString("utf8");
+                  const m = head.match(/<title[^>]*>([^<]+)<\/title>/i);
+                  if (m) title = m[1].trim();
+                  // Full-screen apps (e.g. slide decks) opt into a viewport-fill
+                  // embed with <meta name="publisher:fit" content="viewport">.
+                  // FIRST strip the spots where the literal string is NOT a live
+                  // tag (comments, script/style/title/textarea), THEN look at the
+                  // <head> region only (up to </head> or <body>). Order matters:
+                  // stripping before locating the boundary keeps a literal
+                  // "<body>"/"</head>" inside a comment or <script> from
+                  // truncating the scan and hiding a real tag. What's left and
+                  // matches is a genuine <meta> the browser would honor too, so a
+                  // documented/commented example or a string in a code block
+                  // can't opt the page in. Match by name (attribute order/quoting
+                  // vary), then confirm content="viewport"; the [\s"'] before
+                  // `name` keeps `data-name="publisher:fit"` out. Like the title,
+                  // the tag must sit within the first 4KB.
+                  const cleaned = stripNonTagText(head);
+                  const headEnd = cleaned.search(/<\/head\s*>|<body[\s>]/i);
+                  const headTags =
+                     headEnd === -1 ? cleaned : cleaned.slice(0, headEnd);
+                  const fitMeta = headTags.match(
+                     /<meta\b[^>]*[\s"']name\s*=\s*["']publisher:fit["'][^>]*>/i,
+                  );
+                  if (
+                     fitMeta &&
+                     /\bcontent\s*=\s*["']\s*viewport\s*["']/i.test(fitMeta[0])
+                  ) {
+                     fit = "viewport";
+                  }
+               } finally {
+                  await fh.close();
+               }
+            } catch {
+               // ignore; fall back to relative path as title
+            }
+            out.push({
+               resource: `/environments/${environmentName}/packages/${packageName}/${rel}`,
+               packageName,
+               path: rel,
+               title,
+               fit,
+            });
+         }
+      }
+   }
+
+   await walk(publicRoot, 0);
+   out.sort((a, b) => {
+      // Surface index.html first, then alphabetical.
+      if (a.path === "index.html") return -1;
+      if (b.path === "index.html") return 1;
+      return a.path.localeCompare(b.path);
+   });
+   return out;
+}
+
+// NOTE: route registration for /pages moved below the CORS middleware so
+// cross-origin SDK consumers (e.g. a customer's React app pointing at
+// `<ServerProvider baseURL="https://publisher.example.com/api/v0">`) get
+// the proper CORS headers. See the registration after `app.use(cors(...))`.
+
 // Only serve static files in production mode
 // Otherwise we proxy to the React dev server
 if (!isDevelopment) {
@@ -346,6 +695,34 @@ try {
 // Register draining guard middleware - must be after health endpoints but before other routes
 app.use(drainingGuard);
 
+// /pages — registered here (post-CORS, post-body-parser, post-draining) so
+// cross-origin SDK consumers and authenticated requests both work.
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/pages`,
+   async (req, res) => {
+      try {
+         const environment = await environmentStore.getEnvironment(
+            req.params.environmentName,
+            false,
+         );
+         const pkg = await environment.getPackage(
+            req.params.packageName,
+            false,
+         );
+         const pages = await listPackagePages(
+            req.params.environmentName,
+            req.params.packageName,
+            path.join(pkg.getPackagePath(), "public"),
+         );
+         res.json(pages);
+      } catch (error) {
+         logger.error("Failed to list package pages", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.get(`${API_PREFIX}/status`, async (_req, res) => {
    try {
       const status = await environmentStore.getStatus();
@@ -396,6 +773,86 @@ app.delete(`${API_PREFIX}/theme`, async (_req, res) => {
 app.get(`${API_PREFIX}/watch-mode/status`, watchModeController.getWatchStatus);
 app.post(`${API_PREFIX}/watch-mode/start`, watchModeController.startWatching);
 app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
+
+// Live-reload Server-Sent Events stream for in-package HTML dashboards.
+//
+// This endpoint does NOT start watch mode on its own — that's an explicit
+// opt-in (`--watch-env <name>` CLI flag, or `POST /api/v0/watch-mode/start`).
+// Instead it reports whether watch mode is currently active for the requested
+// env via a `mode` event and, if so, fans out file-change events to the
+// browser. This avoids two failure modes:
+//   - Auto-starting from the request handler would let arbitrary fetches
+//     reach in to mutate global watch-mode state.
+//   - Without the `mode` event the client cannot tell "watch mode isn't
+//     running, don't expect reloads"; with it the client can choose to
+//     surface a small dev indicator (today: silent).
+//
+// Inputs are validated before any state lookup. Names that don't pass the
+// canonical `assertSafePackageName` allowlist get 400 — preventing requests
+// like `/api/v0/environments/%2e%2e/packages/x/events` from reaching the
+// EnvironmentStore at all. We reuse the shared sanitizer rather than a local
+// regex so the rules stay in one place (see path_safety.ts).
+// Cap concurrent live-reload SSE connections so the endpoint can't be used to
+// exhaust server sockets/memory with unbounded long-lived streams. Generous,
+// since legitimate use is one stream per open dashboard tab.
+const MAX_SSE_CONNECTIONS = 1000;
+let sseConnectionCount = 0;
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/events`,
+   async (req, res) => {
+      const env = req.params.environmentName;
+      const pkg = req.params.packageName;
+      try {
+         assertSafePackageName(env);
+         assertSafePackageName(pkg);
+         const environment = await environmentStore.getEnvironment(env, false);
+         await environment.getPackage(pkg, false); // 404 if missing
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+         return;
+      }
+
+      if (sseConnectionCount >= MAX_SSE_CONNECTIONS) {
+         res.status(503).json({
+            code: 503,
+            message: "Too many live-reload connections; try again shortly.",
+         });
+         return;
+      }
+      sseConnectionCount++;
+
+      res.set({
+         "content-type": "text/event-stream",
+         "cache-control": "no-cache",
+         connection: "keep-alive",
+         // Disable proxy/CDN buffering so events flush immediately.
+         "x-accel-buffering": "no",
+      });
+      res.flushHeaders();
+
+      const watching = watchModeController.isWatching(env);
+      res.write("event: hello\ndata: connected\n\n");
+      res.write(`event: mode\ndata: ${watching ? "enabled" : "disabled"}\n\n`);
+
+      const key = `${env}/${pkg}`;
+      const send = () => {
+         res.write("event: changed\ndata: changed\n\n");
+      };
+      watchModeController.events.on(key, send);
+      // Keep the connection alive through idle proxies (heartbeat every 25s).
+      const heartbeat = setInterval(() => {
+         res.write(": heartbeat\n\n");
+      }, 25000);
+      const cleanup = () => {
+         clearInterval(heartbeat);
+         watchModeController.events.off(key, send);
+         sseConnectionCount--;
+      };
+      // "close" covers both clean and abrupt disconnects on Node >= 20.
+      req.on("close", cleanup);
+   },
+);
 
 app.get(`${API_PREFIX}/environments`, async (_req, res) => {
    try {
@@ -679,28 +1136,6 @@ app.get(
    },
 );
 
-/**
- * @deprecated Use /environments/:environmentName/connections/:connectionName/sqlSource POST method instead
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
    async (req, res) => {
@@ -721,26 +1156,6 @@ app.post(
 );
 
 // Per-package versions
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
    async (req, res) => {
@@ -775,21 +1190,12 @@ app.post(
    queryConcurrency(),
    async (req, res) => {
       try {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-
-         // Support both body and query parameters for options for backwards compatibility
-         // TODO: To be removed in the future
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               options as string,
+               req.body?.options as string,
             ),
          );
       } catch (error) {
@@ -805,65 +1211,12 @@ app.post(
    queryConcurrency(),
    async (req, res) => {
       try {
-         let options: string | ParsedQs | (string | ParsedQs)[] | undefined;
-         if (req.body?.options) {
-            options = req.body.options;
-         } else {
-            options = req.query.options;
-         }
          res.status(200).json(
             await connectionController.getConnectionQueryData(
                req.params.environmentName,
                req.params.connectionName,
                req.body.sqlStatement as string,
-               options as string,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * @deprecated Use environments/:environmentName/connections/:connectionName/sqlTemporaryTable POST method instead
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/temporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * @deprecated Use /environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/temporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.query.sqlStatement as string,
+               req.body?.options as string,
                req.params.packageName,
             ),
          );
@@ -940,11 +1293,9 @@ app.post(
    `${API_PREFIX}/environments/:environmentName/packages`,
    async (req, res) => {
       try {
-         const autoLoadManifest = req.query.autoLoadManifest === "true";
          const _package = await packageController.addPackage(
             req.params.environmentName,
             req.body,
-            { autoLoadManifest },
          );
          res.status(200).json(_package?.getPackageMetadata());
       } catch (error) {
@@ -1138,17 +1489,20 @@ app.get(
             }
          }
 
-         res.status(200).json(
-            await modelController.executeNotebookCell(
-               req.params.environmentName,
-               req.params.packageName,
-               notebookPath,
-               cellIndex,
-               filterParams,
-               bypassFilters,
-               givens,
-            ),
+         const result = await modelController.executeNotebookCell(
+            req.params.environmentName,
+            req.params.packageName,
+            notebookPath,
+            cellIndex,
+            filterParams,
+            bypassFilters,
+            givens,
          );
+         setFilterDeprecationHeaders(res, {
+            filterParams,
+            bypassFilters,
+         });
+         res.status(200).json(result);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -1195,22 +1549,25 @@ app.post(
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
-         res.status(200).json(
-            await queryController.getQuery(
-               req.params.environmentName,
-               req.params.packageName,
-               modelPath,
-               req.body.sourceName as string,
-               req.body.queryName as string,
-               req.body.query as string,
-               req.body.compactJson === true,
-               (req.body.filterParams ?? req.body.sourceFilters) as
-                  | Record<string, string | string[]>
-                  | undefined,
-               req.body.bypassFilters === true ? true : undefined,
-               req.body.givens as Record<string, GivenValue> | undefined,
-            ),
+         const result = await queryController.getQuery(
+            req.params.environmentName,
+            req.params.packageName,
+            modelPath,
+            req.body.sourceName as string,
+            req.body.queryName as string,
+            req.body.query as string,
+            req.body.compactJson === true,
+            (req.body.filterParams ?? req.body.sourceFilters) as
+               | Record<string, string | string[]>
+               | undefined,
+            req.body.bypassFilters === true ? true : undefined,
+            req.body.givens as Record<string, GivenValue> | undefined,
          );
+         setFilterDeprecationHeaders(res, {
+            filterParams: req.body.filterParams ?? req.body.sourceFilters,
+            bypassFilters: req.body.bypassFilters === true ? true : undefined,
+         });
+         res.status(200).json(result);
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -1323,35 +1680,11 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/teardown`,
-   async (req, res) => {
-      try {
-         const result = await materializationController.teardownPackage(
-            req.params.environmentName,
-            req.params.packageName,
-            req.body || {},
-         );
-         res.status(200).json(result);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
       try {
          const action = req.query.action;
-         if (action === "start") {
-            const build = await materializationController.startMaterialization(
-               req.params.environmentName,
-               req.params.packageName,
-               req.params.materializationId,
-            );
-            res.status(202).json(build);
-         } else if (action === "stop") {
+         if (action === "stop") {
             const build = await materializationController.stopMaterialization(
                req.params.environmentName,
                req.params.packageName,
@@ -1360,7 +1693,7 @@ app.post(
             res.status(200).json(build);
          } else {
             throw new BadRequestError(
-               `Unsupported action '${String(action ?? "")}'. Expected 'start' or 'stop'.`,
+               `Unsupported action '${String(action ?? "")}'. Expected 'stop'.`,
             );
          }
       } catch (error) {
@@ -1378,52 +1711,10 @@ app.delete(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
+            { dropTables: req.query.dropTables === "true" },
          );
          res.status(204).send();
       } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// ==================== MANIFEST ROUTES ====================
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
-   async (req, res) => {
-      try {
-         const manifest = await manifestController.getManifest(
-            req.params.environmentName,
-            req.params.packageName,
-         );
-         res.status(200).json(manifest);
-      } catch (error) {
-         logger.error("Get manifest error", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/manifest`,
-   async (req, res) => {
-      try {
-         const action = req.query.action;
-         if (action === "reload") {
-            const manifest = await manifestController.reloadManifest(
-               req.params.environmentName,
-               req.params.packageName,
-            );
-            res.status(200).json(manifest);
-         } else {
-            throw new BadRequestError(
-               `Unsupported action '${String(action ?? "")}'. Expected 'reload'.`,
-            );
-         }
-      } catch (error) {
-         logger.error("Manifest action error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1442,12 +1733,34 @@ registerLegacyRoutes(app, {
    queryController,
    compileController,
    materializationController,
-   manifestController,
 });
 
 // Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
-   app.get("*", (_req, res) => res.sendFile(path.resolve(ROOT, "index.html")));
+   const SPA_INDEX = path.resolve(ROOT, "index.html");
+   app.get("*", (req, res) => {
+      res.sendFile(SPA_INDEX, (err) => {
+         if (!err) return;
+         // The SPA bundle isn't built. This happens when running directly
+         // from source (`bun run src/server.ts`) without first running
+         // `bun run build:app`. Return a friendly placeholder rather than
+         // a 500, and surface package URLs the user might be looking for.
+         if (res.headersSent) return;
+         res.status(404)
+            .type("text/html")
+            .send(
+               `<!doctype html><meta charset="utf-8">
+<title>Publisher</title>
+<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}</style>
+<h1>Publisher is running, but the SPA bundle isn't built.</h1>
+<p>You requested <code>${req.path.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c)}</code>.
+The Publisher API is available at <a href="/api/v0/environments">/api/v0/environments</a>.</p>
+<p>To get the Publisher web UI, run <code>cd packages/app &amp;&amp; bunx vite build</code>
+or start the server with <code>NODE_ENV=development</code> after launching Vite on <code>:5173</code>.</p>
+<p>For in-package HTML data apps, browse to <code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code> directly.</p>`,
+            );
+      });
+   });
 }
 
 app.use(
@@ -1481,7 +1794,7 @@ mainServer.timeout = 600000;
 mainServer.keepAliveTimeout = 600000;
 mainServer.headersTimeout = 600000;
 
-mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
+mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
    const address = mainServer.address() as AddressInfo;
    logger.info(
       `Publisher server listening at http://${address.address}:${address.port}`,
@@ -1490,6 +1803,44 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, () => {
       logger.info(
          "Running in development mode - proxying to React dev server at http://localhost:5173",
       );
+   }
+   // If `--watch-env <name>` (or PUBLISHER_WATCH=name1,name2) was passed,
+   // wait for env initialization to settle, then start watch mode for each
+   // named env. Packages in those envs are already mounted in-place via the
+   // EnvironmentStore in-place path (see `loadEnvironmentIntoDisk`), so the
+   // chokidar watcher will see edits to your source repo and fan them out
+   // to any connected SSE clients.
+   const watchEnvList = (process.env.PUBLISHER_WATCH || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+   if (watchEnvList.length > 0) {
+      // The watcher tracks exactly one env at a time (`WatchModeController`
+      // holds a single chokidar instance). Every env in PUBLISHER_WATCH is
+      // still mounted in place (live source) by the EnvironmentStore, but only
+      // the first is watched, so the others do not auto-reload.
+      if (watchEnvList.length > 1) {
+         logger.warn(
+            `Multiple watch environments requested (${watchEnvList.join(
+               ", ",
+            )}); watch mode auto-reloads one at a time. Watching "${
+               watchEnvList[0]
+            }". The others are mounted in place (their source is live) but will not auto-reload. Pass a single --watch-env (or one PUBLISHER_WATCH value) to silence this.`,
+         );
+      }
+      const envName = watchEnvList[0];
+      try {
+         await environmentStore.finishedInitialization;
+         await watchModeController.ensureWatching(envName);
+         logger.info(
+            `Watch mode active for environment "${envName}" (in-place mount, source-edit live reload).`,
+         );
+      } catch (error) {
+         logger.error(
+            `Failed to start watch mode for environment "${envName}"`,
+            { error },
+         );
+      }
    }
 });
 const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
@@ -1500,9 +1851,21 @@ mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
 
+// Separate, isolated MCP server for the agent retrieval tools (get_context,
+// search_docs) on its own listener. Kept apart from the core MCP server above.
+const agentMcpServer = startAgentMcpServer(
+   environmentStore,
+   PUBLISHER_HOST,
+   AGENT_MCP_PORT,
+);
+agentMcpServer.timeout = 600000;
+agentMcpServer.keepAliveTimeout = 600000;
+agentMcpServer.headersTimeout = 600000;
+
 registerSignalHandlers(
    mainServer,
    mcpServer,
    SHUTDOWN_DRAIN_DURATION_SECONDS,
    SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS,
+   agentMcpServer,
 );

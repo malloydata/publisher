@@ -191,6 +191,84 @@ describe("service/model", () => {
 
             sinon.restore();
          });
+
+         it("embeds model-level givens in each newSources SourceInfo", async () => {
+            const sourceInfo = {
+               name: "carriers",
+               schema: { fields: [] },
+            };
+            const givens = [
+               {
+                  name: "region",
+                  type: "string",
+                  annotations: ["#(doc) Region"],
+               },
+            ];
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined, // modelMaterializer
+               undefined, // modelDef
+               undefined, // sources
+               undefined, // queries
+               undefined, // sourceInfos
+               [
+                  {
+                     type: "code",
+                     text: "import 'carriers.malloy'",
+                     newSources: [sourceInfo],
+                  },
+               ], // runnableNotebookCells
+               undefined, // compilationError
+               undefined, // filterMap
+               givens, // givens
+            );
+
+            const notebook = await model.getNotebook();
+            expect(notebook.notebookCells).toHaveLength(1);
+            const parsed = JSON.parse(
+               notebook.notebookCells![0].newSources![0],
+            );
+            expect(parsed.name).toBe("carriers");
+            // SourceInfo fields are preserved untouched.
+            expect(parsed.schema).toEqual({ fields: [] });
+            // Givens ride along verbatim — no second getModel round-trip needed.
+            expect(parsed.givens).toEqual(givens);
+         });
+
+         it("omits givens from newSources when the model declares none", async () => {
+            const sourceInfo = { name: "carriers", schema: { fields: [] } };
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               [
+                  {
+                     type: "code",
+                     text: "import 'carriers.malloy'",
+                     newSources: [sourceInfo],
+                  },
+               ],
+               undefined,
+               undefined,
+               undefined, // no givens
+            );
+
+            const notebook = await model.getNotebook();
+            const parsed = JSON.parse(
+               notebook.notebookCells![0].newSources![0],
+            );
+            expect(parsed.name).toBe("carriers");
+            expect(parsed).not.toHaveProperty("givens");
+         });
       });
 
       describe("getQueryResults", () => {
@@ -239,6 +317,78 @@ describe("service/model", () => {
             sinon.restore();
          });
 
+         // Both caller-driven compile paths — the free-form `query` text and the
+         // `run: source->view` string built from `sourceName`/`queryName` — must
+         // go through restricted mode. The trusted `loadQuery` is reserved for
+         // author-curated content (notebook cells) and must never be reached from
+         // `getQueryResults`. These tests pin the dispatch so a regression that
+         // re-routes either path back to `loadQuery` is caught.
+         describe("compile dispatch", () => {
+            function buildDispatchModel(): {
+               model: Model;
+               loadQuery: sinon.SinonStub;
+               loadRestrictedQuery: sinon.SinonStub;
+            } {
+               // getPreparedResult rejects so execution stops right after the
+               // loader call; we only assert which loader was invoked.
+               const runnableStub = {
+                  getPreparedResult: sinon
+                     .stub()
+                     .rejects(new MalloyError("stub-stop", [])),
+                  run: sinon.stub().rejects(new MalloyError("stub-stop", [])),
+               };
+               const loadQuery = sinon.stub().returns(runnableStub);
+               const loadRestrictedQuery = sinon.stub().returns(runnableStub);
+               const modelMaterializer = { loadQuery, loadRestrictedQuery };
+               const model = new Model(
+                  packageName,
+                  mockModelPath,
+                  {},
+                  "model",
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  modelMaterializer as any,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  { contents: {}, exports: [], queryList: [] } as any,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+               );
+               return { model, loadQuery, loadRestrictedQuery };
+            }
+
+            afterEach(() => sinon.restore());
+
+            it("compiles ad-hoc query text in restricted mode, never trusted loadQuery", async () => {
+               const { model, loadQuery, loadRestrictedQuery } =
+                  buildDispatchModel();
+
+               await expect(
+                  model.getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: orders -> { aggregate: c is count() }",
+                  ),
+               ).rejects.toThrow(MalloyError);
+
+               expect(loadRestrictedQuery.calledOnce).toBe(true);
+               expect(loadQuery.called).toBe(false);
+            });
+
+            it("compiles the named source/view path in restricted mode, never trusted loadQuery", async () => {
+               const { model, loadQuery, loadRestrictedQuery } =
+                  buildDispatchModel();
+
+               await expect(
+                  model.getQueryResults("orders", "summary"),
+               ).rejects.toThrow(MalloyError);
+
+               expect(loadRestrictedQuery.calledOnce).toBe(true);
+               expect(loadQuery.called).toBe(false);
+            });
+         });
+
          it("forwards givens to runnable.getPreparedResult and .run", async () => {
             const givensArg = { region: "EU" };
             const preparedResultStub = sinon
@@ -247,11 +397,13 @@ describe("service/model", () => {
             const runStub = sinon
                .stub()
                .rejects(new MalloyError("stub-stop", []));
+            const runnableStub = {
+               getPreparedResult: preparedResultStub,
+               run: runStub,
+            };
             const modelMaterializer = {
-               loadQuery: sinon.stub().returns({
-                  getPreparedResult: preparedResultStub,
-                  run: runStub,
-               }),
+               loadQuery: sinon.stub().returns(runnableStub),
+               loadRestrictedQuery: sinon.stub().returns(runnableStub),
             };
 
             const model = new Model(
@@ -347,11 +499,13 @@ describe("service/model", () => {
                         typeof API.util.wrapResult
                      >,
                   );
+               const runnableStub = {
+                  getPreparedResult: preparedResultStub,
+                  run: runStub,
+               };
                const modelMaterializer = {
-                  loadQuery: sinon.stub().returns({
-                     getPreparedResult: preparedResultStub,
-                     run: runStub,
-                  }),
+                  loadQuery: sinon.stub().returns(runnableStub),
+                  loadRestrictedQuery: sinon.stub().returns(runnableStub),
                };
                const model = new Model(
                   packageName,
@@ -528,6 +682,47 @@ describe("service/model", () => {
             });
 
             sinon.restore();
+         });
+
+         it("embeds model-level givens in executed cell newSources", async () => {
+            const sourceInfo = { name: "carriers", schema: { fields: [] } };
+            const givens = [
+               {
+                  name: "region",
+                  type: "string",
+                  annotations: ["#(doc) Region"],
+               },
+            ];
+            // A source-only code cell (no runnable) still emits newSources.
+            const runnableCells = [
+               {
+                  type: "code" as const,
+                  text: "import 'carriers.malloy'",
+                  newSources: [sourceInfo],
+               },
+            ];
+
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined, // modelMaterializer
+               undefined, // modelDef
+               undefined, // sources
+               undefined, // queries
+               undefined, // sourceInfos
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               runnableCells as any, // runnableNotebookCells
+               undefined, // compilationError
+               undefined, // filterMap
+               givens, // givens
+            );
+
+            const result = await model.executeNotebookCell(0);
+            const parsed = JSON.parse(result.newSources![0]);
+            expect(parsed.name).toBe("carriers");
+            expect(parsed.givens).toEqual(givens);
          });
       });
    });

@@ -45,6 +45,22 @@ export default function Model({
    const [sharedSourceIndex, setSharedSourceIndex] = React.useState(0);
    const [copyMessage, setCopyMessage] = useState("");
 
+   // Whether the model imports other files — drives the empty-state hint for
+   // import-only models, whose discovery surface is legitimately empty (no
+   // local sources, no export{}) but whose page would otherwise render blank.
+   // `modelDef` is returned by the server but intentionally absent from the
+   // typed CompiledModel schema (internal compiler blob), hence the cast.
+   const modelDefJson = (data as { modelDef?: string } | undefined)?.modelDef;
+   const hasImports = React.useMemo(() => {
+      if (!modelDefJson) return false;
+      try {
+         const def = JSON.parse(modelDefJson) as { imports?: unknown[] };
+         return Array.isArray(def.imports) && def.imports.length > 0;
+      } catch {
+         return false;
+      }
+   }, [modelDefJson]);
+
    if (isLoading) {
       return <Loading text="Fetching Model..." />;
    }
@@ -195,6 +211,29 @@ export default function Model({
                   ))}
                </Stack>
             )}
+
+            {/* Empty discovery surface: nothing exported, nothing to render.
+                For import-only models, say why and how to fix it — otherwise
+                the page reads as broken. */}
+            {(!Array.isArray(data?.sourceInfos) ||
+               data.sourceInfos.length === 0) &&
+               !(data?.queries && data.queries.length > 0) && (
+                  <Box sx={{ textAlign: "center", py: 6 }}>
+                     <Typography
+                        variant="body1"
+                        sx={{ color: "text.secondary", marginBottom: "8px" }}
+                     >
+                        This model exposes no sources or queries.
+                     </Typography>
+                     {hasImports && (
+                        <Typography variant="body2" color="text.secondary">
+                           It imports other files but re-exports nothing. Add{" "}
+                           <code>export {"{ source_name }"}</code> to surface
+                           imported sources here.
+                        </Typography>
+                     )}
+                  </Box>
+               )}
 
             {/* Model Explorer Dialog */}
             <ModelExplorerDialog

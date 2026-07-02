@@ -19,7 +19,13 @@ await build({
    format: "esm",
    external: [
       "@malloydata/db-duckdb",
-      "duckdb",
+      // The DuckDB engine binding (used by the storage layer). Externalized,
+      // not bundled, because its loader require()s platform-specific native
+      // .node files for every OS via a runtime switch; the bundler can't
+      // statically resolve the ones absent on the build host. Left as a
+      // runtime require resolved from node_modules, like the Malloy drivers.
+      "@duckdb/node-api",
+      "@duckdb/node-bindings",
       "@malloydata/malloy",
       "@malloydata/malloy-sql",
       "@malloydata/render",
@@ -36,6 +42,9 @@ await build({
 });
 
 fs.cpSync("../app/dist", "./dist/app", { recursive: true });
+
+// Copy hand-authored vanilla-JS runtime served at /sdk/publisher.js.
+fs.cpSync("./src/runtime", "./dist/runtime", { recursive: true });
 
 // Ship a default publisher.config.json inside the bundle so that
 // `npx @malloy-publisher/server` works with zero args (uses

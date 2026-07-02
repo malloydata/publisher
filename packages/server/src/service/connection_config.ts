@@ -22,6 +22,7 @@ export type EnvironmentConnectionMetadata = {
    isDuckLake: boolean;
    databasePath?: string;
    workingDirectory: string;
+   proxy?: ApiConnection["proxy"];
 };
 
 export type AssembledEnvironmentConnections = {
@@ -109,10 +110,10 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 // allowedDirectories, setupSQL, etc.). It is NOT a filesystem isolation
 // boundary: attachedDatabases[].path is not normalized or constrained to stay
 // under the environment root, and DuckDB's local-file access is unchanged.
-// Adversarial filesystem isolation is explicit non-goal of the MalloyConfig
-// adoption — see PR #682 release notes ("DuckDB hardening knobs are not
-// exposed", "no adversarial DuckDB filesystem isolation"). Future work owns
-// any path-traversal/allowlist enforcement.
+// Adversarial filesystem isolation is an explicit non-goal here: DuckDB
+// hardening knobs are not exposed and there is no adversarial DuckDB
+// filesystem isolation. Future work owns any path-traversal/allowlist
+// enforcement.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
@@ -258,6 +259,52 @@ function buildDuckdbEntry(
 }
 
 function validateConnectionShape(connection: ApiConnection): void {
+   if (connection.proxy) {
+      // A connection proxy makes THIS server open an outbound SSH tunnel to a
+      // tenant-configured bastion. It's a normal connection capability,
+      // authorized by whoever configures the connection — deliberately NOT gated
+      // by an env flag, and kept separate from the `publisher` HTTP multi-hop
+      // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
+      // publisher-to-publisher proxying, a distinct operator decision). Host-key
+      // pinning is fail-closed at connect time (see openProxy).
+      if (connection.proxy.type !== "ssh") {
+         throw new Error(
+            `Connection '${connection.name}' has an unsupported proxy type '${connection.proxy.type}'. Only 'ssh' is supported.`,
+         );
+      }
+      if (connection.type !== "postgres") {
+         throw new Error(
+            `Connection proxy is not supported for type '${connection.type}' (only 'postgres' today).`,
+         );
+      }
+      if (!connection.proxy.ssh) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' has type 'ssh' but no 'ssh' config object.`,
+         );
+      }
+      // The tunnel forwards to an explicit host:port; the connectionString form
+      // can't be rewritten to the local endpoint. Reject it outright when a
+      // proxy is set — normal postgres gives connectionString precedence over
+      // host/port, so a config carrying BOTH would silently tunnel to
+      // host/port and ignore the connectionString, connecting to a different
+      // database than the operator configured. Require discrete host/port.
+      if (connection.postgresConnection?.connectionString) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' does not support the connectionString form; ` +
+               `provide discrete host and port instead (the tunnel forwards to an explicit endpoint).`,
+         );
+      }
+      if (
+         !connection.postgresConnection?.host ||
+         !connection.postgresConnection?.port
+      ) {
+         throw new Error(
+            `Connection proxy on '${connection.name}' requires explicit host and port on the ` +
+               `postgres connection; the connectionString form is not supported with a proxy.`,
+         );
+      }
+   }
+
    switch (connection.type) {
       case "postgres":
       case "mysql":
@@ -336,6 +383,60 @@ function validateConnectionShape(connection: ApiConnection): void {
          }
          break;
       }
+      case "publisher": {
+         // SSRF gate (default-deny / fail-closed). A `publisher` connection
+         // makes THIS server issue outbound HTTP to a tenant-controlled
+         // `connectionUri` (both the query path in db-publisher's
+         // PublisherConnection and the introspection path in db_utils). That is
+         // the intended behavior for local `--watch-env` authoring, but in a
+         // hosted multi-tenant deployment (e.g. Credible running this server) it
+         // is an SSRF surface. Require an explicit opt-in so the type is refused
+         // unless the operator deliberately enabled it. This is the single
+         // choke point — every connection passes validateConnectionShape before
+         // it can be assembled, queried, or introspected — so denying here shuts
+         // off all three at once.
+         if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
+            throw new Error(
+               `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
+                  `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +
+                  `which is only appropriate for local --watch-env authoring. ` +
+                  `Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.`,
+            );
+         }
+         const publisher = connection.publisherConnection;
+         if (!publisher?.connectionUri) {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': missing connectionUri. ` +
+                  `Fix: { "name": "${connection.name}", "type": "publisher", ` +
+                  `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
+            );
+         }
+         // Reject a malformed connectionUri here, at config-load, rather than
+         // letting it fail deep in the request path — where the thrown error can
+         // echo the raw value back, leaking any credentials embedded in it
+         // (`redactUrlCredentials` returns the URI unchanged when it can't parse
+         // it). Never include the raw connectionUri in these messages; the
+         // scheme is safe to name.
+         let parsedUri: URL;
+         try {
+            parsedUri = new URL(publisher.connectionUri);
+         } catch {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': connectionUri is not a valid URL. ` +
+                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+            );
+         }
+         if (
+            parsedUri.protocol !== "http:" &&
+            parsedUri.protocol !== "https:"
+         ) {
+            throw new Error(
+               `Invalid publisher connection '${connection.name}': connectionUri must use http or https (got '${parsedUri.protocol}'). ` +
+                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+            );
+         }
+         break;
+      }
    }
 }
 
@@ -391,6 +492,7 @@ export function assembleEnvironmentConnections(
          isDuckLake,
          databasePath,
          workingDirectory: environmentPath,
+         proxy: connection.proxy,
       });
 
       switch (connection.type) {
@@ -543,6 +645,22 @@ export function assembleEnvironmentConnections(
                environmentPath,
                `${connection.name}_ducklake.duckdb`,
             );
+            break;
+         }
+
+         case "publisher": {
+            // connectionUri presence is validated by validateConnectionShape
+            // above. The proxied dataplane owns auth and read-only enforcement;
+            // PublisherConnection itself does not reject writes. The real
+            // dialect is the remote connection's and is resolved at runtime by
+            // the live connection, so getStaticConnectionAttributes returns
+            // undefined for publisher (falls through to its default).
+            const publisher = connection.publisherConnection!;
+            pojo.connections[connection.name] = {
+               is: "publisher",
+               connectionUri: publisher.connectionUri,
+               accessToken: publisher.accessToken,
+            };
             break;
          }
 

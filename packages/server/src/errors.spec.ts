@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
+   AccessDeniedError,
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
    internalErrorToHttpError,
+   ModelCompilationError,
+   NotQueryableError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ServiceUnavailableError,
@@ -27,6 +30,36 @@ describe("internalErrorToHttpError", () => {
       );
       expect(status).toBe(400);
       expect(json).toEqual({ code: 400, message: "bad input" });
+   });
+
+   it("maps AccessDeniedError to 403 (authorize gate)", () => {
+      const { status, json } = internalErrorToHttpError(
+         new AccessDeniedError('Access denied for source "gated".'),
+      );
+      expect(status).toBe(403);
+      expect(json).toEqual({
+         code: 403,
+         message: 'Access denied for source "gated".',
+      });
+   });
+
+   it("maps NotQueryableError to 404 (explore boundary)", () => {
+      const { status, json } = internalErrorToHttpError(
+         new NotQueryableError('No queryable source "hidden".'),
+      );
+      expect(status).toBe(404);
+      expect(json).toEqual({
+         code: 404,
+         message: 'No queryable source "hidden".',
+      });
+   });
+
+   it("maps ModelCompilationError to 424", () => {
+      const { status, json } = internalErrorToHttpError(
+         new ModelCompilationError({ message: "compile failed" }),
+      );
+      expect(status).toBe(424);
+      expect(json).toEqual({ code: 424, message: "compile failed" });
    });
 
    it("maps ConnectionError to 502 (distinct from auth, still retryable)", () => {

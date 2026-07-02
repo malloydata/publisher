@@ -1,11 +1,22 @@
-import { Materialization, MaterializationStatus } from "../DatabaseInterface";
+import {
+   BuildManifestResult,
+   Materialization,
+   MaterializationStatus,
+   MaterializationUpdate,
+} from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
-   "SUCCESS",
+   "MANIFEST_FILE_READY",
    "FAILED",
    "CANCELLED",
 ]);
+
+/** Non-terminal statuses count as "active" for the single-active guard. */
+const ACTIVE_STATUSES: readonly MaterializationStatus[] = [
+   "PENDING",
+   "MANIFEST_ROWS_READY",
+];
 
 function activeKeyFor(environmentId: string, packageName: string): string {
    return `${environmentId}|${packageName}`;
@@ -27,8 +38,9 @@ export class DuplicateActiveMaterializationError extends Error {
 /**
  * DuckDB-backed repository for package materializations.
  *
- * A Materialization tracks a single build run for an (environment, package) pair
- * through its lifecycle: PENDING -> RUNNING -> SUCCESS | FAILED | CANCELLED.
+ * A Materialization tracks a single build run for an (environment, package)
+ * pair through its lifecycle: PENDING -> MANIFEST_ROWS_READY ->
+ * MANIFEST_FILE_READY, or -> FAILED | CANCELLED.
  */
 export class MaterializationRepository {
    constructor(private db: DuckDBConnection) {}
@@ -73,9 +85,10 @@ export class MaterializationRepository {
       environmentId: string,
       packageName: string,
    ): Promise<Materialization | null> {
+      const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN ('PENDING', 'RUNNING')",
-         [environmentId, packageName],
+         `SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN (${placeholders})`,
+         [environmentId, packageName, ...ACTIVE_STATUSES],
       );
       return row ? this.mapRow(row) : null;
    }
@@ -100,8 +113,8 @@ export class MaterializationRepository {
 
       try {
          const rows = await this.db.all<Record<string, unknown>>(
-            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
             RETURNING *`,
             [
                id,
@@ -128,13 +141,7 @@ export class MaterializationRepository {
 
    async update(
       id: string,
-      updates: {
-         status?: MaterializationStatus;
-         startedAt?: Date;
-         completedAt?: Date;
-         error?: string | null;
-         metadata?: Record<string, unknown> | null;
-      },
+      updates: MaterializationUpdate,
    ): Promise<Materialization> {
       const now = this.now();
       const setClauses: string[] = [];
@@ -173,6 +180,12 @@ export class MaterializationRepository {
             updates.metadata ? JSON.stringify(updates.metadata) : null,
          );
       }
+      if (updates.manifest !== undefined) {
+         setClauses.push(`manifest = ?`);
+         params.push(
+            updates.manifest ? JSON.stringify(updates.manifest) : null,
+         );
+      }
 
       setClauses.push(`updated_at = ?`);
       params.push(now.toISOString());
@@ -190,15 +203,15 @@ export class MaterializationRepository {
       return updated;
    }
 
+   async deleteById(id: string): Promise<void> {
+      await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
+   }
+
    async deleteByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run(
          "DELETE FROM materializations WHERE environment_id = ?",
          [environmentId],
       );
-   }
-
-   async deleteById(id: string): Promise<void> {
-      await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
    }
 
    async deleteByPackage(
@@ -212,29 +225,32 @@ export class MaterializationRepository {
    }
 
    private mapRow(row: Record<string, unknown>): Materialization {
-      let metadata: Record<string, unknown> | null = null;
-      if (row.metadata) {
-         try {
-            metadata = JSON.parse(row.metadata as string);
-         } catch {
-            metadata = null;
-         }
-      }
-
+      const metadata = parseJsonColumn<Record<string, unknown>>(row.metadata);
       return {
          id: row.id as string,
          environmentId: row.environment_id as string,
          packageName: row.package_name as string,
          status: row.status as MaterializationStatus,
+         manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
+         metadata,
          startedAt: row.started_at ? new Date(row.started_at as string) : null,
          completedAt: row.completed_at
             ? new Date(row.completed_at as string)
             : null,
          error: row.error != null ? (row.error as string) : null,
-         metadata,
          createdAt: new Date(row.created_at as string),
          updatedAt: new Date(row.updated_at as string),
       };
+   }
+}
+
+/** Parse a nullable JSON text column, returning null on absence or parse error. */
+function parseJsonColumn<T>(value: unknown): T | null {
+   if (value == null) return null;
+   try {
+      return JSON.parse(value as string) as T;
+   } catch {
+      return null;
    }
 }
 

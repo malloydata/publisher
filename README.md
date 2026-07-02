@@ -52,19 +52,20 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 - **`serving`** — ready to handle requests.
 - **`initializing`** — loading packages and connections from `publisher.config.json`. Normal on boot, and especially noticeable on the first run when sample packages need to be cloned from GitHub. Wait for `serving`.
 - **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` (see [Configuration](#configuration)).
+- **`throttled`** — the memory governor has hit its back-pressure limit and is rejecting new package loads and queries to stay under `PUBLISHER_MAX_MEMORY_BYTES`. Already-loaded packages remain serviceable; the control plane should treat the worker as unhealthy for new load until memory drops. Only reported when the memory governor is enabled.
 
 ---
 
 ## Docker
 
-Two ways to run the Publisher in Docker: build the image from source, or pull the pre-built image from Docker Hub. Either way, the container's `WORKDIR` is `/publisher` (mount your `publisher.config.json` there), REST is on `:4000`, and MCP is on `:4040`.
+Two ways to run the Publisher in Docker: build the image from source, or pull the pre-built image from Docker Hub. Either way, the container's `WORKDIR` is `/publisher` (mount your `publisher.config.json` there), REST is on `:4000`, MCP is on `:4040`, and the agent MCP server is on `:4041`.
 
 ### Build from source
 
 ```bash
 docker build -t malloy-publisher .
 docker run -d \
-  -p 4000:4000 -p 4040:4040 \
+  -p 4000:4000 -p 4040:4040 -p 4041:4041 \
   -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
   malloy-publisher
 ```
@@ -78,7 +79,7 @@ The official pre-built image is published to Docker Hub at [`ms2data/malloy-publ
 ```bash
 docker pull ms2data/malloy-publisher
 docker run -d \
-  -p 4000:4000 -p 4040:4040 \
+  -p 4000:4000 -p 4040:4040 -p 4041:4041 \
   -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
   ms2data/malloy-publisher
 ```
@@ -100,6 +101,15 @@ A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compo
 3. `docker compose up -d`
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
+
+## Agent MCP server
+
+Alongside the core MCP server on `:4040`, Publisher runs a second, separate MCP server on `:4041` (`AGENT_MCP_PORT`) aimed at AI agents. It exposes two read-only retrieval tools:
+
+- **`malloy_getContext`**: given a plain-English question, returns the most relevant model entities (sources, views, named queries, and dimension/measure fields) for a package, so an agent can ground a query in what the model actually defines instead of guessing names.
+- **`malloy_searchDocs`**: keyword search over a bundled index of the Malloy documentation.
+
+It also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4041/mcp`. The server is stateless and unauthenticated, mirroring the core MCP server; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
 
 ## Documentation
 
@@ -135,7 +145,7 @@ When Malloy executes a query, the result includes both **data** and **rendering 
 
 An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the network and provides a professional UI for data exploration.
 
-- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
+- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, plus a separate [agent MCP server](#agent-mcp-server) (port 4041) with retrieval tools and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
 - **App:** Web interface for browsing Malloy content, exploring models with a no-code query builder, and viewing results.
 
 ### Publisher SDK
@@ -156,7 +166,7 @@ Publisher consists of four packages:
 
 | Package                                               | Description                                                                                                                                     |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **[packages/server](packages/server/)**               | Express.js backend providing REST API (port 4000) and MCP API (port 4040). Loads Malloy packages, compiles queries, executes against databases. |
+| **[packages/server](packages/server/)**               | Express.js backend providing REST API (port 4000), MCP API (port 4040), and an agent MCP server (port 4041). Loads Malloy packages, compiles queries, executes against databases. |
 | **[packages/sdk](packages/sdk/)**                     | React component library for building UIs that consume Publisher's REST API.                                                                     |
 | **[packages/app](packages/app/)**                     | Reference implementation and production-ready data exploration tool built with the SDK.                                                         |
 | **[packages/python-client](packages/python-client/)** | Auto-generated Python SDK for the REST API.                                                                                                     |
@@ -250,11 +260,14 @@ Publisher reads its runtime configuration from `publisher.config.json` (see [Dev
 | `PUBLISHER_PORT`                          | `--port <n>`                                    | `4000`    | REST + static-app HTTP port.                                                                                                                                                                           |
 | `PUBLISHER_HOST`                          | `--host <addr>`                                 | `0.0.0.0` | Host binding for the main server.                                                                                                                                                                      |
 | `MCP_PORT`                                | `--mcp_port <n>`                                | `4040`    | MCP HTTP port.                                                                                                                                                                                         |
+| `AGENT_MCP_PORT`                          | `(none)`                                        | `4041`    | Agent MCP HTTP port. Serves the agent retrieval tools (`malloy_getContext`, `malloy_searchDocs`) and the agent skills as MCP prompts, on a separate endpoint from the core MCP server. Binds to `PUBLISHER_HOST`.                  |
 | `SERVER_ROOT`                             | `--server_root <dir>`                           | `.` (cwd) | Directory containing `publisher.config.json`.                                                                                                                                                          |
 | `INITIALIZE_STORAGE`                      | `--init`                                        | _unset_   | Set to `true` (or pass `--init`) to initialize storage on boot. Set on the first run with new persistent storage; safe to omit afterward. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS`         | `--shutdown_drain_duration_seconds <s>`         | `0`       | Time to keep `/health` returning OK after SIGTERM before refusing new traffic.                                                                                                                         |
 | `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown_graceful_close_timeout_seconds <s>` | `0`       | Time to wait for in-flight requests to drain before forcing close.                                                                                                                                     |
 | `NODE_ENV`                                | —                                               | _unset_   | Set to `development` to proxy non-API traffic to the Vite dev server on `:5173`.                                                                                                                       |
+| `PUBLISHER_WATCH`                          | `--watch-env <name>`                            | _unset_   | Dev only. Mount the named environment's local-dir packages in place (a symlink, not a copy) and watch them, so edits to your source recompile that package and live-reload any open pages. Repeat the flag or use a comma-separated list to mount several in place; only the first one auto-reloads. Leave unset in production, where packages are copied and stay decoupled from their source. |
+| `PUBLISHER_FRAME_ANCESTORS`                | —                                               | `*`       | `Content-Security-Policy: frame-ancestors` value sent on served HTML pages, controlling which origins may embed a page in an iframe. Defaults to any origin. |
 | `LOG_LEVEL`                               | —                                               | `debug`   | One of `error`, `warn`, `info`, `verbose`, `debug`, `silly`.                                                                                                                                           |
 | `DISABLE_RESPONSE_LOGGING`                | —                                               | _unset_   | Set to `true` or `1` to suppress response-body logging.                                                                                                                                                |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`             | —                                               | _unset_   | OpenTelemetry collector endpoint.                                                                                                                                                                      |
@@ -330,6 +343,46 @@ Theme object shape:
 `palette.series` and `font` are shared across modes; the rest of the palette keys take an explicit `{ light, dark }` pair. `mapColor` is the saturated end of the choropleth gradient on `# shape_map` and `# segment_map` visualizations.
 
 See [Theming Publisher](https://docs.malloydata.dev/documentation/user_guides/publishing/theming) in the public docs for the full walkthrough, including the editor UI and per-chart annotation examples.
+
+## In-package data apps
+
+A package can ship a `public/` directory of web files (an `index.html` plus CSS, JS, and images) next to its `.malloy` files. Publisher serves only that directory at `/environments/<env>/packages/<pkg>/<file>`, so models, data, and the `publisher.json` manifest stay private and are reachable only through the query API. It lists the pages at `GET .../packages/<pkg>/pages`. Pages render inside the Publisher app by default and can also be embedded in another page as an auto-resizing iframe. A small runtime at `/sdk/publisher.js` exposes `Publisher.query(...)` and `Publisher.embed(...)` for talking to the REST API from the page, with no build step.
+
+For local development, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`). Publisher then mounts that environment's local-dir packages in place and watches them: editing a `.malloy` recompiles the package, editing an asset refreshes the page, and open pages live-reload over a server-sent-events stream at `GET .../packages/<pkg>/events`. See `examples/html-data-app/` for a worked example, and [docs/html-data-apps.md](docs/html-data-apps.md) for the full authoring reference (the `Publisher.query` / `Publisher.embed` API, the page and event contracts, and the security model).
+
+## Controlling the discovery surface
+
+Declaring `explores` in `publisher.json` is the **single opt-in** for curated discovery. When absent or empty, every model is listed with its full source set — today's backward-compatible behavior.
+
+A package's manifest can scope which models and sources appear in listings (the surface that drives discovery and chat), at two granularities that **both apply only after `explores` is declared**:
+
+- **File level — `explores`.** An optional `string[]` of `.malloy` file paths (relative to the package root) that form the package's public surface. When present, only those models are returned by `listModels()`; every other `.malloy` file still compiles for import/join resolution and stays queryable, but is hidden from listings. When absent or empty, every model is listed. Notebooks are always listed regardless of this field (they can't be imported, so they have nothing to hide behind).
+
+  ```json
+  {
+    "name": "sales",
+    "description": "Sales models",
+    "explores": ["index.malloy"]
+  }
+  ```
+
+- **Within a file — `export { … }`.** Once `explores` is declared, the discovery accessors list only the model's re-export closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos` expose. A model with no `export { … }` exports all of its locally-declared top-level sources; declaring `export { customers }` lists only `customers` and keeps imported/internal helpers out.
+
+The two compose: `explores` decides which files are listed, and `export { … }` decides which sources within a listed file are shown.
+
+- **Query boundary — `queryableSources`.** Controls whether that discovery surface is *also* a query boundary. `"declared"` (the default) makes **queryable == discoverable**: when `explores` is declared, only `explores` files — and within them only the `export {}` closure — are valid top-level query targets; every other source still compiles, imports, joins, and extends, but a direct query against it is denied with a `404` (indistinguishable from a non-existent target). `"all"` decouples the axes — `explores`/`export {}` gate discovery only and every compiled source stays directly queryable. When `explores` is absent there is no curated surface, so both modes are equivalent (everything queryable).
+
+  ```json
+  { "name": "sales", "explores": ["index.malloy"], "queryableSources": "all" }
+  ```
+
+  For gradual migration, use `explores` with `queryableSources: "all"` to curate listings while keeping every source queryable by name; switch to `"declared"` when ready to enforce the boundary.
+
+> **`explores`/`export {}` are a discovery filter; `queryableSources` decides if they also gate queries; `#(authorize)` is the identity gate.** With `queryableSources: "all"`, hiding a source only removes it from listings — it stays queryable by name. To restrict *who* can query (as opposed to *what* is queryable), gate the source with `#(authorize)` (see [docs/authorize.md](docs/authorize.md)); those gates are enforced against the complete source set and are never weakened by listing or boundary curation.
+>
+> The `queryableSources` boundary applies to the *query* surface (`getQueryResults`, the MCP query tool, and `/compile`). It does **not** cover raw retrieval by exact path — a hidden model's file text and its compiled metadata are still fetchable by path — by design; use `#(authorize)` when the contents themselves must be protected, not just removed from discovery.
+
+Validation is asymmetric by design: **publishing** a package with an `explores` entry that doesn't resolve to a real model is rejected with a `400`, while at **startup/reload** the package still serves but hides the unresolved entry (it never falls back to listing everything) and surfaces the reason in the package's `exploresWarnings` field.
 
 ## Community
 

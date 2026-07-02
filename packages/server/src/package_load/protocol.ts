@@ -17,7 +17,7 @@
  *
  * Embedded database probing (`.parquet` / `.csv` schema + row count)
  * stays on the main thread — it reuses the package's existing DuckDB
- * connection (PR #772) and the probe queries are async-IO-bound, not
+ * connection and the probe queries are async-IO-bound, not
  * CPU-bound. Keeping all native-DB handles on the main thread also
  * sidesteps Bun crash 0x20131 where duckdb-native cannot be loaded
  * into more than one isolate of the same process.
@@ -27,8 +27,8 @@
  *     (live native handles can't cross the worker boundary).
  *   - Lazy-hydrating each model's `ModelMaterializer` from `modelDef`
  *     via `Runtime._loadModelFromModelDef` on first query — NO
- *     recompile. This is what closes the loop on PR #767's original
- *     "first-query recompile on main thread" gap.
+ *     recompile, so the first query never re-runs the compiler on
+ *     the main thread.
  *
  * Per-model compile failures are returned in-band on
  * `SerializedModel.compilationError` so a single bad model doesn't
@@ -64,11 +64,7 @@
  * cheaper than `JSON.stringify` for the multi-MB modelDef payloads.
  */
 
-import type {
-   Annotation,
-   SQLSourceDef,
-   TableSourceDef,
-} from "@malloydata/malloy";
+import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -177,7 +173,14 @@ export interface SerializedNotebookCell {
 export interface LoadPackageResult {
    type: "load-package-result";
    requestId: string;
-   packageMetadata: { name?: string; description?: string };
+   packageMetadata: {
+      name?: string;
+      description?: string;
+      explores?: string[];
+      queryableSources?: "declared" | "all";
+      manifestLocation?: string | null;
+      materialization?: { schedule: string | null } | null;
+   };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
@@ -236,7 +239,6 @@ export interface SchemaForTablesRequest {
    tables: Record<string, string>;
    options: {
       refreshTimestamp?: number;
-      modelAnnotation?: Annotation;
    };
 }
 
@@ -256,7 +258,6 @@ export interface SchemaForSqlRequest {
    sentence: unknown;
    options: {
       refreshTimestamp?: number;
-      modelAnnotation?: Annotation;
    };
 }
 

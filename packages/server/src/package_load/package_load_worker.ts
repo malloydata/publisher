@@ -16,7 +16,7 @@
  * duplicates the in-memory DB state and adds native-module load
  * latency to every worker spawn. Database probing (`readDatabases`)
  * stays on the main thread where it can reuse the package's existing
- * DuckDB connection (see PR #772).
+ * DuckDB connection.
  *
  * Boundary
  * --------
@@ -46,7 +46,6 @@
  */
 import {
    contextOverlay,
-   type Annotation,
    type BuildManifestEntry,
    type Connection,
    type FetchSchemaOptions,
@@ -56,16 +55,12 @@ import {
    type ModelDef,
    type ModelMaterializer,
    modelDefToModelInfo,
-   type NamedModelObject,
    type NamedQueryDef,
    type Query,
    Runtime,
    type SQLSourceDef,
    type SQLSourceRequest,
-   type StructDef,
    type TableSourceDef,
-   type TurtleDef,
-   isSourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -80,11 +75,19 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import {
    MODEL_FILE_SUFFIX,
+   normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
-import { parseFilters, type FilterDefinition } from "../service/filter";
+import { ModelCompilationError } from "../errors";
+import { validateAuthorizeProbes } from "../service/authorize";
+import { type FilterDefinition } from "../service/filter";
+import { parsePackageMaterialization } from "../service/package_manifest";
+import {
+   extractQueriesFromModelDef,
+   extractSourcesFromModelDef,
+} from "../service/source_extraction";
 import {
    malloyGivenToApi,
    type MalloyGiven,
@@ -271,14 +274,12 @@ class ProxyConnection {
 
 function serializeFetchOptions(options: FetchSchemaOptions): {
    refreshTimestamp?: number;
-   modelAnnotation?: Annotation;
 } {
-   const out: { refreshTimestamp?: number; modelAnnotation?: Annotation } = {};
+   const out: {
+      refreshTimestamp?: number;
+   } = {};
    if (options.refreshTimestamp !== undefined) {
       out.refreshTimestamp = options.refreshTimestamp;
-   }
-   if (options.modelAnnotation !== undefined) {
-      out.modelAnnotation = options.modelAnnotation;
    }
    return out;
 }
@@ -376,16 +377,43 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 // stays decoupled from the main-thread service module graph)
 // ──────────────────────────────────────────────────────────────────────
 
-async function readPackageMetadata(
-   packagePath: string,
-): Promise<{ name?: string; description?: string }> {
+async function readPackageMetadata(packagePath: string): Promise<{
+   name?: string;
+   description?: string;
+   explores?: string[];
+   queryableSources?: "declared" | "all";
+   manifestLocation?: string | null;
+   materialization?: { schedule: string | null } | null;
+}> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
    const parsed = JSON.parse(contents) as {
       name?: string;
       description?: string;
+      explores?: string[];
+      queryableSources?: unknown;
+      manifestLocation?: unknown;
+      materialization?: unknown;
    };
-   return { name: parsed.name, description: parsed.description };
+   return {
+      name: parsed.name,
+      description: parsed.description,
+      explores: Array.isArray(parsed.explores)
+         ? parsed.explores.map(normalizeModelPath)
+         : undefined,
+      // Default + invalid fall back to "declared" (fail-safe: queryable ==
+      // discoverable). Only an explicit "all" opts out of the query boundary.
+      queryableSources: parsed.queryableSources === "all" ? "all" : "declared",
+      // URI (gs://, s3://, file://, or local path) of the control-plane-computed
+      // build manifest. The main thread fetches + binds it after load.
+      manifestLocation:
+         typeof parsed.manifestLocation === "string"
+            ? parsed.manifestLocation
+            : null,
+      // Package-level Malloy Persistence policy; surfaced to the control plane,
+      // which owns scheduling. Only `schedule` is read today.
+      materialization: parsePackageMaterialization(parsed.materialization),
+   };
 }
 
 async function listPackageFiles(packagePath: string): Promise<string[]> {
@@ -401,6 +429,18 @@ function filterModelPaths(allRelative: string[]): string[] {
    );
 }
 
+// `normalizeModelPath` (shared, from ../constants) runs here at parse time so
+// the keys stored in Package.models are already normalized, and the API
+// publish/update path normalizes its `explores` input through the same helper —
+// so on-disk and API-written manifests share one representation.
+
+// explores validation is intentionally NOT done here. The worker is the
+// shared load path (startup, reload, AND publish), but the policy differs by
+// context — strict-reject at publish, warn-and-fail-safe at load — so it lives
+// on the main thread (see Package.getInvalidExplores / loadViaWorker and the
+// publish path in package.controller). An unmatched entry simply lists nothing
+// (listModels filters by set membership), which is the fail-safe outcome.
+
 // ──────────────────────────────────────────────────────────────────────
 // Model compile (mirrors service/model.ts but produces SerializedModel)
 // ──────────────────────────────────────────────────────────────────────
@@ -411,6 +451,7 @@ interface ApiSourceWire {
    views?: { name: string; annotations?: string[] }[];
    filters?: unknown[];
    givens?: unknown[];
+   authorize?: string[];
 }
 interface ApiQueryWire {
    name: string;
@@ -472,96 +513,20 @@ function appendLocalSourceInfos(
    }
 }
 
+// Source / query introspection is shared with the in-process path; see
+// service/source_extraction.ts. The worker has no logger, so a filter parse
+// failure is swallowed silently (no `onParseError` callback) — matching the
+// prior worker-local behavior.
 function extractSources(
-   modelPath: string,
    modelDef: ModelDef,
    givens: ApiGivenWire[] | undefined,
 ): { sources: ApiSourceWire[]; filterMap: Map<string, FilterDefinition[]> } {
-   const filterMap = new Map<string, FilterDefinition[]>();
-   const sources: ApiSourceWire[] = Object.values(modelDef.contents)
-      .filter((obj) => isSourceDef(obj))
-      .map((sourceObj) => {
-         const sourceName =
-            (sourceObj as StructDef).as || (sourceObj as StructDef).name;
-         const annotations = (sourceObj as StructDef).annotation?.blockNotes
-            ?.filter((note) => note.at.url.includes(modelPath))
-            .map((note) => note.text);
-
-         const collected: string[][] = [];
-         let cur: Annotation | undefined = (sourceObj as StructDef).annotation;
-         while (cur) {
-            if (cur.blockNotes) {
-               collected.push(cur.blockNotes.map((note) => note.text));
-            }
-            cur = cur.inherits;
-         }
-         const allAnnotations = collected.reverse().flat();
-         let filters: unknown[] | undefined;
-         if (allAnnotations.length > 0) {
-            try {
-               const parsed = parseFilters(allAnnotations);
-               if (parsed.length > 0) {
-                  filterMap.set(sourceName, parsed);
-                  const fields = (sourceObj as StructDef).fields;
-                  filters = parsed.map((f) => {
-                     const field = fields.find(
-                        (fd) => (fd.as || fd.name) === f.dimension,
-                     );
-                     return {
-                        name: f.name,
-                        dimension: f.dimension,
-                        type: f.type,
-                        implicit: f.implicit,
-                        required: f.required,
-                        dimensionType: field?.type as string | undefined,
-                     };
-                  });
-               }
-            } catch {
-               /* parse errors are warnings; matches in-process */
-            }
-         }
-
-         const views = (sourceObj as StructDef).fields
-            .filter((f) => f.type === "turtle")
-            .filter((turtle) =>
-               (turtle as TurtleDef).pipeline
-                  .map((stage) => stage.type)
-                  .every((type) => type === "reduce"),
-            )
-            .map((turtle) => ({
-               name: turtle.as || turtle.name,
-               annotations: turtle?.annotation?.blockNotes
-                  ?.filter((note) => note.at.url.includes(modelPath))
-                  .map((note) => note.text),
-            }));
-
-         return {
-            name: sourceName,
-            annotations,
-            views,
-            filters,
-            givens,
-         } as ApiSourceWire;
-      });
-
-   return { sources, filterMap };
+   const { sources, filterMap } = extractSourcesFromModelDef(modelDef, givens);
+   return { sources: sources as unknown as ApiSourceWire[], filterMap };
 }
 
-function extractQueries(modelPath: string, modelDef: ModelDef): ApiQueryWire[] {
-   const isNamedQuery = (obj: NamedModelObject): obj is NamedQueryDef =>
-      obj.type === "query";
-   return Object.values(modelDef.contents)
-      .filter(isNamedQuery)
-      .map((q) => ({
-         name: q.as || q.name,
-         sourceName: typeof q.structRef === "string" ? q.structRef : undefined,
-         annotations: q?.annotation?.blockNotes
-            ?.filter((note: { at: { url: string } }) =>
-               note.at.url.includes(modelPath),
-            )
-            .map((note: { text: string }) => note.text),
-      }));
+function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
+   return extractQueriesFromModelDef(modelDef) as ApiQueryWire[];
 }
 
 function buildRuntimeForModel(
@@ -621,8 +586,12 @@ async function compileMalloyModel(
    );
    appendLocalSourceInfos(modelDef, sourceInfos, importedNames);
 
-   const { sources, filterMap } = extractSources(modelPath, modelDef, givens);
-   const queries = extractQueries(modelPath, modelDef);
+   const { sources, filterMap } = extractSources(modelDef, givens);
+   const queries = extractQueries(modelDef);
+   // Validate #(authorize) at compile time (shared with Model.create). Throws
+   // on an unknown given / source-field reference; compileOneModel's catch
+   // turns it into this model's compilationError.
+   await validateAuthorizeProbes(mm, sources);
 
    return {
       modelPath,
@@ -630,6 +599,10 @@ async function compileMalloyModel(
       modelDef,
       modelInfo: modelDefToModelInfo(modelDef),
       sourceInfos,
+      // `sources`/`queries` ship complete (authorize + filter enforcement and
+      // join resolution read the full set); the Model's discovery accessors
+      // filter them down to the export closure (`modelDef.exports`) to match
+      // `modelInfo`/`sourceInfos`.
       sources,
       queries,
       filterMap: Array.from(filterMap.entries()),
@@ -798,10 +771,12 @@ async function compileNotebookModel(
          collected.importedNames,
       );
       finalSourceInfos = collected.sourceInfos;
-      const extracted = extractSources(modelPath, finalModelDef, finalGivens);
+      const extracted = extractSources(finalModelDef, finalGivens);
       finalSources = extracted.sources;
       finalFilterMap = extracted.filterMap;
-      finalQueries = extractQueries(modelPath, finalModelDef);
+      finalQueries = extractQueries(finalModelDef);
+      // Validate #(authorize) at compile time (shared with Model.create).
+      await validateAuthorizeProbes(mm, finalSources);
    }
 
    return {
@@ -870,6 +845,7 @@ async function loadPackage(
 
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
          compileOneModel(job, malloyConfig, modelPath),
@@ -896,6 +872,18 @@ function serializeError(error: unknown): SerializedError {
          message: error.message,
          stack: error.stack,
          malloyProblems: error.problems as unknown[],
+         isCompilationError: true,
+      };
+   }
+   // ModelCompilationError (e.g. an invalid #(authorize) annotation caught by
+   // validateAuthorizeProbes) carries no Malloy `problems`, but it must keep its
+   // compilation-error classification across the worker boundary so the main
+   // thread re-wraps it as a 424, not a generic 500.
+   if (error instanceof ModelCompilationError) {
+      return {
+         name: error.name,
+         message: error.message,
+         stack: error.stack,
          isCompilationError: true,
       };
    }

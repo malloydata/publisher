@@ -71,4 +71,14 @@ if [ -n "$malloy_resolutions" ]; then
 fi
 
 echo "Updated all @malloydata/* packages to ^$NEW_VERSION (except @malloydata/malloy-explorer; see above)."
-echo "Run 'bun install' to pull the new versions"
+
+# Pull the new versions so bun.lock records the @duckdb/node-api version the
+# new Malloy resolves to, then align the DuckDB build-time knobs (CLI install,
+# Dockerfile) to it. A Malloy bump can move that engine to a new DuckDB
+# version; syncing here keeps the baked CLI/extensions on the same version the
+# runtime reads, with no manual follow-up step.
+echo "Pulling new versions with 'bun install'..."
+bun install
+
+echo "Syncing DuckDB build version to Malloy's @duckdb/node-api engine..."
+bun scripts/sync-duckdb-version.js --write

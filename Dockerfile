@@ -11,10 +11,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://install.duckdb.org | bash && \
-    ln -s /root/.duckdb/cli/latest/duckdb /usr/local/bin/duckdb && \
-    curl -sSL https://raw.githubusercontent.com/iqea-ai/duckdb-snowflake/main/scripts/install-adbc-driver.sh | bash && \
-    ldconfig && \
+# DuckDB CLI version, pinned to @duckdb/node-api (the query engine) so the
+# CLI bakes extensions into the same ~/.duckdb/extensions/v<version>/ dir
+# the runtime reads. CI passes --build-arg DUCKDB_VERSION derived from the
+# lockfile (the source of truth); the default below is a fallback for plain
+# `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
+# by the CI consistency check.
+ARG DUCKDB_VERSION=1.5.3
+RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
+    ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -28,6 +33,14 @@ ENV JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto
 ENV PATH=$JAVA_HOME/bin:$PATH
 ENV NODE_ENV=production
 WORKDIR /publisher
+
+# CA certificates are required for the DuckDB extension bake (run by
+# packages/server's build): without them @duckdb/node-api can't verify TLS to
+# extensions.duckdb.org and every download fails with an SSL CA cert error.
+# The bun:slim base ships without them.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
@@ -66,10 +79,10 @@ WORKDIR /publisher
 # (some tools truncate at 80–120 chars); the `documentation` URL points
 # at the root README's Docker section for build/run/mount-path details.
 LABEL org.opencontainers.image.title="Malloy Publisher" \
-      org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
-      org.opencontainers.image.source="https://github.com/malloydata/publisher" \
-      org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
-      org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040, agent MCP :4041)." \
+    org.opencontainers.image.source="https://github.com/malloydata/publisher" \
+    org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
+    org.opencontainers.image.licenses="MIT"
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
@@ -84,14 +97,35 @@ COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
+# Carry over the DuckDB extensions baked during the builder stage's
+# `build:server-only` (packages/server's build runs bake-duckdb-extensions).
+# They live in ~/.duckdb/extensions/v<version>/, which the runtime engine reads
+# at INSTALL/LOAD time -- so the server finds them on disk and skips the network
+# fetch. Copying the baked cache from the builder keeps a single bake mechanism
+# (the server build) instead of re-running it here. The CLI (base-deps) and
+# runtime engine are pinned to the same DuckDB version, so all agree on one dir.
+COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
+
 # Runtime config
+ARG DUCKDB_VERSION=1.5.3
 ENV NODE_ENV=production
-ENV PATH="/root/.duckdb/cli/latest:$PATH"
+ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 RUN mkdir -p /etc/publisher
-# Declare both runtime ports so `docker run -P` and Docker Desktop's
-# port-preview surface MCP as well as REST. The server already listens
-# on both — this just makes them discoverable.
-EXPOSE 4000 4040
+
+# Trust the Amazon RDS root CAs so Postgres->RDS connections verify the server
+# certificate out of the box. Node/Bun ignore the OS trust store and use their
+# own bundled CA set, so NODE_EXTRA_CA_CERTS is the load-bearing knob (it appends
+# to that set). Fetched at build (curl is in base-deps) rather than vendored, so
+# there is no committed cert to keep fresh: a CA rotation is picked up on the next
+# image build/release, and every consumer of this image (the worker, the
+# SSH-bastion connection path) inherits the trust anchor without re-mounting a CA.
+RUN curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    -o /etc/ssl/certs/rds-global-bundle.pem
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/rds-global-bundle.pem
+# Declare the runtime ports so `docker run -P` and Docker Desktop's
+# port-preview surface them. The server already listens on all three (REST on
+# 4000, core MCP on 4040, agent MCP on 4041); this just makes them discoverable.
+EXPOSE 4000 4040 4041
 
 # Pass --server_root explicitly so the zero-arg bundled-default trigger
 # in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire

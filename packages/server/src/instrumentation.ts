@@ -1,5 +1,4 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { metrics } from "@opentelemetry/api";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
@@ -18,6 +17,7 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import type { NextFunction, Request, Response } from "express";
 import { logger } from "./logger";
+import { publisherMeter } from "./telemetry";
 
 let prometheusExporter: PrometheusExporter | null = null;
 let sdk: NodeSDK | null = null;
@@ -98,7 +98,7 @@ instrument();
 
 // --- HTTP metrics middleware ---
 
-const meter = metrics.getMeter("publisher");
+const meter = publisherMeter();
 
 const httpRequestDuration = meter.createHistogram(
    "http_server_request_duration_ms",
@@ -121,8 +121,20 @@ const httpRequestCount = meter.createCounter("http_server_requests_total", {
 // /health/liveness probe (a pure synchronous 200 handler) can fail under K8s,
 // so we surface p50/p99/max so an operator can correlate liveness restarts
 // with sustained event-loop pressure (large Malloy compiles, GC, etc.).
-const eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
-eventLoopHistogram.enable();
+//
+// `monitorEventLoopDelay` is a Node-only API; some runtimes (e.g. Bun on
+// certain platforms, used by the integration test suite) don't implement it.
+// Degrade gracefully there rather than crashing module load: the metrics are
+// simply not registered.
+const eventLoopHistogram = (() => {
+   try {
+      const histogram = monitorEventLoopDelay({ resolution: 20 });
+      histogram.enable();
+      return histogram;
+   } catch {
+      return null;
+   }
+})();
 
 const eventLoopLagP50 = meter.createObservableGauge(
    "publisher_event_loop_lag_p50_ms",
@@ -150,21 +162,25 @@ const eventLoopLagMax = meter.createObservableGauge(
 );
 
 // Sample all three in one batch so the histogram reset can't race the reads.
-meter.addBatchObservableCallback(
-   (observableResult) => {
-      observableResult.observe(
-         eventLoopLagP50,
-         eventLoopHistogram.percentile(50) / 1e6,
-      );
-      observableResult.observe(
-         eventLoopLagP99,
-         eventLoopHistogram.percentile(99) / 1e6,
-      );
-      observableResult.observe(eventLoopLagMax, eventLoopHistogram.max / 1e6);
-      eventLoopHistogram.reset();
-   },
-   [eventLoopLagP50, eventLoopLagP99, eventLoopLagMax],
-);
+// Skipped entirely when the runtime lacks event-loop-delay monitoring.
+if (eventLoopHistogram) {
+   const histogram = eventLoopHistogram;
+   meter.addBatchObservableCallback(
+      (observableResult) => {
+         observableResult.observe(
+            eventLoopLagP50,
+            histogram.percentile(50) / 1e6,
+         );
+         observableResult.observe(
+            eventLoopLagP99,
+            histogram.percentile(99) / 1e6,
+         );
+         observableResult.observe(eventLoopLagMax, histogram.max / 1e6);
+         histogram.reset();
+      },
+      [eventLoopLagP50, eventLoopLagP99, eventLoopLagMax],
+   );
+}
 
 const IGNORED_PATHS = new Set([
    "/health",

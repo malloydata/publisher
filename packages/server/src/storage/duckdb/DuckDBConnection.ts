@@ -1,11 +1,30 @@
 import { Mutex } from "async-mutex";
-import duckdb from "duckdb";
+import {
+   DuckDBConnection as NeoConnection,
+   DuckDBInstance,
+   type DuckDBValue,
+} from "@duckdb/node-api";
 import * as path from "path";
 import { DatabaseConnection } from "../DatabaseInterface";
 
+/**
+ * Embedded persistence layer for the publisher's own metadata (environments,
+ * packages, connections, materializations, build manifests) in `publisher.db`.
+ *
+ * This is a plain DAO over a durable, exclusively-owned DuckDB handle -- it is
+ * deliberately NOT Malloy's `@malloydata/db-duckdb` connection, which is an
+ * analytical query connection (no prepared-statement parameter binding, a
+ * `:memory:` primary with ATTACH/DETACH/idle lifecycle, pooled/shared
+ * instances, and a poison-pill close). Those semantics are wrong for a
+ * source-of-truth store that must hold one handle open for the server's
+ * lifetime and run parameterized CRUD.
+ *
+ * It wraps `@duckdb/node-api` (the same DuckDB engine Malloy pulls in), so the
+ * repo carries a single DuckDB engine rather than a second, redundant driver.
+ */
 export class DuckDBConnection implements DatabaseConnection {
-   private db: duckdb.Database | null = null;
-   private connection: duckdb.Connection | null = null;
+   private instance: DuckDBInstance | null = null;
+   private connection: NeoConnection | null = null;
    private dbPath: string;
    private mutex: Mutex = new Mutex();
 
@@ -15,94 +34,47 @@ export class DuckDBConnection implements DatabaseConnection {
    }
 
    async initialize(): Promise<void> {
-      return new Promise((resolve, reject) => {
-         this.db = new duckdb.Database(this.dbPath, {}, (err) => {
-            if (err) {
-               console.error("Failed to create DuckDB database:", err);
-               reject(new Error(`Failed to initialize DuckDB: ${err.message}`));
-               return;
-            }
-
-            // Connect synchronously
-            this.connection = (
-               this.db as duckdb.Database & { connect(): duckdb.Connection }
-            ).connect();
-
-            if (!this.connection) {
-               reject(new Error("Failed to create connection object"));
-               return;
-            }
-
-            // Verify connection works
-            this.connection.all("SELECT 42 as answer", (testErr, _rows) => {
-               if (testErr) {
-                  console.error("Connection test failed:", testErr);
-                  reject(
-                     new Error(
-                        `Failed to verify DuckDB connection: ${testErr.message}`,
-                     ),
-                  );
-                  return;
-               }
-
-               resolve();
-            });
-         });
-      });
+      try {
+         this.instance = await DuckDBInstance.create(this.dbPath);
+         this.connection = await this.instance.connect();
+         // Verify the connection works
+         await this.connection.run("SELECT 42 as answer");
+      } catch (err) {
+         const message = err instanceof Error ? err.message : String(err);
+         console.error("Failed to create DuckDB database:", err);
+         throw new Error(`Failed to initialize DuckDB: ${message}`);
+      }
    }
 
    async close(): Promise<void> {
-      return new Promise((resolve, reject) => {
+      try {
          if (this.connection) {
-            this.connection.close((err) => {
-               if (err) {
-                  reject(
-                     new Error(
-                        `Failed to close DuckDB connection: ${err.message}`,
-                     ),
-                  );
-                  return;
-               }
-
-               if (this.db) {
-                  this.db.close((dbErr) => {
-                     if (dbErr) {
-                        reject(
-                           new Error(
-                              `Failed to close DuckDB: ${dbErr.message}`,
-                           ),
-                        );
-                        return;
-                     }
-                     console.log("DuckDB connection closed");
-                     resolve();
-                  });
-               } else {
-                  resolve();
-               }
-            });
-         } else {
-            resolve();
+            this.connection.closeSync();
+            this.connection = null;
          }
-      });
+         if (this.instance) {
+            this.instance.closeSync();
+            this.instance = null;
+         }
+         console.log("DuckDB connection closed");
+      } catch (err) {
+         const message = err instanceof Error ? err.message : String(err);
+         throw new Error(`Failed to close DuckDB connection: ${message}`);
+      }
    }
 
    async isInitialized(): Promise<boolean> {
       if (!this.connection) return false;
 
       return this.mutex.runExclusive(async () => {
-         return new Promise<boolean>((resolve) => {
-            this.connection!.all(
+         try {
+            const reader = await this.connection!.runAndReadAll(
                "SELECT name FROM sqlite_master WHERE type='table' AND name='environments'",
-               (err, rows) => {
-                  if (err) {
-                     resolve(false);
-                     return;
-                  }
-                  resolve(rows && rows.length > 0);
-               },
             );
-         });
+            return reader.getRowObjectsJS().length > 0;
+         } catch {
+            return false;
+         }
       });
    }
 
@@ -112,26 +84,14 @@ export class DuckDBConnection implements DatabaseConnection {
       }
 
       return this.mutex.runExclusive(async () => {
-         return new Promise<void>((resolve, reject) => {
-            const callback = (err: Error | null) => {
-               if (err) {
-                  reject(
-                     new Error(
-                        `Query execution failed: ${err.message}\nQuery: ${query}`,
-                     ),
-                  );
-                  return;
-               }
-               resolve();
-            };
-
-            // Pass params directly without the params argument if empty
-            if (params && params.length > 0) {
-               this.connection!.run(query, ...params, callback);
-            } else {
-               this.connection!.run(query, callback);
-            }
-         });
+         try {
+            await this.connection!.run(query, params as DuckDBValue[]);
+         } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            throw new Error(
+               `Query execution failed: ${message}\nQuery: ${query}`,
+            );
+         }
       });
    }
 
@@ -141,37 +101,23 @@ export class DuckDBConnection implements DatabaseConnection {
       }
 
       return this.mutex.runExclusive(async () => {
-         return new Promise<T[]>((resolve, reject) => {
-            const callback = (err: Error | null, rows: unknown[]) => {
-               if (err) {
-                  reject(
-                     new Error(
-                        `Query execution failed: ${err.message}\nQuery: ${query}`,
-                     ),
-                  );
-                  return;
-               }
-               resolve((rows || []) as T[]);
-            };
-
-            if (params && params.length > 0) {
-               this.connection!.all(query, ...params, callback);
-            } else {
-               this.connection!.all(query, callback);
-            }
-         });
+         try {
+            const reader = await this.connection!.runAndReadAll(
+               query,
+               params as DuckDBValue[],
+            );
+            return reader.getRowObjectsJS() as T[];
+         } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            throw new Error(
+               `Query execution failed: ${message}\nQuery: ${query}`,
+            );
+         }
       });
    }
 
    async get<T>(query: string, params?: unknown[]): Promise<T | null> {
       const rows = await this.all<T>(query, params);
       return rows.length > 0 ? rows[0] : null;
-   }
-
-   getConnection(): duckdb.Connection {
-      if (!this.connection) {
-         throw new Error("Database not initialized");
-      }
-      return this.connection;
    }
 }

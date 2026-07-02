@@ -15,7 +15,7 @@
     "build:app": "cd packages/app && bun run build ",
     "build:app:server": "cd packages/app && bun run build:server",
     "build:server": "cd packages/server && bun run build",
-    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server && bun run install-duckdb-bindings && bun run install-duckdb-snowflake",
+    "build": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:server",
     "build:cli": "cd packages/cli && bun run build",
     "build:server-deploy": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:app:server && NODE_ENV=production bun run build:server",
     "start": "cd packages/server && bun run start",
@@ -47,14 +47,14 @@
     "prettier:check": "bunx prettier './packages/**/*.{ts,tsx}' --check",
     "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
-    "install-duckdb-bindings": "node scripts/install-duckdb-bindings.js",
-    "install-duckdb-snowflake": "node scripts/install-duckdb-snowflake.js"
+    "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",
     "@types/node": "^24.10.0",
     "@types/react": "^19.1.7",
     "@types/react-dom": "^19.1.6",
+    "@types/ssh2": "^1.15.5",
     "eslint": "^8.50.0",
     "gts": "^6.0.2",
     "prettier": "^3.0.0",
@@ -69,13 +69,15 @@
     "fn": "^0.2.0",
     "prettier-plugin-terraform-formatter": "^1.2.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "ssh2": "^1.17.0"
   },
   "resolutions": {
-    "duckdb": "1.4.4",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.394",
+    "@malloydata/malloy-interfaces": "^0.0.415",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.394"
+    "@malloydata/malloy-query-builder": "^0.0.415",
+    "@malloydata/malloy-filter": "^0.0.415",
+    "@malloydata/malloy-tag": "^0.0.415"
   }
 }
