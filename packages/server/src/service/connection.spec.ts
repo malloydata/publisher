@@ -1,10 +1,12 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import sinon from "sinon";
 import { components } from "../api";
 import {
+   buildProxiedSslQuery,
    createEnvironmentConnections,
    testConnectionConfig,
 } from "./connection";
@@ -1844,5 +1846,73 @@ describe("connection integration tests", () => {
          },
          { timeout: 30000 },
       );
+   });
+});
+
+describe("buildProxiedSslQuery", () => {
+   const ORIG_CA = process.env.NODE_EXTRA_CA_CERTS;
+   afterEach(() => {
+      if (ORIG_CA === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+      else process.env.NODE_EXTRA_CA_CERTS = ORIG_CA;
+   });
+
+   it("defaults to no-verify when sslmode is unset (force-SSL target isn't rejected for plaintext)", () => {
+      expect(buildProxiedSslQuery("conn")).toBe("?sslmode=no-verify");
+   });
+
+   it("returns no-verify for explicit no-verify", () => {
+      expect(buildProxiedSslQuery("conn", "no-verify")).toBe(
+         "?sslmode=no-verify",
+      );
+   });
+
+   it("emits an explicit sslmode=disable, never an empty query", () => {
+      // Regression: an empty query lets pg fall back to the deployment's PGSSLMODE
+      // env, which would verify and fail the 127.0.0.1 hostname check.
+      expect(buildProxiedSslQuery("conn", "disable")).toBe("?sslmode=disable");
+   });
+
+   it("builds a chain-verifying, hostname-skipped query for verify-ca", () => {
+      process.env.NODE_EXTRA_CA_CERTS = "/etc/ssl/certs/rds bundle.pem";
+      const q = buildProxiedSslQuery("conn", "verify-ca");
+      expect(q).toContain("uselibpqcompat=true");
+      expect(q).toContain("sslmode=verify-ca");
+      expect(q).toContain(
+         `sslrootcert=${encodeURIComponent("/etc/ssl/certs/rds bundle.pem")}`,
+      );
+   });
+
+   it("throws for verify-ca when no CA bundle is available", () => {
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      expect(() => buildProxiedSslQuery("conn", "verify-ca")).toThrow(
+         /no trusted CA bundle/i,
+      );
+   });
+
+   it("throws for an unsupported sslmode", () => {
+      expect(() => buildProxiedSslQuery("conn", "require")).toThrow(
+         /unsupported sslmode/i,
+      );
+   });
+
+   it("verify-ca connectionString parses to an ssl config (pg-connection-string version guard)", async () => {
+      // uselibpqcompat=true (pg-connection-string >= 2.7) is what turns verify-ca
+      // into "verify chain, skip hostname". If pg is ever downgraded below that
+      // floor, sslmode would be ignored — this guard fails loudly instead.
+      const caPath = path.join(os.tmpdir(), `proxy-ca-${process.pid}.pem`);
+      await fs.writeFile(
+         caPath,
+         "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+      );
+      process.env.NODE_EXTRA_CA_CERTS = caPath;
+      try {
+         const q = buildProxiedSslQuery("conn", "verify-ca");
+         const { parse } = await import("pg-connection-string");
+         const parsed = parse(`postgresql://127.0.0.1:5432/db${q}`);
+         expect(parsed.ssl).toBeTruthy();
+         expect(typeof parsed.ssl).toBe("object");
+      } finally {
+         await fs.rm(caPath, { force: true });
+      }
    });
 });
