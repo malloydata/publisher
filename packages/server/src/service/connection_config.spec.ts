@@ -582,7 +582,7 @@ describe("SSH proxy validation", () => {
          ...validSshProxy,
          postgresConnection: {
             ...validSshProxy.postgresConnection!,
-            databaseName: "reporting@prod",
+            databaseName: "sales@prod",
          },
       };
       expect(() => assembleEnvironmentConnections([conn])).toThrow(
