@@ -303,36 +303,67 @@ describe("openProxy — SSH tunnel", () => {
       ).rejects.toThrow(/host-key mismatch/i);
    });
 
-   it("rejects when hostKey is absent and opt-out env is not set", async () => {
-      const orig = process.env.PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY;
-      delete process.env.PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY;
-
+   it("connects when hostKey is absent — unpinned self-service default", async () => {
+      // No hostKey → connect without host-key verification (the SSH transport is
+      // still encrypted). Matches mainstream BI tools' SSH-tunnel default.
+      const ep = await openProxy(
+         {
+            type: "ssh",
+            ssh: {
+               host: "127.0.0.1",
+               port: sshServer.port,
+               username: "testuser",
+               privateKey: clientPrivatePem,
+            },
+         },
+         { host: "127.0.0.1", port: echoServer.port },
+      );
       try {
-         await expect(
-            openProxy(
-               {
-                  type: "ssh",
-                  ssh: {
-                     host: "127.0.0.1",
-                     port: sshServer.port,
-                     username: "testuser",
-                     privateKey: clientPrivatePem,
-                  },
-               },
-               { host: "127.0.0.1", port: echoServer.port },
-            ),
-         ).rejects.toThrow(/no hostKey provided/i);
+         const reply = await connectAndSend(ep.port, "unpinned");
+         expect(reply).toContain("unpinned");
       } finally {
-         if (orig !== undefined) {
-            process.env.PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY = orig;
-         }
+         await closeQuietly(() => ep.close());
       }
    });
 
-   it("connects when hostKey is absent and opt-out env is set", async () => {
-      process.env.PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY = "true";
+   it("accepts a multi-line hostKey listing several keys — matches any (LB bastion)", async () => {
+      // A load-balanced bastion presents a different host key per backend, so the
+      // pin lists every backend's key and any match is accepted.
+      const decoy = Buffer.alloc(32, 0xff).toString("base64");
+      const multiKey = [
+         `bastion.example.com ssh-ed25519 ${decoy}`,
+         `bastion.example.com ssh-rsa ${sshServer.hostKeyBase64}`,
+      ].join("\n");
+      const ep = await openProxy(
+         {
+            type: "ssh",
+            ssh: {
+               host: "127.0.0.1",
+               port: sshServer.port,
+               username: "testuser",
+               privateKey: clientPrivatePem,
+               hostKey: multiKey,
+            },
+         },
+         { host: "127.0.0.1", port: echoServer.port },
+      );
       try {
-         const ep = await openProxy(
+         const reply = await connectAndSend(ep.port, "multi-key");
+         expect(reply).toContain("multi-key");
+      } finally {
+         await closeQuietly(() => ep.close());
+      }
+   });
+
+   it("rejects a multi-line hostKey when none of the listed keys match", async () => {
+      const decoy1 = Buffer.alloc(32, 0xff).toString("base64");
+      const decoy2 = Buffer.alloc(32, 0xaa).toString("base64");
+      const multiKey = [
+         `bastion.example.com ssh-ed25519 ${decoy1}`,
+         `bastion.example.com ssh-rsa ${decoy2}`,
+      ].join("\n");
+      await expect(
+         openProxy(
             {
                type: "ssh",
                ssh: {
@@ -340,19 +371,12 @@ describe("openProxy — SSH tunnel", () => {
                   port: sshServer.port,
                   username: "testuser",
                   privateKey: clientPrivatePem,
+                  hostKey: multiKey,
                },
             },
             { host: "127.0.0.1", port: echoServer.port },
-         );
-         try {
-            const reply = await connectAndSend(ep.port, "allow-unknown");
-            expect(reply).toContain("allow-unknown");
-         } finally {
-            await closeQuietly(() => ep.close());
-         }
-      } finally {
-         delete process.env.PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY;
-      }
+         ),
+      ).rejects.toThrow(/host-key mismatch/i);
    });
 
    it("rejects for unsupported proxy type", async () => {

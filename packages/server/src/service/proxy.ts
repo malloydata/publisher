@@ -8,24 +8,26 @@
  * A connection proxy is a normal connection capability (authorized by whoever
  * configures the connection); it is intentionally NOT behind an env-flag gate,
  * and is kept separate from the `publisher` HTTP multi-hop type's
- * PUBLISHER_ALLOW_PROXY_CONNECTIONS gate. The trust boundary is host-key pinning
- * (below), which is fail-closed.
+ * PUBLISHER_ALLOW_PROXY_CONNECTIONS gate. When host-key pinning is configured it
+ * is fail-closed (below).
  *
  * # Host-key policy
  *
- * Publisher is fail-closed by default: if `ssh.hostKey` is absent the tunnel
- * is refused at connect time to prevent MITM.  Set the environment variable
- *
- *   PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true
- *
- * to disable this check for development/testing.  Never set this in
- * production.
+ * `ssh.hostKey` is optional. When set, it pins the bastion's host key(s) and the
+ * tunnel is fail-closed on mismatch; it may list multiple known_hosts lines (a
+ * load-balanced/HA bastion presents a different key per backend), and any listed
+ * key is accepted. When absent, the tunnel connects without host-key
+ * verification — the self-service default, matching mainstream BI tools' SSH
+ * tunnels. The SSH transport is still encrypted; unpinned, a MITM on the
+ * publisher→bastion hop is possible, mitigated by the customer allowlisting our
+ * egress on the bastion.
  */
 
 import net from "net";
 import { Client as SshClient } from "ssh2";
 import type { ConnectConfig, SyncHostVerifier } from "ssh2";
 import { components } from "../api";
+import { logger } from "../logger";
 
 type ConnectionProxy = components["schemas"]["ConnectionProxy"];
 
@@ -39,17 +41,27 @@ const SSH_CONNECT_TIMEOUT_MS = 15_000;
 const SSH_KEEPALIVE_INTERVAL_MS = 15_000;
 
 /**
- * Extract the base64 wire-format key from a stored hostKey, accepting any of:
- * a full known_hosts line (`[markers] host keytype AAAA…`), a `keytype AAAA…`
- * pair, or the bare base64 blob. SSH public-key blobs always base64-encode to a
- * string starting with "AAAA" (the 4-byte length prefix of the key-type name),
- * so we pick that token; otherwise fall back to the last whitespace-delimited
- * token. This matches what ssh2's hostVerifier hands us (`key.toString("base64")`).
+ * Parse a stored hostKey into the set of base64 wire-format key blobs to accept.
+ * The value may hold one or more OpenSSH known_hosts entries (one per line) — a
+ * load-balanced bastion presents a different host key per backend, so pinning
+ * such a bastion means listing every backend's key. Blank lines and `#` comments
+ * are skipped. Each entry may be a full known_hosts line (`[markers] host keytype
+ * AAAA…`), a `keytype AAAA…` pair, or a bare base64 blob; SSH key blobs
+ * base64-encode to a string starting with "AAAA" (the length prefix of the
+ * key-type name), so we pick that token, else the last whitespace-delimited
+ * token. Compared against what ssh2 hands us (`key.toString("base64")`).
  */
-function extractHostKeyBase64(raw: string): string {
-   const tokens = raw.trim().split(/\s+/);
-   const blob = tokens.find((t) => /^AAAA[A-Za-z0-9+/]+={0,2}$/.test(t));
-   return blob ?? tokens[tokens.length - 1] ?? "";
+export function parseHostKeys(raw: string): Set<string> {
+   const keys = new Set<string>();
+   for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const tokens = trimmed.split(/\s+/);
+      const blob = tokens.find((t) => /^AAAA[A-Za-z0-9+/]+={0,2}$/.test(t));
+      const key = blob ?? tokens[tokens.length - 1];
+      if (key) keys.add(key);
+   }
+   return keys;
 }
 
 /**
@@ -112,31 +124,29 @@ function openSshProxy(
          hostVerifier: ((key: Buffer): boolean => {
             // `key` is the raw Buffer of the host's public key.
             const presented = key.toString("base64");
-            if (ssh.hostKey) {
-               const expected = extractHostKeyBase64(ssh.hostKey);
-               if (presented !== expected) {
-                  fail(
-                     new Error(
-                        `SSH host-key mismatch for ${ssh.host}: expected ${expected.slice(0, 24)}… but got ${presented.slice(0, 24)}….`,
-                     ),
-                  );
-                  return false;
+            const pinned = ssh.hostKey
+               ? parseHostKeys(ssh.hostKey)
+               : new Set<string>();
+            if (pinned.size > 0) {
+               // Pinned: fail-closed, accepting any listed key (an LB/HA bastion
+               // presents a different key per backend).
+               if (pinned.has(presented)) {
+                  return true;
                }
-               return true;
+               fail(
+                  new Error(
+                     `SSH host-key mismatch for ${ssh.host}: the presented key is ` +
+                        `not among the ${pinned.size} pinned host key(s).`,
+                  ),
+               );
+               return false;
             }
-            // No hostKey provided.
-            if (process.env.PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY === "true") {
-               return true;
-            }
-            fail(
-               new Error(
-                  `SSH connection to ${ssh.host} refused: no hostKey provided and ` +
-                     `PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY is not 'true'.  ` +
-                     `Set hostKey to the bastion's host public key (an OpenSSH ` +
-                     `known_hosts line or its base64 blob, e.g. from ssh-keyscan).`,
-               ),
+            // Unpinned (no hostKey): connect without host-key verification — the
+            // self-service default (see file header).
+            logger.warn(
+               `Connecting to SSH bastion ${ssh.host} without host-key verification (no hostKey pinned).`,
             );
-            return false;
+            return true;
          }) as SyncHostVerifier,
       };
 

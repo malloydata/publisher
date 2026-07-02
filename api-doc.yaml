@@ -3130,12 +3130,14 @@ components:
         hostKey:
           type: string
           description: |
-            Pinned bastion host public key, as an OpenSSH known_hosts line or its
-            base64 blob (e.g. from `ssh-keyscan <bastion>`), verified on every
-            connect. Plain and hashed (`|1|…`) known_hosts lines both work — only
-            the key blob is compared, never the hostname. A missing or mismatched
-            host key fails the connection closed, unless
-            PUBLISHER_SSH_ALLOW_UNKNOWN_HOSTKEY=true is set.
+            Optional pinned bastion host public key(s), as one or more OpenSSH
+            known_hosts lines (or bare base64 blobs), verified on every connect.
+            List multiple lines to pin a load-balanced/HA bastion that presents a
+            different key per backend — any listed key is accepted; a mismatch
+            fails the connection closed. Plain and hashed (`|1|…`) lines both work
+            — only the key blob is compared, never the hostname. When omitted, the
+            tunnel connects without host-key verification (the self-service
+            default); the SSH transport is still encrypted.
 
     ConnectionAttributes:
       type: object
@@ -3178,6 +3180,18 @@ components:
           description:
             Complete PostgreSQL connection string (alternative to individual
             parameters)
+        sslmode:
+          type: string
+          enum: [disable, no-verify, verify-ca]
+          description:
+            TLS mode for a connection reached through a `proxy` (SSH bastion).
+            Because the driver connects to a local tunnel endpoint, the cert
+            hostname can't be checked; `verify-ca` validates the server cert
+            chain against the trusted CA bundle (e.g. the baked Amazon RDS roots)
+            without the hostname, `no-verify` encrypts without verifying, and
+            `disable` uses no TLS. Defaults to `no-verify` when a proxy is set (so
+            a force-SSL target isn't rejected for plaintext); ignored on the
+            non-proxied path, which uses the server's PGSSLMODE.
 
     MysqlConnection:
       type: object
