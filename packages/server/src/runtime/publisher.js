@@ -79,7 +79,12 @@
          "/packages/" +
          encodeURIComponent(target.pkg) +
          "/models/" +
-         modelPath.split("/").map(encodeURIComponent).join("/") +
+         // Encode the whole model path as ONE path segment (slashes -> %2F). A model
+         // in a subfolder ("model/x.malloy") must not become two URL segments: some
+         // servers only match a single-segment {path} and would 405 a multi-segment
+         // path. This matches the typed SDK (encodeURIComponent) and the server's
+         // encoded-slash handling.
+         encodeURIComponent(modelPath) +
          "/query";
       var body = { compactJson: compactJson };
       if (malloyQuery) body.query = malloyQuery;
