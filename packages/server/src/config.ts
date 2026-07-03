@@ -74,6 +74,25 @@ function resolvePublisherConfigPath(serverRoot: string): {
 type FilesystemPath = `./${string}` | `../${string}` | `/${string}`;
 type GcsPath = `gs://${string}`;
 type ApiConnection = components["schemas"]["Connection"];
+export type Theme = components["schemas"]["Theme"];
+
+/**
+ * Palette colour keys that have separate light/dark variants. Hand-copied
+ * from `packages/sdk/src/theme/keys.ts`: the server and the SDK are
+ * intentionally decoupled (neither imports the other; their only shared
+ * contract is api-doc.yaml), so the list lives in both. The parity test
+ * `theme_key_parity.spec.ts` fails if the two copies or the api-doc
+ * Theme.palette schema drift apart. Exported so that test can import it.
+ */
+export const PER_MODE_COLOR_KEYS = [
+   "background",
+   "tableHeader",
+   "tableHeaderBackground",
+   "tableBody",
+   "tile",
+   "tileTitle",
+   "mapColor",
+] as const;
 
 export type Package = {
    name: string;
@@ -87,23 +106,27 @@ export type Connection = {
 
 export type Environment = {
    name: string;
+   theme?: Theme;
    packages: Package[];
    connections?: Connection[];
 };
 
 export type PublisherConfig = {
    frozenConfig: boolean;
+   theme?: Theme;
    environments: Environment[];
 };
 
 export type ProcessedEnvironment = {
    name: string;
+   theme?: Theme;
    packages: Package[];
    connections: ApiConnection[];
 };
 
 export type ProcessedPublisherConfig = {
    frozenConfig: boolean;
+   theme?: Theme;
    environments: ProcessedEnvironment[];
 };
 
@@ -488,11 +511,137 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       );
    }
 
+   const instanceTheme = sanitizeTheme(
+      processedConfig &&
+         typeof processedConfig === "object" &&
+         "theme" in processedConfig
+         ? (processedConfig as { theme: unknown }).theme
+         : undefined,
+      "publisher.config.json",
+   );
+
    return {
       frozenConfig,
+      ...(instanceTheme ? { theme: instanceTheme } : {}),
       environments,
    } as PublisherConfig;
 };
+
+/**
+ * Sanitize a raw theme value pulled from JSON. Returns a Theme on success
+ * or `undefined` if the input is missing/invalid. Bad shapes log a warning
+ * and are dropped rather than failing the whole config; an unthemed config
+ * still boots fine.
+ */
+export function sanitizeTheme(
+   raw: unknown,
+   context: string,
+): Theme | undefined {
+   if (raw === undefined || raw === null) return undefined;
+   if (typeof raw !== "object" || Array.isArray(raw)) {
+      logger.warn(
+         `Invalid "theme" in ${context}: expected an object. Ignoring.`,
+      );
+      return undefined;
+   }
+   const obj = raw as Record<string, unknown>;
+   const theme: Theme = {};
+
+   if ("defaultMode" in obj) {
+      const mode = obj.defaultMode;
+      if (mode === "light" || mode === "dark" || mode === "auto") {
+         theme.defaultMode = mode;
+      } else {
+         logger.warn(
+            `Invalid "theme.defaultMode" in ${context}: expected "light" | "dark" | "auto" (got ${JSON.stringify(mode)}). Ignoring field.`,
+         );
+      }
+   }
+   if ("allowUserToggle" in obj) {
+      const value = obj.allowUserToggle;
+      if (typeof value === "boolean") {
+         theme.allowUserToggle = value;
+      } else {
+         // Don't coerce: Boolean("false") is true, so a stray string would
+         // silently invert the operator's intent. Match defaultMode above
+         // and warn + ignore instead.
+         logger.warn(
+            `Invalid "theme.allowUserToggle" in ${context}: expected a boolean (got ${JSON.stringify(value)}). Ignoring field.`,
+         );
+      }
+   }
+   if ("palette" in obj && obj.palette && typeof obj.palette === "object") {
+      const palette = obj.palette as Record<string, unknown>;
+      const sanitized: NonNullable<Theme["palette"]> = {};
+      if (Array.isArray(palette.series)) {
+         // Preserve an explicit empty array as a clear-the-palette
+         // signal; resolveTheme treats [] as a real override.
+         sanitized.series = palette.series.filter(
+            (c): c is string => typeof c === "string",
+         );
+      }
+      // Per-mode colour keys share the same shape: { light?: string, dark?: string }.
+      // Sanitize uniformly so adding a new key only touches PER_MODE_COLOR_KEYS.
+      for (const key of PER_MODE_COLOR_KEYS) {
+         const raw = palette[key];
+         if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+         const r = raw as Record<string, unknown>;
+         const out: { light?: string; dark?: string } = {};
+         if (typeof r.light === "string") out.light = r.light;
+         if (typeof r.dark === "string") out.dark = r.dark;
+         if (Object.keys(out).length > 0) {
+            (sanitized as Record<string, unknown>)[key] = out;
+         }
+      }
+      if (Object.keys(sanitized).length > 0) theme.palette = sanitized;
+   }
+   if ("font" in obj && obj.font && typeof obj.font === "object") {
+      const font = obj.font as Record<string, unknown>;
+      const sanitized: NonNullable<Theme["font"]> = {};
+      if (typeof font.family === "string") sanitized.family = font.family;
+      if (typeof font.size === "number" && Number.isFinite(font.size)) {
+         sanitized.size = font.size;
+      }
+      if (Object.keys(sanitized).length > 0) theme.font = sanitized;
+   }
+
+   return Object.keys(theme).length > 0 ? theme : undefined;
+}
+
+/**
+ * Merge an environment-level theme on top of the instance default. Both
+ * inputs are already sanitized. The override wins per key at every level;
+ * absent keys fall through to the base. Returns `undefined` only when both
+ * sides are absent.
+ *
+ * Per-mode colour objects merge per-mode so an environment that sets
+ * only `palette.tile.dark` keeps the instance's `palette.tile.light`.
+ */
+export function mergeThemes(
+   base: Theme | undefined,
+   override: Theme | undefined,
+): Theme | undefined {
+   if (!base) return override;
+   if (!override) return base;
+   const merged: Theme = { ...base, ...override };
+   if (base.palette || override.palette) {
+      merged.palette = {
+         ...(base.palette ?? {}),
+         ...(override.palette ?? {}),
+      };
+      for (const key of PER_MODE_COLOR_KEYS) {
+         const b = base.palette?.[key];
+         const o = override.palette?.[key];
+         if (b || o) {
+            merged.palette[key] = { ...(b ?? {}), ...(o ?? {}) };
+         }
+      }
+   }
+   if (base.font || override.font) {
+      merged.font = { ...(base.font ?? {}), ...(override.font ?? {}) };
+   }
+   return merged;
+}
 
 export const isPublisherConfigFrozen = (serverRoot: string) => {
    try {
@@ -637,17 +786,47 @@ export const getProcessedPublisherConfig = (
          continue;
       }
 
+      // Per-environment theme override: computed here (the instance default
+      // merged with this environment's theme) but NOT yet wired through.
+      // addEnvironment() drops this field, so the live Environment never
+      // carries it and no viewer applies it today; only the instance-level
+      // theme is applied. Kept for the planned per-environment follow-up.
+      const envTheme = sanitizeTheme(
+         (environment as { theme?: unknown }).theme,
+         `environment "${environment.name}"`,
+      );
+      const resolvedTheme = mergeThemes(rawConfig.theme, envTheme);
+
       validEnvironments.push({
          name: environment.name,
          packages: validPackages,
          connections: convertConnectionsToApiConnections(
             environment.connections || [],
          ),
+         ...(resolvedTheme ? { theme: resolvedTheme } : {}),
       });
    }
 
    return {
       frozenConfig: rawConfig.frozenConfig ?? false,
+      ...(rawConfig.theme ? { theme: rawConfig.theme } : {}),
       environments: validEnvironments,
    };
+};
+
+/**
+ * Convenience accessor for the instance-wide default theme. Used by
+ * ServerStatus so the app shell can apply the operator's chosen theme
+ * before the viewer has navigated into any specific environment.
+ */
+export const getInstanceTheme = (serverRoot: string): Theme | undefined => {
+   try {
+      return getPublisherConfig(serverRoot).theme;
+   } catch (error) {
+      logger.error(
+         `Error reading instance theme from ${PUBLISHER_CONFIG_NAME}`,
+         { error },
+      );
+      return undefined;
+   }
 };

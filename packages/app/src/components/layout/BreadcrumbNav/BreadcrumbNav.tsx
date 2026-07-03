@@ -19,7 +19,7 @@ function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
          label={label}
          size="small"
          aria-label={`Navigate to ${label}`}
-         sx={{
+         sx={(theme) => ({
             backgroundColor: "background.paper",
             color: "text.primary",
             fontWeight: 500,
@@ -34,9 +34,17 @@ function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
                whiteSpace: "nowrap",
             },
             "&:hover": {
-               backgroundColor: "grey.100",
+               // grey.100 in our palette is a near-white #F4F3F1, which
+               // matches the light-mode text colour at hover and makes
+               // the label invisible in dark mode. Use a translucent
+               // white in dark and the off-white grey in light so the
+               // chip stays legible in both modes.
+               backgroundColor:
+                  theme.palette.mode === "dark"
+                     ? "rgba(255, 255, 255, 0.08)"
+                     : "grey.100",
             },
-         }}
+         })}
       />
    );
 }

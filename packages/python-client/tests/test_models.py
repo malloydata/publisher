@@ -48,13 +48,11 @@ def test_environment_model_instantiation_and_attributes():
 
         # Test assignment after instantiation
         environment_with_extras_assigned = Environment(name="extras_assigned")
-        environment_with_extras_assigned.additional_properties[
-            "new_field_assigned"
-        ] = "new_value_assigned"
+        environment_with_extras_assigned.additional_properties["new_field_assigned"] = (
+            "new_value_assigned"
+        )
         assert (
-            environment_with_extras_assigned.additional_properties[
-                "new_field_assigned"
-            ]
+            environment_with_extras_assigned.additional_properties["new_field_assigned"]
             == "new_value_assigned"
         )
         assert "new_field_assigned" in environment_with_extras_assigned
@@ -71,8 +69,7 @@ def test_environment_model_instantiation_and_attributes():
         environment_from_dict = Environment.from_dict(data_for_from_dict)
         assert environment_from_dict.name == "extras_from_dict"
         assert (
-            environment_from_dict.additional_properties["unknown_field"]
-            == "some_value"
+            environment_from_dict.additional_properties["unknown_field"] == "some_value"
         )
         assert "unknown_field" in environment_from_dict
         assert environment_from_dict["unknown_field"] == "some_value"

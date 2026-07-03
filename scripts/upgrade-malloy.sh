@@ -82,3 +82,12 @@ bun install
 
 echo "Syncing DuckDB build version to Malloy's @duckdb/node-api engine..."
 bun scripts/sync-duckdb-version.js --write
+
+# The root "pg" resolution in package.json deliberately holds pg at the
+# version main resolves (8.16.3 as of this writing). @malloydata/db-postgres
+# pins pg to an older exact version (8.7.3 as of 0.0.421) that would
+# otherwise downgrade Publisher's Postgres driver on a family bump. Unlike
+# the DuckDB sync above, this pin is NOT auto-managed: after a Malloy bump,
+# confirm the pinned pg still satisfies the new @malloydata/db-postgres and
+# raise or drop it if the connector needs a newer pg.
+echo "Reminder: the root \"pg\" resolution is a manual hold; re-verify it against the new @malloydata/db-postgres pin."
