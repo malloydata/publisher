@@ -111,6 +111,27 @@ Alongside the core MCP server on `:4040`, Publisher runs a second, separate MCP 
 
 It also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4041/mcp`. The server is stateless and unauthenticated, mirroring the core MCP server; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
 
+## Claude Code plugin
+
+The retrieval tools and the agent skills are also packaged as a [Claude Code plugin](https://code.claude.com/docs/en/plugins), so one install wires up everything: the skills load automatically, and both MCP endpoints (core `:4040` and agent `:4041`) are registered for you. There is no skill file to copy and no MCP config to hand-edit.
+
+This repository doubles as a single-plugin marketplace, so you can install directly from it:
+
+```
+/plugin marketplace add malloydata/publisher
+/plugin install malloy-publisher@malloydata
+```
+
+To try it against a local checkout first, point Claude Code at the repo root:
+
+```bash
+claude --plugin-dir /path/to/publisher
+```
+
+The plugin carries only the client-side configuration; it does not start Publisher. Run the server yourself (see [Quick Start](#quick-start)) so the endpoints are reachable, then the plugin's skills and tools become available. The MCP URLs honor the `MCP_PORT` and `AGENT_MCP_PORT` environment variables and fall back to `4040` and `4041`, so a server on custom ports still resolves.
+
+The plugin is specific to Claude Code. Any other MCP-capable agent can use the same capability by pointing its own MCP client at the two endpoints; the skills are served there as MCP prompts.
+
 ## Documentation
 
 Full documentation is available at **[docs.malloydata.dev/documentation/user_guides/publishing](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**:

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "malloy-publisher",
+  "displayName": "Malloy Publisher",
+  "description": "Agent skills and read-only retrieval tools for querying Malloy semantic models through Publisher's MCP servers.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Malloy Publisher contributors",
+    "url": "https://github.com/malloydata/publisher"
+  },
+  "homepage": "https://docs.malloydata.dev/documentation/user_guides/publishing/publishing",
+  "repository": "https://github.com/malloydata/publisher",
+  "license": "MIT",
+  "keywords": ["malloy", "mcp", "semantic-model", "analytics", "agent-skills"],
+  "mcpServers": {
+    "malloy-publisher": {
+      "type": "http",
+      "url": "http://localhost:${MCP_PORT:-4040}/mcp"
+    },
+    "malloy-publisher-agent": {
+      "type": "http",
+      "url": "http://localhost:${AGENT_MCP_PORT:-4041}/mcp"
+    }
+  }
+}

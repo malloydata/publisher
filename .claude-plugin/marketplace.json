@@ -1,0 +1,14 @@
+{
+  "name": "malloydata",
+  "description": "Malloy Publisher's Claude Code plugin: agent skills and retrieval tools for querying Malloy semantic models.",
+  "owner": {
+    "name": "Malloy"
+  },
+  "plugins": [
+    {
+      "name": "malloy-publisher",
+      "source": "./",
+      "description": "Agent skills and read-only retrieval tools for querying Malloy semantic models through Publisher's MCP servers."
+    }
+  ]
+}
