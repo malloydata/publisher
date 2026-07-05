@@ -2669,7 +2669,7 @@ components:
           description: |
             URI (gs:// or s3://) of the externally-computed manifest for this package.
             On (re)load the publisher reads it and binds persist references
-            (buildId -> physicalTableName). Null = serve live.
+            (sourceEntityId -> physicalTableName). Null = serve live.
         materialization:
           oneOf:
             - $ref: "#/components/schemas/PackageMaterializationConfig"
@@ -2704,7 +2704,7 @@ components:
           type: integer
           readOnly: true
           description: >-
-            Server-computed, read-only: number of buildId -> physical-table
+            Server-computed, read-only: number of sourceEntityId -> physical-table
             entries currently bound (0 when unbound or on live fallback).
         boundManifestUri:
           type: ["string", "null"]
@@ -2721,8 +2721,9 @@ components:
           readOnly: true
           description: >-
             Server-computed, read-only: the persist build plan for this package
-            version (per-source buildId, output columns, build SQL, dependency
-            graphs), exposed as a deterministic property of the compiled package.
+            version (per-source sourceEntityId, output columns, build SQL,
+            dependency graphs), exposed as a deterministic property of the
+            compiled package.
             A caller reads it directly off the load/get-package response, assigns
             physical names/identity per source, and issues a single build call
             (see `CreateMaterializationRequest.buildInstructions`) — no separate
@@ -3250,6 +3251,21 @@ components:
               ducklake,
               publisher,
             ]
+        fingerprint:
+          type: string
+          description: >
+            Optional, opaque, stable fingerprint of this connection's data
+            identity. It is a hash of the configuration that determines *which
+            data* the connection reaches (its data-locating settings), and
+            deliberately excludes credentials and other secret values, so it
+            stays constant across credential rotation and changes only when the
+            connection is pointed at different data. When present, it is used as
+            this connection's contribution to content-addressed build identifiers
+            so that builds re-address only when the underlying data identity
+            actually changes; consumers should treat it as an opaque token and
+            use the supplied value verbatim rather than deriving their own. This
+            field is optional — when omitted, a connection identity is derived
+            locally instead.
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         proxy:
@@ -3925,7 +3941,8 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description: Build a new table even when a source's buildId is unchanged.
+          description:
+            Build a new table even when a source's sourceEntityId is unchanged.
         sourceNames:
           type: array
           items:
@@ -4033,7 +4050,7 @@ components:
 
     PersistSourcePlan:
       type: object
-      required: [name, sourceID, connectionName, buildId, sql, columns]
+      required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
       properties:
         name:
           type: string
@@ -4043,9 +4060,15 @@ components:
           type: string
         dialect:
           type: string
-        buildId:
+        sourceEntityId:
           type: string
-          description: hash(connectionDigest + canonical logical SQL).
+          description: >-
+            Stable, content-addressed identity of this persisted source. A
+            deterministic UUID5 derived from the source's scope, its connection
+            `fingerprint`, and its canonical compiled SQL — deliberately
+            independent of package version, so it changes only when the source's
+            data identity changes. Consumers treat it as an opaque token and use
+            the supplied value verbatim.
         sql:
           type: string
           description:
@@ -4092,17 +4115,18 @@ components:
 
     BuildInstruction:
       type: object
-      required: [buildId, materializedTableId, physicalTableName, realization]
+      required:
+        [sourceEntityId, materializedTableId, physicalTableName, realization]
       properties:
-        buildId:
+        sourceEntityId:
           type: string
           description: Identifies which planned source this instruction is for
-            (matches PersistSourcePlan.buildId).
+            (matches PersistSourcePlan.sourceEntityId).
         sourceID:
           type: string
           description:
-            Optional convenience echo of "sourceName@modelURL"; buildId is
-            authoritative.
+            Optional convenience echo of "sourceName@modelURL"; sourceEntityId
+            is authoritative.
         materializedTableId:
           type: string
           description:
@@ -4113,7 +4137,7 @@ components:
           description:
             Logical, fully-qualified (but unquoted) table name to create — an
             optional dialect container path plus the table name, e.g.
-            `mydataset.engaged_events_<buildId>_v0`. The publisher dialect-quotes
+            `mydataset.engaged_events_<sourceEntityId>_v0`. The publisher dialect-quotes
             each segment when it emits the DDL, so quote-requiring names (a
             hyphenated BigQuery project id, a container path) are valid, and
             echoes this logical name back in the manifest.
@@ -4123,8 +4147,8 @@ components:
     BuildManifest:
       type: object
       description:
-        Build output. Maps each buildId a build produced to its physical table.
-        Returned inline; the caller persists it.
+        Build output. Maps each sourceEntityId a build produced to its physical
+        table. Returned inline; the caller persists it.
       properties:
         builtAt:
           type: string
@@ -4133,7 +4157,7 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of buildId to manifest entry.
+          description: Map of sourceEntityId to manifest entry.
         strict:
           type: boolean
           description: Whether unresolved references should error.
@@ -4141,9 +4165,9 @@ components:
     ManifestEntry:
       type: object
       description: A single entry in the build manifest.
-      required: [buildId, physicalTableName]
+      required: [sourceEntityId, physicalTableName]
       properties:
-        buildId:
+        sourceEntityId:
           type: string
         sourceName:
           type: string

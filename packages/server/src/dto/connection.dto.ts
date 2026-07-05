@@ -265,6 +265,12 @@ export class ConnectionDto implements ApiConnection {
       | "motherduck"
       | "ducklake";
 
+   // Opaque, secret-free data-identity token; carried verbatim (never parsed
+   // or re-hashed) into content-addressed source ids. See api-doc.yaml.
+   @IsOptional()
+   @IsString()
+   fingerprint?: string;
+
    @IsOptional()
    @ValidateNested()
    @Type(() => PostgresConnectionDto)

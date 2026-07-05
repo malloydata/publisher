@@ -58,7 +58,7 @@ async function readManifestBytes(uri: string): Promise<string> {
 
 /**
  * Fetch and parse the control-plane-computed build manifest at `uri`, returning
- * the Malloy-runtime binding map (`buildId -> { tableName }`). The wire manifest
+ * the Malloy-runtime binding map (`sourceEntityId -> { tableName }`). The wire manifest
  * keys physical tables under `physicalTableName`; the Malloy runtime consumes
  * `tableName`, so we translate here. Entries missing a physical table are
  * skipped. Throws if the URI can't be read or parsed.
@@ -80,16 +80,16 @@ export async function fetchManifestEntries(
    }
 
    const entries: BuildManifest["entries"] = {};
-   for (const [buildId, entry] of Object.entries(parsed.entries ?? {})) {
+   for (const [sourceEntityId, entry] of Object.entries(parsed.entries ?? {})) {
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
          logger.warn("Manifest entry has no physicalTableName; skipping", {
             uri,
-            buildId,
+            sourceEntityId,
          });
          continue;
       }
-      entries[buildId] = { tableName: physicalTableName };
+      entries[sourceEntityId] = { tableName: physicalTableName };
    }
    return entries;
 }

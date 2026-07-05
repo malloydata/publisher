@@ -81,7 +81,7 @@ export class MaterializationController {
       }
       const instruction = raw as Record<string, unknown>;
       const required = [
-         "buildId",
+         "sourceEntityId",
          "materializedTableId",
          "physicalTableName",
          "realization",
@@ -102,7 +102,7 @@ export class MaterializationController {
          );
       }
       return {
-         buildId: instruction.buildId as string,
+         sourceEntityId: instruction.sourceEntityId as string,
          sourceID:
             typeof instruction.sourceID === "string"
                ? instruction.sourceID

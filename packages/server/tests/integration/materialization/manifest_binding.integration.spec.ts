@@ -111,7 +111,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
             strict: false,
             entries: {
                build123: {
-                  buildId: "build123",
+                  sourceEntityId: "build123",
                   sourceName: "order_summary",
                   physicalTableName: "main.order_summary_mz",
                   connectionName: "duckdb",

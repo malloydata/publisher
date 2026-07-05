@@ -206,14 +206,14 @@ describe("Materialization REST API: single-call (E2E)", () => {
             // instruction, and create the materialization already building it.
             const source = await firstPlanSource();
             expect(source.name).toBe("order_summary");
-            expect(typeof source.buildId).toBe("string");
+            expect(typeof source.sourceEntityId).toBe("string");
 
             const physicalTableName = "order_summary_built";
             const createRes = await createMaterialization({
                buildInstructions: {
                   sources: [
                      {
-                        buildId: source.buildId,
+                        sourceEntityId: source.sourceEntityId,
                         sourceID: source.sourceID,
                         materializedTableId: "mt-order-summary",
                         physicalTableName,
@@ -241,7 +241,7 @@ describe("Materialization REST API: single-call (E2E)", () => {
                string,
                Record<string, unknown>
             >;
-            const entry = entries[source.buildId as string];
+            const entry = entries[source.sourceEntityId as string];
             expect(entry).toBeDefined();
             expect(entry.physicalTableName).toBe(physicalTableName);
             expect(entry.sourceName).toBe("order_summary");
@@ -261,12 +261,12 @@ describe("Materialization REST API: single-call (E2E)", () => {
          { timeout: 90_000 },
       );
 
-      it("rejects buildInstructions with an unknown buildId at create (400)", async () => {
+      it("rejects buildInstructions with an unknown sourceEntityId at create (400)", async () => {
          const createRes = await createMaterialization({
             buildInstructions: {
                sources: [
                   {
-                     buildId: "not-a-real-build-id",
+                     sourceEntityId: "not-a-real-build-id",
                      materializedTableId: "mt",
                      physicalTableName: "t",
                      realization: "COPY",

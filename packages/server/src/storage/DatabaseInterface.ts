@@ -143,7 +143,7 @@ export interface MaterializationUpdate {
 }
 
 /**
- * Malloy-facing build manifest: maps a buildId to the physical table backing
+ * Malloy-facing build manifest: maps a sourceEntityId to the physical table backing
  * that persist source. This is the shape the Malloy runtime consumes when
  * (re)loading models so persist references resolve to materialized tables.
  * Distinct from {@link BuildManifestResult} (the wire build output, which also

@@ -29,9 +29,9 @@ describe("fetchManifestEntries", () => {
          builtAt: new Date().toISOString(),
          strict: false,
          entries: {
-            b1: { buildId: "b1", physicalTableName: "schema.orders_mz" },
+            b1: { sourceEntityId: "b1", physicalTableName: "schema.orders_mz" },
             b2: {
-               buildId: "b2",
+               sourceEntityId: "b2",
                physicalTableName: "schema.daily_mz",
                connectionName: "bq",
             },
@@ -48,7 +48,7 @@ describe("fetchManifestEntries", () => {
 
    it("reads via a file:// URI", async () => {
       const file = await writeManifest({
-         entries: { b1: { buildId: "b1", physicalTableName: "t1" } },
+         entries: { b1: { sourceEntityId: "b1", physicalTableName: "t1" } },
       });
 
       const entries = await fetchManifestEntries(pathToFileURL(file).href);
@@ -59,8 +59,8 @@ describe("fetchManifestEntries", () => {
    it("skips entries without a physicalTableName", async () => {
       const file = await writeManifest({
          entries: {
-            good: { buildId: "good", physicalTableName: "t1" },
-            bad: { buildId: "bad" },
+            good: { sourceEntityId: "good", physicalTableName: "t1" },
+            bad: { sourceEntityId: "bad" },
          },
       });
 
