@@ -1931,7 +1931,7 @@ function makeHydrationRuntime(
    // (getSQL) time, gated on `prepareResultOptions.buildManifest`; without this
    // the hydrated model always recomputes from the base tables even though the
    // manifest was bound at load. `strict: false` keeps serving live for any
-   // source whose buildId is absent from the manifest.
+   // source whose sourceEntityId is absent from the manifest.
    return new Runtime({
       urlReader,
       config,

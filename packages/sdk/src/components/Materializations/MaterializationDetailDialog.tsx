@@ -168,7 +168,7 @@ export default function MaterializationDetailDialog({
                                  <TableCell>Connection</TableCell>
                                  <TableCell>Dialect</TableCell>
                                  <TableCell align="right">Columns</TableCell>
-                                 <TableCell>Build ID</TableCell>
+                                 <TableCell>Source Entity ID</TableCell>
                               </TableRow>
                            </TableHead>
                            <TableBody>
@@ -198,7 +198,7 @@ export default function MaterializationDetailDialog({
                                           maxWidth: 220,
                                        }}
                                     >
-                                       {source.buildId}
+                                       {source.sourceEntityId}
                                     </TableCell>
                                  </TableRow>
                               ))}

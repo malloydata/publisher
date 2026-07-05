@@ -112,8 +112,8 @@ export function flattenDependsOn(node: {
  * persist dependency is nested under a root in its recursive {@code dependsOn}
  * tree (and present in {@code sources}). Walking only {@code graph.nodes}
  * silently skips every intermediate persist source, so it never gets
- * materialized (it only gets a table by coincidence when it shares a buildId
- * with a root). We post-order DFS the {@code dependsOn} tree
+ * materialized (it only gets a table by coincidence when it shares a
+ * sourceEntityId with a root). We post-order DFS the {@code dependsOn} tree
  * so dependencies are built first (a downstream build can then read its upstream
  * source's freshly materialized table), deduplicating shared (diamond)
  * dependencies by sourceID so each is yielded once. This mirrors the canonical
@@ -147,11 +147,23 @@ export function* iterGraphSources(
 }
 
 /**
- * The buildId for a persist source: a stable digest of its connection identity
- * and canonical SQL. Centralizes the (source, connectionDigests) call shape so
- * planning, self-instruction, and build all agree on the same id.
+ * The sourceEntityId for a persist source: a stable content address of its
+ * connection identity and canonical SQL. Centralizes the
+ * (source, connectionDigests) call shape so planning, self-instruction, build,
+ * and serve-time manifest resolution all agree on the same id.
+ *
+ * <p>This is the single seam between the publisher and the Malloy compiler's
+ * source-identity recipe. Today it delegates to
+ * {@code PersistSource.makeBuildId(connectionDigest, sql)} — the compiler's
+ * current hex content hash. The connection's contribution is already
+ * fingerprint-aware: when a connection carries an API `fingerprint`, its
+ * digest IS that fingerprint verbatim (see applyConnectionFingerprint in
+ * connection.ts), so ids stay stable across credential rotation. When the
+ * compiler ships the scoped UUID5 sourceEntityId recipe (scope + connection
+ * fingerprint + canonical SQL), swap the delegation below to the new compiler
+ * API — this function is the only place the publisher derives the id.
  */
-export function computeBuildId(
+export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
 ): string {
@@ -246,9 +258,9 @@ export async function compilePackageBuildPlan(
       const conn = connections.get(graph.connectionName);
       if (!conn) {
          // The connection failed to resolve (already warned in
-         // resolvePackageConnections). Its buildIds will be computed without a
-         // digest, so surface it as a discrete correctness signal rather than
-         // skipping silently.
+         // resolvePackageConnections). Its sourceEntityIds will be computed
+         // without a digest, so surface it as a discrete correctness signal
+         // rather than skipping silently.
          recordConnectionDigestSkipped();
          logger.warn("Skipping connection digest; connection did not resolve", {
             connectionName: graph.connectionName,
@@ -256,6 +268,9 @@ export async function compilePackageBuildPlan(
          continue;
       }
       if (!connectionDigests[graph.connectionName]) {
+         // getDigest() is fingerprint-aware: a connection configured with an
+         // API `fingerprint` returns it verbatim (applyConnectionFingerprint),
+         // so a credential rotation does not re-address its sources.
          connectionDigests[graph.connectionName] = await conn.getDigest();
       }
    }
@@ -297,7 +312,7 @@ export function deriveBuildPlan(
          sourceID: source.sourceID,
          connectionName: source.connectionName,
          dialect: source.dialectName,
-         buildId: computeBuildId(source, connectionDigests),
+         sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
          columns: deriveColumns(source),
          annotationFields: deriveAnnotationFields(source),

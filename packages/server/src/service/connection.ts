@@ -1028,6 +1028,38 @@ function getMetadataForLookup(
    return name ? metadata.get(name) : undefined;
 }
 
+/**
+ * Make a connection's digest the caller-supplied API `fingerprint`, verbatim.
+ *
+ * The fingerprint is the connection's data identity as declared by the caller
+ * (secret-free, stable across credential rotation). When set, it replaces the
+ * locally derived `getDigest()` so it becomes the connection's contribution to
+ * content-addressed source ids everywhere a digest is read:
+ *
+ *  - build planning (`compilePackageBuildPlan` -> `conn.getDigest()`),
+ *  - the package-load worker's connection-metadata RPC, and
+ *  - Malloy's own serve-time manifest resolution (the runtime calls
+ *    `conn.getDigest()` internally when a build manifest is bound).
+ *
+ * Overriding the method on the resolved instance — inside the one
+ * `lookupConnection` wrapper every resolution passes through — is what keeps
+ * build-time and serve-time ids identical; applying it per call site would
+ * invite divergence and a silent live-serving fallback. The value is used
+ * verbatim (never re-hashed or combined with local details) and treated as an
+ * opaque token: it is not a secret, but it is never logged or parsed.
+ * Without a fingerprint the connection keeps its locally derived digest.
+ */
+function applyConnectionFingerprint(
+   connection: Connection,
+   metadata: EnvironmentConnectionMetadata | undefined,
+): Connection {
+   const fingerprint = metadata?.apiConnection.fingerprint;
+   if (fingerprint) {
+      connection.getDigest = () => fingerprint;
+   }
+   return connection;
+}
+
 function isDuckDBConnection(
    connection: Connection,
 ): connection is DuckDBConnection {
@@ -1095,10 +1127,11 @@ export function buildEnvironmentMalloyConfig(
    }
 
    malloyConfig.wrapConnections(
-      (base: LookupConnection<Connection>): LookupConnection<Connection> => ({
-         lookupConnection: async (name?: string): Promise<Connection> => {
-            const metadata = getMetadataForLookup(assembled.metadata, name);
-
+      (base: LookupConnection<Connection>): LookupConnection<Connection> => {
+         const resolveConnection = async (
+            name: string | undefined,
+            metadata: EnvironmentConnectionMetadata | undefined,
+         ): Promise<Connection> => {
             if (metadata?.isDuckLake) {
                let connectionPromise = duckLakeCache.get(name!);
                if (!connectionPromise) {
@@ -1210,8 +1243,21 @@ export function buildEnvironmentMalloyConfig(
                await attachOnce(connection, metadata);
             }
             return connection;
-         },
-      }),
+         };
+
+         return {
+            lookupConnection: async (name?: string): Promise<Connection> => {
+               const metadata = getMetadataForLookup(assembled.metadata, name);
+               // Every resolution branch funnels through this one exit so a
+               // configured fingerprint is applied no matter which wrapper
+               // produced the connection (see applyConnectionFingerprint).
+               return applyConnectionFingerprint(
+                  await resolveConnection(name, metadata),
+                  metadata,
+               );
+            },
+         };
+      },
    );
 
    return {

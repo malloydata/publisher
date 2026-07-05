@@ -59,7 +59,7 @@ describe("MaterializationController.createMaterialization validation", () => {
          buildInstructions: {
             sources: [
                {
-                  buildId: "b1",
+                  sourceEntityId: "b1",
                   sourceID: "orders@m",
                   materializedTableId: "mt-1",
                   physicalTableName: "orders_v1",
@@ -71,7 +71,7 @@ describe("MaterializationController.createMaterialization validation", () => {
       expect(parsed).toEqual({
          buildInstructions: [
             {
-               buildId: "b1",
+               sourceEntityId: "b1",
                sourceID: "orders@m",
                materializedTableId: "mt-1",
                physicalTableName: "orders_v1",
@@ -99,7 +99,7 @@ describe("MaterializationController.createMaterialization validation", () => {
       await expect(
          controller.createMaterialization("env", "pkg", {
             buildInstructions: {
-               sources: [{ buildId: "b1", materializedTableId: "mt-1" }],
+               sources: [{ sourceEntityId: "b1", materializedTableId: "mt-1" }],
             },
          }),
       ).rejects.toThrow(BadRequestError);
@@ -112,7 +112,7 @@ describe("MaterializationController.createMaterialization validation", () => {
             buildInstructions: {
                sources: [
                   {
-                     buildId: "b1",
+                     sourceEntityId: "b1",
                      materializedTableId: "mt-1",
                      physicalTableName: "orders_v1",
                      realization: "MERGE",

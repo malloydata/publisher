@@ -34,7 +34,7 @@ import { errMessage } from "../utils";
 import {
    CompiledBuildPlan,
    compilePackageBuildPlan,
-   computeBuildId,
+   computeSourceEntityId,
    deriveAnnotationFields,
    iterGraphSources,
 } from "./build_plan";
@@ -43,16 +43,17 @@ import { bareTableName, quoteIdentifier, quoteTablePath } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
 
 /**
- * Length of the buildId prefix used when synthesizing staging table names.
- * buildId is a 64-char SHA-256 hex string; 12 hex chars is 48 bits of
- * entropy, well inside every dialect's identifier limit (Postgres is the
- * tightest at 63).
+ * Length of the sourceEntityId prefix used when synthesizing staging table
+ * names. 12 hex chars is 48 bits of entropy, well inside every dialect's
+ * identifier limit (Postgres is the tightest at 63).
  */
-const STAGING_BUILD_ID_LEN = 12;
+const STAGING_ID_LEN = 12;
 
 /** Staging suffix appended to a table name while it is being built. */
-export function stagingSuffix(buildId: string): string {
-   return `_${buildId.substring(0, STAGING_BUILD_ID_LEN)}`;
+export function stagingSuffix(sourceEntityId: string): string {
+   // Drop hyphens so the suffix stays a bare identifier fragment when the id
+   // becomes a UUID5 (a no-op for the current hex ids).
+   return `_${sourceEntityId.replace(/-/g, "").substring(0, STAGING_ID_LEN)}`;
 }
 
 /**
@@ -334,7 +335,7 @@ export class MaterializationService {
             carried = {};
          } else {
             // Skip-if-unchanged: reuse tables from the most recent successful
-            // manifest for sources whose buildId is unchanged, unless
+            // manifest for sources whose sourceEntityId is unchanged, unless
             // forceRefresh.
             const priorEntries = opts.forceRefresh
                ? {}
@@ -396,7 +397,7 @@ export class MaterializationService {
    /**
     * Derive the publisher's own build instructions for auto-run. Each persist
     * source (respecting the optional sourceNames filter) gets a self-assigned
-    * physical table name and COPY realization, unless its buildId is unchanged
+    * physical table name and COPY realization, unless its sourceEntityId is unchanged
     * since `priorEntries` — those are carried forward (reused) instead of
     * rebuilt.
     */
@@ -420,24 +421,24 @@ export class MaterializationService {
          )) {
             if (include && !include.has(persistSource.name)) continue;
 
-            const buildId = computeBuildId(
+            const sourceEntityId = computeSourceEntityId(
                persistSource,
                compiled.connectionDigests,
             );
-            if (seen.has(buildId)) continue;
-            seen.add(buildId);
+            if (seen.has(sourceEntityId)) continue;
+            seen.add(sourceEntityId);
 
-            const prior = priorEntries[buildId];
+            const prior = priorEntries[sourceEntityId];
             if (prior && prior.physicalTableName) {
-               carried[buildId] = prior;
+               carried[sourceEntityId] = prior;
                continue;
             }
 
             instructions.push({
-               buildId,
-               materializedTableId: `local-${buildId.substring(
+               sourceEntityId,
+               materializedTableId: `local-${sourceEntityId.substring(
                   0,
-                  STAGING_BUILD_ID_LEN,
+                  STAGING_ID_LEN,
                )}`,
                physicalTableName: selfAssignTableName(persistSource),
                realization: "COPY",
@@ -486,9 +487,11 @@ export class MaterializationService {
       entries: Record<string, ManifestEntry>,
    ): Promise<void> {
       const manifestEntries: BuildManifest["entries"] = {};
-      for (const [buildId, entry] of Object.entries(entries)) {
+      for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (entry.physicalTableName) {
-            manifestEntries[buildId] = { tableName: entry.physicalTableName };
+            manifestEntries[sourceEntityId] = {
+               tableName: entry.physicalTableName,
+            };
          }
       }
       try {
@@ -512,7 +515,7 @@ export class MaterializationService {
 
    /**
     * Validate caller-supplied build instructions against the package's compiled
-    * build plan: every instructed buildId must be a planned source, and only
+    * build plan: every instructed sourceEntityId must be a planned source, and only
     * COPY realization is supported. Throws when the package declares no persist
     * source (no plan to build against).
     */
@@ -525,15 +528,15 @@ export class MaterializationService {
             "Package has no persist sources; buildInstructions cannot be applied",
          );
       }
-      const plannedBuildIds = new Set<string>();
+      const plannedSourceEntityIds = new Set<string>();
       for (const source of Object.values(plan.sources)) {
-         plannedBuildIds.add(source.buildId);
+         plannedSourceEntityIds.add(source.sourceEntityId);
       }
 
       for (const instruction of instructions) {
-         if (!plannedBuildIds.has(instruction.buildId)) {
+         if (!plannedSourceEntityIds.has(instruction.sourceEntityId)) {
             throw new BadRequestError(
-               `Instruction references unknown buildId '${instruction.buildId}'`,
+               `Instruction references unknown sourceEntityId '${instruction.sourceEntityId}'`,
             );
          }
          // COPY-only for now; SNAPSHOT lands once clone semantics are defined.
@@ -561,20 +564,20 @@ export class MaterializationService {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
       // Index instructions by sourceID (the stable per-source handle) so the
-      // build no longer recomputes the buildId to find an instruction.
-      // Recomputing it here forced a caller's buildId to equal the publisher's
-      // content hash, so a caller that derives buildIds by any other scheme
-      // would have its sources silently skipped (the recomputed buildId would
-      // not match the instruction). buildId is treated as opaque, caller-assigned
-      // identity. A buildId index is kept as a fallback for instructions without
+      // build no longer recomputes the sourceEntityId to find an instruction.
+      // Recomputing it here forced a caller's sourceEntityId to equal the publisher's
+      // content hash, so a caller that derives sourceEntityIds by any other scheme
+      // would have its sources silently skipped (the recomputed sourceEntityId would
+      // not match the instruction). sourceEntityId is treated as opaque, caller-assigned
+      // identity. A sourceEntityId index is kept as a fallback for instructions without
       // a sourceID (e.g. standalone auto-run).
       const bySourceID = new Map<string, BuildInstruction>();
-      const byBuildId = new Map<string, BuildInstruction>();
+      const bySourceEntityId = new Map<string, BuildInstruction>();
       for (const instruction of instructions) {
          if (instruction.sourceID) {
             bySourceID.set(instruction.sourceID, instruction);
          }
-         byBuildId.set(instruction.buildId, instruction);
+         bySourceEntityId.set(instruction.sourceEntityId, instruction);
       }
 
       // Accumulates physical names as sources are built so downstream sources
@@ -582,11 +585,13 @@ export class MaterializationService {
       // it with carried-forward entries so reused upstreams resolve too.
       const manifest = new Manifest();
       const entries: Record<string, ManifestEntry> = {};
-      for (const [buildId, entry] of Object.entries(seedEntries)) {
+      for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
          if (entry.physicalTableName) {
-            manifest.update(buildId, { tableName: entry.physicalTableName });
+            manifest.update(sourceEntityId, {
+               tableName: entry.physicalTableName,
+            });
          }
-         entries[buildId] = entry;
+         entries[sourceEntityId] = entry;
       }
 
       for (const graph of graphs) {
@@ -599,15 +604,19 @@ export class MaterializationService {
          for (const persistSource of iterGraphSources(graph, sources)) {
             if (signal.aborted) throw new Error("Build cancelled");
 
-            // The manifest is keyed by the content buildId — what Malloy
+            // The manifest is keyed by the content sourceEntityId — what Malloy
             // recomputes to resolve upstream persist references during SQL
-            // generation — independent of the instruction's identity buildId.
-            const buildId = computeBuildId(persistSource, connectionDigests);
-            // Prefer sourceID matching (so the caller's buildId scheme stays
-            // opaque to the build); fall back to buildId for instructions
+            // generation — independent of the instruction's identity sourceEntityId.
+            const sourceEntityId = computeSourceEntityId(
+               persistSource,
+               connectionDigests,
+            );
+            // Prefer sourceID matching (so the caller's sourceEntityId scheme stays
+            // opaque to the build); fall back to sourceEntityId for instructions
             // without a sourceID (auto-run).
             const instruction =
-               bySourceID.get(persistSource.sourceID) ?? byBuildId.get(buildId);
+               bySourceID.get(persistSource.sourceID) ??
+               bySourceEntityId.get(sourceEntityId);
             if (!instruction) continue;
 
             const entry = await this.buildOneSource(
@@ -617,7 +626,7 @@ export class MaterializationService {
                connectionDigests,
                manifest,
             );
-            entries[buildId] = entry;
+            entries[sourceEntityId] = entry;
          }
       }
 
@@ -627,7 +636,7 @@ export class MaterializationService {
    /**
     * Build a single instructed source into its assigned physical table.
     * COPY uses a staging table + atomic rename for crash-safety; the staging
-    * name derives from the buildId. Records and returns the manifest entry.
+    * name derives from the sourceEntityId. Records and returns the manifest entry.
     */
    private async buildOneSource(
       persistSource: PersistSource,
@@ -636,7 +645,7 @@ export class MaterializationService {
       connectionDigests: Record<string, string>,
       manifest: Manifest,
    ): Promise<ManifestEntry> {
-      const buildId = instruction.buildId;
+      const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
       const buildSQL = persistSource.getSQL({
          buildManifest: manifest.buildManifest,
@@ -644,7 +653,7 @@ export class MaterializationService {
       });
 
       const bareName = bareTableName(physicalTableName);
-      const stagingTableName = `${physicalTableName}${stagingSuffix(buildId)}`;
+      const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
       // The control plane sends the logical (unquoted) physical name; dialect-
       // quote each identifier here so a container path or quote-requiring name
       // (e.g. a hyphenated BigQuery project id) produces valid DDL. The manifest
@@ -681,7 +690,7 @@ export class MaterializationService {
       }
 
       // Make this table visible to downstream sources built later in this run.
-      manifest.update(buildId, { tableName: physicalTableName });
+      manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
       recordSourceBuildDuration(durationMs);
@@ -691,7 +700,7 @@ export class MaterializationService {
       });
 
       return {
-         buildId,
+         sourceEntityId,
          sourceName: persistSource.name,
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
@@ -799,7 +808,7 @@ export class MaterializationService {
          if (!connectionName || !physicalTableName) {
             logger.warn("Skipping manifest entry with no connection/table", {
                materializationId: m.id,
-               buildId: entry.buildId,
+               sourceEntityId: entry.sourceEntityId,
             });
             continue;
          }
@@ -825,7 +834,7 @@ export class MaterializationService {
             // table behind; clean it up too while we hold the connection.
             await connection.runSQL(
                `DROP TABLE IF EXISTS ${quoteTablePath(
-                  `${physicalTableName}${stagingSuffix(entry.buildId)}`,
+                  `${physicalTableName}${stagingSuffix(entry.sourceEntityId)}`,
                   dialect,
                )}`,
             );

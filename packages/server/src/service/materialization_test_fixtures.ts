@@ -48,7 +48,7 @@ export function makeBuildPlan(overrides: Partial<BuildPlan> = {}): BuildPlan {
             sourceID: "orders@m.malloy",
             connectionName: "duckdb",
             dialect: "duckdb",
-            buildId: "build-orders",
+            sourceEntityId: "build-orders",
             sql: "SELECT 1",
             columns: [],
          },
@@ -62,7 +62,7 @@ export function makeInstruction(
    overrides: Partial<BuildInstruction> = {},
 ): BuildInstruction {
    return {
-      buildId: "build-orders",
+      sourceEntityId: "build-orders",
       materializedTableId: "mt-1",
       physicalTableName: '"orders_v1"',
       realization: "COPY",
@@ -72,12 +72,12 @@ export function makeInstruction(
 
 /**
  * A minimal stand-in for a Malloy {@link PersistSource} exposing only what the
- * build internals touch (name/id, deterministic buildId, SQL, and the
+ * build internals touch (name/id, deterministic sourceEntityId, SQL, and the
  * `#@ persist name=` annotation reader, defaulted to "unset").
  */
 export function fakeSource(opts: {
    name: string;
-   buildId: string;
+   sourceEntityId: string;
    sql?: string;
    connectionName?: string;
    dialectName?: string;
@@ -87,7 +87,7 @@ export function fakeSource(opts: {
       sourceID: opts.name,
       connectionName: opts.connectionName ?? "duckdb",
       dialectName: opts.dialectName ?? "duckdb",
-      makeBuildId: () => opts.buildId,
+      makeBuildId: () => opts.sourceEntityId,
       getSQL: () => opts.sql ?? "SELECT 1",
       annotations: {
          parseAsTag: () => ({ tag: { text: () => undefined } }),

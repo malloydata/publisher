@@ -61,7 +61,7 @@ export class Package {
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    // Build-manifest binding state (Malloy Persistence v0). When bound, these
-   // entries (buildId -> { tableName }) are what served queries use to route
+   // entries (sourceEntityId -> { tableName }) are what served queries use to route
    // persist sources to their materialized physical tables; they are also reused
    // by the /compile preview so previewed SQL matches executed SQL. Surfaced on
    // /status (via getPackageMetadata) so the control plane can confirm a worker
@@ -72,7 +72,7 @@ export class Package {
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
    // The package's persist build plan: a deterministic property of the compiled
-   // package (per-source buildId, columns, build SQL, dependency graphs),
+   // package (per-source sourceEntityId, columns, build SQL, dependency graphs),
    // computed once at load from the live (unbound) models so it is stable for a
    // given (package version, connection config). Null when the package declares
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
@@ -460,7 +460,7 @@ export class Package {
    }
 
    /**
-    * The package's persist build plan (per-source buildId, columns, build SQL,
+    * The package's persist build plan (per-source sourceEntityId, columns, build SQL,
     * dependency graphs), or null when the package declares no persist source.
     * A deterministic property of the compiled package; callers derive build
     * instructions from it for an orchestrated materialization.
@@ -503,7 +503,7 @@ export class Package {
    }
 
    /**
-    * The currently-bound build-manifest entries (buildId -> { tableName }), or
+    * The currently-bound build-manifest entries (sourceEntityId -> { tableName }), or
     * undefined when the package is serving live. Reused by the /compile preview
     * so previewed SQL gets the same persist-source -> physical-table routing as
     * execution.

@@ -131,7 +131,7 @@ export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
 
 /**
  * Record that a connection digest could not be computed during build-plan
- * compilation because the connection failed to resolve. The resulting buildIds
+ * compilation because the connection failed to resolve. The resulting sourceEntityIds
  * are computed without a digest, so this is a correctness signal, not just noise.
  */
 export function recordConnectionDigestSkipped(): void {
