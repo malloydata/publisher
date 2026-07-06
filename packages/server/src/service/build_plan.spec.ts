@@ -212,6 +212,50 @@ describe("deriveBuildPlan", () => {
       });
    });
 
+   it("reports declared sharing/refresh verbatim and null when unset", () => {
+      // The control plane distinguishes unset from an explicit `shared` (it
+      // applies the platform default itself), so the publisher must report
+      // the declared value verbatim — never substitute the default.
+      const declared = fakeSource({
+         name: "declared",
+         sourceEntityId: "bid-d",
+         annotationFields: {
+            name: "d_table",
+            sharing: "private",
+            refresh: "incremental",
+         },
+      });
+      const unset = fakeSource({ name: "unset", sourceEntityId: "bid-u" });
+      const plan = deriveBuildPlan(
+         [
+            {
+               connectionName: "duckdb",
+               nodes: [
+                  [
+                     { sourceID: "declared@m", dependsOn: [] },
+                     { sourceID: "unset@m", dependsOn: [] },
+                  ],
+               ],
+            },
+         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         { "declared@m": declared, "unset@m": unset },
+         { duckdb: "dig" },
+      );
+
+      expect(plan.sources["declared@m"].sharing).toBe("private");
+      expect(plan.sources["declared@m"].refresh).toBe("incremental");
+      // The raw annotation map still carries every field alongside the typed
+      // projections.
+      expect(plan.sources["declared@m"].annotationFields).toEqual({
+         name: "d_table",
+         sharing: "private",
+         refresh: "incremental",
+      });
+      // Unset is null — not "shared" — on the wire.
+      expect(plan.sources["unset@m"].sharing).toBeNull();
+      expect(plan.sources["unset@m"].refresh).toBeNull();
+   });
+
    it("honors the sourceNames filter", () => {
       const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
       const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });

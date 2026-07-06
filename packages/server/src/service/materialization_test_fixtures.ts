@@ -81,7 +81,10 @@ export function fakeSource(opts: {
    sql?: string;
    connectionName?: string;
    dialectName?: string;
+   /** key=value fields of the `#@ persist` annotation (e.g. sharing). */
+   annotationFields?: Record<string, string>;
 }): PersistSource {
+   const fields = opts.annotationFields;
    return {
       name: opts.name,
       sourceID: opts.name,
@@ -90,7 +93,20 @@ export function fakeSource(opts: {
       makeBuildId: () => opts.sourceEntityId,
       getSQL: () => opts.sql ?? "SELECT 1",
       annotations: {
-         parseAsTag: () => ({ tag: { text: () => undefined } }),
+         parseAsTag: () =>
+            fields
+               ? {
+                    tag: {
+                       *entries() {
+                          for (const [key, value] of Object.entries(fields)) {
+                             yield [key, { text: () => value }];
+                          }
+                       },
+                    },
+                 }
+               : // No annotation fields: entries() is absent, and
+                 // deriveAnnotationFields degrades to {}.
+                 { tag: { text: () => undefined } },
       },
    } as unknown as PersistSource;
 }

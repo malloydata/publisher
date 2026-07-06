@@ -83,7 +83,10 @@ import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
-import { parsePackageMaterialization } from "../service/package_manifest";
+import {
+   PackageMaterializationConfig,
+   parsePackageMaterialization,
+} from "../service/package_manifest";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -383,7 +386,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
    explores?: string[];
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
-   materialization?: { schedule: string | null } | null;
+   materialization?: PackageMaterializationConfig | null;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");

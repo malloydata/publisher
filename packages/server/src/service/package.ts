@@ -347,6 +347,7 @@ export class Package {
          // absence as a schedule removal. See `parsePackageMaterialization`.
          materialization: outcome.packageMetadata.materialization ?? {
             schedule: null,
+            freshness: null,
          },
       };
 
@@ -448,6 +449,16 @@ export class Package {
          logger.warn(`Package ${packageName} has invalid explores`, {
             packageName,
             detail: invalidMsg,
+         });
+      }
+      // Same fail-safe split for the materialization cron gate: an existing
+      // package whose manifest violates the private-only cron rule still loads
+      // (warn), but a publish of it is rejected (see package.controller).
+      const invalidSchedule = pkg.formatInvalidSchedule();
+      if (invalidSchedule) {
+         logger.warn(`Package ${packageName} has an invalid cron schedule`, {
+            packageName,
+            detail: invalidSchedule,
          });
       }
       pkg.logEmptyDiscoveryWarnings();
@@ -601,6 +612,41 @@ export class Package {
     */
    public formatInvalidExplores(exploresOverride?: string[]): string {
       return this.exploreWarnings(exploresOverride).join("\n");
+   }
+
+   /**
+    * Publish-gate for the package-level materialization cron (the power tier
+    * of artifact-anchored scheduling): a declared `materialization.schedule`
+    * governs every persist source in the package, so it is valid only when
+    * each source in the compiled build plan resolves to an explicit
+    * `sharing=private`. A cron over any shared/unset source would let one
+    * package dictate the refresh cadence of an artifact other packages share —
+    * those packages declare `materialization.freshness.window` instead and the
+    * control plane schedules the shared artifact from the tightest window.
+    * One actionable message per offending source (empty when the cron is
+    * valid or no cron is declared). Strict at publish (package.controller),
+    * warn-only at load/reload (loadViaWorker) — same split as explores.
+    */
+   public scheduleWarnings(): string[] {
+      const schedule = this.packageMetadata.materialization?.schedule;
+      if (!schedule) return [];
+      const sources = Object.values(this.buildPlan?.sources ?? {});
+      return sources
+         .filter((source) => source.sharing !== "private")
+         .map(
+            (source) =>
+               `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires every ` +
+               `persist source to declare '#@ persist ... sharing=private'; source ` +
+               `'${source.name}' resolves to ${
+                  source.sharing ? `'${source.sharing}'` : "unset"
+               }. Declare 'materialization.freshness.window' instead (the control plane ` +
+               `schedules refreshes from it), or mark every persist source sharing=private.`,
+         );
+   }
+
+   /** The {@link scheduleWarnings} joined into one string, or "" if none. */
+   public formatInvalidSchedule(): string {
+      return this.scheduleWarnings().join("\n");
    }
 
    /**

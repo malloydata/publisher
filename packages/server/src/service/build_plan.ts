@@ -307,6 +307,7 @@ export function deriveBuildPlan(
    const wireSources: Record<string, WirePersistSourcePlan> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
+      const annotationFields = deriveAnnotationFields(source);
       wireSources[sourceID] = {
          name: source.name,
          sourceID: source.sourceID,
@@ -314,8 +315,16 @@ export function deriveBuildPlan(
          dialect: source.dialectName,
          sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
+         // Declared `#@ persist` scope/refresh knobs, reported VERBATIM (null
+         // = unset). The control plane applies the platform default (unset =>
+         // shared) itself, so the publisher must never substitute it — unset
+         // has to stay distinguishable from an explicit `shared`. The source's
+         // own annotation is the most-specific declaration layer, and the only
+         // one that exists today.
+         sharing: annotationFields.sharing ?? null,
+         refresh: annotationFields.refresh ?? null,
          columns: deriveColumns(source),
-         annotationFields: deriveAnnotationFields(source),
+         annotationFields,
          modelPath: sourceModelPaths?.[sourceID],
       };
    }
