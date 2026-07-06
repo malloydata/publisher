@@ -80,5 +80,8 @@
     "@malloydata/malloy-query-builder": "^0.0.421",
     "@malloydata/malloy-filter": "^0.0.421",
     "@malloydata/malloy-tag": "^0.0.421"
+  },
+  "patchedDependencies": {
+    "@malloydata/malloy@0.0.421": "patches/@malloydata%2Fmalloy@0.0.421.patch"
   }
 }

@@ -1,0 +1,30 @@
+diff --git a/dist/api/foundation/core.js b/dist/api/foundation/core.js
+index d0b7f8728fedd9419cef87334658cbeb612f018e..dd6c999843c0dbc1b87576c63b73b1223472ea02 100644
+--- a/dist/api/foundation/core.js
++++ b/dist/api/foundation/core.js
+@@ -1298,13 +1298,23 @@ class PersistSource {
+      * @return The SQL string for this source.
+      */
+     getSQL(options) {
++        // [publisher patch] compile with finalize=false so a persist source's SQL
++        // is the bare source SELECT, not the dialect's runnable/result-serialized
++        // form. Postgres (Dialect.hasFinalStage=true) otherwise wraps the final
++        // stage in `row_to_json(...) as row`, which (1) makes CREATE TABLE AS
++        // materialize a single JSON column and (2) diverges the build-time
++        // BuildID from the serve-time lookup (which resolves persist sources from
++        // the bare SELECT), so queries never route to the materialized table.
++        // No-op where hasFinalStage=false (BigQuery/duckdb). Mirrors
++        // malloydata/malloy#2964; drop this patch once that ships in a released
++        // @malloydata/malloy and the dep is bumped.
+         const sd = this.persistableDef;
+         const queryModel = this.model.queryModel;
+         if (sd.type === 'sql_select') {
+-            return (0, model_1.getCompiledSQL)(sd, options !== null && options !== void 0 ? options : {}, (query, opts) => queryModel.compileQuery(query, opts).sql);
++            return (0, model_1.getCompiledSQL)(sd, options !== null && options !== void 0 ? options : {}, (query, opts) => queryModel.compileQuery(query, opts, false).sql);
+         }
+         else {
+-            const compiled = queryModel.compileQuery(sd.query, options);
++            const compiled = queryModel.compileQuery(sd.query, options, false);
+             return compiled.sql;
+         }
+     }
