@@ -2749,7 +2749,42 @@ components:
             5-field UNIX cron controlling how often the control plane
             re-materializes this package's published versions. Null = no
             scheduled re-materialization declared in the manifest (publish /
-            on-demand only).
+            on-demand only). A cron is the power tier of artifact-anchored
+            scheduling: it is valid only when every persist source in the
+            package resolves to an explicit `sharing=private`; a cron on a
+            package with any shared/unset persist source is rejected at
+            publish (declare `materialization.freshness.window` instead).
+        freshness:
+          oneOf:
+            - $ref: "#/components/schemas/Freshness"
+            - type: "null"
+          description: >-
+            The manifest's `materialization.freshness` block, verbatim. Null =
+            no freshness policy declared. `window` is the control plane's
+            refresh objective for the package's materialized sources;
+            `fallback` is the declared query-time behavior when the objective
+            is missed. The publisher only surfaces the values — the control
+            plane owns the scheduling and gating logic.
+
+    Freshness:
+      type: object
+      description: >-
+        Freshness policy declared in malloy-publisher.json's
+        `materialization.freshness` block. Fields are surfaced verbatim;
+        invalid values are dropped (reported as absent), never defaulted.
+      properties:
+        window:
+          type: string
+          description: >-
+            Maximum acceptable staleness of the package's materialized
+            sources, as a duration string (e.g. "24h"). The control plane
+            schedules refreshes to meet it.
+        fallback:
+          type: string
+          enum: [live, stale_ok, fail]
+          description: >-
+            Declared query-time behavior when the freshness window is missed:
+            serve live, serve the stale table, or fail the query.
 
     Model:
       type: object
@@ -4074,6 +4109,21 @@ components:
           description:
             The source's build SQL (with the build manifest applied for upstream
             rewrites).
+        sharing:
+          type: ["string", "null"]
+          description: >-
+            The source's declared `#@ persist ... sharing=...` value
+            ("private" | "shared"), reported verbatim. Null = unset — the
+            publisher never substitutes the platform default, so the control
+            plane can distinguish unset from an explicit `shared` and apply
+            the default (unset => shared) itself. The publisher reports the
+            most-specific declaration (the source's own persist annotation).
+        refresh:
+          type: ["string", "null"]
+          description: >-
+            The source's declared `#@ persist ... refresh=...` value
+            ("full" | "incremental"), reported verbatim; null = unset.
+            Metadata pass-through — inert to the publisher today.
         columns:
           type: array
           description: Output schema of the source.

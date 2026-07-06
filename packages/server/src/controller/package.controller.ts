@@ -5,6 +5,30 @@ import { EnvironmentStore } from "../service/environment_store";
 
 type ApiPackage = components["schemas"]["Package"];
 
+/**
+ * Everything that is strict-at-publish, joined into one 400 message (or
+ * undefined when the package is publishable): invalid explores entries plus
+ * the materialization cron gate (a package-level `schedule` requires every
+ * persist source to resolve to explicit `sharing=private` — see
+ * Package.scheduleWarnings). At startup/reload both are warn-only instead
+ * (fail-safe; see Package.loadViaWorker).
+ */
+function formatPublishRejections(
+   pkg: {
+      formatInvalidExplores(exploresOverride?: string[]): string;
+      formatInvalidSchedule(): string;
+   },
+   exploresOverride?: string[],
+): string | undefined {
+   const message = [
+      pkg.formatInvalidExplores(exploresOverride),
+      pkg.formatInvalidSchedule(),
+   ]
+      .filter(Boolean)
+      .join("\n");
+   return message || undefined;
+}
+
 export class PackageController {
    private environmentStore: EnvironmentStore;
 
@@ -100,7 +124,7 @@ export class PackageController {
                   bodyLocation,
                   stagingPath,
                ),
-            (pkg) => pkg.formatInvalidExplores(),
+            (pkg) => formatPublishRejections(pkg),
          );
       } else {
          result = await environment.addPackage(packageName);
@@ -114,7 +138,7 @@ export class PackageController {
       }
 
       if (!body.location) {
-         const invalidMsg = result.formatInvalidExplores();
+         const invalidMsg = formatPublishRejections(result);
          if (invalidMsg) {
             await environment.unloadPackage(packageName).catch(() => {
                /* best-effort; the package is not persisted below */
@@ -177,7 +201,8 @@ export class PackageController {
                   stagingPath,
                ),
             (pkg) =>
-               pkg.formatInvalidExplores(
+               formatPublishRejections(
+                  pkg,
                   body.explores?.map(normalizeModelPath),
                ),
          );
