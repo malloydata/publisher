@@ -47,6 +47,9 @@ COPY package.json bun.lock api-doc.yaml ./
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
+# patchedDependencies (see package.json) reference files here; they must be
+# present before `bun install` or the install fails resolving the patch.
+COPY patches/ ./patches/
 
 # Install all workspace dependencies once (cached across builds)
 RUN --mount=type=cache,target=/root/.bun/install/cache \
@@ -86,6 +89,9 @@ LABEL org.opencontainers.image.title="Malloy Publisher" \
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
+# Patch files must be present before the production `bun install` below, since
+# package.json's patchedDependencies reference them (see builder stage).
+COPY --from=builder /publisher/patches/ ./patches/
 COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
 COPY --from=builder /publisher/packages/app/package.json /publisher/packages/app/package.json
 COPY --from=builder /publisher/packages/server/dist/ /publisher/packages/server/dist/
