@@ -47,7 +47,8 @@
     "prettier:check": "bunx prettier './packages/**/*.{ts,tsx}' --check",
     "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
-    "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js"
+    "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js",
+    "validate-pg-sync": "bun scripts/sync-pg-version.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",
@@ -73,7 +74,7 @@
     "ssh2": "^1.17.0"
   },
   "resolutions": {
-    "pg": "8.16.3",
+    "pg": "8.7.3",
     "esbuild": "0.25.9",
     "@malloydata/malloy-interfaces": "^0.0.421",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
