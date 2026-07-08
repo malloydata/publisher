@@ -1,148 +1,117 @@
-# AI Agents with the Model Context Protocol (MCP) Server
+# AI Agents with the Model Context Protocol (MCP)
 
-## 1. Overview
+## Overview
 
-The Malloy Publisher includes a server implementing the **Model Context Protocol (MCP)**, a standardized interface designed to connect Large Language Models (LLMs) and AI agents directly to governed, semantic data models.
+Publisher speaks the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), so an AI agent can work with your Malloy models over a standard interface. Because a Malloy model already carries the business logic and the relationships between entities, an agent grounds its answers in your definitions instead of guessing at table and column names.
 
-At its core, the MCP server acts as a **gateway**, allowing you to have a natural language conversation with your data. Instead of writing complex queries, you can ask questions in plain English. The server leverages a Malloy model—your single source of truth for business logic and data relationships—to interpret these questions and generate trustworthy, accurate answers.
+Publisher runs two MCP servers side by side:
 
-The key benefit is that any MCP-compatible client can connect to your data. The ecosystem of clients is evolving quickly, and you could connect the server to various AI chat applications, custom scripts, or other tools.
+- **Core MCP server** (port 4040): discovery and query tools. An agent lists environments, packages, and models, reads model source, and runs Malloy queries.
+- **Agent MCP server** (port 4041): retrieval tools plus the bundled agent skills. An agent finds the model entities relevant to a question, searches the Malloy documentation, and pulls guidance skills.
 
-For more comprehensive details on the Malloy Publisher, please visit the [Malloy Publisher GitHub repository](https://github.com/malloydata/publisher).
+Any MCP-compatible client can connect: a desktop chat app, an IDE assistant, or your own script.
 
----
+## Core MCP server (port 4040)
 
-## 2. MCP Server Capabilities
+The core server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port` or `MCP_PORT`). Clients interact with it through tool calls.
 
-When running, the Malloy Publisher exposes its capabilities via an **MCP endpoint** at `http://localhost:4040/mcp`. An MCP-compatible client can interact with this endpoint to access several features of your semantic model.
+### Discovery tools
 
-#### Tool Calls
+- `malloy_environmentList`: list the available environments.
+- `malloy_packageList`: list the packages in an environment.
+- `malloy_packageGet`: list the models in a package.
+- `malloy_modelGetText`: read the source text of a model file.
 
-The primary way clients interact with the server is through tool calls. These are functions the AI can use to discover and query your data models.
+### Query tool
 
-* **Discovery Tools**: Used by the AI to understand what data is available.
-    * `malloy_projectList`: Lists all available Malloy projects.
-    * `malloy_packageList`: Lists all the packages contained within a specific project.
-    * `malloy_packageGet`: Lists all the models contained within a specific package.
-    * `malloy_modelGetText`: Gets the raw text content of a specific model file.
-* **Query Execution Tool**: Used by the AI to get data.
-    * `malloy_executeQuery`: Executes a Malloy query and returns the results in JSON format. Supports `givens` for supplying values to model-declared [runtime parameters](givens.md). Also supports the deprecated `filterParams` argument for the legacy [`#(filter)` annotation path](filters.md).
+- `malloy_executeQuery`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md), and the deprecated `filterParams` argument for the legacy [`#(filter)` path](filters.md).
 
-#### Prompts & Resources
+### Prompts and resources
 
-The MCP server can also provide clients with **prompts** (e.g., suggested questions to start a conversation) and **resources** (e.g., links to documentation or data dictionaries). However, these are nascent capabilities of the MCP standard, and many current MCP clients do not yet utilize them.
+MCP also defines prompts and resources (for example suggested questions or links to a data dictionary). These are newer parts of the standard and many clients do not use them yet. A tool like the MCP Inspector lets you explore them.
 
-Developer tools like the **MCP Inspector** can allow you to explore these features. For the demonstration below, we will focus on **tool calls**, which are the primary interaction method used by the Claude app.
+## Agent MCP server (port 4041)
 
----
+Alongside the core server, Publisher runs a second MCP server on port 4041 (set by `AGENT_MCP_PORT`, bound to `PUBLISHER_HOST`) aimed at AI agents. Point a client at `http://localhost:4041/mcp`. It adds two read-only retrieval tools:
 
-## 3. Demonstration: Connecting Claude Desktop to a Local MCP Server
+- `malloy_getContext`: given a package and a plain-English question, return the model entities most relevant to it (sources, views, named queries, and dimension and measure fields). This lets an agent ground a query in names the model actually defines before writing it. Retrieval is lexical (lunr/BM25) over the model's own text, so it matches the terms your model uses. A field named in `snake_case` (say `dep_delay`) indexes as one token, so a search for "delay" will not surface it; when a first pass comes up empty, query around the source to enumerate its fields rather than forwarding the user's exact words.
+- `malloy_searchDocs`: keyword search over a bundled index of the Malloy documentation, returning matching titles, URLs, and excerpts.
 
-This walkthrough will guide you through running the MCP server locally and configuring the Claude Desktop App to use its tool-calling capabilities.
+### Skills as MCP prompts
 
-### Prerequisites
+The agent server also serves the bundled agent [skills](../skills/) as MCP prompts. A host that ingests MCP but does not read skill files from disk (for example Codex, ChatGPT, or Cursor) can pull the same guidance through this channel. MCP prompts are on-demand: a client lists them and the user or host selects one, so guidance that is always-on for skill-aware hosts becomes opt-in here. For authoring or contributing skills, see [docs/agent-skills](agent-skills/).
 
-Before you begin, ensure you have the following set up:
+Neither server requires authentication, and the core server's `malloy_executeQuery` runs Malloy against the databases your models connect to, so anyone who can reach these ports can read that data. The server binds `0.0.0.0` by default, which also exposes it on your network. Bind it to loopback with `--host 127.0.0.1` for local-only use, and put an authenticating gateway in front before exposing it more widely.
 
-* **An Existing Malloy Model**: This demo will use the `hackernews.malloy` model from the [Malloy Samples Data Repository](https://github.com/malloydata/malloy-samples).
-* **Node.js & Bun**: The Publisher server runs on Bun, a fast JavaScript runtime.
-* **Python 3**: Required to run the intermediary bridge script.
-* **Claude Desktop App**: The specific AI client we are using for this demonstration. 
+## Connecting a client
 
-### Step 1: Start the Malloy Publisher MCP Server
+These examples assume Publisher is already running. Running it needs Node.js on your PATH (the quick start below uses `npx`), and the Claude Desktop bridge additionally needs Python 3. See the [README](https://github.com/malloydata/publisher) for install and run options.
 
-The easiest way to get started is to run the server directly using `npx`, pointing it to a local copy of the Malloy samples.
+### Over HTTP
 
-1.  First, clone the `malloy-samples` repository:
-    ```bash
-    git clone https://github.com/credibledata/malloy-samples.git
-    ```
-2.  Navigate into the newly created directory:
-    ```bash
-    cd malloy-samples
-    ```
-3.  Run the publisher server, telling it to use the current directory as its root:
-    ```bash
-    npx @malloy-publisher/server --server_root .
-    ```
+Clients such as Cursor and VS Code connect straight to the HTTP endpoints. The exact config shape varies by client (key names differ, for example VS Code uses `servers` rather than `mcpServers`), but each entry points an MCP server at a URL:
 
-After running the command, you should see output confirming the server is active:
-
-```bash
-MCP server listening at http://localhost:4040
+```json
+{
+  "mcpServers": {
+    "malloy": { "type": "http", "url": "http://localhost:4040/mcp" },
+    "malloy-agent": { "type": "http", "url": "http://localhost:4041/mcp" }
+  }
+}
 ```
 
-This is the recommended approach for a quick start. For more details and alternative methods, such as building from the source, see the official **[Build and Run Instructions](https://github.com/malloydata/publisher?tab=readme-ov-file#build-and-run-instructions)**.
+Add or drop the `"type": "http"` field to match your client. Current Claude Desktop does not accept an HTTP entry here; connect it through the Python bridge below or its Connectors UI.
 
-### Step 2: Download the Python Bridge Script
+If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Point the client at the machine's network address instead, or move Publisher's core server to another port with `--mcp_port`. The agent server on 4041 is usually unaffected.
 
-A small intermediary script is needed to connect the current version of the Claude desktop app (version 0.11.4) to the local Malloy MCP server.
+### With Claude Desktop through the Python bridge (older versions)
 
-* **Download the script here**: [malloy_bridge.py](https://raw.githubusercontent.com/malloydata/publisher/main/packages/server/dxt/malloy_bridge.py)
+Older Claude Desktop builds (around 0.11.4) do not speak HTTP MCP directly and need a small bridge script that translates between the client and the server.
 
-**Why is this bridge script needed?** This script acts as a "translator." The Claude client has specific expectations for how it communicates with external tools, and this script handles minor formatting differences on the fly to ensure seamless communication with the MCP server.
+1. Start the server. Run from an empty directory and Publisher serves its default DuckDB sample packages (`ecommerce`, `imdb`, `faa`), which it downloads from the malloy-samples repository on first run, so the first start needs network access and can take a minute:
+   ```bash
+   npx @malloy-publisher/server
+   ```
+   You should see `MCP server listening at http://0.0.0.0:4040` (reach it at `http://localhost:4040`). To serve your own models instead, point the server at their directory with `--server_root <path>`.
+2. Download the bridge script: [malloy_bridge.py](https://raw.githubusercontent.com/malloydata/publisher/main/packages/server/dxt/malloy_bridge.py).
+3. In Claude Desktop, open Settings > Developer > Edit Config and add an entry that runs the script:
+   ```json
+   {
+     "mcpServers": {
+       "malloy": {
+         "command": "python3",
+         "args": ["/path/to/malloy_bridge.py"],
+         "env": {}
+       }
+     }
+   }
+   ```
+4. Save the file and start a conversation. Claude discovers your models through the tools and answers questions about them. [Watch a short demo.](https://www.loom.com/share/fcc5112ac1ca4bf78bee0985f1cd31be)
 
-### Step 3: Configure the Claude Desktop App
+Example prompts against the bundled samples:
 
-Next, you need to tell Claude to use your Python bridge script as its tool server.
+- "Use Malloy to run an exploratory analysis on the FAA flight data."
+- "Use Malloy to help me understand the ecommerce data, and chart the results."
+- "Use Malloy to check how many movies Tom Hanks has been in."
 
-1.  In the Claude desktop app, navigate to **Settings > Developer > Edit Config**. 
-2.  This will open a JSON configuration file.
-3.  Add or edit the `mcpServers` section to point to the `malloy_bridge.py` script you downloaded. Replace `/path/to/your/` with the **actual file path** on your system.
-    ```json
-    {
-      "mcpServers": {
-        "malloy": {
-          "command": "python3",
-          "args": ["/path/to/your/malloy_bridge.py"],
-          "env": {},
-          "disabled": false
-        }
-      }
-    }
-    ```
-4.  Save the configuration file. Claude will now route any requests for the "malloy" toolset through your local Python script to the MCP server.
+## Troubleshooting
 
-### Starting a Conversation
+Connection errors:
 
-Once the server is running and Claude is configured, the setup is complete. You can now start a new conversation and ask questions about your data directly. Thanks to the MCP discovery tools, Claude will automatically find your models, understand their structure, and execute queries to answer your questions.
+- Confirm the server is running and listening on port 4040 (and 4041 for the agent server).
+- Check the URL or file path in your client configuration.
+- For the bridge, confirm Python 3 is installed and on your PATH.
+- If `localhost:4040` does not respond but the machine's network address does, another local process is holding the loopback port (some editor and MCP extensions bind it). See the HTTP section above.
 
-[Watch the demo video here.](https://www.loom.com/share/fcc5112ac1ca4bf78bee0985f1cd31be)
+Model or query errors:
 
-#### Example Prompts
+- Confirm your model files are under the directory you pointed the server at.
+- Check the model syntax.
 
-Here are a few examples of questions you could ask, based on the models found in the `malloy-samples` repository:
+For the bridge, the script writes a detailed log to `/tmp/malloy_bridge.log`, and Claude Desktop keeps its own MCP log under Developer > Open MCP Log file.
 
-* *"Use malloy to run an exploratory data analysis on the FAA dataset."*
-* *"Use malloy to help me understand the ecommerce data. Create charts to visualize the data."*
-* *"Use malloy to check how many movies Tom Hanks has been in."*
+## Further reading
 
----
-
-## 4. Troubleshooting and Debugging
-
-### Common Issues
-
-1.  **Connection Errors**:
-    * Ensure the Malloy Publisher server is running and listening on port 4040.
-    * Double-check that the file path in Claude's JSON configuration is correct.
-    * Verify that Python 3 is installed and available in your system's PATH.
-2.  **Model or Query Errors**:
-    * Confirm that your Malloy model files are located within the directory you pointed the server to.
-    * Check the Malloy model syntax for errors.
-
-### Debugging
-
-To diagnose issues, you can inspect the logs from both the Claude app and the Python bridge script.
-
-* **Claude App MCP Logs**: See requests from Claude's perspective. In the Claude desktop app, click the **Developer** menu and select **Open MCP Log file**.
-* **Python Bridge Script Logs**: The `malloy_bridge.py` script writes a detailed log of all activity. This is the best place to find specific error messages. You can find this log file at:
-    ```
-    /tmp/malloy_bridge.log
-    ```
-
----
-
-## 5. Further Information
-
-The Malloy Publisher and the Model Context Protocol are under active development. For the latest updates, advanced usage patterns, and information on future enhancements, please refer to the official **[Malloy Publisher repository](https://github.com/malloydata/publisher)**.
+- [Publisher README](https://github.com/malloydata/publisher): build and run instructions, configuration, and the full environment-variable reference (including `MCP_PORT` and `AGENT_MCP_PORT`).
+- [docs/agent-skills](agent-skills/): the agent skills and how to author them.
+- [givens.md](givens.md) and [filters.md](filters.md): runtime parameters and source filters.
