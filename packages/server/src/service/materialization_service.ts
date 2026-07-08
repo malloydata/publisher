@@ -23,6 +23,7 @@ import {
    BuildManifest,
    BuildManifestResult,
    BuildPlan,
+   FreshnessManifest,
    Materialization,
    MaterializationStatus,
    MaterializationUpdate,
@@ -480,12 +481,16 @@ export class MaterializationService {
       environment: {
          reloadAllModelsForPackage(
             packageName: string,
-            manifest: BuildManifest["entries"],
+            manifest: FreshnessManifest,
          ): Promise<void>;
       },
       packageName: string,
       entries: Record<string, ManifestEntry>,
    ): Promise<void> {
+      // The post-build auto-load binds tableName-only entries: the control plane
+      // stamps freshness (dataAsOf/window/fallback) on the wire manifest it
+      // distributes, not on this in-memory post-build load, so these sources are
+      // bound un-gated (always serve the freshly-built table).
       const manifestEntries: BuildManifest["entries"] = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (entry.physicalTableName) {

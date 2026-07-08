@@ -7,14 +7,17 @@ import { Environment } from "./environment";
 import type { Package } from "./package";
 
 /**
- * The publish gate for the package-level materialization cron (§9.4
- * artifact-anchored scheduling): a declared `materialization.schedule` is the
- * power tier and is valid only when every persist source in the compiled
- * build plan resolves to an explicit `sharing=private`. These tests run a real
- * `Environment` + `Package.create` over temp dirs, so they also prove
- * end-to-end that the pinned compiler ACCEPTS `sharing=` / `refresh=` keys in
- * the `#@ persist` annotation and that the values survive to the wire build
- * plan verbatim (unset stays null — never defaulted to "shared").
+ * The publish gate for the package-level materialization cron. At Phase B the
+ * package-level cron (`materialization.schedule`) is replaced outright by
+ * `materialization.freshness.window` (persistence.md §9.4), so ANY declared cron
+ * is rejected regardless of the sources' sharing. The `sharing=private`
+ * carve-out arrives whole with Phase A (persistence-phase-b-design.md §3.4);
+ * until then there is no private artifact for a cron to own, so the B→A rule is
+ * reject-all. These tests run a real `Environment` + `Package.create` over temp
+ * dirs, so they also prove end-to-end that the pinned compiler ACCEPTS
+ * `sharing=` / `refresh=` keys in the `#@ persist` annotation and that the
+ * values survive to the wire build plan verbatim (unset stays null — never
+ * defaulted to "shared").
  */
 describe("materialization cron gate", () => {
    let rootDir: string;
@@ -99,29 +102,31 @@ source: b is duckdb.sql("SELECT 2 as x")
    );
 
    it(
-      "rejects a cron over shared/unset persist sources, pointing at freshness.window",
+      "rejects any declared cron, pointing at freshness.window",
       async () => {
          const pkg = await loadPackage(MIXED_MODEL, "0 6 * * *");
 
+         // One actionable message for the whole package — the B→A rule is
+         // reject-all, not per-source.
          const warnings = pkg.scheduleWarnings();
-         // One actionable message per offending source; the compliant private
-         // source is not flagged.
-         expect(warnings).toHaveLength(2);
+         expect(warnings).toHaveLength(1);
          const joined = pkg.formatInvalidSchedule();
-         expect(joined).toContain("'open' resolves to 'shared'");
-         expect(joined).toContain("'unspecified' resolves to unset");
-         expect(joined).not.toContain("'priv'");
+         expect(joined).toContain("materialization.schedule");
          expect(joined).toContain("materialization.freshness.window");
       },
       { timeout: 30000 },
    );
 
    it(
-      "allows a cron when every persist source is explicitly private",
+      "rejects a declared cron even when every persist source is private",
       async () => {
+         // The sharing=private carve-out arrives with Phase A; during B→A even
+         // an all-private package's cron is rejected outright.
          const pkg = await loadPackage(ALL_PRIVATE_MODEL, "0 6 * * *");
-         expect(pkg.scheduleWarnings()).toEqual([]);
-         expect(pkg.formatInvalidSchedule()).toBe("");
+         expect(pkg.scheduleWarnings()).toHaveLength(1);
+         expect(pkg.formatInvalidSchedule()).toContain(
+            "materialization.freshness.window",
+         );
       },
       { timeout: 30000 },
    );

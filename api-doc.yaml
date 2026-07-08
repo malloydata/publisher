@@ -4236,6 +4236,23 @@ components:
           $ref: "#/components/schemas/Realization"
         rowCount:
           type: ["integer", "null"]
+        dataAsOf:
+          type: string
+          format: date-time
+          description: >-
+            Instant up to which the materialized artifact provably reflects its
+            sources (full build: snapshot start). The freshness age anchor:
+            age = now - dataAsOf. NOT build-completion time.
+        freshnessWindowSeconds:
+          type: integer
+          format: int64
+          description: Effective freshness window (SLO). Absent => un-gated (never stale).
+        freshnessFallback:
+          type: string
+          enum: [live, stale_ok, fail]
+          description: >-
+            Per-version read-time policy when the entry is stale. Never combined
+            across versions; each version's entries carry its own declared fallback.
 
   parameters:
     environmentName:

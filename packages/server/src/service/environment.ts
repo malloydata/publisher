@@ -28,7 +28,7 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { BuildManifest } from "../storage/DatabaseInterface";
+import { FreshnessManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -1119,7 +1119,7 @@ export class Environment {
     */
    public async reloadAllModelsForPackage(
       packageName: string,
-      manifest: BuildManifest["entries"],
+      manifest: FreshnessManifest,
    ): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
@@ -1193,7 +1193,7 @@ export class Environment {
     */
    private async fetchManifestEntriesWithTimeout(
       manifestLocation: string,
-   ): Promise<BuildManifest["entries"]> {
+   ): Promise<FreshnessManifest> {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
          timer = setTimeout(
