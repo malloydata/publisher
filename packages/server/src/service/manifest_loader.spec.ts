@@ -46,6 +46,39 @@ describe("fetchManifestEntries", () => {
       });
    });
 
+   it("carries the control-plane freshness fields verbatim", async () => {
+      const dataAsOf = "2026-07-07T00:00:00.000Z";
+      const file = await writeManifest({
+         entries: {
+            gated: {
+               sourceEntityId: "gated",
+               physicalTableName: "schema.gated_mz",
+               dataAsOf,
+               freshnessWindowSeconds: 3600,
+               freshnessFallback: "stale_ok",
+            },
+            ungated: {
+               sourceEntityId: "ungated",
+               physicalTableName: "schema.ungated_mz",
+            },
+         },
+      });
+
+      const entries = await fetchManifestEntries(file);
+
+      // Filter-free: freshness fields are retained for the serve-path gate; a
+      // window-less entry is left un-gated.
+      expect(entries).toEqual({
+         gated: {
+            tableName: "schema.gated_mz",
+            dataAsOf,
+            freshnessWindowSeconds: 3600,
+            freshnessFallback: "stale_ok",
+         },
+         ungated: { tableName: "schema.ungated_mz" },
+      });
+   });
+
    it("reads via a file:// URI", async () => {
       const file = await writeManifest({
          entries: { b1: { sourceEntityId: "b1", physicalTableName: "t1" } },

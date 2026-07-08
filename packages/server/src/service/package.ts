@@ -30,9 +30,14 @@ import {
 import { formatDuration, logger } from "../logger";
 import { recordBuildPlanComputeDuration } from "../materialization_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest, BuildPlan } from "../storage/DatabaseInterface";
+import {
+   BuildManifest,
+   BuildPlan,
+   FreshnessManifest,
+} from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
+import { filterFreshManifest } from "./freshness";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
@@ -52,6 +57,22 @@ type PackageConnectionInput =
    | Map<string, Connection>
    | (() => MalloyConfig);
 
+/**
+ * Project the full wire entries down to the Malloy-runtime binding map
+ * (`sourceEntityId -> { tableName }`) used to hydrate models. The freshness
+ * fields are dropped here — they gate the serve path per query, not model
+ * hydration.
+ */
+function toTableNameManifest(
+   entries: FreshnessManifest,
+): BuildManifest["entries"] {
+   const out: BuildManifest["entries"] = {};
+   for (const [sourceEntityId, entry] of Object.entries(entries)) {
+      out[sourceEntityId] = { tableName: entry.tableName };
+   }
+   return out;
+}
+
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -67,6 +88,22 @@ export class Package {
    // /status (via getPackageMetadata) so the control plane can confirm a worker
    // actually bound the distributed manifest instead of inferring it from logs.
    private buildManifestEntries: BuildManifest["entries"] | undefined;
+   // The full wire entries retained at bind (sourceEntityId -> { tableName,
+   // dataAsOf, freshnessWindowSeconds, freshnessFallback }). Unlike
+   // {@link buildManifestEntries} (the tableName-only projection baked into the
+   // hydration runtime and reused by /compile), this keeps the control-plane
+   // freshness fields so the serve path can re-evaluate `age vs window` per
+   // query. Undefined when the package is serving live (unbound).
+   private freshnessEntries: FreshnessManifest | undefined;
+   // Memoized freshness-filtered manifest for the serve path. Almost all queries
+   // in a window share the same included set, so this is recomputed only when a
+   // retained entry actually crosses its window (`validUntil`, the next
+   // staleSince) or when a rebind replaces the entries (cleared in
+   // recordManifestBinding). validUntil === Infinity means no included entry has
+   // an evaluable window, so the result is stable until the next rebind.
+   private freshManifestCache:
+      | { manifest: BuildManifest["entries"]; validUntil: number }
+      | undefined;
    private manifestBindingStatus: "unbound" | "bound" | "live_fallback" =
       "unbound";
    private manifestEntryCount = 0;
@@ -419,6 +456,10 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
+      // Install the per-query freshness resolver on the freshly-built models.
+      // At create time no manifest is bound yet, so the resolver returns
+      // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
+      pkg.wireFreshnessResolvers();
 
       // Compute the persist build plan off the live (unbound) models, before the
       // caller binds any configured manifest, so the surfaced plan reflects the
@@ -524,6 +565,51 @@ export class Package {
    }
 
    /**
+    * The freshness-filtered build manifest for the serve path, evaluated at
+    * `now`. Persistence.md §9.3 Phase B: a query on a `#@ persist` source may
+    * use its materialized table only while the table is within its declared
+    * freshness window; otherwise it falls back per the entry's `fallback`
+    * (`live`/`fail` drop the entry → serve live; `stale_ok` keeps it → serve the
+    * stale table). Un-gated entries (no window) always route to the table.
+    *
+    * Undefined when the package is serving live (unbound) — callers then apply
+    * no per-query override and the runtime serves live.
+    *
+    * Memoized: recomputed only when a retained entry crosses its window
+    * (monotonic fresh→stale, so a single `validUntil` deadline suffices) or when
+    * a rebind replaces the entries. Cheap O(1) hit on the common path.
+    */
+   public getFreshBuildManifest(
+      now: number = Date.now(),
+   ): BuildManifest["entries"] | undefined {
+      if (!this.freshnessEntries) return undefined;
+      if (this.freshManifestCache && now < this.freshManifestCache.validUntil) {
+         return this.freshManifestCache.manifest;
+      }
+      const { manifest, nextStaleSince } = filterFreshManifest(
+         this.freshnessEntries,
+         new Date(now),
+      );
+      this.freshManifestCache = {
+         manifest,
+         validUntil: nextStaleSince ?? Infinity,
+      };
+      return manifest;
+   }
+
+   /**
+    * Install the per-query freshness resolver on every owned model so the serve
+    * path (Model.getQueryResults / executeNotebookCell) applies the
+    * freshness-filtered manifest as a per-query Malloy `buildManifest` override.
+    * Idempotent; called after (re)building the model set.
+    */
+   private wireFreshnessResolvers(): void {
+      for (const model of this.models.values()) {
+         model.setFreshnessResolver(() => this.getFreshBuildManifest());
+      }
+   }
+
+   /**
     * Record the URI whose manifest is currently bound to the served models. May
     * differ from `manifestLocation` after an in-memory auto-load following a
     * materialization build (no URI), in which case it stays null.
@@ -545,13 +631,18 @@ export class Package {
     * observability (/status). An empty map means the manifest was cleared, so
     * the package reverts to live (unbound).
     */
-   private recordManifestBinding(
-      buildManifest: BuildManifest["entries"],
-   ): void {
-      const count = Object.keys(buildManifest).length;
-      this.buildManifestEntries = count > 0 ? buildManifest : undefined;
+   private recordManifestBinding(entries: FreshnessManifest): void {
+      const count = Object.keys(entries).length;
+      // Full wire entries (with freshness) drive the per-query serve-path gate;
+      // the tableName-only projection is what /compile and /status consume.
+      this.freshnessEntries = count > 0 ? entries : undefined;
+      this.buildManifestEntries =
+         count > 0 ? toTableNameManifest(entries) : undefined;
       this.manifestEntryCount = count;
       this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
+      // A rebind replaces the entries, so any memoized freshness-filtered
+      // manifest is stale — drop it so the next query recomputes.
+      this.freshManifestCache = undefined;
       if (count === 0) {
          this.boundManifestUri = null;
       }
@@ -615,33 +706,27 @@ export class Package {
    }
 
    /**
-    * Publish-gate for the package-level materialization cron (the power tier
-    * of artifact-anchored scheduling): a declared `materialization.schedule`
-    * governs every persist source in the package, so it is valid only when
-    * each source in the compiled build plan resolves to an explicit
-    * `sharing=private`. A cron over any shared/unset source would let one
-    * package dictate the refresh cadence of an artifact other packages share —
-    * those packages declare `materialization.freshness.window` instead and the
-    * control plane schedules the shared artifact from the tightest window.
-    * One actionable message per offending source (empty when the cron is
-    * valid or no cron is declared). Strict at publish (package.controller),
-    * warn-only at load/reload (loadViaWorker) — same split as explores.
+    * Publish-gate for the package-level materialization cron. The package-level
+    * cron (`materialization.schedule`) is replaced outright at Phase B by
+    * `materialization.freshness.window` (persistence.md §9.4), so any declared
+    * cron is rejected. The `sharing=private` carve-out — a cron may legitimately
+    * own a package's own private artifacts — arrives whole with Phase A; until
+    * `sharing=private` is declarable there is no private artifact for a cron to
+    * own, so the B→A rule is to reject any declared cron outright
+    * (persistence-phase-b-design.md §3.4). One actionable message pointing at
+    * `materialization.freshness.window` (empty when no cron is declared). Strict
+    * at publish (package.controller), warn-only at load/reload (loadViaWorker) —
+    * same split as explores.
     */
    public scheduleWarnings(): string[] {
       const schedule = this.packageMetadata.materialization?.schedule;
       if (!schedule) return [];
-      const sources = Object.values(this.buildPlan?.sources ?? {});
-      return sources
-         .filter((source) => source.sharing !== "private")
-         .map(
-            (source) =>
-               `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires every ` +
-               `persist source to declare '#@ persist ... sharing=private'; source ` +
-               `'${source.name}' resolves to ${
-                  source.sharing ? `'${source.sharing}'` : "unset"
-               }. Declare 'materialization.freshness.window' instead (the control plane ` +
-               `schedules refreshes from it), or mark every persist source sharing=private.`,
-         );
+      return [
+         `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} is not accepted: ` +
+            `package-level crons are rejected in Phase B. Declare ` +
+            `'materialization.freshness.window' instead (the control plane schedules ` +
+            `refreshes from it).`,
+      ];
    }
 
    /** The {@link scheduleWarnings} joined into one string, or "" if none. */
@@ -728,9 +813,11 @@ export class Package {
     * timeout, pool shutting down) propagate as `ServiceUnavailableError`
     * — the caller (manifest service) decides how to retry.
     */
-   public async reloadAllModels(
-      buildManifest: BuildManifest["entries"],
-   ): Promise<void> {
+   public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+      // Models are hydrated against the tableName-only projection; the freshness
+      // fields gate the serve path per query (via getFreshBuildManifest), not
+      // model hydration.
+      const buildManifest = toTableNameManifest(entries);
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
          packageName: this.packageName,
@@ -837,7 +924,13 @@ export class Package {
       this.applyQueryBoundaryToModels();
       // Remember what we just bound so /compile can route identically and
       // /status can report the binding. An empty map reverts to live (unbound).
-      this.recordManifestBinding(buildManifest);
+      // Retains the full freshness entries so the serve-path gate can evaluate
+      // them per query.
+      this.recordManifestBinding(entries);
+      // Install the per-query freshness resolver on the rebuilt model set so the
+      // serve path applies the freshness-filtered manifest as a per-query
+      // override.
+      this.wireFreshnessResolvers();
       // Re-run the fail-safe warning against the refreshed model set: an edit
       // to publisher.json that introduces a bad entry should surface in the
       // logs on reload too, not only at initial load (loadViaWorker).
