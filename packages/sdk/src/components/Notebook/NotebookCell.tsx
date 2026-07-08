@@ -18,6 +18,7 @@ import {
 import Markdown from "markdown-to-jsx";
 import React, { useEffect, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
@@ -36,6 +37,83 @@ interface NotebookCellProps {
    index: number;
    maxResultSize?: number;
    isExecuting?: boolean;
+   onNavigate?: (to: string, event?: React.MouseEvent) => void;
+}
+
+interface NotebookMarkdownLinkProps {
+   href?: string;
+   title?: string;
+   children?: React.ReactNode;
+   envName: string;
+   pkgName: string;
+   sourceDir: string;
+   onNavigate?: (to: string, event?: React.MouseEvent) => void;
+}
+
+// Links inside a rendered notebook/README are authored relative to the source
+// file (e.g. `spielberg.malloynb`). A plain browser anchor resolves them
+// against the current page URL, which drops the package segment for a README
+// shown at the package route. Resolve relative links against the source file's
+// own directory instead and route them through the SPA. External, hash, and
+// absolute links stay as normal anchors.
+function NotebookMarkdownLink({
+   href,
+   title,
+   children,
+   envName,
+   pkgName,
+   sourceDir,
+   onNavigate,
+}: NotebookMarkdownLinkProps) {
+   const hasScheme = !!href && /^[a-z][a-z0-9+.-]*:/i.test(href);
+   const isInternalRelative =
+      !!href && !hasScheme && !href.startsWith("/") && !href.startsWith("#");
+
+   if (!isInternalRelative || !href) {
+      // External, absolute, or hash link: render a normal anchor. Only allow
+      // safe schemes so a crafted `javascript:`/`data:` href in a package
+      // README (packages can come from untrusted git/S3 sources) cannot run.
+      const isUnsafeScheme =
+         hasScheme && !/^(https?|mailto|tel):/i.test(href ?? "");
+      return (
+         <a
+            href={isUnsafeScheme ? undefined : href}
+            title={title}
+            {...(hasScheme
+               ? { target: "_blank", rel: "noopener noreferrer" }
+               : {})}
+         >
+            {children}
+         </a>
+      );
+   }
+
+   // Resolve the relative href against the source file's directory (empty for a
+   // package-root README) via a dummy origin, which normalizes any `./`/`../`
+   // and clamps escapes at the package root, then prefix the package path.
+   const resolved = new URL(href, `https://malloy.invalid/${sourceDir}`);
+   const packageRelative =
+      resolved.pathname.slice(1) + resolved.search + resolved.hash;
+   const to = `/${envName}/${pkgName}/${packageRelative}`;
+   // With a host router (onNavigate) intercept and route through the SPA.
+   // Without one (router-free SDK embedding) the absolute href navigates on
+   // its own, so rendering a notebook needs no react-router context.
+   return (
+      <a
+         href={to}
+         title={title}
+         onClick={
+            onNavigate
+               ? (event) => {
+                    event.preventDefault();
+                    onNavigate(to, event);
+                 }
+               : undefined
+         }
+      >
+         {children}
+      </a>
+   );
 }
 
 export function NotebookCell({
@@ -46,6 +124,7 @@ export function NotebookCell({
    index,
    maxResultSize,
    isExecuting,
+   onNavigate,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -60,6 +139,28 @@ export function NotebookCell({
       React.useState<boolean>(false);
 
    const [copyMessage, setCopyMessage] = useState("");
+
+   const { environmentName, packageName, modelPath } =
+      parseResourceUri(resourceUri);
+   // Directory of the source file within the package (empty for a package-root
+   // README), used to resolve relative links the author wrote against it.
+   const sourceDir =
+      modelPath && modelPath.includes("/")
+         ? modelPath.slice(0, modelPath.lastIndexOf("/") + 1)
+         : "";
+   const markdownOptions = {
+      overrides: {
+         a: {
+            component: NotebookMarkdownLink,
+            props: {
+               envName: environmentName,
+               pkgName: packageName,
+               sourceDir,
+               onNavigate,
+            },
+         },
+      },
+   };
 
    // Regex to extract imported names from import statements
    const IMPORT_NAMES_REGEX = /import\s*\{([^}]+)\}\s*from\s*['"`][^'"`]+['"`]/;
@@ -190,7 +291,7 @@ export function NotebookCell({
                      alignItems="flex-start"
                      justifyContent="space-between"
                   >
-                     <Markdown>{cell.text}</Markdown>
+                     <Markdown options={markdownOptions}>{cell.text}</Markdown>
                      <Tooltip title="Click to copy link">
                         <LinkOutlinedIcon
                            sx={{
@@ -204,7 +305,7 @@ export function NotebookCell({
                      </Tooltip>
                   </Stack>
                ) : (
-                  <Markdown>{cell.text}</Markdown>
+                  <Markdown options={markdownOptions}>{cell.text}</Markdown>
                )}
                <Snackbar
                   open={copyMessage !== ""}

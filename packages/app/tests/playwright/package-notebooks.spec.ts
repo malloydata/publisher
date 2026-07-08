@@ -48,4 +48,24 @@ test.describe("package-notebooks", () => {
          }),
       ).toBeVisible();
    });
+
+   test("clicking a notebook row keeps the package segment in the URL", async ({
+      page,
+   }) => {
+      await gotoHome(page);
+      await openEnvironment(page, DEFAULT_ENV);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
+
+      // README.malloynb shares no name overlap with the package, so a dropped
+      // package segment lands on /malloy-samples/README.malloynb and 404s. The
+      // imdb.malloynb case above cannot catch that (the URL still matches).
+      await page
+         .getByRole("button", { name: "README.malloynb", exact: true })
+         .click();
+
+      await expect(page).toHaveURL(
+         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.imdb}/README\\.malloynb$`),
+      );
+      await expect(page.getByText(/does not exist/i)).toHaveCount(0);
+   });
 });

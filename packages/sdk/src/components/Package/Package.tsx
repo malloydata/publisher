@@ -215,7 +215,12 @@ export default function Package({
                         icon={<ContentTypeIcon type="report" />}
                         tint={MALLOY_BRAND.teal}
                         label={notebook.path}
-                        onClick={(event) => onClick(notebook.path, event)}
+                        onClick={(event) =>
+                           onClick(
+                              `/${environmentName}/${packageName}/${notebook.path}`,
+                              event,
+                           )
+                        }
                      />
                   ))}
                   {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
@@ -248,7 +253,7 @@ export default function Package({
                                     // The `pages/` prefix lets the router branch
                                     // off the existing model-path catch-all.
                                     onClickPackageFile(
-                                       `pages/${page.path}`,
+                                       `/${environmentName}/${packageName}/pages/${page.path}`,
                                        event,
                                     );
                                  } else {
@@ -293,7 +298,12 @@ export default function Package({
                         icon={<ContentTypeIcon type="model" />}
                         tint={MALLOY_BRAND.orange}
                         label={model.path}
-                        onClick={(event) => onClick(model.path, event)}
+                        onClick={(event) =>
+                           onClick(
+                              `/${environmentName}/${packageName}/${model.path}`,
+                              event,
+                           )
+                        }
                      />
                   ))}
                   {models.length === 0 && <EmptyRow label="No models" />}
@@ -332,6 +342,7 @@ export default function Package({
                      <Notebook
                         resourceUri={readmeResourceUri}
                         retrievalFn={retrievalFn}
+                        onNavigate={onClick}
                      />
                   </Box>
                )}

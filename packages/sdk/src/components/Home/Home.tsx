@@ -18,6 +18,7 @@ import { useState } from "react";
 import { Environment } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { getEnvironmentDescription } from "../../utils/parsing";
+import { DOC_LINKS } from "../../constants/docLinks";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
@@ -33,17 +34,17 @@ const FEATURES: Array<{ title: string; body: string; href: string }> = [
    {
       title: "Ad-hoc analysis",
       body: "Browse semantic sources, build queries, and run nested logic in Explorer — no code.",
-      href: "https://github.com/malloydata/publisher/blob/main/README.md#ad-hoc-data-analysis",
+      href: DOC_LINKS.explorer,
    },
    {
       title: "Notebook dashboards",
       body: "Code-first dashboards using Malloy notebooks. Versioned alongside your models.",
-      href: "https://github.com/malloydata/publisher/blob/main/README.md#notebook-based-dashboards",
+      href: DOC_LINKS.publishing,
    },
    {
       title: "AI data agents",
       body: "Expose models via MCP so agents can discover sources and ask well-formed questions.",
-      href: "https://github.com/malloydata/publisher/blob/main/README.md#mcp-based-ai-data-agents",
+      href: DOC_LINKS.mcpAgents,
    },
 ];
 
@@ -185,7 +186,7 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                   <Button
                      variant="contained"
                      color="primary"
-                     href="https://github.com/malloydata/publisher/blob/main/README.md#server-configuration"
+                     href={DOC_LINKS.publishing}
                      target="_blank"
                      rel="noopener noreferrer"
                   >
