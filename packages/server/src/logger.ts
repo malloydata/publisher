@@ -84,6 +84,60 @@ export function formatDuration(durationMs: number): string {
    return `${durationMs.toFixed(2)}ms`;
 }
 
+// Connection endpoints carry provider credentials in their request/response
+// bodies (BigQuery serviceAccountKeyJson, Snowflake privateKey/password, Postgres
+// password/connectionString, S3 secretAccessKey/sessionToken, Azure clientSecret/
+// sasUrl, Databricks token, ...). The middleware below logs the full body, so
+// those values are masked by key name before they reach a log transport.
+const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
+   "password",
+   "connectionString",
+   "serviceAccountKeyJson",
+   "privateKey",
+   "privateKeyPass",
+   "secret",
+   "secretAccessKey",
+   "sessionToken",
+   "sasUrl",
+   "clientSecret",
+   "oauthClientSecret",
+   "peakaKey",
+   "token",
+   "accessToken",
+]);
+
+const REDACTED = "[REDACTED]";
+
+/**
+ * Deep-copy `value`, replacing any property whose key names a credential
+ * (SENSITIVE_KEYS) with a placeholder. The match is by key name and recurses
+ * through nested objects and arrays, since connections arrive nested under
+ * `connections[]`. Primitives and Dates pass through unchanged and the input is
+ * never mutated; used to keep secrets out of the request/response logs.
+ */
+export function redactSensitive(
+   value: unknown,
+   seen: WeakSet<object> = new WeakSet(),
+): unknown {
+   if (value === null || typeof value !== "object" || value instanceof Date) {
+      return value;
+   }
+   if (seen.has(value)) {
+      return "[Circular]";
+   }
+   seen.add(value);
+   if (Array.isArray(value)) {
+      return value.map((item) => redactSensitive(item, seen));
+   }
+   const result: Record<string, unknown> = {};
+   for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      result[key] = SENSITIVE_KEYS.has(key)
+         ? REDACTED
+         : redactSensitive(val, seen);
+   }
+   return result;
+}
+
 export const loggerMiddleware: RequestHandler = (req, res, next) => {
    const startTime = performance.now();
    const resJson = res.json;
@@ -102,14 +156,14 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
       const logMetadata: Record<string, unknown> = {
          statusCode: res.statusCode,
          duration: formatDuration(durationMs),
-         payload: req.body,
+         payload: redactSensitive(req.body),
          params: req.params,
          query: req.query,
       };
 
       // Only include response body if response logging is enabled
       if (!DISABLE_RESPONSE_LOGGING) {
-         logMetadata.response = res.locals.body;
+         logMetadata.response = redactSensitive(res.locals.body);
       }
 
       // Add traceId to log metadata if present
