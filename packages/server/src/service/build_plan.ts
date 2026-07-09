@@ -17,6 +17,25 @@ type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type WireColumn = components["schemas"]["Column"];
 type BuildPlan = components["schemas"]["BuildPlan"];
+type WireFreshness = components["schemas"]["Freshness"];
+type WirePackageMaterialization =
+   components["schemas"]["PackageMaterializationConfig"];
+
+/** The freshness `fallback` values the publisher recognizes; others are dropped. */
+const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
+type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
+
+/** One layer's contribution to the resolved freshness/schedule (all optional). */
+interface FreshnessScheduleLayer {
+   window?: string;
+   fallback?: FreshnessFallback;
+   schedule?: string;
+}
+
+/** Minimal path-reader over a Malloy `Tag` (see `@malloydata/malloy-tag`). */
+interface ReadableTag {
+   text(...path: string[]): string | undefined;
+}
 
 /**
  * Minimal surface a package must expose to compile its build plan. Both
@@ -28,6 +47,13 @@ export interface BuildPlanPackage {
    getPackagePath(): string;
    getMalloyConfig(): MalloyConfig;
    getMalloyConnection(name: string): Promise<MalloyConnection>;
+   /**
+    * The package-level `materialization` config (from malloy-publisher.json),
+    * used as the least-specific layer when resolving per-source freshness /
+    * schedule. Optional so existing fixtures/callers that don't track it still
+    * typecheck (they resolve without a package default).
+    */
+   getMaterializationConfig?(): WirePackageMaterialization | null;
 }
 
 /**
@@ -92,6 +118,110 @@ export function deriveAnnotationFields(
       // Degrade to {} — mirrors deriveColumns / selfAssignTableName.
    }
    return out;
+}
+
+/**
+ * Read the freshness/schedule keys (`freshness.window`, `freshness.fallback`,
+ * `schedule`) from one Malloy tag layer, keeping only recognized values. These
+ * are dotted/nested tag properties, so they are NOT captured by the scalar
+ * {@link deriveAnnotationFields} loop and must be read by path here.
+ */
+function tagFreshnessScheduleLayer(
+   tag: ReadableTag | undefined,
+): FreshnessScheduleLayer {
+   if (!tag || typeof tag.text !== "function") return {};
+   const layer: FreshnessScheduleLayer = {};
+   const window = tag.text("freshness", "window");
+   if (typeof window === "string") layer.window = window;
+   const fallback = tag.text("freshness", "fallback");
+   if (
+      typeof fallback === "string" &&
+      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
+   ) {
+      layer.fallback = fallback as FreshnessFallback;
+   }
+   const schedule = tag.text("schedule");
+   if (typeof schedule === "string") layer.schedule = schedule;
+   return layer;
+}
+
+/**
+ * The package-level `materialization` config as a freshness resolution layer.
+ * Only `freshness` inherits down to a source: the package-level cron
+ * (`materialization.schedule`) is a distinct package-grain concept surfaced on
+ * `PackageMaterializationConfig.schedule` and gated on its own, so it is NOT
+ * folded into a source's effective per-source cron (doing so would double-count
+ * against the package cron gate).
+ */
+function packageFreshnessLayer(
+   cfg: WirePackageMaterialization | null | undefined,
+): Pick<FreshnessScheduleLayer, "window" | "fallback"> {
+   if (!cfg) return {};
+   const layer: Pick<FreshnessScheduleLayer, "window" | "fallback"> = {};
+   if (cfg.freshness?.window) layer.window = cfg.freshness.window;
+   const fallback = cfg.freshness?.fallback;
+   if (
+      typeof fallback === "string" &&
+      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
+   ) {
+      layer.fallback = fallback as FreshnessFallback;
+   }
+   return layer;
+}
+
+/** The source's `#@` tag, or undefined if it fails to parse (degrade to unset). */
+function safeSourceTag(source: PersistSource): ReadableTag | undefined {
+   try {
+      return source.annotations.parseAsTag("@").tag as ReadableTag;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The model-file-level (`##`) tag resolved for the source, or undefined on a
+ * parse failure. The model-file layer sits between the source annotation and
+ * the package default in most-specific-wins resolution.
+ */
+function safeModelTag(source: PersistSource): ReadableTag | undefined {
+   try {
+      return source.modelAnnotations.parseAsTag().tag as ReadableTag;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * Resolve a source's EFFECTIVE freshness + schedule, reported verbatim (unset
+ * at every level stays null so the control plane can distinguish "unset" —
+ * apply platform default — from an explicit declaration). Invalid `fallback`
+ * values are dropped, never defaulted. Precedence, per field, most-specific-wins:
+ *
+ *  - `freshness`: source annotation > model-file default > package default.
+ *  - `schedule`: source annotation > model-file default (the source's OWN cron).
+ *    The package-level cron is a package-grain concept, surfaced and gated
+ *    separately, so it is not folded into the per-source effective cron.
+ */
+export function resolveFreshnessSchedule(
+   source: PersistSource,
+   packageMaterialization: WirePackageMaterialization | null | undefined,
+): { freshness: WireFreshness | null; schedule: string | null } {
+   const sourceLayer = tagFreshnessScheduleLayer(safeSourceTag(source));
+   const modelLayer = tagFreshnessScheduleLayer(safeModelTag(source));
+   const pkgLayer = packageFreshnessLayer(packageMaterialization);
+
+   const window = sourceLayer.window ?? modelLayer.window ?? pkgLayer.window;
+   const fallback =
+      sourceLayer.fallback ?? modelLayer.fallback ?? pkgLayer.fallback;
+   const schedule = sourceLayer.schedule ?? modelLayer.schedule ?? null;
+
+   let freshness: WireFreshness | null = null;
+   if (window !== undefined || fallback !== undefined) {
+      freshness = {};
+      if (window !== undefined) freshness.window = window;
+      if (fallback !== undefined) freshness.fallback = fallback;
+   }
+   return { freshness, schedule };
 }
 
 /** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
@@ -291,6 +421,7 @@ export function deriveBuildPlan(
    connectionDigests: Record<string, string>,
    sourceNames?: string[],
    sourceModelPaths?: Record<string, string>,
+   packageMaterialization?: WirePackageMaterialization | null,
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
@@ -308,6 +439,15 @@ export function deriveBuildPlan(
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
       const annotationFields = deriveAnnotationFields(source);
+      // EFFECTIVE per-source freshness + schedule, resolved most-specific-wins
+      // (source > model-file > package) and reported verbatim (null = unset at
+      // every level). Unlike `sharing`/`refresh` these are dotted/nested tag
+      // keys, so they come from resolveFreshnessSchedule rather than the scalar
+      // annotationFields map.
+      const { freshness, schedule } = resolveFreshnessSchedule(
+         source,
+         packageMaterialization,
+      );
       wireSources[sourceID] = {
          name: source.name,
          sourceID: source.sourceID,
@@ -323,6 +463,8 @@ export function deriveBuildPlan(
          // one that exists today.
          sharing: annotationFields.sharing ?? null,
          refresh: annotationFields.refresh ?? null,
+         freshness,
+         schedule,
          columns: deriveColumns(source),
          annotationFields,
          modelPath: sourceModelPaths?.[sourceID],
@@ -351,5 +493,6 @@ export async function computePackageBuildPlan(
       compiled.connectionDigests,
       undefined,
       compiled.sourceModelPaths,
+      pkg.getMaterializationConfig?.() ?? null,
    );
 }

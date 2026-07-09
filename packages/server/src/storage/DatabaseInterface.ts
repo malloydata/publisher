@@ -116,6 +116,7 @@ export type BuildPlan = components["schemas"]["BuildPlan"];
 export type BuildManifestResult = components["schemas"]["BuildManifest"];
 export type ManifestEntry = components["schemas"]["ManifestEntry"];
 export type BuildInstruction = components["schemas"]["BuildInstruction"];
+export type ManifestReference = components["schemas"]["ManifestReference"];
 export type Realization = components["schemas"]["Realization"];
 
 export interface Materialization {
