@@ -18,7 +18,7 @@ describe("PackageController.addPackage explores validation", () => {
          "Invalid explores entry 'missing.malloy' in publisher.json: file not found";
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
-         formatInvalidSchedule: () => "",
+         formatInvalidPersistencePolicy: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
@@ -55,7 +55,7 @@ describe("PackageController.addPackage explores validation", () => {
          "Invalid explores entry 'missing.malloy' in publisher.json: file not found";
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
-         formatInvalidSchedule: () => "",
+         formatInvalidPersistencePolicy: () => "",
       };
       // installPackage mimics the real contract: invoke the validator and, if it
       // returns a message, throw BadRequestError (after its internal rollback).
@@ -104,7 +104,7 @@ describe("PackageController.addPackage explores validation", () => {
    it("persists when explores are valid (no-location)", async () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
-         formatInvalidSchedule: () => "",
+         formatInvalidPersistencePolicy: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
       const getEnvironment = sinon.stub().resolves({ addPackage });
@@ -127,22 +127,22 @@ describe("PackageController.addPackage explores validation", () => {
    });
 });
 
-describe("PackageController.addPackage cron schedule validation", () => {
+describe("PackageController.addPackage persistence policy validation", () => {
    afterEach(() => {
       sinon.restore();
    });
 
-   it("rejects a publish whose cron fails the private-only gate (no-location path)", async () => {
-      // Valid explores but an invalid materialization cron: the publish must
-      // still 400 (strict-at-publish, same split as explores — load merely
-      // warns) and roll back via unloadPackage.
+   it("rejects a publish whose persistence policy is invalid (no-location path)", async () => {
+      // Valid explores but an invalid persistence policy (e.g. a schedule on a
+      // package-scoped package): the publish must still 400 (strict-at-publish,
+      // same split as explores — load merely warns) and roll back via
+      // unloadPackage.
       const cronMsg =
-         "materialization.schedule (cron) in publisher.json requires every " +
-         "persist source to declare '#@ persist ... sharing=private'; source " +
-         "'orders' resolves to unset.";
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
       const mockPackage = {
          formatInvalidExplores: () => "",
-         formatInvalidSchedule: () => cronMsg,
+         formatInvalidPersistencePolicy: () => cronMsg,
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -165,13 +165,13 @@ describe("PackageController.addPackage cron schedule validation", () => {
       expect(addPackageToDatabase.called).toBe(false);
    });
 
-   it("location path: the cron gate runs inside installPackage's rollback window", async () => {
+   it("location path: the persistence-policy gate runs inside installPackage's rollback window", async () => {
       const cronMsg =
-         "materialization.schedule (cron) in publisher.json requires every " +
-         "persist source to declare '#@ persist ... sharing=private'.";
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
       const mockPackage = {
          formatInvalidExplores: () => "",
-         formatInvalidSchedule: () => cronMsg,
+         formatInvalidPersistencePolicy: () => cronMsg,
       };
       const installPackage = sinon
          .stub()
@@ -225,7 +225,7 @@ describe("PackageController.updatePackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
-         formatInvalidSchedule: () => "",
+         formatInvalidPersistencePolicy: () => "",
       };
       const installPackage = sinon
          .stub()

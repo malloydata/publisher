@@ -8,6 +8,35 @@ const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
 
 /**
+ * Package-level Malloy Persistence scope mode, declared once at the manifest
+ * root. `package` (the default) = artifacts are reused across the package's
+ * versions when they satisfy freshness; `version` = each artifact is owned by
+ * one published version (the only mode a `materialization.schedule` is legal
+ * in). Applied uniformly to every persist source and index in the package.
+ */
+export const PACKAGE_SCOPES = ["version", "package"] as const;
+export type PackageScope = (typeof PACKAGE_SCOPES)[number];
+
+/**
+ * Read the manifest root's `scope`, defaulting to `"package"` when absent or
+ * null. Any other value is a manifest error: scope is load-bearing (it decides
+ * version-owned vs cross-version reuse), so a typo must fail loudly rather than
+ * silently pick a default. Throws on an invalid value.
+ */
+export function parsePackageScope(raw: unknown): PackageScope {
+   if (raw === undefined || raw === null) {
+      return "package";
+   }
+   if ((PACKAGE_SCOPES as readonly unknown[]).includes(raw)) {
+      return raw as PackageScope;
+   }
+   throw new Error(
+      `Invalid "scope" in the package manifest: ${JSON.stringify(raw)}. ` +
+         `Expected "version" or "package" (default "package").`,
+   );
+}
+
+/**
  * The manifest's `materialization.freshness` block, surfaced verbatim for the
  * control plane (which owns the scheduling and query-time gating logic).
  * Fields are kept only when valid — an invalid value is dropped, never

@@ -25,11 +25,10 @@ type WirePackageMaterialization =
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
 
-/** One layer's contribution to the resolved freshness/schedule (all optional). */
-interface FreshnessScheduleLayer {
+/** One layer's contribution to the resolved freshness (all optional). */
+interface FreshnessLayer {
    window?: string;
    fallback?: FreshnessFallback;
-   schedule?: string;
 }
 
 /** Minimal path-reader over a Malloy `Tag` (see `@malloydata/malloy-tag`). */
@@ -121,16 +120,17 @@ export function deriveAnnotationFields(
 }
 
 /**
- * Read the freshness/schedule keys (`freshness.window`, `freshness.fallback`,
- * `schedule`) from one Malloy tag layer, keeping only recognized values. These
- * are dotted/nested tag properties, so they are NOT captured by the scalar
- * {@link deriveAnnotationFields} loop and must be read by path here.
+ * Read the freshness keys (`freshness.window`, `freshness.fallback`) from one
+ * Malloy tag layer, keeping only recognized values. These are dotted/nested tag
+ * properties, so they are NOT captured by the scalar {@link deriveAnnotationFields}
+ * loop and must be read by path here. (Per-source `sharing`/`schedule` were
+ * retired — scope is package-level and a schedule is package-root-only — so they
+ * are not resolved here; declaring either on a source is a publish-time manifest
+ * error, enforced in Package.persistencePolicyWarnings.)
  */
-function tagFreshnessScheduleLayer(
-   tag: ReadableTag | undefined,
-): FreshnessScheduleLayer {
+function tagFreshnessLayer(tag: ReadableTag | undefined): FreshnessLayer {
    if (!tag || typeof tag.text !== "function") return {};
-   const layer: FreshnessScheduleLayer = {};
+   const layer: FreshnessLayer = {};
    const window = tag.text("freshness", "window");
    if (typeof window === "string") layer.window = window;
    const fallback = tag.text("freshness", "fallback");
@@ -140,24 +140,15 @@ function tagFreshnessScheduleLayer(
    ) {
       layer.fallback = fallback as FreshnessFallback;
    }
-   const schedule = tag.text("schedule");
-   if (typeof schedule === "string") layer.schedule = schedule;
    return layer;
 }
 
-/**
- * The package-level `materialization` config as a freshness resolution layer.
- * Only `freshness` inherits down to a source: the package-level cron
- * (`materialization.schedule`) is a distinct package-grain concept surfaced on
- * `PackageMaterializationConfig.schedule` and gated on its own, so it is NOT
- * folded into a source's effective per-source cron (doing so would double-count
- * against the package cron gate).
- */
+/** The package-level `materialization.freshness` as a resolution layer. */
 function packageFreshnessLayer(
    cfg: WirePackageMaterialization | null | undefined,
-): Pick<FreshnessScheduleLayer, "window" | "fallback"> {
+): FreshnessLayer {
    if (!cfg) return {};
-   const layer: Pick<FreshnessScheduleLayer, "window" | "fallback"> = {};
+   const layer: FreshnessLayer = {};
    if (cfg.freshness?.window) layer.window = cfg.freshness.window;
    const fallback = cfg.freshness?.fallback;
    if (
@@ -192,36 +183,30 @@ function safeModelTag(source: PersistSource): ReadableTag | undefined {
 }
 
 /**
- * Resolve a source's EFFECTIVE freshness + schedule, reported verbatim (unset
- * at every level stays null so the control plane can distinguish "unset" —
- * apply platform default — from an explicit declaration). Invalid `fallback`
- * values are dropped, never defaulted. Precedence, per field, most-specific-wins:
- *
- *  - `freshness`: source annotation > model-file default > package default.
- *  - `schedule`: source annotation > model-file default (the source's OWN cron).
- *    The package-level cron is a package-grain concept, surfaced and gated
- *    separately, so it is not folded into the per-source effective cron.
+ * Resolve a source's EFFECTIVE freshness with most-specific-wins precedence,
+ * per field: source annotation > model-file default > package default. Reported
+ * verbatim (unset at every level stays null so the control plane can
+ * distinguish "unset" — apply platform default — from an explicit declaration).
+ * Invalid `fallback` values are dropped, never defaulted. Freshness is valid in
+ * both scope modes.
  */
-export function resolveFreshnessSchedule(
+export function resolveFreshness(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
-): { freshness: WireFreshness | null; schedule: string | null } {
-   const sourceLayer = tagFreshnessScheduleLayer(safeSourceTag(source));
-   const modelLayer = tagFreshnessScheduleLayer(safeModelTag(source));
+): WireFreshness | null {
+   const sourceLayer = tagFreshnessLayer(safeSourceTag(source));
+   const modelLayer = tagFreshnessLayer(safeModelTag(source));
    const pkgLayer = packageFreshnessLayer(packageMaterialization);
 
    const window = sourceLayer.window ?? modelLayer.window ?? pkgLayer.window;
    const fallback =
       sourceLayer.fallback ?? modelLayer.fallback ?? pkgLayer.fallback;
-   const schedule = sourceLayer.schedule ?? modelLayer.schedule ?? null;
 
-   let freshness: WireFreshness | null = null;
-   if (window !== undefined || fallback !== undefined) {
-      freshness = {};
-      if (window !== undefined) freshness.window = window;
-      if (fallback !== undefined) freshness.fallback = fallback;
-   }
-   return { freshness, schedule };
+   if (window === undefined && fallback === undefined) return null;
+   const freshness: WireFreshness = {};
+   if (window !== undefined) freshness.window = window;
+   if (fallback !== undefined) freshness.fallback = fallback;
+   return freshness;
 }
 
 /** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
@@ -439,15 +424,14 @@ export function deriveBuildPlan(
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
       const annotationFields = deriveAnnotationFields(source);
-      // EFFECTIVE per-source freshness + schedule, resolved most-specific-wins
+      // EFFECTIVE per-source freshness, resolved most-specific-wins
       // (source > model-file > package) and reported verbatim (null = unset at
-      // every level). Unlike `sharing`/`refresh` these are dotted/nested tag
-      // keys, so they come from resolveFreshnessSchedule rather than the scalar
-      // annotationFields map.
-      const { freshness, schedule } = resolveFreshnessSchedule(
-         source,
-         packageMaterialization,
-      );
+      // every level). Freshness is a dotted/nested tag key, so it comes from
+      // resolveFreshness rather than the scalar annotationFields map, and is
+      // valid in both scope modes. Per-source `sharing`/`schedule` are NOT
+      // emitted (retired from the contract); if a source declares either it is
+      // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
+      // still ride `annotationFields` so the validator can detect them.
       wireSources[sourceID] = {
          name: source.name,
          sourceID: source.sourceID,
@@ -455,16 +439,8 @@ export function deriveBuildPlan(
          dialect: source.dialectName,
          sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
-         // Declared `#@ persist` scope/refresh knobs, reported VERBATIM (null
-         // = unset). The control plane applies the platform default (unset =>
-         // shared) itself, so the publisher must never substitute it — unset
-         // has to stay distinguishable from an explicit `shared`. The source's
-         // own annotation is the most-specific declaration layer, and the only
-         // one that exists today.
-         sharing: annotationFields.sharing ?? null,
          refresh: annotationFields.refresh ?? null,
-         freshness,
-         schedule,
+         freshness: resolveFreshness(source, packageMaterialization),
          columns: deriveColumns(source),
          annotationFields,
          modelPath: sourceModelPaths?.[sourceID],

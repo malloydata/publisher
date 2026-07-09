@@ -386,6 +386,10 @@ export class Package {
             schedule: null,
             freshness: null,
          },
+         // Package-level persist scope mode, applied uniformly to every persist
+         // source/index. Defaults to "package" (cross-version reuse) when the
+         // manifest omits it.
+         scope: outcome.packageMetadata.scope ?? "package",
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -492,15 +496,19 @@ export class Package {
             detail: invalidMsg,
          });
       }
-      // Same fail-safe split for the materialization cron gate: an existing
-      // package whose manifest violates the private-only cron rule still loads
-      // (warn), but a publish of it is rejected (see package.controller).
-      const invalidSchedule = pkg.formatInvalidSchedule();
-      if (invalidSchedule) {
-         logger.warn(`Package ${packageName} has an invalid cron schedule`, {
-            packageName,
-            detail: invalidSchedule,
-         });
+      // Same fail-safe split for the persistence-policy gate: an existing
+      // package whose manifest violates the scope/schedule/freshness rules
+      // still loads (warn), but a publish of it is rejected (see
+      // package.controller).
+      const invalidPolicy = pkg.formatInvalidPersistencePolicy();
+      if (invalidPolicy) {
+         logger.warn(
+            `Package ${packageName} has an invalid persistence policy`,
+            {
+               packageName,
+               detail: invalidPolicy,
+            },
+         );
       }
       pkg.logEmptyDiscoveryWarnings();
 
@@ -717,56 +725,84 @@ export class Package {
    }
 
    /**
-    * Publish-gate for materialization crons (Phase A carve-out, persistence.md
-    * §9.4). A cron is the power tier of artifact-anchored scheduling and is
-    * valid only over `sharing="private"` artifacts; a cron on a shared (or unset
-    * ⇒ shared) artifact is rejected, pointing at `freshness.window` as the
-    * shared-tier replacement. Two grains, both enforced off the resolved build
-    * plan (per-source `sharing`/`schedule` are effective, most-specific-wins):
+    * Publish-gate for the package's Malloy Persistence policy (persistence.md
+    * §3.1, §9.2–§9.5). Scope is a single package-level mode (`Package.scope`)
+    * and a materialization cron is package-root-only and version-scope-only.
+    * The rules, read off the resolved build plan + manifest:
     *
-    *  - Per-source: a source's own `schedule` is valid only when that source
-    *    resolves to explicit `sharing="private"`.
-    *  - Package: `materialization.schedule` governs every persist source, so it
-    *    is valid only when every governed source resolves to explicit
-    *    `sharing="private"` (a mixed/shared/unset package cannot carry it).
+    *  1. Per-source `#@ persist ... sharing=`/`schedule=` are retired — declaring
+    *     either on a source is an error (scope is package-level; a schedule is
+    *     package-root-only). Detected via the raw `annotationFields`.
+    *  2. `materialization.schedule` is legal only when `scope: version` (a
+    *     package-scoped lineage is reused across versions, so a single
+    *     per-version cadence is meaningless).
+    *  3. `materialization.schedule` and freshness (package `materialization.freshness`
+    *     or any source `freshness`) are mutually exclusive — declare either the
+    *     power tier or the objective tier, never both.
+    *
+    * The cross-package dependency rule (a `scope: version` scheduled package may
+    * not depend on a package-scoped upstream) is not enforced here: scope is
+    * uniform within a package, so an intra-package dependency can never violate
+    * it, and the publisher's build plan is intra-package only — a cross-package
+    * upstream's scope is not resolvable from the single `Package` served. It is
+    * deferred to the scheduler slice (R1–R3), which resolves cross-package scope.
     *
     * Strict at publish (package.controller), warn-only at load/reload
     * (loadViaWorker) — same split as explores.
     */
-   public scheduleWarnings(): string[] {
+   public persistencePolicyWarnings(): string[] {
       const warnings: string[] = [];
       const sources = this.buildPlan?.sources
          ? Object.values(this.buildPlan.sources)
          : [];
+      const materialization = this.packageMetadata.materialization;
+      const packageSchedule = materialization?.schedule ?? null;
+      const packageFreshness = materialization?.freshness ?? null;
+      const scope = this.packageMetadata.scope ?? "package";
 
+      // Rule 1: per-source sharing/schedule are no longer part of the model.
       for (const source of sources) {
-         if (source.schedule && source.sharing !== "private") {
+         const fields = source.annotationFields ?? {};
+         if (fields.sharing !== undefined) {
             warnings.push(
-               `#@ persist source "${source.name}" declares a schedule (cron) but ` +
-                  `resolves to sharing="${
-                     source.sharing ?? "shared (unset default)"
-                  }": a per-source cron is valid only for sharing="private". ` +
-                  `Declare 'freshness.window' instead (the control plane schedules ` +
-                  `refreshes from it).`,
+               `#@ persist source "${source.name}" declares sharing=... which is ` +
+                  `no longer supported: scope is a single package-level mode. Set ` +
+                  `the root-level "scope": "version" | "package" in ` +
+                  `${PACKAGE_MANIFEST_NAME} instead.`,
+            );
+         }
+         if (fields.schedule !== undefined) {
+            warnings.push(
+               `#@ persist source "${source.name}" declares schedule=... which is ` +
+                  `no longer supported: a schedule is package-root-only. Declare ` +
+                  `"materialization.schedule" at the ${PACKAGE_MANIFEST_NAME} root ` +
+                  `(requires "scope": "version") instead.`,
             );
          }
       }
 
-      const packageSchedule = this.packageMetadata.materialization?.schedule;
+      // Rule 2: a package-level cron is legal only with scope: version.
+      if (packageSchedule && scope !== "version") {
+         warnings.push(
+            `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
+               `"scope": "version": a package-scoped lineage is reused across ` +
+               `versions, so a single per-version cadence is meaningless. Set ` +
+               `"scope": "version", or remove the schedule.`,
+         );
+      }
+
+      // Rule 3: schedule and freshness are mutually exclusive.
       if (packageSchedule) {
-         const nonPrivate = sources.filter((s) => s.sharing !== "private");
-         if (sources.length === 0 || nonPrivate.length > 0) {
-            const detail =
-               sources.length === 0
-                  ? "the package declares no persist source for it to govern"
-                  : `sources [${nonPrivate
-                       .map((s) => s.name)
-                       .join(", ")}] resolve to shared/unset`;
+         const freshnessDeclared =
+            !!(
+               packageFreshness &&
+               (packageFreshness.window || packageFreshness.fallback)
+            ) || sources.some((s) => s.freshness != null);
+         if (freshnessDeclared) {
             warnings.push(
-               `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} is valid ` +
-                  `only when every persist source resolves to sharing="private": ` +
-                  `${detail}. Declare 'materialization.freshness.window' instead ` +
-                  `(the control plane schedules refreshes from it).`,
+               `materialization.schedule and freshness are mutually exclusive in ` +
+                  `${PACKAGE_MANIFEST_NAME}: declare either a schedule (power tier) ` +
+                  `or freshness (objective tier), never both.`,
             );
          }
       }
@@ -774,9 +810,12 @@ export class Package {
       return warnings;
    }
 
-   /** The {@link scheduleWarnings} joined into one string, or "" if none. */
-   public formatInvalidSchedule(): string {
-      return this.scheduleWarnings().join("\n");
+   /**
+    * The {@link persistencePolicyWarnings} joined into one string, or "" if the
+    * package's persistence policy is valid.
+    */
+   public formatInvalidPersistencePolicy(): string {
+      return this.persistencePolicyWarnings().join("\n");
    }
 
    /**

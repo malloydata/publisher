@@ -65,7 +65,10 @@
  */
 
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
-import type { PackageMaterializationConfig } from "../service/package_manifest";
+import type {
+   PackageMaterializationConfig,
+   PackageScope,
+} from "../service/package_manifest";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -181,6 +184,7 @@ export interface LoadPackageResult {
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;
+      scope?: PackageScope;
    };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */
