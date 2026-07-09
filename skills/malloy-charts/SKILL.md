@@ -218,8 +218,45 @@ Default (implicit). Use explicitly for `.size=fill` property.
 ```malloy
 ## viz.line_chart.defaults.y.independent=true
 ## viz.bar_chart.defaults.stack
-## theme.fontFamily="Inter, sans-serif"
 ```
+
+## Theming
+
+Publisher styles charts and tables from one structured theme. The instance sets it (in `publisher.config.json`'s `theme` block or the **Settings, then Theme** editor); a model overrides it per result with `# theme.*` annotations, or model-wide with `## theme.*`. Per-chart annotations use the same nested `palette.*` / `font.*` vocabulary as the config, not flat key names, and they win over the instance theme for the keys they set. The forms:
+
+| Annotation | Controls | Modes |
+|-----------|----------|-------|
+| `# theme.palette.series` | Categorical series colors (array) | shared |
+| `# theme.palette.background.{light,dark}` | Chart canvas + table background | per-mode |
+| `# theme.palette.tableHeader.{light,dark}` | Table header text color | per-mode |
+| `# theme.palette.tableHeaderBackground.{light,dark}` | Table header row background | per-mode |
+| `# theme.palette.tableBody.{light,dark}` | Table body text color | per-mode |
+| `# theme.palette.tile.{light,dark}` | Dashboard tile background | per-mode |
+| `# theme.palette.tileTitle.{light,dark}` | Dashboard tile title color | per-mode |
+| `# theme.palette.mapColor.{light,dark}` | Choropleth gradient (`# shape_map` / `# segment_map`) | per-mode |
+| `# theme.font.family` | Font for all rendered text | shared |
+| `# theme.font.size` | Table font size (px) | shared |
+
+The seven `palette.*` color keys each take a `.light` and/or `.dark` variant so dark mode gets its own value. `palette.series`, `font.family`, and `font.size` are single values shared across modes.
+
+```malloy
+// Model-wide defaults (## applies to every view in the model):
+## theme.palette.series = ["#14b3cb", "#e47404", "#1474a4"]
+## theme.font.family = "Inter, sans-serif"
+
+// Per-view override (# applies to this result only; beats the instance theme):
+# theme.palette.background.light = "#fafafa"
+# theme.palette.background.dark = "#111111"
+# theme.palette.tableHeader.dark = "#94a3b8"
+view: revenue_by_month is {
+  group_by: month
+  aggregate: revenue
+}
+```
+
+**Precedence**, highest to lowest, per key: `# theme.*` on the view, then `## theme.*` model default, then the instance theme, then Publisher's built-in defaults. A per-chart annotation overrides the instance for the keys it sets; unset keys fall through to the instance. (This is the reverse of a bare `@malloydata/render` embed, where the embedder wins: Publisher reads the annotation itself and layers it on top.)
+
+Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. The gotchas-rendering skill lists the annotation forms that look valid but do nothing.
 
 
 ## Advanced Patterns
