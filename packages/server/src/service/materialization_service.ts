@@ -28,6 +28,7 @@ import {
    MaterializationStatus,
    MaterializationUpdate,
    ManifestEntry,
+   ManifestReference,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
@@ -216,6 +217,8 @@ export class MaterializationService {
          forceRefresh?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
+         referenceManifest?: ManifestReference[];
+         strictUpstreams?: boolean;
       } = {},
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -275,6 +278,8 @@ export class MaterializationService {
                sourceNames: options.sourceNames,
                forceRefresh,
                buildInstructions,
+               referenceManifest: options.referenceManifest,
+               strictUpstreams: options.strictUpstreams,
             },
             signal,
          ),
@@ -299,6 +304,8 @@ export class MaterializationService {
          sourceNames: string[] | undefined;
          forceRefresh: boolean;
          buildInstructions: BuildInstruction[] | undefined;
+         referenceManifest: ManifestReference[] | undefined;
+         strictUpstreams: boolean | undefined;
       },
       signal: AbortSignal,
    ): Promise<void> {
@@ -333,7 +340,12 @@ export class MaterializationService {
          let carried: Record<string, ManifestEntry>;
          if (orchestrated) {
             instructions = opts.buildInstructions!;
-            carried = {};
+            // Seed the build Manifest with the caller-supplied upstream
+            // references so a downstream source's persist upstream (built in a
+            // prior run, not rebuilt here) resolves to its existing physical
+            // table instead of recomputing live. The reference key is the
+            // compiler's manifest-lookup sourceEntityId (see ManifestReference).
+            carried = this.referenceManifestToEntries(opts.referenceManifest);
          } else {
             // Skip-if-unchanged: reuse tables from the most recent successful
             // manifest for sources whose sourceEntityId is unchanged, unless
@@ -357,6 +369,7 @@ export class MaterializationService {
             instructions,
             carried,
             signal,
+            opts.strictUpstreams ?? false,
          );
 
          const sourcesBuilt = instructions.length;
@@ -448,6 +461,26 @@ export class MaterializationService {
       }
 
       return { instructions, carried };
+   }
+
+   /**
+    * Project the caller-supplied upstream reference manifest into the seed
+    * entry map `executeInstructedBuild` consumes. Each reference is keyed by the
+    * compiler's manifest-lookup sourceEntityId and carries only the physical
+    * table name — enough for the build Manifest to resolve a downstream persist
+    * reference to the existing table without rebuilding the upstream.
+    */
+   private referenceManifestToEntries(
+      referenceManifest: ManifestReference[] | undefined,
+   ): Record<string, ManifestEntry> {
+      const entries: Record<string, ManifestEntry> = {};
+      for (const ref of referenceManifest ?? []) {
+         entries[ref.sourceEntityId] = {
+            sourceEntityId: ref.sourceEntityId,
+            physicalTableName: ref.physicalTableName,
+         };
+      }
+      return entries;
    }
 
    /**
@@ -565,6 +598,7 @@ export class MaterializationService {
       instructions: BuildInstruction[],
       seedEntries: Record<string, ManifestEntry>,
       signal: AbortSignal,
+      strict = false,
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -587,8 +621,12 @@ export class MaterializationService {
 
       // Accumulates physical names as sources are built so downstream sources
       // resolve their upstream references to the freshly-assigned tables. Seed
-      // it with carried-forward entries so reused upstreams resolve too.
+      // it with carried-forward entries so reused upstreams resolve too. In
+      // strict mode, an upstream persist reference that is neither built here
+      // nor seeded fails the compile (runtime-manifest-strict-miss) instead of
+      // silently recomputing live.
       const manifest = new Manifest();
+      manifest.strict = strict;
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
          if (entry.physicalTableName) {

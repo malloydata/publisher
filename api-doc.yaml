@@ -4124,6 +4124,25 @@ components:
             The source's declared `#@ persist ... refresh=...` value
             ("full" | "incremental"), reported verbatim; null = unset.
             Metadata pass-through — inert to the publisher today.
+        freshness:
+          oneOf:
+            - $ref: "#/components/schemas/Freshness"
+            - type: "null"
+          description: >-
+            The source's EFFECTIVE freshness objective after most-specific-wins
+            resolution (source > model-file > package). Null = unset at every
+            level; the control plane applies the platform default. Reported
+            verbatim (invalid fields dropped, never defaulted).
+        schedule:
+          type: ["string", "null"]
+          description: >-
+            The source's EFFECTIVE power-tier cron after most-specific-wins
+            resolution of the source's OWN declaration (source > model-file).
+            The package-level cron (PackageMaterializationConfig.schedule) is a
+            distinct package-grain concept and is NOT folded in here. Null =
+            unset. Valid only when the source resolves to sharing="private" (a
+            cron on a shared or unset source is rejected at publish; declare
+            freshness.window instead).
         columns:
           type: array
           description: Output schema of the source.
@@ -4162,6 +4181,45 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BuildInstruction"
+        referenceManifest:
+          type: array
+          description: >-
+            Already-materialized persist upstreams the built sources may
+            reference but which are NOT rebuilt in this run. The publisher seeds
+            the build Manifest with these so a downstream source's upstream
+            persist reference resolves to the existing physical table instead of
+            recomputing it live. Only consumed on the orchestrated
+            (buildInstructions) path; auto-run seeds its own reference set from
+            the most-recent manifest.
+          items:
+            $ref: "#/components/schemas/ManifestReference"
+        strictUpstreams:
+          type: boolean
+          default: false
+          description: >-
+            When true, a persist upstream that is neither built here nor present
+            in referenceManifest fails the build (compiler strict mode) instead
+            of silently recomputing it live. Per-unit dispatch should set this
+            true.
+
+    ManifestReference:
+      type: object
+      description: >-
+        A reference to an already-materialized persist upstream that the built
+        sources may read but which is not rebuilt in this run.
+      required: [sourceEntityId, physicalTableName]
+      properties:
+        sourceEntityId:
+          type: string
+          description: >-
+            The upstream's content id AS REPORTED BY THE PUBLISHER in
+            PersistSourcePlan.sourceEntityId. It MUST equal what the compiler
+            recomputes for the manifest lookup (mkBuildID over the upstream's
+            manifest-ignorant SQL); do not substitute any other identity here.
+        physicalTableName:
+          type: string
+          description: >-
+            Fully-qualified physical table the upstream currently serves.
 
     BuildInstruction:
       type: object

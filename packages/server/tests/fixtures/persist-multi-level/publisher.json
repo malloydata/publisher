@@ -1,0 +1,5 @@
+{
+  "name": "persist-multi-level",
+  "version": "1.0.0",
+  "description": "DuckDB two-level persist DAG fixture (orders_base -> orders_rollup)"
+}

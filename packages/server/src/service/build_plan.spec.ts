@@ -10,6 +10,7 @@ import {
    deriveBuildPlan,
    flattenDependsOn,
    iterGraphSources,
+   resolveFreshnessSchedule,
    resolvePackageConnections,
 } from "./build_plan";
 import { fakeSource } from "./materialization_test_fixtures";
@@ -293,6 +294,124 @@ describe("deriveBuildPlan", () => {
       // Mapped source gets its model path; an unmapped source stays undefined.
       expect(plan.sources["a@m"].modelPath).toBe("rollup.malloy");
       expect(plan.sources["b@m"].modelPath).toBeUndefined();
+   });
+});
+
+describe("resolveFreshnessSchedule", () => {
+   it("reports source-level freshness + schedule verbatim", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         freshnessSchedule: {
+            freshness: { window: "1h", fallback: "stale_ok" },
+            schedule: "0 */6 * * *",
+         },
+      });
+      expect(resolveFreshnessSchedule(source, null)).toEqual({
+         freshness: { window: "1h", fallback: "stale_ok" },
+         schedule: "0 */6 * * *",
+      });
+   });
+
+   it("returns null for both when unset at every level", () => {
+      const source = fakeSource({ name: "s", sourceEntityId: "bid" });
+      expect(resolveFreshnessSchedule(source, null)).toEqual({
+         freshness: null,
+         schedule: null,
+      });
+   });
+
+   it("falls back to model-file then package per field (most-specific-wins)", () => {
+      // freshness.window from source, freshness.fallback from model-file. The
+      // package-level cron is NOT inherited as the source's effective schedule;
+      // schedule here comes only from the source's own model-file default.
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         freshnessSchedule: { freshness: { window: "1h" } },
+         modelFreshnessSchedule: {
+            freshness: { fallback: "fail" },
+            schedule: "0 3 * * *",
+         },
+      });
+      const pkg = {
+         schedule: "0 0 * * *",
+         freshness: { window: "24h", fallback: "live" as const },
+      };
+      expect(resolveFreshnessSchedule(source, pkg)).toEqual({
+         freshness: { window: "1h", fallback: "fail" },
+         schedule: "0 3 * * *",
+      });
+   });
+
+   it("does not inherit the package-level cron as the source's schedule", () => {
+      const source = fakeSource({ name: "s", sourceEntityId: "bid" });
+      const pkg = { schedule: "0 0 * * *", freshness: { window: "24h" } };
+      // Freshness inherits from the package; schedule stays null (the package
+      // cron is gated separately, not folded into the per-source cron).
+      expect(resolveFreshnessSchedule(source, pkg)).toEqual({
+         freshness: { window: "24h" },
+         schedule: null,
+      });
+   });
+
+   it("inherits the package freshness when the source and model are unset", () => {
+      const source = fakeSource({ name: "s", sourceEntityId: "bid" });
+      const pkg = { schedule: null, freshness: { window: "24h" } };
+      expect(resolveFreshnessSchedule(source, pkg)).toEqual({
+         freshness: { window: "24h" },
+         schedule: null,
+      });
+   });
+
+   it("drops an invalid fallback rather than defaulting it", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         freshnessSchedule: { freshness: { window: "1h", fallback: "bogus" } },
+      });
+      expect(resolveFreshnessSchedule(source, null)).toEqual({
+         freshness: { window: "1h" },
+         schedule: null,
+      });
+   });
+});
+
+describe("deriveBuildPlan freshness/schedule", () => {
+   it("projects the resolved per-source freshness + schedule onto the plan", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         annotationFields: { name: "s_table", sharing: "private" },
+         freshnessSchedule: {
+            freshness: { window: "1h" },
+            schedule: "0 */6 * * *",
+         },
+      });
+      const plan = deriveBuildPlan(
+         [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "s@m", dependsOn: [] }]],
+            },
+         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         { "s@m": source },
+         { duckdb: "dig" },
+         undefined,
+         undefined,
+         {
+            schedule: null,
+            freshness: { window: "24h", fallback: "live" as const },
+         },
+      );
+
+      // Source window wins over the package default; package fallback fills the
+      // unset source fallback; source schedule reported verbatim.
+      expect(plan.sources["s@m"].freshness).toEqual({
+         window: "1h",
+         fallback: "live",
+      });
+      expect(plan.sources["s@m"].schedule).toBe("0 */6 * * *");
    });
 });
 
