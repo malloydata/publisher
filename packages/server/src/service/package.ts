@@ -521,6 +521,17 @@ export class Package {
       return this.buildPlan;
    }
 
+   /**
+    * The package-level `materialization` config (from malloy-publisher.json),
+    * the least-specific layer for resolving per-source freshness/schedule in the
+    * build plan. Null when the package declares no policy.
+    */
+   public getMaterializationConfig(): NonNullable<
+      ApiPackage["materialization"]
+   > | null {
+      return this.packageMetadata.materialization ?? null;
+   }
+
    public getPackageMetadata(): ApiPackage {
       // Overlay the server-computed fields onto the stored metadata: the
       // explores misconfig warnings (loading is fail-safe — the package still
@@ -706,27 +717,61 @@ export class Package {
    }
 
    /**
-    * Publish-gate for the package-level materialization cron. The package-level
-    * cron (`materialization.schedule`) is replaced outright at Phase B by
-    * `materialization.freshness.window` (persistence.md §9.4), so any declared
-    * cron is rejected. The `sharing=private` carve-out — a cron may legitimately
-    * own a package's own private artifacts — arrives whole with Phase A; until
-    * `sharing=private` is declarable there is no private artifact for a cron to
-    * own, so the B→A rule is to reject any declared cron outright
-    * (persistence-phase-b-design.md §3.4). One actionable message pointing at
-    * `materialization.freshness.window` (empty when no cron is declared). Strict
-    * at publish (package.controller), warn-only at load/reload (loadViaWorker) —
-    * same split as explores.
+    * Publish-gate for materialization crons (Phase A carve-out, persistence.md
+    * §9.4). A cron is the power tier of artifact-anchored scheduling and is
+    * valid only over `sharing="private"` artifacts; a cron on a shared (or unset
+    * ⇒ shared) artifact is rejected, pointing at `freshness.window` as the
+    * shared-tier replacement. Two grains, both enforced off the resolved build
+    * plan (per-source `sharing`/`schedule` are effective, most-specific-wins):
+    *
+    *  - Per-source: a source's own `schedule` is valid only when that source
+    *    resolves to explicit `sharing="private"`.
+    *  - Package: `materialization.schedule` governs every persist source, so it
+    *    is valid only when every governed source resolves to explicit
+    *    `sharing="private"` (a mixed/shared/unset package cannot carry it).
+    *
+    * Strict at publish (package.controller), warn-only at load/reload
+    * (loadViaWorker) — same split as explores.
     */
    public scheduleWarnings(): string[] {
-      const schedule = this.packageMetadata.materialization?.schedule;
-      if (!schedule) return [];
-      return [
-         `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} is not accepted: ` +
-            `package-level crons are rejected in Phase B. Declare ` +
-            `'materialization.freshness.window' instead (the control plane schedules ` +
-            `refreshes from it).`,
-      ];
+      const warnings: string[] = [];
+      const sources = this.buildPlan?.sources
+         ? Object.values(this.buildPlan.sources)
+         : [];
+
+      for (const source of sources) {
+         if (source.schedule && source.sharing !== "private") {
+            warnings.push(
+               `#@ persist source "${source.name}" declares a schedule (cron) but ` +
+                  `resolves to sharing="${
+                     source.sharing ?? "shared (unset default)"
+                  }": a per-source cron is valid only for sharing="private". ` +
+                  `Declare 'freshness.window' instead (the control plane schedules ` +
+                  `refreshes from it).`,
+            );
+         }
+      }
+
+      const packageSchedule = this.packageMetadata.materialization?.schedule;
+      if (packageSchedule) {
+         const nonPrivate = sources.filter((s) => s.sharing !== "private");
+         if (sources.length === 0 || nonPrivate.length > 0) {
+            const detail =
+               sources.length === 0
+                  ? "the package declares no persist source for it to govern"
+                  : `sources [${nonPrivate
+                       .map((s) => s.name)
+                       .join(", ")}] resolve to shared/unset`;
+            warnings.push(
+               `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} is valid ` +
+                  `only when every persist source resolves to sharing="private": ` +
+                  `${detail}. Declare 'materialization.freshness.window' instead ` +
+                  `(the control plane schedules refreshes from it).`,
+            );
+         }
+      }
+
+      return warnings;
    }
 
    /** The {@link scheduleWarnings} joined into one string, or "" if none. */
