@@ -87,9 +87,12 @@ export function formatDuration(durationMs: number): string {
 // Connection endpoints carry provider credentials in their request/response
 // bodies (BigQuery serviceAccountKeyJson, Snowflake privateKey/password, Postgres
 // password/connectionString, S3 secretAccessKey/sessionToken, Azure clientSecret/
-// sasUrl, Databricks token, ...). The middleware below logs the full body, so
-// those values are masked by key name before they reach a log transport.
-const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
+// sasUrl, Databricks token, ...), and axios error logs can carry credential HTTP
+// headers (Authorization, Cookie). Those values are masked by key name before
+// they reach a log transport. Matching is case-insensitive so header casing
+// (Authorization vs authorization) does not slip through.
+const SENSITIVE_KEY_NAMES = [
+   // connection config credentials
    "password",
    "connectionString",
    "serviceAccountKeyJson",
@@ -104,16 +107,26 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
    "peakaKey",
    "token",
    "accessToken",
-]);
+   // credential-bearing HTTP headers
+   "authorization",
+   "proxy-authorization",
+   "cookie",
+   "set-cookie",
+   "x-api-key",
+];
+const SENSITIVE_KEYS: ReadonlySet<string> = new Set(
+   SENSITIVE_KEY_NAMES.map((name) => name.toLowerCase()),
+);
 
 const REDACTED = "[REDACTED]";
 
 /**
  * Deep-copy `value`, replacing any property whose key names a credential
- * (SENSITIVE_KEYS) with a placeholder. The match is by key name and recurses
- * through nested objects and arrays, since connections arrive nested under
- * `connections[]`. Primitives and Dates pass through unchanged and the input is
- * never mutated; used to keep secrets out of the request/response logs.
+ * (SENSITIVE_KEYS) with a placeholder. The match is by key name (case-
+ * insensitive) and recurses through nested objects and arrays, since
+ * connections arrive nested under `connections[]`. Primitives and Dates pass
+ * through unchanged and the input is never mutated; used to keep secrets out of
+ * the request/response and axios-error logs.
  */
 export function redactSensitive(
    value: unknown,
@@ -131,7 +144,7 @@ export function redactSensitive(
    }
    const result: Record<string, unknown> = {};
    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      result[key] = SENSITIVE_KEYS.has(key)
+      result[key] = SENSITIVE_KEYS.has(key.toLowerCase())
          ? REDACTED
          : redactSensitive(val, seen);
    }
@@ -184,23 +197,53 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
    next();
 };
 
-export const logAxiosError = (error: AxiosError) => {
+/**
+ * Build the message + metadata logged for an AxiosError, with secrets removed.
+ * A failing upstream call can echo a connection config in `response.data` or
+ * return credential headers, and the raw `error.request` / `error` objects hold
+ * the outgoing Authorization header. Response fields are redacted and the raw
+ * request object is reduced to a few safe descriptors, so credentials never
+ * reach the log. Split out from `logAxiosError` so it can be unit tested.
+ */
+export function buildAxiosErrorLog(error: AxiosError): {
+   message: string;
+   meta: Record<string, unknown>;
+} {
    if (error.response) {
       // The request was made and the server responded with a status code
-      // that falls out of the range of 2xx
-      logger.error("Axios server-side error", {
-         url: error.response.config.url,
-         status: error.response.status,
-         headers: error.response.headers,
-         data: error.response.data,
-      });
-   } else if (error.request) {
-      // The request was made but no response was received
-      // `error.request` is an instance of XMLHttpRequest in the browser and an instance of
-      // http.ClientRequest in node.js
-      logger.error("Axios client-side error", { error: error.request });
-   } else {
-      // Something happened in setting up the request that triggered an Error
-      logger.error("Axios unknown error", { error });
+      // that falls out of the range of 2xx.
+      return {
+         message: "Axios server-side error",
+         meta: {
+            url: error.response.config.url,
+            status: error.response.status,
+            headers: redactSensitive(error.response.headers),
+            data: redactSensitive(error.response.data),
+         },
+      };
    }
+   if (error.request) {
+      // The request was made but no response was received. `error.request` is
+      // the raw ClientRequest/XHR and carries the outgoing headers (including
+      // Authorization), so log only safe descriptors from the config.
+      return {
+         message: "Axios client-side error",
+         meta: {
+            method: error.config?.method,
+            url: error.config?.url,
+            code: error.code,
+         },
+      };
+   }
+   // Something happened setting up the request. The AxiosError still holds
+   // `config.headers`, so log only the message.
+   return {
+      message: "Axios unknown error",
+      meta: { message: error.message },
+   };
+}
+
+export const logAxiosError = (error: AxiosError) => {
+   const { message, meta } = buildAxiosErrorLog(error);
+   logger.error(message, meta);
 };
