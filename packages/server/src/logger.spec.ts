@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { redactSensitive } from "./logger";
+import type { AxiosError } from "axios";
+import { buildAxiosErrorLog, redactSensitive } from "./logger";
 
 describe("redactSensitive", () => {
    it("masks every known credential field at the top level", () => {
@@ -120,5 +121,73 @@ describe("redactSensitive", () => {
       const out = redactSensitive(input) as Record<string, unknown>;
       expect(out.password).toBe("[REDACTED]");
       expect(out.self).toBe("[Circular]");
+   });
+
+   it("matches credential keys case-insensitively", () => {
+      const out = redactSensitive({
+         Password: "hunter2",
+         Authorization: "Bearer abc",
+      }) as Record<string, unknown>;
+      expect(out.Password).toBe("[REDACTED]");
+      expect(out.Authorization).toBe("[REDACTED]");
+   });
+
+   it("masks credential HTTP headers", () => {
+      const out = redactSensitive({
+         "content-type": "application/json",
+         authorization: "Bearer secret-token",
+         cookie: "session=abc",
+      }) as Record<string, unknown>;
+      expect(out["content-type"]).toBe("application/json");
+      expect(out.authorization).toBe("[REDACTED]");
+      expect(out.cookie).toBe("[REDACTED]");
+   });
+});
+
+describe("buildAxiosErrorLog", () => {
+   it("redacts response data and headers on a server-side error", () => {
+      const error = {
+         response: {
+            config: { url: "http://worker/api" },
+            status: 500,
+            headers: { authorization: "Bearer abc", "content-type": "json" },
+            data: { connection: { serviceAccountKeyJson: "PRIVATE_KEY" } },
+         },
+      } as unknown as AxiosError;
+      const { message, meta } = buildAxiosErrorLog(error);
+      expect(message).toBe("Axios server-side error");
+      expect(meta).toEqual({
+         url: "http://worker/api",
+         status: 500,
+         headers: { authorization: "[REDACTED]", "content-type": "json" },
+         data: { connection: { serviceAccountKeyJson: "[REDACTED]" } },
+      });
+   });
+
+   it("never logs the raw request object on a client-side error", () => {
+      const error = {
+         request: { _header: "GET / HTTP/1.1\r\nAuthorization: Bearer abc" },
+         config: { method: "get", url: "http://worker/api" },
+         code: "ECONNABORTED",
+      } as unknown as AxiosError;
+      const { message, meta } = buildAxiosErrorLog(error);
+      expect(message).toBe("Axios client-side error");
+      expect(meta).toEqual({
+         method: "get",
+         url: "http://worker/api",
+         code: "ECONNABORTED",
+      });
+      expect(JSON.stringify(meta)).not.toContain("Bearer abc");
+   });
+
+   it("logs only the message on a setup error", () => {
+      const error = {
+         message: "getaddrinfo ENOTFOUND",
+         config: { headers: { Authorization: "Bearer abc" } },
+      } as unknown as AxiosError;
+      const { message, meta } = buildAxiosErrorLog(error);
+      expect(message).toBe("Axios unknown error");
+      expect(meta).toEqual({ message: "getaddrinfo ENOTFOUND" });
+      expect(JSON.stringify(meta)).not.toContain("Bearer abc");
    });
 });
