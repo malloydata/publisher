@@ -91,3 +91,12 @@ view: rev_delta is {
 ```
 
 Use `down_is_good=true` for metrics where decrease is positive (churn, defects).
+
+## Theming
+
+- **Per-chart theme keys are nested, not flat.** In Publisher, `# theme.palette.tableHeader.dark = "#94a3b8"` works; a flat `# theme.tableHeaderColor = "#94a3b8"` is silently dropped. Publisher's annotation reader only understands the structured `palette.*` / `font.*` form (the same vocabulary as the config), not the renderer's flat `MalloyExplicitTheme` key names.
+- **A per-chart annotation OVERRIDES the instance theme.** Precedence, highest to lowest, per key: `# theme.*` (view), then `## theme.*` (model), then the instance theme (config / Settings, then Theme editor), then built-in defaults. A `# theme.*` view tag beats a `## theme.*` model default, and both beat the instance theme for the keys they set. This is the opposite of a bare `@malloydata/render` embed, where the embedder wins.
+- **Only seven palette keys take light/dark.** `background`, `tableHeader`, `tableHeaderBackground`, `tableBody`, `tile`, `tileTitle`, and `mapColor` each accept a `.light` and/or `.dark` variant. `palette.series`, `font.family`, and `font.size` are single values shared across modes; a `.light`/`.dark` on them does nothing.
+- **`# theme.palette.mapColor.{light,dark}` recolors choropleths only.** It sets the saturated end of the `# shape_map` / `# segment_map` gradient (per mode). Rect-mark heatmaps keep their built-in scheme.
+- **`defaultMode` and `allowUserToggle` are instance-only.** No per-chart annotation controls the light/dark default or the toggle lock; set them in the config `theme` block or the editor.
+- **Environment-level theming is not applied yet.** Only the instance theme and the `# theme.*` / `## theme.*` per-chart annotations take effect today.
