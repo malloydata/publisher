@@ -50,7 +50,7 @@ extend {
   dimension:
     // Use dimension (not rename:) for cleaner column names
     order_type is `Type`
-    full_name is first_name || ' ' || last_name
+    full_name is concat(first_name, ' ', last_name)
     segment is lifetime_value ?
       pick 'enterprise' when >= 100000
       pick 'mid-market' when >= 10000
@@ -60,6 +60,8 @@ extend {
     customer_count is count()
 }
 ```
+
+> **Every `dimension:` needs `name is expr`.** A bare column name like `dimension: species` is a parse error (e.g. `missing IS at ...`). Raw columns are already usable in `group_by` / `select` without any declaration, so only add a `dimension:` when deriving or renaming a field (e.g. `revenue is price * quantity`).
 
 ### Base Source (Curated Mode with Access Modifiers)
 
@@ -165,6 +167,7 @@ source: customer_health is customers extend {
 
 ## Key Rules
 
+- **Every `dimension:` needs `name is expr`**: a bare `dimension: species` is a parse error. Raw columns are queryable directly in `group_by` / `select`; only declare a `dimension:` to derive or rename a field.
 - **Define joined tables before referencing them**, use `import` statements in multi-file architecture
 - **Use `nullif(denominator, 0)` for all division**
 - **Alias joined fields before using in `order_by`**: `group_by: yr is table.year`
