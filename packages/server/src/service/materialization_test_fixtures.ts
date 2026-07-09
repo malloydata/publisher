@@ -75,6 +75,41 @@ export function makeInstruction(
  * build internals touch (name/id, deterministic sourceEntityId, SQL, and the
  * `#@ persist name=` annotation reader, defaulted to "unset").
  */
+/** A freshness/schedule layer for the fake source's `#@` or `##` tag. */
+interface FakeFreshnessSchedule {
+   freshness?: { window?: string; fallback?: string };
+   schedule?: string;
+}
+
+/**
+ * Build a fake Malloy `Tag` supporting both readers the build plan uses:
+ * `entries()` (scalar `#@ persist` key=value pairs, for deriveAnnotationFields)
+ * and the path-based `text(...at)` (dotted `freshness.window` / `schedule`, for
+ * resolveFreshnessSchedule).
+ */
+function fakeTag(
+   fields: Record<string, string> | undefined,
+   fs: FakeFreshnessSchedule | undefined,
+) {
+   return {
+      *entries() {
+         for (const [key, value] of Object.entries(fields ?? {})) {
+            yield [key, { text: () => value }];
+         }
+      },
+      text(...at: string[]): string | undefined {
+         if (at.length === 1) {
+            if (at[0] === "schedule") return fs?.schedule;
+            return fields?.[at[0]];
+         }
+         if (at.length === 2 && at[0] === "freshness") {
+            return fs?.freshness?.[at[1] as "window" | "fallback"];
+         }
+         return undefined;
+      },
+   };
+}
+
 export function fakeSource(opts: {
    name: string;
    sourceEntityId: string;
@@ -83,6 +118,10 @@ export function fakeSource(opts: {
    dialectName?: string;
    /** key=value fields of the `#@ persist` annotation (e.g. sharing). */
    annotationFields?: Record<string, string>;
+   /** Source-level (`#@`) freshness/schedule (dotted keys). */
+   freshnessSchedule?: FakeFreshnessSchedule;
+   /** Model-file-level (`##`) freshness/schedule default. */
+   modelFreshnessSchedule?: FakeFreshnessSchedule;
 }): PersistSource {
    const fields = opts.annotationFields;
    return {
@@ -93,20 +132,14 @@ export function fakeSource(opts: {
       makeBuildId: () => opts.sourceEntityId,
       getSQL: () => opts.sql ?? "SELECT 1",
       annotations: {
-         parseAsTag: () =>
-            fields
-               ? {
-                    tag: {
-                       *entries() {
-                          for (const [key, value] of Object.entries(fields)) {
-                             yield [key, { text: () => value }];
-                          }
-                       },
-                    },
-                 }
-               : // No annotation fields: entries() is absent, and
-                 // deriveAnnotationFields degrades to {}.
-                 { tag: { text: () => undefined } },
+         parseAsTag: () => ({
+            tag: fakeTag(fields, opts.freshnessSchedule),
+         }),
+      },
+      modelAnnotations: {
+         parseAsTag: () => ({
+            tag: fakeTag(undefined, opts.modelFreshnessSchedule),
+         }),
       },
    } as unknown as PersistSource;
 }
