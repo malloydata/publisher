@@ -2585,6 +2585,24 @@ components:
           description:
             Package location, can be an absolute path or URI (e.g. github, s3,
             gcs, etc.)
+        scope:
+          type: string
+          enum:
+            - version
+            - package
+          default: package
+          description: >-
+            Package-level Malloy Persistence scope mode, declared once at the
+            malloy-publisher.json root and applied uniformly to every persist
+            source and index in the package. `package` (the default) =
+            persisted artifacts are package-scoped: reused across the package's
+            published versions whenever they still satisfy freshness. `version`
+            = version-scoped: each artifact is owned by one published version.
+            There is no per-source/per-dimension scope. A
+            `materialization.schedule` cron is legal only when `scope: version`
+            (a package-scoped lineage is reused across versions, so a single
+            per-version cadence is meaningless). Emitted whenever the package is
+            loaded; defaults to `package` when the manifest omits it.
         explores:
           type: array
           items:
@@ -2750,10 +2768,13 @@ components:
             re-materializes this package's published versions. Null = no
             scheduled re-materialization declared in the manifest (publish /
             on-demand only). A cron is the power tier of artifact-anchored
-            scheduling: it is valid only when every persist source in the
-            package resolves to an explicit `sharing=private`; a cron on a
-            package with any shared/unset persist source is rejected at
-            publish (declare `materialization.freshness.window` instead).
+            scheduling and is package-root-only: it is valid only when the
+            package declares `scope: version` (a package-scoped lineage is
+            reused across versions, so a single per-version cadence is
+            meaningless), and it is mutually exclusive with freshness — declare
+            either a `schedule` (power tier) or `freshness` (objective tier),
+            never both. A schedule on a `scope: package` package, or alongside
+            any freshness, is rejected at publish.
         freshness:
           oneOf:
             - $ref: "#/components/schemas/Freshness"
@@ -4109,15 +4130,6 @@ components:
           description:
             The source's build SQL (with the build manifest applied for upstream
             rewrites).
-        sharing:
-          type: ["string", "null"]
-          description: >-
-            The source's declared `#@ persist ... sharing=...` value
-            ("private" | "shared"), reported verbatim. Null = unset — the
-            publisher never substitutes the platform default, so the control
-            plane can distinguish unset from an explicit `shared` and apply
-            the default (unset => shared) itself. The publisher reports the
-            most-specific declaration (the source's own persist annotation).
         refresh:
           type: ["string", "null"]
           description: >-
@@ -4132,17 +4144,10 @@ components:
             The source's EFFECTIVE freshness objective after most-specific-wins
             resolution (source > model-file > package). Null = unset at every
             level; the control plane applies the platform default. Reported
-            verbatim (invalid fields dropped, never defaulted).
-        schedule:
-          type: ["string", "null"]
-          description: >-
-            The source's EFFECTIVE power-tier cron after most-specific-wins
-            resolution of the source's OWN declaration (source > model-file).
-            The package-level cron (PackageMaterializationConfig.schedule) is a
-            distinct package-grain concept and is NOT folded in here. Null =
-            unset. Valid only when the source resolves to sharing="private" (a
-            cron on a shared or unset source is rejected at publish; declare
-            freshness.window instead).
+            verbatim (invalid fields dropped, never defaulted). Valid in both
+            scope modes. (Per-source `sharing`/`schedule` were retired: scope is
+            a single package-level mode and a schedule is package-root-only —
+            declaring either on a source is a publish-time manifest error.)
         columns:
           type: array
           description: Output schema of the source.

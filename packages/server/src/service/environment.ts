@@ -1347,6 +1347,10 @@ export class Environment {
             // control plane misread the gap as a schedule removal. It is not a
             // PATCH-editable field, so always preserve the existing value.
             materialization: existing.materialization,
+            // Same rationale for the manifest-derived persist `scope`: not
+            // PATCH-editable, so preserve it rather than dropping it to the
+            // default until the next reload.
+            scope: existing.scope,
          });
 
          // Strict-reject, symmetric with the publish path

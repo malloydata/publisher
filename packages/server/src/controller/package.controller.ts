@@ -8,21 +8,22 @@ type ApiPackage = components["schemas"]["Package"];
 /**
  * Everything that is strict-at-publish, joined into one 400 message (or
  * undefined when the package is publishable): invalid explores entries plus
- * the materialization cron gate (a package-level `schedule` requires every
- * persist source to resolve to explicit `sharing=private` — see
- * Package.scheduleWarnings). At startup/reload both are warn-only instead
- * (fail-safe; see Package.loadViaWorker).
+ * the Malloy Persistence policy gate (scope is package-level; a
+ * `materialization.schedule` is package-root-only + version-scope-only and
+ * mutually exclusive with freshness; per-source `sharing`/`schedule` are
+ * retired — see Package.persistencePolicyWarnings). At startup/reload both are
+ * warn-only instead (fail-safe; see Package.loadViaWorker).
  */
 function formatPublishRejections(
    pkg: {
       formatInvalidExplores(exploresOverride?: string[]): string;
-      formatInvalidSchedule(): string;
+      formatInvalidPersistencePolicy(): string;
    },
    exploresOverride?: string[],
 ): string | undefined {
    const message = [
       pkg.formatInvalidExplores(exploresOverride),
-      pkg.formatInvalidSchedule(),
+      pkg.formatInvalidPersistencePolicy(),
    ]
       .filter(Boolean)
       .join("\n");

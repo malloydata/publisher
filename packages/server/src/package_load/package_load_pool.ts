@@ -81,7 +81,10 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
-import type { PackageMaterializationConfig } from "../service/package_manifest";
+import type {
+   PackageMaterializationConfig,
+   PackageScope,
+} from "../service/package_manifest";
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -235,6 +238,7 @@ export interface LoadPackageOutcome {
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;
+      scope?: PackageScope;
    };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {

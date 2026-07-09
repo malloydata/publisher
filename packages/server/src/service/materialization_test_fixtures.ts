@@ -75,17 +75,16 @@ export function makeInstruction(
  * build internals touch (name/id, deterministic sourceEntityId, SQL, and the
  * `#@ persist name=` annotation reader, defaulted to "unset").
  */
-/** A freshness/schedule layer for the fake source's `#@` or `##` tag. */
+/** A freshness layer for the fake source's `#@` or `##` tag. */
 interface FakeFreshnessSchedule {
    freshness?: { window?: string; fallback?: string };
-   schedule?: string;
 }
 
 /**
  * Build a fake Malloy `Tag` supporting both readers the build plan uses:
  * `entries()` (scalar `#@ persist` key=value pairs, for deriveAnnotationFields)
- * and the path-based `text(...at)` (dotted `freshness.window` / `schedule`, for
- * resolveFreshnessSchedule).
+ * and the path-based `text(...at)` (dotted `freshness.window`, for
+ * resolveFreshness).
  */
 function fakeTag(
    fields: Record<string, string> | undefined,
@@ -99,7 +98,6 @@ function fakeTag(
       },
       text(...at: string[]): string | undefined {
          if (at.length === 1) {
-            if (at[0] === "schedule") return fs?.schedule;
             return fields?.[at[0]];
          }
          if (at.length === 2 && at[0] === "freshness") {
@@ -116,11 +114,11 @@ export function fakeSource(opts: {
    sql?: string;
    connectionName?: string;
    dialectName?: string;
-   /** key=value fields of the `#@ persist` annotation (e.g. sharing). */
+   /** key=value fields of the `#@ persist` annotation (e.g. name, refresh). */
    annotationFields?: Record<string, string>;
-   /** Source-level (`#@`) freshness/schedule (dotted keys). */
+   /** Source-level (`#@`) freshness (dotted keys). */
    freshnessSchedule?: FakeFreshnessSchedule;
-   /** Model-file-level (`##`) freshness/schedule default. */
+   /** Model-file-level (`##`) freshness default. */
    modelFreshnessSchedule?: FakeFreshnessSchedule;
 }): PersistSource {
    const fields = opts.annotationFields;

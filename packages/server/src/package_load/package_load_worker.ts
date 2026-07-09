@@ -85,7 +85,9 @@ import { validateAuthorizeProbes } from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
+   PackageScope,
    parsePackageMaterialization,
+   parsePackageScope,
 } from "../service/package_manifest";
 import {
    extractQueriesFromModelDef,
@@ -387,6 +389,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
    materialization?: PackageMaterializationConfig | null;
+   scope?: PackageScope;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -397,6 +400,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
       queryableSources?: unknown;
       manifestLocation?: unknown;
       materialization?: unknown;
+      scope?: unknown;
    };
    return {
       name: parsed.name,
@@ -416,6 +420,9 @@ async function readPackageMetadata(packagePath: string): Promise<{
       // Package-level Malloy Persistence policy; surfaced to the control plane,
       // which owns scheduling. Only `schedule` is read today.
       materialization: parsePackageMaterialization(parsed.materialization),
+      // Package-level persist scope mode; defaults to "package". An invalid
+      // value throws here and fails the load (scope is load-bearing).
+      scope: parsePackageScope(parsed.scope),
    };
 }
 

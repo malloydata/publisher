@@ -1,7 +1,28 @@
 import { describe, expect, it } from "bun:test";
-import { parsePackageMaterialization } from "./package_manifest";
+import {
+   parsePackageMaterialization,
+   parsePackageScope,
+} from "./package_manifest";
 
 describe("service/package_manifest", () => {
+   describe("parsePackageScope", () => {
+      it("defaults to 'package' when absent", () => {
+         expect(parsePackageScope(undefined)).toBe("package");
+         expect(parsePackageScope(null)).toBe("package");
+      });
+
+      it("accepts the two valid modes verbatim", () => {
+         expect(parsePackageScope("version")).toBe("version");
+         expect(parsePackageScope("package")).toBe("package");
+      });
+
+      it("throws on any other value (no silent default)", () => {
+         expect(() => parsePackageScope("shared")).toThrow(/scope/i);
+         expect(() => parsePackageScope("")).toThrow(/scope/i);
+         expect(() => parsePackageScope(7)).toThrow(/scope/i);
+      });
+   });
+
    describe("parsePackageMaterialization", () => {
       it("extracts a string schedule", () => {
          expect(parsePackageMaterialization({ schedule: "0 6 * * *" })).toEqual(
