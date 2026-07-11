@@ -175,3 +175,15 @@ jobs:
       - name: Inspect image
         run: |
           docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
+
+      # Keep the Docker Hub repository overview in sync with the repo so it never
+      # drifts. Only runs for stable releases (not -dev/-rc prereleases).
+      - name: Update Docker Hub description
+        if: steps.version_step.outputs.is_prerelease == 'false'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.REGISTRY_IMAGE }}
+          short-description: "Open-source server for Malloy semantic models — REST + MCP for apps, tools, and AI agents."
+          readme-filepath: ./packages/server/README.docker.md
