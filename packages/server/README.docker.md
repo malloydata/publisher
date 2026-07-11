@@ -1,8 +1,8 @@
 # Publisher in Docker
 
-The canonical build is the root [`Dockerfile`](../../Dockerfile) and the CI smoke test (`docker_smoke_test` in `.github/workflows/build.yml`) builds and runs that exact image. The two-port REST + MCP server, the Snowflake ADBC driver, the DuckDB CLI, and the production app bundle all ship in it.
+The canonical build is the root [`Dockerfile`](https://github.com/malloydata/publisher/blob/main/Dockerfile) and the CI smoke test (`docker_smoke_test` in `.github/workflows/build.yml`) builds and runs that exact image. The two-port REST + MCP server, the Snowflake ADBC driver, the DuckDB CLI, and the production app bundle all ship in it.
 
-A short Docker section in the [repo root README](../../README.md#docker) covers the canonical build + run; this doc goes deeper on runtime layout, environment variables, persistent storage, and credentials.
+A short Docker section in the [repo root README](https://github.com/malloydata/publisher#docker) covers the canonical build + run; this doc goes deeper on runtime layout, environment variables, persistent storage, and credentials.
 
 ## Build and run
 
@@ -17,7 +17,7 @@ docker run -d \
 
 Once `/api/v0/status` reports `operationalState: "serving"`, the REST API is at `http://localhost:4000` and MCP at `http://localhost:4040/mcp`.
 
-If you don't have a config of your own yet, copy [`packages/server/publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials required) and mount that. There's also a [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) sibling for the BigQuery samples.
+If you don't have a config of your own yet, copy [`publisher.config.example.duckdb.json`](https://github.com/malloydata/publisher/blob/main/packages/server/publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials required) and mount that. There's also a [`publisher.config.example.bigquery.json`](https://github.com/malloydata/publisher/blob/main/packages/server/publisher.config.example.bigquery.json) sibling for the BigQuery samples.
 
 ## Pre-built image
 
@@ -32,7 +32,7 @@ docker run -d \
   ms2data/malloy-publisher
 ```
 
-See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`) lives in the root README's [Docker section](../../README.md#docker).
+See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`) lives in the root README's [Docker section](https://github.com/malloydata/publisher#docker).
 
 ## Runtime layout
 
@@ -57,7 +57,7 @@ docker run -d \
 
 The first request after a fresh start clones sample packages from GitHub — a named volume turns that one-time cost into a one-time cost across all container lifecycles.
 
-For the same pattern as a complete Compose file (with a healthcheck against `/api/v0/status` and both ports mapped), see [`docker-compose.example.yml`](../../docker-compose.example.yml) at the repo root.
+For the same pattern as a complete Compose file (with a healthcheck against `/api/v0/status` and both ports mapped), see [`docker-compose.example.yml`](https://github.com/malloydata/publisher/blob/main/docker-compose.example.yml) at the repo root.
 
 ## Configuration via environment variables
 

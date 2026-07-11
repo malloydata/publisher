@@ -1,10 +1,35 @@
 # Publisher
 
 <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml">![build](https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg)</a>
+[![npm](https://img.shields.io/npm/v/@malloy-publisher/server.svg)](https://www.npmjs.com/package/@malloy-publisher/server)
+[![Docker](https://img.shields.io/docker/pulls/ms2data/malloy-publisher.svg)](https://hub.docker.com/r/ms2data/malloy-publisher)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Publisher** is the open-source semantic model server for [Malloy](https://malloydata.dev). It serves Malloy models through REST and MCP APIs, enabling consistent data access for applications, tools, and AI agents.
+**Publisher** is the open-source server for [Malloy](https://malloydata.dev) semantic models. Through REST APIs and MCP, it lets applications, tools, and AI agents discover model metadata, and compile and execute Malloy queries to retrieve governed data.
+
+![Malloy Publisher](docs/malloy-publisher-demo.png)
+
+## Contents
+
+- [Concepts](#concepts) · [Prerequisites](#prerequisites) · [Quick Start](#quick-start) · [Docker](#docker)
+- [Use your own models and database](#use-your-own-models-and-database) · [Configuration](#configuration)
+- [AI agents (MCP and skills)](#ai-agents-mcp-and-skills) · [Documentation](#documentation)
+- [How the Pieces Fit Together](#how-the-pieces-fit-together) · [Architecture](#architecture) · [Development](#development) · [Contributing](#contributing)
+
+## Concepts
+
+A few terms used throughout this README and the API:
+
+- **Malloy** — a language for modeling and querying data. A model defines sources, dimensions, measures, and views once, so callers query concepts instead of raw tables. See [malloydata.dev](https://malloydata.dev).
+- **Semantic model** — a `.malloy` file that captures business logic (entity relationships, metrics, named queries). Publisher serves these definitions and compiles them to SQL at query time.
+- **Package** — a directory of `.malloy` models and `.malloynb` notebooks plus a `publisher.json` manifest, served as a unit.
+- **Environment** — a named group of packages and the database **connections** they use. Environments are declared in `publisher.config.json` (this is the top-level API path segment: `/api/v0/environments/...`).
+- **Connection** — how an environment reaches a database: `duckdb`, `postgres`, `bigquery`, `snowflake`, `mysql`, `trino`, and more.
+- **MCP** — the [Model Context Protocol](https://modelcontextprotocol.io), the standard interface Publisher exposes so AI agents can discover models and run queries. See [AI agents](#ai-agents-mcp-and-skills).
 
 ## Prerequisites
+
+To just run Publisher you only need **Node.js ≥ 20** (for the `npx` quick start below) or **Docker** — skip the rest of this table. The full list below matters when you build from source or regenerate clients; Python and Java are only for the optional build steps noted in the last column.
 
 | Tool                              | Version                     | Required for                                                                  |
 | --------------------------------- | --------------------------- | ----------------------------------------------------------------------------- |
@@ -25,9 +50,41 @@ Open http://localhost:4000 to explore the sample models. Three DuckDB-backed sam
 
 > **Heads up — npx + DuckDB native binding.** On some Node 24 setups, `npx` does not install DuckDB's native binding (`node_modules/duckdb/lib/binding/duckdb.node`), so the server exits at startup with `Cannot find module ...duckdb.node`. This is an upstream `duckdb` install-script issue tracked separately. Workaround until that's fixed: clone this repo and run `make start-init` (or `bun run build && bun run start`) from the repo root — the workspace's `install-duckdb-bindings` script handles the binding install during `bun run build`.
 
-### Bring your own config
+### Use your own models and database
 
-Pass `--config <path>` to point the server at a specific `publisher.config.json`, or place a `publisher.config.json` in the directory you launch from. Both forms override the bundled default.
+`publisher.config.json` is where you declare what Publisher serves. It's a list of **environments**, each with **packages** (your `.malloy` models) and the **connections** those models query. A minimal config that serves a local package against a Postgres warehouse:
+
+```json
+{
+  "frozenConfig": false,
+  "environments": [
+    {
+      "name": "my-env",
+      "packages": [
+        { "name": "sales", "location": "/srv/models/sales" }
+      ],
+      "connections": [
+        {
+          "name": "warehouse",
+          "type": "postgres",
+          "postgresConnection": {
+            "host": "db.example.com",
+            "port": 5432,
+            "databaseName": "analytics",
+            "userName": "readonly",
+            "password": "<secret>"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+- **`packages[].location`** is an absolute local path (as above) or a URI — the bundled samples use GitHub `tree` URLs.
+- **`connections`** can target any supported database: `postgres`, `mysql`, `bigquery`, `snowflake`, `trino`, `duckdb`, and more — nothing here is BigQuery-specific. Each package also gets an automatic in-process `duckdb` sandbox, which is why the DuckDB samples need no connection at all. See [docs/connections.md](docs/connections.md) for every connection type and its options (SSH bastions, TLS, attached databases).
+
+Point the server at your config with `--config`, or launch from a directory that already contains a `publisher.config.json`:
 
 ```bash
 # Existing repo of Malloy samples or your own packages
@@ -102,14 +159,48 @@ A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compo
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
 
-## Agent MCP server
+## AI agents (MCP and skills)
 
-Alongside the core MCP server on `:4040`, Publisher runs a second, separate MCP server on `:4041` (`AGENT_MCP_PORT`) aimed at AI agents. It exposes two read-only retrieval tools:
+Publisher speaks [MCP](https://modelcontextprotocol.io) so any MCP-compatible client — Claude, Cursor, VS Code, or your own script — can discover your models and run Malloy queries against them. It runs **two** MCP servers side by side.
 
-- **`malloy_getContext`**: given a plain-English question, returns the most relevant model entities (sources, views, named queries, and dimension/measure fields) for a package, so an agent can ground a query in what the model actually defines instead of guessing names.
-- **`malloy_searchDocs`**: keyword search over a bundled index of the Malloy documentation.
+### Core MCP server (`:4040`)
 
-It also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4041/mcp`. The server is stateless and unauthenticated, mirroring the core MCP server; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
+Discovery and query tools, at `http://<host>:4040/mcp` (set the port with `--mcp_port` / `MCP_PORT`):
+
+- **`malloy_environmentList`** / **`malloy_packageList`** / **`malloy_packageGet`** — browse environments, packages, and the models in a package.
+- **`malloy_modelGetText`** — read a model's source text.
+- **`malloy_executeQuery`** — run a Malloy query and return JSON. Accepts `givens` for model-declared [runtime parameters](docs/givens.md).
+
+### Agent MCP server (`:4041`)
+
+A second server (`AGENT_MCP_PORT`, bound to `PUBLISHER_HOST`) at `http://<host>:4041/mcp` adds read-only retrieval tools aimed at agents:
+
+- **`malloy_getContext`** — given a plain-English question, returns the model entities (sources, views, named queries, dimension/measure fields) most relevant to it, so an agent grounds its query in names the model actually defines instead of guessing.
+- **`malloy_searchDocs`** — keyword search over a bundled index of the Malloy documentation.
+
+### Connecting a client
+
+Point your client at the HTTP endpoints. Key names vary by client (VS Code uses `servers` rather than `mcpServers`):
+
+```json
+{
+  "mcpServers": {
+    "malloy": { "type": "http", "url": "http://localhost:4040/mcp" },
+    "malloy-agent": { "type": "http", "url": "http://localhost:4041/mcp" }
+  }
+}
+```
+
+Both servers are stateless and **unauthenticated**, and `malloy_executeQuery` reads whatever data your models connect to — bind to loopback with `--host 127.0.0.1` for local use, and put an authenticating gateway in front before exposing them. See [docs/ai-agents.md](docs/ai-agents.md) for the Claude Desktop bridge and troubleshooting.
+
+### Agent skills
+
+The repo bundles a set of agent **skills** (under [`skills/`](skills/)) — task-focused `SKILL.md` guidance files that teach an agent how to model, query, chart, and publish Malloy (for example `malloy-model`, `malloy-analyze`, `malloy-publish`). Two ways to use them:
+
+- **Skill-aware hosts** (e.g. Claude Code, Claude Desktop) load them as native skill files for always-on guidance.
+- **Other MCP hosts** (e.g. Codex, ChatGPT, Cursor) get the same skills as on-demand **MCP prompts** served by the agent server on `:4041`.
+
+For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
 
 ## Documentation
 
@@ -145,7 +236,7 @@ When Malloy executes a query, the result includes both **data** and **rendering 
 
 An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the network and provides a professional UI for data exploration.
 
-- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, plus a separate [agent MCP server](#agent-mcp-server) (port 4041) with retrieval tools and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
+- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, plus a separate [agent MCP server](#ai-agents-mcp-and-skills) (port 4041) with retrieval tools and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
 - **App:** Web interface for browsing Malloy content, exploring models with a no-code query builder, and viewing results.
 
 ### Publisher SDK
@@ -383,6 +474,10 @@ The two compose: `explores` decides which files are listed, and `export { … }`
 > The `queryableSources` boundary applies to the *query* surface (`getQueryResults`, the MCP query tool, and `/compile`). It does **not** cover raw retrieval by exact path — a hidden model's file text and its compiled metadata are still fetchable by path — by design; use `#(authorize)` when the contents themselves must be protected, not just removed from discovery.
 
 Validation is asymmetric by design: **publishing** a package with an `explores` entry that doesn't resolve to a real model is rejected with a `400`, while at **startup/reload** the package still serves but hides the unresolved entry (it never falls back to listing everything) and surfaces the reason in the package's `exploresWarnings` field.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and the DCO sign-off requirement. Publisher is released under the [MIT License](LICENSE).
 
 ## Community
 
