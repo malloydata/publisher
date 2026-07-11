@@ -99,6 +99,7 @@ import {
    type MalloyGivenApi,
 } from "../service/given";
 import { ignoreDotfiles } from "../utils";
+import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import type {
    ConnectionMetadata,
    ConnectionMetadataRequest,
@@ -152,6 +153,13 @@ function callMain<T>(send: (requestId: string) => void): Promise<T> {
    });
 }
 
+// Per-load phase timing: brackets the wall-clock spent awaiting proxied schema
+// fetches so `loadPackage` can separate connection I/O from compile CPU. The
+// pool runs one load per worker at a time, so a single module-level instance
+// is safe; it's still keyed by jobId to shrug off a straggler fetch from a
+// prior, reused-worker load. See {@link RpcWaitAccountant}.
+const schemaWait = new RpcWaitAccountant();
+
 function dispatchMainResponse(message: MainToWorkerMessage): void {
    if (
       message.type === "schema-for-tables-response" ||
@@ -202,18 +210,25 @@ class ProxyConnection {
       schemas: Record<string, TableSourceDef>;
       errors: Record<string, string>;
    }> {
-      const response = await callMain<SchemaForTablesResponse>((requestId) => {
-         const req: SchemaForTablesRequest = {
-            type: "schema-for-tables",
-            requestId,
-            jobId: this.jobId,
-            connectionName: this.name,
-            tables,
-            options: serializeFetchOptions(options),
-         };
-         port.postMessage(req);
-      });
-      return { schemas: response.schemas, errors: response.errors };
+      schemaWait.noteStart(this.jobId);
+      try {
+         const response = await callMain<SchemaForTablesResponse>(
+            (requestId) => {
+               const req: SchemaForTablesRequest = {
+                  type: "schema-for-tables",
+                  requestId,
+                  jobId: this.jobId,
+                  connectionName: this.name,
+                  tables,
+                  options: serializeFetchOptions(options),
+               };
+               port.postMessage(req);
+            },
+         );
+         return { schemas: response.schemas, errors: response.errors };
+      } finally {
+         schemaWait.noteSettle(this.jobId);
+      }
    }
 
    async fetchSchemaForSQLStruct(
@@ -223,17 +238,23 @@ class ProxyConnection {
       | { structDef: SQLSourceDef; error?: undefined }
       | { error: string; structDef?: undefined }
    > {
-      const response = await callMain<SchemaForSqlResponse>((requestId) => {
-         const req: SchemaForSqlRequest = {
-            type: "schema-for-sql",
-            requestId,
-            jobId: this.jobId,
-            connectionName: this.name,
-            sentence: sentence as unknown,
-            options: serializeFetchOptions(options),
-         };
-         port.postMessage(req);
-      });
+      schemaWait.noteStart(this.jobId);
+      let response: SchemaForSqlResponse;
+      try {
+         response = await callMain<SchemaForSqlResponse>((requestId) => {
+            const req: SchemaForSqlRequest = {
+               type: "schema-for-sql",
+               requestId,
+               jobId: this.jobId,
+               connectionName: this.name,
+               sentence: sentence as unknown,
+               options: serializeFetchOptions(options),
+            };
+            port.postMessage(req);
+         });
+      } finally {
+         schemaWait.noteSettle(this.jobId);
+      }
       if (response.error !== undefined) return { error: response.error };
       if (response.structDef === undefined) {
          return { error: "Empty SQL schema response from main thread" };
@@ -856,18 +877,41 @@ async function loadPackage(
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
 
+   // Bracket the compile region: only work from here on is compilation +
+   // proxied schema fetches. The setup above (manifest read + file listing)
+   // is excluded so it can't inflate the compile figure — it stays in the
+   // derivable remainder (loadDuration - compile - schemaFetch). Begin the
+   // schema-fetch accounting HERE, at the region boundary, not at load start:
+   // that keeps `compileDurationMs = compileRegion - schemaFetchWait` exact
+   // regardless of whether any fetch ever happens during setup (none do
+   // today, but this stops that assumption from silently mattering).
+   const compileRegionStart = performance.now();
+   schemaWait.begin(job.requestId);
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
          compileOneModel(job, malloyConfig, modelPath),
       ),
    );
 
+   const loadEnd = performance.now();
+   const schemaFetchDurationMs = schemaWait.waitMs;
    return {
       type: "load-package-result",
       requestId: job.requestId,
       packageMetadata,
       models,
-      loadDurationMs: performance.now() - loadStart,
+      loadDurationMs: loadEnd - loadStart,
+      timings: {
+         // Compile-region wall minus the schema-fetch wait it contains — a
+         // conservative ceiling on compile CPU (clamped: rounding can nudge
+         // it slightly negative).
+         compileDurationMs: Math.max(
+            0,
+            loadEnd - compileRegionStart - schemaFetchDurationMs,
+         ),
+         schemaFetchDurationMs,
+         schemaFetchCount: schemaWait.fetches,
+      },
    };
 }
 

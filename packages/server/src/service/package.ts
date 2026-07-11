@@ -29,6 +29,11 @@ import {
 } from "../errors";
 import { formatDuration, logger } from "../logger";
 import { recordBuildPlanComputeDuration } from "../materialization_metrics";
+import {
+   LOAD_DURATION_BUCKETS_MS,
+   recordPackageLoadPhases,
+   type PackageLoadStatus,
+} from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
    BuildManifest,
@@ -71,6 +76,23 @@ function toTableNameManifest(
       out[sourceEntityId] = { tableName: entry.tableName };
    }
    return out;
+}
+
+/**
+ * Classify a failed package load into the `status` label shared by the
+ * `malloy_package_load_duration` histogram and the per-phase load metrics, so
+ * both slice failures identically. A real Malloy/model compile error is a 4xx
+ * `compilation_error`; a rewrapped pool-infrastructure failure is a transient
+ * `pool_unavailable`; anything else is a generic `error`.
+ */
+function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
+   if (error instanceof ModelCompilationError || error instanceof MalloyError) {
+      return "compilation_error";
+   }
+   if (error instanceof ServiceUnavailableError) {
+      return "pool_unavailable";
+   }
+   return "error";
 }
 
 export class Package {
@@ -127,6 +149,10 @@ export class Package {
       {
          description: "Time taken to load a Malloy package",
          unit: "ms",
+         // OTel's default buckets top out at 10s, censoring the slow-load tail.
+         // Use the shared load-duration buckets (→5min) so p95/p99 of large
+         // package loads are resolvable. See LOAD_DURATION_BUCKETS_MS.
+         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
       },
    );
 
@@ -248,16 +274,9 @@ export class Package {
          console.error(error);
          const endTime = performance.now();
          const executionTime = endTime - startTime;
-         const status =
-            error instanceof ModelCompilationError ||
-            error instanceof MalloyError
-               ? "compilation_error"
-               : error instanceof ServiceUnavailableError
-                 ? "pool_unavailable"
-                 : "error";
          this.packageLoadHistogram.record(executionTime, {
             malloy_package_name: packageName,
-            status,
+            status: packageLoadFailureStatus(error),
          });
          // Clean up the package directory on failure, but NOT when packagePath
          // is an in-place mount symlink (watch mode). Removing it would unmount
@@ -361,6 +380,10 @@ export class Package {
          workerDurationMs: outcome.loadDurationMs,
          dispatchOverheadMs:
             workerDoneTime - dispatchTime - outcome.loadDurationMs,
+         // Phase split of the worker duration (remainder = setup + extraction).
+         compileDurationMs: outcome.timings.compileDurationMs,
+         schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
+         schemaFetchCount: outcome.timings.schemaFetchCount,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
@@ -400,43 +423,59 @@ export class Package {
       // hydration path.)
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
-      for (const sm of outcome.models) {
-         if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
-            logger.error("Model compilation failed", {
+      try {
+         for (const sm of outcome.models) {
+            if (sm.compilationError) {
+               const err = Model.deserializeCompilationError(
+                  sm.compilationError,
+               );
+               logger.error("Model compilation failed", {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+               // The outer catch in Package.create records the total metric +
+               // cleans the package directory.
+               throw err;
+            }
+            const model = Model.fromSerialized(
                packageName,
-               modelPath: sm.modelPath,
-               error: err.message,
-            });
-            // The outer catch in Package.create records the metric +
-            // cleans the package directory.
-            throw err;
-         }
-         const model = Model.fromSerialized(
-            packageName,
-            packagePath,
-            malloyConfig,
-            sm,
-         );
-         // Validate renderer tags on the main thread (the renderer is too heavy
-         // to load inside the pure-CPU package-load worker). A misconfigured tag
-         // is logged as a warning naming the target; it does not fail the load.
-         // The findings also ride the package response as non-fatal `warnings`.
-         for (const w of await model.validateRenderTags()) {
-            renderTagWarnings.push({ model: sm.modelPath, ...w });
-         }
-         // Reject unquoted `#@ persist name=` annotations the same way: an
-         // unquoted name is dropped from the build plan, so the source would
-         // publish but never materialize. Scan the raw `.malloy` source (the
-         // ground truth for quoting); throws a ModelCompilationError (424).
-         if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-            const modelSource = await fs.readFile(
-               path.join(packagePath, sm.modelPath),
-               "utf-8",
+               packagePath,
+               malloyConfig,
+               sm,
             );
-            assertPersistNamesQuoted(modelSource, sm.modelPath);
+            // Validate renderer tags on the main thread (the renderer is too
+            // heavy to load inside the pure-CPU package-load worker). A
+            // misconfigured tag is logged as a warning naming the target; it
+            // does not fail the load. The findings also ride the package
+            // response as non-fatal `warnings`.
+            for (const w of await model.validateRenderTags()) {
+               renderTagWarnings.push({ model: sm.modelPath, ...w });
+            }
+            // Reject unquoted `#@ persist name=` annotations the same way: an
+            // unquoted name is dropped from the build plan, so the source would
+            // publish but never materialize. Scan the raw `.malloy` source (the
+            // ground truth for quoting); throws a ModelCompilationError (424).
+            if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+               const modelSource = await fs.readFile(
+                  path.join(packagePath, sm.modelPath),
+                  "utf-8",
+               );
+               assertPersistNamesQuoted(modelSource, sm.modelPath);
+            }
+            models.set(sm.modelPath, model);
          }
-         models.set(sm.modelPath, model);
+      } catch (err) {
+         // Record the load's phase cost tagged with the terminal status before
+         // the error propagates to the outer catch (which records the total).
+         // Only in-band compile failures reach here — the worker already
+         // produced `outcome.timings`; a pool failure throws before `outcome`
+         // exists and carries no timings, so it's simply not recorded.
+         recordPackageLoadPhases(
+            outcome.timings,
+            packageLoadFailureStatus(err),
+         );
+         throw err;
       }
 
       const endTime = performance.now();
@@ -445,6 +484,7 @@ export class Package {
          malloy_package_name: packageName,
          status: "success",
       });
+      recordPackageLoadPhases(outcome.timings, "success");
       logger.info(`Successfully loaded package ${packageName}`, {
          packageName,
          duration: formatDuration(executionTime),
