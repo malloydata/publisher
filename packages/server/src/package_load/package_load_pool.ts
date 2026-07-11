@@ -247,6 +247,8 @@ export interface LoadPackageOutcome {
       }
    >;
    loadDurationMs: number;
+   /** Per-load phase timing breakdown (see {@link LoadPackageResult.timings}). */
+   timings: LoadPackageResult["timings"];
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -844,6 +846,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
          sourceInfos: m.sourceInfos as Malloy.SourceInfo[] | undefined,
       })),
       loadDurationMs: result.loadDurationMs,
+      timings: result.timings,
    };
 }
 

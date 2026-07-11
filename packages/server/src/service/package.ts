@@ -29,6 +29,10 @@ import {
 } from "../errors";
 import { formatDuration, logger } from "../logger";
 import { recordBuildPlanComputeDuration } from "../materialization_metrics";
+import {
+   LOAD_DURATION_BUCKETS_MS,
+   recordPackageLoadPhases,
+} from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
    BuildManifest,
@@ -127,6 +131,10 @@ export class Package {
       {
          description: "Time taken to load a Malloy package",
          unit: "ms",
+         // OTel's default buckets top out at 10s, censoring the slow-load tail.
+         // Use the shared load-duration buckets (→5min) so p95/p99 of large
+         // package loads are resolvable. See LOAD_DURATION_BUCKETS_MS.
+         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
       },
    );
 
@@ -361,9 +369,14 @@ export class Package {
          workerDurationMs: outcome.loadDurationMs,
          dispatchOverheadMs:
             workerDoneTime - dispatchTime - outcome.loadDurationMs,
+         // Phase split of the worker duration (remainder = setup + extraction).
+         compileDurationMs: outcome.timings.compileDurationMs,
+         schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
+         schemaFetchCount: outcome.timings.schemaFetchCount,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
+      recordPackageLoadPhases(outcome.timings, "success");
 
       // Override the manifest-derived resource URI — the worker only
       // returns name/description from publisher.json, but the rest of
