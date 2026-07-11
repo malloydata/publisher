@@ -40,7 +40,18 @@ export const LOAD_DURATION_BUCKETS_MS = [
 /** Bucket boundaries for the per-load schema-fetch count. */
 const SCHEMA_FETCH_COUNT_BUCKETS = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500];
 
-export type PackageLoadStatus = "success" | "error";
+/**
+ * Terminal status of a package load, mirroring the `status` label on the
+ * existing `malloy_package_load_duration` histogram so the phase metrics slice
+ * the same way. In practice the phase histograms only ever carry `success`,
+ * `compilation_error`, or `error` — a `pool_unavailable` failure happens before
+ * the worker returns any timings, so there is nothing to record for it.
+ */
+export type PackageLoadStatus =
+   | "success"
+   | "compilation_error"
+   | "pool_unavailable"
+   | "error";
 
 /** Phase timings a single package load reports (subset of the total). */
 export interface PackageLoadPhaseTimings {
@@ -88,12 +99,14 @@ function ensureInstruments(): void {
 }
 
 /**
- * Record one load's phase breakdown. Call for completed loads (`success`);
- * the terms are meaningless for a load that never produced a worker result.
+ * Record one load's phase breakdown. Call once the worker has returned timings,
+ * with the load's terminal `status` (so the phases can be sliced by outcome the
+ * same way the total duration is). The terms are meaningless for a load that
+ * never produced a worker result (e.g. a pool failure), so don't call it there.
  */
 export function recordPackageLoadPhases(
    timings: PackageLoadPhaseTimings,
-   status: PackageLoadStatus = "success",
+   status: PackageLoadStatus,
 ): void {
    ensureInstruments();
    const attrs = { status };

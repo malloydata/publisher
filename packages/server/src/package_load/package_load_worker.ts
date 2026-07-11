@@ -870,7 +870,6 @@ async function loadPackage(
    job: LoadPackageRequest,
 ): Promise<LoadPackageResult> {
    const loadStart = performance.now();
-   schemaWait.begin(job.requestId);
 
    const packageMetadata = await readPackageMetadata(job.packagePath);
    const malloyConfig = buildWorkerMalloyConfig(job);
@@ -881,8 +880,13 @@ async function loadPackage(
    // Bracket the compile region: only work from here on is compilation +
    // proxied schema fetches. The setup above (manifest read + file listing)
    // is excluded so it can't inflate the compile figure — it stays in the
-   // derivable remainder (loadDuration - compile - schemaFetch).
+   // derivable remainder (loadDuration - compile - schemaFetch). Begin the
+   // schema-fetch accounting HERE, at the region boundary, not at load start:
+   // that keeps `compileDurationMs = compileRegion - schemaFetchWait` exact
+   // regardless of whether any fetch ever happens during setup (none do
+   // today, but this stops that assumption from silently mattering).
    const compileRegionStart = performance.now();
+   schemaWait.begin(job.requestId);
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
          compileOneModel(job, malloyConfig, modelPath),

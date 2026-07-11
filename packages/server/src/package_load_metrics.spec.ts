@@ -62,6 +62,38 @@ describe("package_load_metrics", () => {
       expect(fetches.sum).toBe(5);
    });
 
+   it("labels phases by terminal status, so failures are separable from successes", async () => {
+      recordPackageLoadPhases(
+         {
+            compileDurationMs: 30,
+            schemaFetchDurationMs: 5,
+            schemaFetchCount: 1,
+         },
+         "success",
+      );
+      recordPackageLoadPhases(
+         {
+            compileDurationMs: 12,
+            schemaFetchDurationMs: 3,
+            schemaFetchCount: 1,
+         },
+         "compilation_error",
+      );
+
+      const ok = await harness.collectHistogram(
+         "malloy_package_load_compile_duration",
+         { status: "success" },
+      );
+      const failed = await harness.collectHistogram(
+         "malloy_package_load_compile_duration",
+         { status: "compilation_error" },
+      );
+      expect(ok.count).toBe(1);
+      expect(ok.sum).toBe(30);
+      expect(failed.count).toBe(1);
+      expect(failed.sum).toBe(12);
+   });
+
    it("resolves the slow-load tail past OTel's default 10s cap", async () => {
       // A 90s load would fall in the +Inf bucket under OTel's default
       // boundaries (top = 10000ms); the explicit buckets must extend further.
