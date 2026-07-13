@@ -219,6 +219,13 @@ export class MaterializationService {
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         /**
+          * What initiated this run. `ON_DEMAND` (default) = a manual/API create;
+          * `SCHEDULER` = the standalone materialization scheduler firing a
+          * package's `materialization.schedule` cron. Recorded on the run
+          * metadata so a scheduled rebuild is distinguishable from a manual one.
+          */
+         trigger?: "ON_DEMAND" | "SCHEDULER";
       } = {},
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -248,6 +255,7 @@ export class MaterializationService {
          forceRefresh,
          sourceNames: options.sourceNames ?? null,
          mode: orchestrated ? "orchestrated" : "auto",
+         trigger: options.trigger ?? "ON_DEMAND",
       };
 
       let created: Materialization;
