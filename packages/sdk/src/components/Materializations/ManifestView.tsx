@@ -13,7 +13,7 @@ import { MONO_FONT_FAMILY } from "../styles";
 import { formatTimestamp } from "./utils";
 
 type ManifestViewProps = {
-   entries: { [buildId: string]: ManifestEntry } | undefined;
+   entries: { [sourceEntityId: string]: ManifestEntry } | undefined;
    builtAt?: string;
 };
 
@@ -60,10 +60,10 @@ export default function ManifestView({ entries, builtAt }: ManifestViewProps) {
                   </TableRow>
                </TableHead>
                <TableBody>
-                  {rows.map(([buildId, entry]) => (
-                     <TableRow key={buildId}>
+                  {rows.map(([sourceEntityId, entry]) => (
+                     <TableRow key={sourceEntityId}>
                         <TableCell sx={{ fontFamily: MONO_FONT_FAMILY }}>
-                           {entry.sourceName ?? buildId}
+                           {entry.sourceName ?? sourceEntityId}
                         </TableCell>
                         <TableCell sx={{ fontFamily: MONO_FONT_FAMILY }}>
                            {entry.physicalTableName ?? "-"}

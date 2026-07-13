@@ -236,13 +236,15 @@ describe("MaterializationService", () => {
          ).toMatchObject({ mode: "orchestrated" });
       });
 
-      it("rejects instructions referencing an unknown buildId before creating", async () => {
+      it("rejects instructions referencing an unknown sourceEntityId before creating", async () => {
          setPackage(ctx.environmentStore, {
             getBuildPlan: () => makeBuildPlan(),
          });
          await expect(
             ctx.service.createMaterialization("my-env", "pkg", {
-               buildInstructions: [makeInstruction({ buildId: "ghost" })],
+               buildInstructions: [
+                  makeInstruction({ sourceEntityId: "ghost" }),
+               ],
             }),
          ).rejects.toThrow(BadRequestError);
          expect(ctx.repository.createMaterialization.called).toBe(false);
@@ -347,7 +349,7 @@ describe("MaterializationService", () => {
                   strict: false,
                   entries: {
                      b1: {
-                        buildId: "b1",
+                        sourceEntityId: "b1",
                         physicalTableName: "orders_mz",
                         connectionName: "duckdb",
                      },
@@ -383,7 +385,7 @@ describe("MaterializationService", () => {
                   strict: false,
                   entries: {
                      b1: {
-                        buildId: "b1",
+                        sourceEntityId: "b1",
                         physicalTableName: "orders_mz",
                         connectionName: "duckdb",
                      },
@@ -423,7 +425,7 @@ describe("MaterializationService", () => {
                   strict: false,
                   entries: {
                      b1: {
-                        buildId: "b1",
+                        sourceEntityId: "b1",
                         // Container path on a hyphenated BigQuery project: each
                         // segment must be backtick-quoted independently.
                         physicalTableName: "my-proj.ds.engaged",
@@ -460,7 +462,7 @@ describe("MaterializationService", () => {
                   strict: false,
                   entries: {
                      b1: {
-                        buildId: "b1",
+                        sourceEntityId: "b1",
                         physicalTableName: "orders_mz",
                         connectionName: "duckdb",
                      },
@@ -481,7 +483,7 @@ describe("MaterializationService", () => {
 });
 
 describe("stagingSuffix", () => {
-   it("derives a short, stable suffix from the buildId", () => {
+   it("derives a short, stable suffix from the sourceEntityId", () => {
       expect(stagingSuffix("abcdef1234567890")).toBe("_abcdef123456");
    });
 });
@@ -492,17 +494,17 @@ describe("deriveSelfInstructions", () => {
       ctx = createMocks();
    });
 
-   it("carries forward unchanged buildIds and builds the rest (deduping repeats)", () => {
+   it("carries forward unchanged sourceEntityIds and builds the rest (deduping repeats)", () => {
       const compiled = compiledWith(
          {
-            s1: fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" }),
-            s2: fakeSource({ name: "s2", buildId: "b2bbbbbbbbbbbbbb" }),
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
          },
          [["s1", "s2"], ["s2"]],
       );
       const priorEntries = {
          b1aaaaaaaaaaaaaa: {
-            buildId: "b1aaaaaaaaaaaaaa",
+            sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: "s1_prev",
             connectionName: "duckdb",
          },
@@ -519,7 +521,7 @@ describe("deriveSelfInstructions", () => {
       ).deriveSelfInstructions(compiled, undefined, priorEntries);
 
       expect(instructions).toHaveLength(1);
-      expect(instructions[0].buildId).toBe("b2bbbbbbbbbbbbbb");
+      expect(instructions[0].sourceEntityId).toBe("b2bbbbbbbbbbbbbb");
       expect(instructions[0].physicalTableName).toBe("s2");
       expect(instructions[0].realization).toBe("COPY");
       expect(instructions[0].materializedTableId).toBe("local-b2bbbbbbbbbb");
@@ -531,8 +533,8 @@ describe("deriveSelfInstructions", () => {
    it("honors the sourceNames filter (excluded sources are neither built nor carried)", () => {
       const compiled = compiledWith(
          {
-            s1: fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" }),
-            s2: fakeSource({ name: "s2", buildId: "b2bbbbbbbbbbbbbb" }),
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
          },
          [["s1", "s2"]],
       );
@@ -547,7 +549,7 @@ describe("deriveSelfInstructions", () => {
       ).deriveSelfInstructions(compiled, ["s2"], {});
 
       expect(instructions).toHaveLength(1);
-      expect(instructions[0].buildId).toBe("b2bbbbbbbbbbbbbb");
+      expect(instructions[0].sourceEntityId).toBe("b2bbbbbbbbbbbbbb");
       expect(Object.keys(carried as Record<string, unknown>)).toHaveLength(0);
    });
 });
@@ -561,7 +563,7 @@ describe("getMostRecentManifestEntries (skip-if-unchanged)", () => {
    it("returns entries from the most recent successful run, excluding the in-flight one", async () => {
       const entries = {
          b1: {
-            buildId: "b1",
+            sourceEntityId: "b1",
             physicalTableName: "orders_v1",
             connectionName: "duckdb",
          },
@@ -599,7 +601,9 @@ describe("getMostRecentManifestEntries (skip-if-unchanged)", () => {
             manifest: {
                builtAt: "t",
                strict: false,
-               entries: { b1: { buildId: "b1", physicalTableName: "t1" } },
+               entries: {
+                  b1: { sourceEntityId: "b1", physicalTableName: "t1" },
+               },
             },
          }),
       ]);
@@ -679,8 +683,8 @@ describe("executeInstructedBuild", () => {
    it("builds instructed sources in dependency order and seeds carried entries", async () => {
       const runSQL = sinon.stub().resolves();
       const connection = { runSQL } as unknown as MalloyConnection;
-      const s1 = fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" });
-      const s2 = fakeSource({ name: "s2", buildId: "b2bbbbbbbbbbbbbb" });
+      const s1 = fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" });
+      const s2 = fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" });
       const compiled = compiledWith(
          { s1, s2 },
          [["s1"], ["s2"]],
@@ -691,13 +695,13 @@ describe("executeInstructedBuild", () => {
          compiled,
          [
             {
-               buildId: "b1aaaaaaaaaaaaaa",
+               sourceEntityId: "b1aaaaaaaaaaaaaa",
                materializedTableId: "mt-1",
                physicalTableName: "s1_v1",
                realization: "COPY",
             },
             {
-               buildId: "b2bbbbbbbbbbbbbb",
+               sourceEntityId: "b2bbbbbbbbbbbbbb",
                materializedTableId: "mt-2",
                physicalTableName: "s2_v1",
                realization: "COPY",
@@ -705,7 +709,7 @@ describe("executeInstructedBuild", () => {
          ],
          {
             carried0: {
-               buildId: "carried0",
+               sourceEntityId: "carried0",
                physicalTableName: "carried_tbl",
                connectionName: "duckdb",
             },
@@ -725,8 +729,14 @@ describe("executeInstructedBuild", () => {
       // though the caller instructed it. Both must now build, `mid` first.
       const runSQL = sinon.stub().resolves();
       const connection = { runSQL } as unknown as MalloyConnection;
-      const root = fakeSource({ name: "root", buildId: "brootaaaaaaaaaa" });
-      const mid = fakeSource({ name: "mid", buildId: "bmidbbbbbbbbbbb" });
+      const root = fakeSource({
+         name: "root",
+         sourceEntityId: "brootaaaaaaaaaa",
+      });
+      const mid = fakeSource({
+         name: "mid",
+         sourceEntityId: "bmidbbbbbbbbbbb",
+      });
       const compiled = {
          graphs: [
             {
@@ -750,13 +760,13 @@ describe("executeInstructedBuild", () => {
          compiled,
          [
             {
-               buildId: "brootaaaaaaaaaa",
+               sourceEntityId: "brootaaaaaaaaaa",
                materializedTableId: "mt-r",
                physicalTableName: "root_v1",
                realization: "COPY",
             },
             {
-               buildId: "bmidbbbbbbbbbbb",
+               sourceEntityId: "bmidbbbbbbbbbbb",
                materializedTableId: "mt-m",
                physicalTableName: "mid_v1",
                realization: "COPY",
@@ -779,7 +789,7 @@ describe("executeInstructedBuild", () => {
    });
 
    it("throws when an instructed graph's connection is missing", async () => {
-      const s1 = fakeSource({ name: "s1", buildId: "b1aaaaaaaaaaaaaa" });
+      const s1 = fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" });
       const compiled = compiledWith({ s1 }, [["s1"]], new Map());
 
       await expect(
@@ -787,7 +797,7 @@ describe("executeInstructedBuild", () => {
             compiled,
             [
                {
-                  buildId: "b1aaaaaaaaaaaaaa",
+                  sourceEntityId: "b1aaaaaaaaaaaaaa",
                   materializedTableId: "mt-1",
                   physicalTableName: "s1_v1",
                   realization: "COPY",
@@ -809,15 +819,15 @@ describe("buildOneSource", () => {
       connection: { runSQL: sinon.SinonStub },
       physicalTableName: string,
       dialectName?: string,
-   ): Promise<{ buildId: string; physicalTableName: string }> {
+   ): Promise<{ sourceEntityId: string; physicalTableName: string }> {
       const source = fakeSource({
          name: "orders",
-         buildId: "abcdef1234567890",
+         sourceEntityId: "abcdef1234567890",
          sql: "SELECT * FROM t",
          dialectName,
       });
       const instruction: BuildInstruction = {
-         buildId: "abcdef1234567890",
+         sourceEntityId: "abcdef1234567890",
          materializedTableId: "mt-1",
          physicalTableName,
          realization: "COPY",
@@ -830,7 +840,7 @@ describe("buildOneSource", () => {
                c: unknown,
                d: Record<string, string>,
                m: Manifest,
-            ) => Promise<{ buildId: string; physicalTableName: string }>;
+            ) => Promise<{ sourceEntityId: string; physicalTableName: string }>;
          }
       ).buildOneSource(
          source,
@@ -853,7 +863,7 @@ describe("buildOneSource", () => {
          'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
-      expect(entry.buildId).toBe("abcdef1234567890");
+      expect(entry.sourceEntityId).toBe("abcdef1234567890");
    });
 
    it("drops the staging table and rethrows when the build SQL fails", async () => {
@@ -911,6 +921,10 @@ describe("runBuild (branch behavior)", () => {
             sourceNames: string[] | undefined;
             forceRefresh: boolean;
             buildInstructions: BuildInstruction[] | undefined;
+            referenceManifest?:
+               | { sourceEntityId: string; physicalTableName: string }[]
+               | undefined;
+            strictUpstreams?: boolean | undefined;
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -919,7 +933,7 @@ describe("runBuild (branch behavior)", () => {
    function stubEngine(): RunBuildInternals {
       const entries = {
          "build-orders": {
-            buildId: "build-orders",
+            sourceEntityId: "build-orders",
             physicalTableName: '"orders_v1"',
             connectionName: "duckdb",
          },
@@ -962,6 +976,44 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.autoLoadManifest.called).toBe(false);
    });
 
+   it("orchestrated: seeds the build from referenceManifest and honors strictUpstreams", async () => {
+      const svc = stubEngine();
+      const instructions = [makeInstruction()];
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: instructions,
+            referenceManifest: [
+               { sourceEntityId: "up-1", physicalTableName: "upstream_tbl" },
+            ],
+            strictUpstreams: true,
+         },
+         new AbortController().signal,
+      );
+
+      // The reference manifest becomes the seed (carried) entries so a
+      // downstream build resolves its upstream to the existing physical table.
+      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual({
+         "up-1": {
+            sourceEntityId: "up-1",
+            physicalTableName: "upstream_tbl",
+         },
+      });
+      // strictUpstreams flows through as the strict flag (5th arg).
+      expect(svc.executeInstructedBuild.firstCall.args[4]).toBe(true);
+      // Reused upstreams are counted as carried, not built.
+      expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
+         mode: "orchestrated",
+         sourcesBuilt: 1,
+         sourcesReused: 1,
+      });
+   });
+
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
       const svc = stubEngine();
 
@@ -995,11 +1047,11 @@ describe("autoLoadManifest", () => {
       const reloadAllModelsForPackage = sinon.stub().resolves();
       const entries = {
          b1: {
-            buildId: "b1",
+            sourceEntityId: "b1",
             physicalTableName: "orders_v1",
             connectionName: "duckdb",
          },
-         b2: { buildId: "b2", physicalTableName: undefined },
+         b2: { sourceEntityId: "b2", physicalTableName: undefined },
       };
 
       await (
@@ -1033,7 +1085,7 @@ describe("autoLoadManifest", () => {
                ) => Promise<void>;
             }
          ).autoLoadManifest({ reloadAllModelsForPackage }, "pkg", {
-            b1: { buildId: "b1", physicalTableName: "t" },
+            b1: { sourceEntityId: "b1", physicalTableName: "t" },
          }),
       ).resolves.toBeUndefined();
    });

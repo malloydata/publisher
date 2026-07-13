@@ -18,6 +18,7 @@ describe("PackageController.addPackage explores validation", () => {
          "Invalid explores entry 'missing.malloy' in publisher.json: file not found";
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
+         formatInvalidPersistencePolicy: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
@@ -52,7 +53,10 @@ describe("PackageController.addPackage explores validation", () => {
       // controller passes a validator and does NOT call delete/unload itself.
       const invalidMsg =
          "Invalid explores entry 'missing.malloy' in publisher.json: file not found";
-      const mockPackage = { formatInvalidExplores: () => invalidMsg };
+      const mockPackage = {
+         formatInvalidExplores: () => invalidMsg,
+         formatInvalidPersistencePolicy: () => "",
+      };
       // installPackage mimics the real contract: invoke the validator and, if it
       // returns a message, throw BadRequestError (after its internal rollback).
       const installPackage = sinon
@@ -100,6 +104,7 @@ describe("PackageController.addPackage explores validation", () => {
    it("persists when explores are valid (no-location)", async () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
       const getEnvironment = sinon.stub().resolves({ addPackage });
@@ -122,6 +127,88 @@ describe("PackageController.addPackage explores validation", () => {
    });
 });
 
+describe("PackageController.addPackage persistence policy validation", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   it("rejects a publish whose persistence policy is invalid (no-location path)", async () => {
+      // Valid explores but an invalid persistence policy (e.g. a schedule on a
+      // package-scoped package): the publish must still 400 (strict-at-publish,
+      // same split as explores — load merely warns) and roll back via
+      // unloadPackage.
+      const cronMsg =
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => cronMsg,
+      };
+      const unloadPackage = sinon.stub().resolves(undefined);
+      const addPackage = sinon.stub().resolves(mockPackage);
+      const environment = { addPackage, unloadPackage };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      await expect(
+         controller.addPackage("env", { name: "pkg", description: "test" }),
+      ).rejects.toThrow(cronMsg);
+
+      expect(unloadPackage.calledOnceWith("pkg")).toBe(true);
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+
+   it("location path: the persistence-policy gate runs inside installPackage's rollback window", async () => {
+      const cronMsg =
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => cronMsg,
+      };
+      const installPackage = sinon
+         .stub()
+         .callsFake(
+            async (
+               _name: string,
+               _downloader: unknown,
+               validate?: (pkg: unknown) => string | undefined,
+            ) => {
+               const msg = validate?.(mockPackage);
+               if (msg) throw new BadRequestError(msg);
+               return mockPackage;
+            },
+         );
+      const environment = { installPackage };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      await expect(
+         controller.addPackage("env", {
+            name: "pkg",
+            description: "test",
+            location: "gs://bucket/pkg.zip",
+         }),
+      ).rejects.toThrow(cronMsg);
+
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+});
+
 describe("PackageController.updatePackage explores validation", () => {
    afterEach(() => {
       sinon.restore();
@@ -138,6 +225,7 @@ describe("PackageController.updatePackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
+         formatInvalidPersistencePolicy: () => "",
       };
       const installPackage = sinon
          .stub()

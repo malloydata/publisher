@@ -164,6 +164,14 @@ export class Model {
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
+   /** Per-query freshness resolver, pushed down by the owning Package (see
+    *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
+    *  manifest for the serve path — threaded into Malloy's per-query
+    *  `buildManifest` override so a persist source only routes to its
+    *  materialized table while within its declared freshness window. Undefined
+    *  (or returning undefined) means no override: the runtime-baked manifest
+    *  applies, which serves live when unbound. */
+   private freshnessResolver?: () => BuildManifest["entries"] | undefined;
    private meter = publisherMeter();
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -743,6 +751,29 @@ export class Model {
       this.discoveryCurationEnabled = enabled;
    }
 
+   /**
+    * Set by the owning Package (see Package.wireFreshnessResolvers). Supplies
+    * the freshness-filtered build manifest the serve path threads into Malloy's
+    * per-query `buildManifest` override so stale persist sources fall back per
+    * their declared policy. See {@link resolveFreshBuildManifest}.
+    */
+   public setFreshnessResolver(
+      resolver: () => BuildManifest["entries"] | undefined,
+   ): void {
+      this.freshnessResolver = resolver;
+   }
+
+   /**
+    * The freshness-filtered build manifest for this query, or undefined when the
+    * package is unbound / has no resolver (⇒ no per-query override; the runtime
+    * serves live). Evaluated per call so a table that crosses its window while
+    * the package stays loaded is gated on the very next query.
+    */
+   private resolveFreshBuildManifest(): BuildManifest | undefined {
+      const entries = this.freshnessResolver?.();
+      return entries ? { entries, strict: false } : undefined;
+   }
+
    public getSources(): ApiSource[] | undefined {
       return this.curateForDiscovery(this.sources);
    }
@@ -1273,8 +1304,14 @@ export class Model {
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
+      // Per-query freshness gate (persistence.md §9.3): resolve the
+      // freshness-filtered manifest once and thread it into both the prepare
+      // (for the row limit) and the run so a stale persist source falls back per
+      // its declared policy — and prep/run agree on the same substitution.
+      const buildManifest = this.resolveFreshBuildManifest();
       const rowLimit = resolveModelQueryRowLimit(
-         (await runnable.getPreparedResult({ givens })).resultExplore.limit,
+         (await runnable.getPreparedResult({ givens, buildManifest }))
+            .resultExplore.limit,
          { defaultLimit: getDefaultQueryRowLimit(), maxRows },
       );
       const endTime = performance.now();
@@ -1282,7 +1319,12 @@ export class Model {
 
       let queryResults;
       try {
-         queryResults = await runnable.run({ rowLimit, givens, abortSignal });
+         queryResults = await runnable.run({
+            rowLimit,
+            givens,
+            abortSignal,
+            buildManifest,
+         });
       } catch (error) {
          // Record error metrics
          const errorEndTime = performance.now();
@@ -1521,9 +1563,16 @@ export class Model {
 
             const cellMaxRows = getMaxQueryRows();
             const cellMaxBytes = getMaxResponseBytes();
+            // Per-query freshness gate (see getQueryResults): the same
+            // freshness-filtered manifest gates notebook-cell queries.
+            const buildManifest = this.resolveFreshBuildManifest();
             const rowLimit = resolveModelQueryRowLimit(
-               (await runnableToExecute.getPreparedResult({ givens }))
-                  .resultExplore.limit,
+               (
+                  await runnableToExecute.getPreparedResult({
+                     givens,
+                     buildManifest,
+                  })
+               ).resultExplore.limit,
                {
                   defaultLimit: getDefaultQueryRowLimit(),
                   maxRows: cellMaxRows,
@@ -1533,6 +1582,7 @@ export class Model {
                rowLimit,
                givens,
                abortSignal,
+               buildManifest,
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
@@ -1931,7 +1981,7 @@ function makeHydrationRuntime(
    // (getSQL) time, gated on `prepareResultOptions.buildManifest`; without this
    // the hydrated model always recomputes from the base tables even though the
    // manifest was bound at load. `strict: false` keeps serving live for any
-   // source whose buildId is absent from the manifest.
+   // source whose sourceEntityId is absent from the manifest.
    return new Runtime({
       urlReader,
       config,

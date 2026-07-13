@@ -17,6 +17,24 @@ type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type WireColumn = components["schemas"]["Column"];
 type BuildPlan = components["schemas"]["BuildPlan"];
+type WireFreshness = components["schemas"]["Freshness"];
+type WirePackageMaterialization =
+   components["schemas"]["PackageMaterializationConfig"];
+
+/** The freshness `fallback` values the publisher recognizes; others are dropped. */
+const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
+type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
+
+/** One layer's contribution to the resolved freshness (all optional). */
+interface FreshnessLayer {
+   window?: string;
+   fallback?: FreshnessFallback;
+}
+
+/** Minimal path-reader over a Malloy `Tag` (see `@malloydata/malloy-tag`). */
+interface ReadableTag {
+   text(...path: string[]): string | undefined;
+}
 
 /**
  * Minimal surface a package must expose to compile its build plan. Both
@@ -28,6 +46,13 @@ export interface BuildPlanPackage {
    getPackagePath(): string;
    getMalloyConfig(): MalloyConfig;
    getMalloyConnection(name: string): Promise<MalloyConnection>;
+   /**
+    * The package-level `materialization` config (from malloy-publisher.json),
+    * used as the least-specific layer when resolving per-source freshness /
+    * schedule. Optional so existing fixtures/callers that don't track it still
+    * typecheck (they resolve without a package default).
+    */
+   getMaterializationConfig?(): WirePackageMaterialization | null;
 }
 
 /**
@@ -94,6 +119,96 @@ export function deriveAnnotationFields(
    return out;
 }
 
+/**
+ * Read the freshness keys (`freshness.window`, `freshness.fallback`) from one
+ * Malloy tag layer, keeping only recognized values. These are dotted/nested tag
+ * properties, so they are NOT captured by the scalar {@link deriveAnnotationFields}
+ * loop and must be read by path here. (Per-source `sharing`/`schedule` were
+ * retired — scope is package-level and a schedule is package-root-only — so they
+ * are not resolved here; declaring either on a source is a publish-time manifest
+ * error, enforced in Package.persistencePolicyWarnings.)
+ */
+function tagFreshnessLayer(tag: ReadableTag | undefined): FreshnessLayer {
+   if (!tag || typeof tag.text !== "function") return {};
+   const layer: FreshnessLayer = {};
+   const window = tag.text("freshness", "window");
+   if (typeof window === "string") layer.window = window;
+   const fallback = tag.text("freshness", "fallback");
+   if (
+      typeof fallback === "string" &&
+      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
+   ) {
+      layer.fallback = fallback as FreshnessFallback;
+   }
+   return layer;
+}
+
+/** The package-level `materialization.freshness` as a resolution layer. */
+function packageFreshnessLayer(
+   cfg: WirePackageMaterialization | null | undefined,
+): FreshnessLayer {
+   if (!cfg) return {};
+   const layer: FreshnessLayer = {};
+   if (cfg.freshness?.window) layer.window = cfg.freshness.window;
+   const fallback = cfg.freshness?.fallback;
+   if (
+      typeof fallback === "string" &&
+      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
+   ) {
+      layer.fallback = fallback as FreshnessFallback;
+   }
+   return layer;
+}
+
+/** The source's `#@` tag, or undefined if it fails to parse (degrade to unset). */
+function safeSourceTag(source: PersistSource): ReadableTag | undefined {
+   try {
+      return source.annotations.parseAsTag("@").tag as ReadableTag;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The model-file-level (`##`) tag resolved for the source, or undefined on a
+ * parse failure. The model-file layer sits between the source annotation and
+ * the package default in most-specific-wins resolution.
+ */
+function safeModelTag(source: PersistSource): ReadableTag | undefined {
+   try {
+      return source.modelAnnotations.parseAsTag().tag as ReadableTag;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * Resolve a source's EFFECTIVE freshness with most-specific-wins precedence,
+ * per field: source annotation > model-file default > package default. Reported
+ * verbatim (unset at every level stays null so the control plane can
+ * distinguish "unset" — apply platform default — from an explicit declaration).
+ * Invalid `fallback` values are dropped, never defaulted. Freshness is valid in
+ * both scope modes.
+ */
+export function resolveFreshness(
+   source: PersistSource,
+   packageMaterialization: WirePackageMaterialization | null | undefined,
+): WireFreshness | null {
+   const sourceLayer = tagFreshnessLayer(safeSourceTag(source));
+   const modelLayer = tagFreshnessLayer(safeModelTag(source));
+   const pkgLayer = packageFreshnessLayer(packageMaterialization);
+
+   const window = sourceLayer.window ?? modelLayer.window ?? pkgLayer.window;
+   const fallback =
+      sourceLayer.fallback ?? modelLayer.fallback ?? pkgLayer.fallback;
+
+   if (window === undefined && fallback === undefined) return null;
+   const freshness: WireFreshness = {};
+   if (window !== undefined) freshness.window = window;
+   if (fallback !== undefined) freshness.fallback = fallback;
+   return freshness;
+}
+
 /** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
 export function flattenDependsOn(node: {
    dependsOn: { sourceID: string }[];
@@ -112,8 +227,8 @@ export function flattenDependsOn(node: {
  * persist dependency is nested under a root in its recursive {@code dependsOn}
  * tree (and present in {@code sources}). Walking only {@code graph.nodes}
  * silently skips every intermediate persist source, so it never gets
- * materialized (it only gets a table by coincidence when it shares a buildId
- * with a root). We post-order DFS the {@code dependsOn} tree
+ * materialized (it only gets a table by coincidence when it shares a
+ * sourceEntityId with a root). We post-order DFS the {@code dependsOn} tree
  * so dependencies are built first (a downstream build can then read its upstream
  * source's freshly materialized table), deduplicating shared (diamond)
  * dependencies by sourceID so each is yielded once. This mirrors the canonical
@@ -147,11 +262,23 @@ export function* iterGraphSources(
 }
 
 /**
- * The buildId for a persist source: a stable digest of its connection identity
- * and canonical SQL. Centralizes the (source, connectionDigests) call shape so
- * planning, self-instruction, and build all agree on the same id.
+ * The sourceEntityId for a persist source: a stable content address of its
+ * connection identity and canonical SQL. Centralizes the
+ * (source, connectionDigests) call shape so planning, self-instruction, build,
+ * and serve-time manifest resolution all agree on the same id.
+ *
+ * <p>This is the single seam between the publisher and the Malloy compiler's
+ * source-identity recipe. Today it delegates to
+ * {@code PersistSource.makeBuildId(connectionDigest, sql)} — the compiler's
+ * current hex content hash. The connection's contribution is already
+ * fingerprint-aware: when a connection carries an API `fingerprint`, its
+ * digest IS that fingerprint verbatim (see applyConnectionFingerprint in
+ * connection.ts), so ids stay stable across credential rotation. When the
+ * compiler ships the scoped UUID5 sourceEntityId recipe (scope + connection
+ * fingerprint + canonical SQL), swap the delegation below to the new compiler
+ * API — this function is the only place the publisher derives the id.
  */
-export function computeBuildId(
+export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
 ): string {
@@ -246,9 +373,9 @@ export async function compilePackageBuildPlan(
       const conn = connections.get(graph.connectionName);
       if (!conn) {
          // The connection failed to resolve (already warned in
-         // resolvePackageConnections). Its buildIds will be computed without a
-         // digest, so surface it as a discrete correctness signal rather than
-         // skipping silently.
+         // resolvePackageConnections). Its sourceEntityIds will be computed
+         // without a digest, so surface it as a discrete correctness signal
+         // rather than skipping silently.
          recordConnectionDigestSkipped();
          logger.warn("Skipping connection digest; connection did not resolve", {
             connectionName: graph.connectionName,
@@ -256,6 +383,9 @@ export async function compilePackageBuildPlan(
          continue;
       }
       if (!connectionDigests[graph.connectionName]) {
+         // getDigest() is fingerprint-aware: a connection configured with an
+         // API `fingerprint` returns it verbatim (applyConnectionFingerprint),
+         // so a credential rotation does not re-address its sources.
          connectionDigests[graph.connectionName] = await conn.getDigest();
       }
    }
@@ -276,6 +406,7 @@ export function deriveBuildPlan(
    connectionDigests: Record<string, string>,
    sourceNames?: string[],
    sourceModelPaths?: Record<string, string>,
+   packageMaterialization?: WirePackageMaterialization | null,
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
@@ -292,15 +423,26 @@ export function deriveBuildPlan(
    const wireSources: Record<string, WirePersistSourcePlan> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
+      const annotationFields = deriveAnnotationFields(source);
+      // EFFECTIVE per-source freshness, resolved most-specific-wins
+      // (source > model-file > package) and reported verbatim (null = unset at
+      // every level). Freshness is a dotted/nested tag key, so it comes from
+      // resolveFreshness rather than the scalar annotationFields map, and is
+      // valid in both scope modes. Per-source `sharing`/`schedule` are NOT
+      // emitted (retired from the contract); if a source declares either it is
+      // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
+      // still ride `annotationFields` so the validator can detect them.
       wireSources[sourceID] = {
          name: source.name,
          sourceID: source.sourceID,
          connectionName: source.connectionName,
          dialect: source.dialectName,
-         buildId: computeBuildId(source, connectionDigests),
+         sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
+         refresh: annotationFields.refresh ?? null,
+         freshness: resolveFreshness(source, packageMaterialization),
          columns: deriveColumns(source),
-         annotationFields: deriveAnnotationFields(source),
+         annotationFields,
          modelPath: sourceModelPaths?.[sourceID],
       };
    }
@@ -327,5 +469,6 @@ export async function computePackageBuildPlan(
       compiled.connectionDigests,
       undefined,
       compiled.sourceModelPaths,
+      pkg.getMaterializationConfig?.() ?? null,
    );
 }

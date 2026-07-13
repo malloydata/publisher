@@ -91,15 +91,105 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       });
    }
 
+   const ROUTING_QUERY = "run: order_summary -> { aggregate: c is count() }";
+
    async function queryOrderSummaryStatus(): Promise<number> {
       const res = await fetch(`${baseUrl}${API}/models/${MODEL_PATH}/query`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            query: "run: order_summary -> { aggregate: c is count() }",
-         }),
+         body: JSON.stringify({ query: ROUTING_QUERY }),
       });
       return res.status;
+   }
+
+   /** The SQL the served query actually compiled to (routing evidence). */
+   async function executedSql(): Promise<string> {
+      const res = await fetch(`${baseUrl}${API}/models/${MODEL_PATH}/query`, {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ query: ROUTING_QUERY }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { result: string };
+      return (JSON.parse(body.result) as { sql: string }).sql;
+   }
+
+   /** Read the package's build plan and return the persist source's real sourceEntityId. */
+   async function orderSummarySourceEntityId(): Promise<string> {
+      const res = await fetch(url(""));
+      expect(res.status).toBe(200);
+      const pkg = (await res.json()) as {
+         buildPlan?: { sources?: Record<string, { sourceEntityId?: string }> };
+      };
+      const sources = pkg.buildPlan?.sources ?? {};
+      const sourceEntityId = Object.values(sources)[0]?.sourceEntityId;
+      expect(typeof sourceEntityId).toBe("string");
+      return sourceEntityId as string;
+   }
+
+   /** Poll a materialization until it reaches a terminal state. */
+   async function pollUntilTerminal(
+      id: string,
+      timeoutMs = 90_000,
+   ): Promise<Record<string, unknown>> {
+      const terminal = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+         const res = await fetch(url(`/materializations/${id}`));
+         expect(res.status).toBe(200);
+         const data = (await res.json()) as Record<string, unknown>;
+         if (terminal.includes(data.status as string)) return data;
+         await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new Error(`Materialization ${id} did not reach a terminal state`);
+   }
+
+   /**
+    * Build + physicalise the persist source (auto-run self-assigns
+    * physicalTableName = "order_summary" from `#@ persist name=...`) so a
+    * `SELECT * FROM order_summary` is actually queryable, then revert the
+    * package to live (unbound) — keeping the table — so a subsequent
+    * manifest-URI bind is what routes the served query.
+    */
+   async function buildTableThenRevertToLive(): Promise<void> {
+      const createRes = await fetch(url("/materializations"), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({}),
+      });
+      expect(createRes.status).toBe(201);
+      const { id } = (await createRes.json()) as { id: string };
+      const built = await pollUntilTerminal(id);
+      expect(built.status).toBe("MANIFEST_FILE_READY");
+      // Revert to live: drop the auto-load binding but leave the built table.
+      await fetch(url("?reload=true"));
+      // Retire the run record so it doesn't hold the per-package active slot.
+      await fetch(url(`/materializations/${id}`), { method: "DELETE" });
+   }
+
+   /** Write a manifest file keyed by the persist source's real sourceEntityId. */
+   async function writeRoutingManifest(
+      sourceEntityId: string,
+      physicalTableName: string,
+   ): Promise<string> {
+      const file = path.join(tmpDir, `routing-manifest-${Date.now()}.json`);
+      await fsp.writeFile(
+         file,
+         JSON.stringify({
+            builtAt: new Date().toISOString(),
+            strict: false,
+            entries: {
+               [sourceEntityId]: {
+                  sourceEntityId,
+                  sourceName: "order_summary",
+                  physicalTableName,
+                  connectionName: "duckdb",
+               },
+            },
+         }),
+         "utf8",
+      );
+      return file;
    }
 
    async function writeManifest(): Promise<string> {
@@ -111,7 +201,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
             strict: false,
             entries: {
                build123: {
-                  buildId: "build123",
+                  sourceEntityId: "build123",
                   sourceName: "order_summary",
                   physicalTableName: "main.order_summary_mz",
                   connectionName: "duckdb",
@@ -169,6 +259,48 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(await queryOrderSummaryStatus()).toBe(200);
       },
       { timeout: 60_000 },
+   );
+
+   it(
+      "routes served queries to the materialized table after a manifest-URI bind",
+      async () => {
+         // Start from live so the baseline recomputes from the base CSV.
+         await getPackage(true);
+         expect(await executedSql()).toContain("data/orders.csv");
+
+         // Physically build the persist source, then revert to live (keeping
+         // the table) so the manifest-URI bind below is the only thing that
+         // could route the served query.
+         await buildTableThenRevertToLive();
+         expect(await executedSql()).toContain("data/orders.csv");
+
+         // Bind the CP-shaped manifest via manifestLocation, keyed by the
+         // source's REAL sourceEntityId (the value Malloy recomputes at serve
+         // time to resolve the persist reference). Anything else silently misses.
+         const sourceEntityId = await orderSummarySourceEntityId();
+         const manifestFile = await writeRoutingManifest(
+            sourceEntityId,
+            "order_summary",
+         );
+         const patchRes = await patchPackage({
+            manifestLocation: manifestFile,
+         });
+         expect(patchRes.status).toBe(200);
+         const patched = await patchRes.json();
+         expect(patched.manifestBindingStatus).toBe("bound");
+         expect(patched.manifestEntryCount).toBe(1);
+
+         // The payoff: the served query now scans the materialized table and no
+         // longer recomputes from the base CSV.
+         const routed = await executedSql();
+         expect(routed).not.toContain("data/orders.csv");
+         expect(routed).toContain("order_summary");
+
+         // Cleanup: revert to live so the dangling binding doesn't leak.
+         await patchPackage({ manifestLocation: null });
+         await getPackage(true);
+      },
+      { timeout: 120_000 },
    );
 
    it("degrades to serving live when the manifest is unreachable", async () => {

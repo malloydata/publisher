@@ -58,6 +58,15 @@ a / b                 a / nullif(b, 0)
 measure: avg_score is avg(score)      measure: avg_score is avg(score::number)
 ```
 
+**Dirty columns: null the sentinel before casting.** `::number` is a strict cast, so a column that carries non-numeric sentinels (`'NA'`, `'N/A'`, `''`, `'-'`, `'null'`) compiles fine but fails at query time with `Could not convert string 'NA' to DOUBLE`. Strip the sentinel with `nullif` first, then cast (aggregates skip nulls):
+
+```malloy
+// WRONG: throws on 'NA' at query time   // RIGHT: nulls 'NA', then casts
+measure: s is avg(score::number)         measure: s is avg(nullif(score, 'NA')::number)
+```
+
+Chain `nullif` for multiple sentinels: `nullif(nullif(score, 'NA'), '')::number`. Sample the column's values first (`run: source -> { group_by: score; limit: 20 }`) to see which sentinels it uses.
+
 ## Boolean Columns: No Quotes
 
 ```malloy

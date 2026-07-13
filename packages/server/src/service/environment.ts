@@ -28,7 +28,7 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { BuildManifest } from "../storage/DatabaseInterface";
+import { FreshnessManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -1119,7 +1119,7 @@ export class Environment {
     */
    public async reloadAllModelsForPackage(
       packageName: string,
-      manifest: BuildManifest["entries"],
+      manifest: FreshnessManifest,
    ): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
@@ -1193,7 +1193,7 @@ export class Environment {
     */
    private async fetchManifestEntriesWithTimeout(
       manifestLocation: string,
-   ): Promise<BuildManifest["entries"]> {
+   ): Promise<FreshnessManifest> {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
          timer = setTimeout(
@@ -1347,6 +1347,10 @@ export class Environment {
             // control plane misread the gap as a schedule removal. It is not a
             // PATCH-editable field, so always preserve the existing value.
             materialization: existing.materialization,
+            // Same rationale for the manifest-derived persist `scope`: not
+            // PATCH-editable, so preserve it rather than dropping it to the
+            // default until the next reload.
+            scope: existing.scope,
          });
 
          // Strict-reject, symmetric with the publish path

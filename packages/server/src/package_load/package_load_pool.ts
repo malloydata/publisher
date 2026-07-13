@@ -82,6 +82,10 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import type {
+   PackageMaterializationConfig,
+   PackageScope,
+} from "../service/package_manifest";
+import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
    LoadPackageError,
@@ -233,7 +237,8 @@ export interface LoadPackageOutcome {
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
-      materialization?: { schedule: string | null } | null;
+      materialization?: PackageMaterializationConfig | null;
+      scope?: PackageScope;
    };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {
@@ -242,6 +247,8 @@ export interface LoadPackageOutcome {
       }
    >;
    loadDurationMs: number;
+   /** Per-load phase timing breakdown (see {@link LoadPackageResult.timings}). */
+   timings: LoadPackageResult["timings"];
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -839,6 +846,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
          sourceInfos: m.sourceInfos as Malloy.SourceInfo[] | undefined,
       })),
       loadDurationMs: result.loadDurationMs,
+      timings: result.timings,
    };
 }
 

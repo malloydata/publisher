@@ -4,12 +4,13 @@ import * as sinon from "sinon";
 import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
    compilePackageBuildPlan,
-   computeBuildId,
+   computeSourceEntityId,
    computePackageBuildPlan,
    deriveAnnotationFields,
    deriveBuildPlan,
    flattenDependsOn,
    iterGraphSources,
+   resolveFreshness,
    resolvePackageConnections,
 } from "./build_plan";
 import { fakeSource } from "./materialization_test_fixtures";
@@ -27,8 +28,8 @@ describe("flattenDependsOn", () => {
 
 describe("iterGraphSources", () => {
    it("yields resolvable sources in dependency order, skipping missing ones", () => {
-      const a = fakeSource({ name: "a", buildId: "ba" });
-      const b = fakeSource({ name: "b", buildId: "bb" });
+      const a = fakeSource({ name: "a", sourceEntityId: "ba" });
+      const b = fakeSource({ name: "b", sourceEntityId: "bb" });
       const graph = {
          connectionName: "duckdb",
          nodes: [
@@ -52,9 +53,9 @@ describe("iterGraphSources", () => {
       // and every transitive persist dependency is nested in dependsOn. All
       // three must be yielded (so all get built), leaf-first so a downstream
       // build reads its upstream's freshly materialized table.
-      const root = fakeSource({ name: "root", buildId: "br" });
-      const mid = fakeSource({ name: "mid", buildId: "bm" });
-      const leaf = fakeSource({ name: "leaf", buildId: "bl" });
+      const root = fakeSource({ name: "root", sourceEntityId: "br" });
+      const mid = fakeSource({ name: "mid", sourceEntityId: "bm" });
+      const leaf = fakeSource({ name: "leaf", sourceEntityId: "bl" });
       const graph = {
          connectionName: "duckdb",
          nodes: [
@@ -85,9 +86,9 @@ describe("iterGraphSources", () => {
    it("deduplicates a shared (diamond) dependency across roots", () => {
       // r1 and r2 both depend on `shared`; it must be yielded exactly once and
       // before both dependents.
-      const r1 = fakeSource({ name: "r1", buildId: "b1" });
-      const r2 = fakeSource({ name: "r2", buildId: "b2" });
-      const shared = fakeSource({ name: "shared", buildId: "bs" });
+      const r1 = fakeSource({ name: "r1", sourceEntityId: "b1" });
+      const r2 = fakeSource({ name: "r2", sourceEntityId: "b2" });
+      const shared = fakeSource({ name: "shared", sourceEntityId: "bs" });
       const graph = {
          connectionName: "duckdb",
          nodes: [
@@ -149,7 +150,7 @@ describe("deriveAnnotationFields", () => {
    });
 });
 
-describe("computeBuildId", () => {
+describe("computeSourceEntityId", () => {
    it("delegates to PersistSource.makeBuildId with the connection digest and SQL", () => {
       const makeBuildId = sinon.stub().returns("computed-id");
       const source = {
@@ -158,7 +159,7 @@ describe("computeBuildId", () => {
          getSQL: () => "SELECT 7",
       } as unknown as PersistSource;
 
-      const id = computeBuildId(source, { duckdb: "dig-1" });
+      const id = computeSourceEntityId(source, { duckdb: "dig-1" });
 
       expect(id).toBe("computed-id");
       expect(makeBuildId.calledOnceWithExactly("dig-1", "SELECT 7")).toBe(true);
@@ -188,7 +189,7 @@ describe("deriveBuildPlan", () => {
    it("projects graphs and sources into the wire build plan", () => {
       const orders = fakeSource({
          name: "orders",
-         buildId: "bid-orders",
+         sourceEntityId: "bid-orders",
          sql: "SELECT 1",
       });
       const plan = deriveBuildPlan(
@@ -206,15 +207,64 @@ describe("deriveBuildPlan", () => {
       expect(plan.sources["orders@m"]).toMatchObject({
          name: "orders",
          connectionName: "duckdb",
-         buildId: "bid-orders",
+         sourceEntityId: "bid-orders",
          sql: "SELECT 1",
          columns: [],
       });
    });
 
+   it("reports declared refresh verbatim (null when unset) and does not emit sharing/schedule", () => {
+      // `refresh` is a metadata pass-through; `sharing`/`schedule` were retired
+      // from the contract and must not be emitted as typed fields (they stay in
+      // the raw annotationFields for the publish-time validator to detect).
+      const declared = fakeSource({
+         name: "declared",
+         sourceEntityId: "bid-d",
+         annotationFields: {
+            name: "d_table",
+            sharing: "private",
+            refresh: "incremental",
+         },
+      });
+      const unset = fakeSource({ name: "unset", sourceEntityId: "bid-u" });
+      const plan = deriveBuildPlan(
+         [
+            {
+               connectionName: "duckdb",
+               nodes: [
+                  [
+                     { sourceID: "declared@m", dependsOn: [] },
+                     { sourceID: "unset@m", dependsOn: [] },
+                  ],
+               ],
+            },
+         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         { "declared@m": declared, "unset@m": unset },
+         { duckdb: "dig" },
+      );
+
+      expect(plan.sources["declared@m"].refresh).toBe("incremental");
+      // Retired typed fields are absent from the wire projection.
+      expect(
+         (plan.sources["declared@m"] as Record<string, unknown>).sharing,
+      ).toBeUndefined();
+      expect(
+         (plan.sources["declared@m"] as Record<string, unknown>).schedule,
+      ).toBeUndefined();
+      // The raw annotation map still carries every field (so the validator can
+      // reject a source-level sharing/schedule at publish).
+      expect(plan.sources["declared@m"].annotationFields).toEqual({
+         name: "d_table",
+         sharing: "private",
+         refresh: "incremental",
+      });
+      // Unset refresh is null on the wire.
+      expect(plan.sources["unset@m"].refresh).toBeNull();
+   });
+
    it("honors the sourceNames filter", () => {
-      const a = fakeSource({ name: "a", buildId: "bid-a" });
-      const b = fakeSource({ name: "b", buildId: "bid-b" });
+      const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
+      const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });
       const plan = deriveBuildPlan(
          [
             {
@@ -231,8 +281,8 @@ describe("deriveBuildPlan", () => {
    });
 
    it("carries the per-source package-relative modelPath", () => {
-      const a = fakeSource({ name: "a", buildId: "bid-a" });
-      const b = fakeSource({ name: "b", buildId: "bid-b" });
+      const a = fakeSource({ name: "a", sourceEntityId: "bid-a" });
+      const b = fakeSource({ name: "b", sourceEntityId: "bid-b" });
       const plan = deriveBuildPlan(
          [
             {
@@ -249,6 +299,101 @@ describe("deriveBuildPlan", () => {
       // Mapped source gets its model path; an unmapped source stays undefined.
       expect(plan.sources["a@m"].modelPath).toBe("rollup.malloy");
       expect(plan.sources["b@m"].modelPath).toBeUndefined();
+   });
+});
+
+describe("resolveFreshness", () => {
+   it("reports source-level freshness verbatim", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         freshnessSchedule: {
+            freshness: { window: "1h", fallback: "stale_ok" },
+         },
+      });
+      expect(resolveFreshness(source, null)).toEqual({
+         window: "1h",
+         fallback: "stale_ok",
+      });
+   });
+
+   it("returns null when unset at every level", () => {
+      const source = fakeSource({ name: "s", sourceEntityId: "bid" });
+      expect(resolveFreshness(source, null)).toBeNull();
+   });
+
+   it("falls back to model-file then package per field (most-specific-wins)", () => {
+      // freshness.window from source, freshness.fallback from model-file.
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         freshnessSchedule: { freshness: { window: "1h" } },
+         modelFreshnessSchedule: { freshness: { fallback: "fail" } },
+      });
+      const pkg = {
+         schedule: null,
+         freshness: { window: "24h", fallback: "live" as const },
+      };
+      expect(resolveFreshness(source, pkg)).toEqual({
+         window: "1h",
+         fallback: "fail",
+      });
+   });
+
+   it("inherits the package freshness when the source and model are unset", () => {
+      const source = fakeSource({ name: "s", sourceEntityId: "bid" });
+      const pkg = { schedule: null, freshness: { window: "24h" } };
+      expect(resolveFreshness(source, pkg)).toEqual({ window: "24h" });
+   });
+
+   it("drops an invalid fallback rather than defaulting it", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         freshnessSchedule: { freshness: { window: "1h", fallback: "bogus" } },
+      });
+      expect(resolveFreshness(source, null)).toEqual({ window: "1h" });
+   });
+});
+
+describe("deriveBuildPlan freshness", () => {
+   it("projects the resolved per-source freshness onto the plan (no schedule/sharing)", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         annotationFields: { name: "s_table" },
+         freshnessSchedule: { freshness: { window: "1h" } },
+      });
+      const plan = deriveBuildPlan(
+         [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "s@m", dependsOn: [] }]],
+            },
+         ] as unknown as Parameters<typeof deriveBuildPlan>[0],
+         { "s@m": source },
+         { duckdb: "dig" },
+         undefined,
+         undefined,
+         {
+            schedule: null,
+            freshness: { window: "24h", fallback: "live" as const },
+         },
+      );
+
+      // Source window wins over the package default; package fallback fills the
+      // unset source fallback.
+      expect(plan.sources["s@m"].freshness).toEqual({
+         window: "1h",
+         fallback: "live",
+      });
+      // Retired fields are not emitted.
+      expect(
+         (plan.sources["s@m"] as Record<string, unknown>).schedule,
+      ).toBeUndefined();
+      expect(
+         (plan.sources["s@m"] as Record<string, unknown>).sharing,
+      ).toBeUndefined();
    });
 });
 

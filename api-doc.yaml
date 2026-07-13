@@ -2585,6 +2585,24 @@ components:
           description:
             Package location, can be an absolute path or URI (e.g. github, s3,
             gcs, etc.)
+        scope:
+          type: string
+          enum:
+            - version
+            - package
+          default: package
+          description: >-
+            Package-level Malloy Persistence scope mode, declared once at the
+            malloy-publisher.json root and applied uniformly to every persist
+            source and index in the package. `package` (the default) =
+            persisted artifacts are package-scoped: reused across the package's
+            published versions whenever they still satisfy freshness. `version`
+            = version-scoped: each artifact is owned by one published version.
+            There is no per-source/per-dimension scope. A
+            `materialization.schedule` cron is legal only when `scope: version`
+            (a package-scoped lineage is reused across versions, so a single
+            per-version cadence is meaningless). Emitted whenever the package is
+            loaded; defaults to `package` when the manifest omits it.
         explores:
           type: array
           items:
@@ -2669,7 +2687,7 @@ components:
           description: |
             URI (gs:// or s3://) of the externally-computed manifest for this package.
             On (re)load the publisher reads it and binds persist references
-            (buildId -> physicalTableName). Null = serve live.
+            (sourceEntityId -> physicalTableName). Null = serve live.
         materialization:
           oneOf:
             - $ref: "#/components/schemas/PackageMaterializationConfig"
@@ -2704,7 +2722,7 @@ components:
           type: integer
           readOnly: true
           description: >-
-            Server-computed, read-only: number of buildId -> physical-table
+            Server-computed, read-only: number of sourceEntityId -> physical-table
             entries currently bound (0 when unbound or on live fallback).
         boundManifestUri:
           type: ["string", "null"]
@@ -2721,8 +2739,9 @@ components:
           readOnly: true
           description: >-
             Server-computed, read-only: the persist build plan for this package
-            version (per-source buildId, output columns, build SQL, dependency
-            graphs), exposed as a deterministic property of the compiled package.
+            version (per-source sourceEntityId, output columns, build SQL,
+            dependency graphs), exposed as a deterministic property of the
+            compiled package.
             A caller reads it directly off the load/get-package response, assigns
             physical names/identity per source, and issues a single build call
             (see `CreateMaterializationRequest.buildInstructions`) — no separate
@@ -2748,7 +2767,45 @@ components:
             5-field UNIX cron controlling how often the control plane
             re-materializes this package's published versions. Null = no
             scheduled re-materialization declared in the manifest (publish /
-            on-demand only).
+            on-demand only). A cron is the power tier of artifact-anchored
+            scheduling and is package-root-only: it is valid only when the
+            package declares `scope: version` (a package-scoped lineage is
+            reused across versions, so a single per-version cadence is
+            meaningless), and it is mutually exclusive with freshness — declare
+            either a `schedule` (power tier) or `freshness` (objective tier),
+            never both. A schedule on a `scope: package` package, or alongside
+            any freshness, is rejected at publish.
+        freshness:
+          oneOf:
+            - $ref: "#/components/schemas/Freshness"
+            - type: "null"
+          description: >-
+            The manifest's `materialization.freshness` block, verbatim. Null =
+            no freshness policy declared. `window` is the control plane's
+            refresh objective for the package's materialized sources;
+            `fallback` is the declared query-time behavior when the objective
+            is missed. The publisher only surfaces the values — the control
+            plane owns the scheduling and gating logic.
+
+    Freshness:
+      type: object
+      description: >-
+        Freshness policy declared in malloy-publisher.json's
+        `materialization.freshness` block. Fields are surfaced verbatim;
+        invalid values are dropped (reported as absent), never defaulted.
+      properties:
+        window:
+          type: string
+          description: >-
+            Maximum acceptable staleness of the package's materialized
+            sources, as a duration string (e.g. "24h"). The control plane
+            schedules refreshes to meet it.
+        fallback:
+          type: string
+          enum: [live, stale_ok, fail]
+          description: >-
+            Declared query-time behavior when the freshness window is missed:
+            serve live, serve the stale table, or fail the query.
 
     Model:
       type: object
@@ -3250,6 +3307,21 @@ components:
               ducklake,
               publisher,
             ]
+        fingerprint:
+          type: string
+          description: >
+            Optional, opaque, stable fingerprint of this connection's data
+            identity. It is a hash of the configuration that determines *which
+            data* the connection reaches (its data-locating settings), and
+            deliberately excludes credentials and other secret values, so it
+            stays constant across credential rotation and changes only when the
+            connection is pointed at different data. When present, it is used as
+            this connection's contribution to content-addressed build identifiers
+            so that builds re-address only when the underlying data identity
+            actually changes; consumers should treat it as an opaque token and
+            use the supplied value verbatim rather than deriving their own. This
+            field is optional — when omitted, a connection identity is derived
+            locally instead.
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         proxy:
@@ -3925,7 +3997,8 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description: Build a new table even when a source's buildId is unchanged.
+          description:
+            Build a new table even when a source's sourceEntityId is unchanged.
         sourceNames:
           type: array
           items:
@@ -4033,7 +4106,7 @@ components:
 
     PersistSourcePlan:
       type: object
-      required: [name, sourceID, connectionName, buildId, sql, columns]
+      required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
       properties:
         name:
           type: string
@@ -4043,14 +4116,38 @@ components:
           type: string
         dialect:
           type: string
-        buildId:
+        sourceEntityId:
           type: string
-          description: hash(connectionDigest + canonical logical SQL).
+          description: >-
+            Stable, content-addressed identity of this persisted source. A
+            deterministic UUID5 derived from the source's scope, its connection
+            `fingerprint`, and its canonical compiled SQL — deliberately
+            independent of package version, so it changes only when the source's
+            data identity changes. Consumers treat it as an opaque token and use
+            the supplied value verbatim.
         sql:
           type: string
           description:
             The source's build SQL (with the build manifest applied for upstream
             rewrites).
+        refresh:
+          type: ["string", "null"]
+          description: >-
+            The source's declared `#@ persist ... refresh=...` value
+            ("full" | "incremental"), reported verbatim; null = unset.
+            Metadata pass-through — inert to the publisher today.
+        freshness:
+          oneOf:
+            - $ref: "#/components/schemas/Freshness"
+            - type: "null"
+          description: >-
+            The source's EFFECTIVE freshness objective after most-specific-wins
+            resolution (source > model-file > package). Null = unset at every
+            level; the control plane applies the platform default. Reported
+            verbatim (invalid fields dropped, never defaulted). Valid in both
+            scope modes. (Per-source `sharing`/`schedule` were retired: scope is
+            a single package-level mode and a schedule is package-root-only —
+            declaring either on a source is a publish-time manifest error.)
         columns:
           type: array
           description: Output schema of the source.
@@ -4089,20 +4186,60 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BuildInstruction"
+        referenceManifest:
+          type: array
+          description: >-
+            Already-materialized persist upstreams the built sources may
+            reference but which are NOT rebuilt in this run. The publisher seeds
+            the build Manifest with these so a downstream source's upstream
+            persist reference resolves to the existing physical table instead of
+            recomputing it live. Only consumed on the orchestrated
+            (buildInstructions) path; auto-run seeds its own reference set from
+            the most-recent manifest.
+          items:
+            $ref: "#/components/schemas/ManifestReference"
+        strictUpstreams:
+          type: boolean
+          default: false
+          description: >-
+            When true, a persist upstream that is neither built here nor present
+            in referenceManifest fails the build (compiler strict mode) instead
+            of silently recomputing it live. Per-unit dispatch should set this
+            true.
+
+    ManifestReference:
+      type: object
+      description: >-
+        A reference to an already-materialized persist upstream that the built
+        sources may read but which is not rebuilt in this run.
+      required: [sourceEntityId, physicalTableName]
+      properties:
+        sourceEntityId:
+          type: string
+          description: >-
+            The upstream's content id AS REPORTED BY THE PUBLISHER in
+            PersistSourcePlan.sourceEntityId. It MUST equal what the compiler
+            recomputes for the manifest lookup (mkBuildID over the upstream's
+            manifest-ignorant SQL); do not substitute any other identity here.
+        physicalTableName:
+          type: string
+          description: >-
+            Fully-qualified physical table the upstream currently serves.
 
     BuildInstruction:
       type: object
-      required: [buildId, materializedTableId, physicalTableName, realization]
+      required:
+        [sourceEntityId, materializedTableId, physicalTableName, realization]
       properties:
-        buildId:
+        sourceEntityId:
           type: string
           description: Identifies which planned source this instruction is for
-            (matches PersistSourcePlan.buildId).
+            (matches PersistSourcePlan.sourceEntityId).
         sourceID:
           type: string
           description:
-            Optional convenience echo of "sourceName@modelURL"; buildId is
-            authoritative.
+            Optional convenience echo of "sourceName@modelURL"; sourceEntityId
+            is authoritative.
         materializedTableId:
           type: string
           description:
@@ -4113,7 +4250,7 @@ components:
           description:
             Logical, fully-qualified (but unquoted) table name to create — an
             optional dialect container path plus the table name, e.g.
-            `mydataset.engaged_events_<buildId>_v0`. The publisher dialect-quotes
+            `mydataset.engaged_events_<sourceEntityId>_v0`. The publisher dialect-quotes
             each segment when it emits the DDL, so quote-requiring names (a
             hyphenated BigQuery project id, a container path) are valid, and
             echoes this logical name back in the manifest.
@@ -4123,8 +4260,8 @@ components:
     BuildManifest:
       type: object
       description:
-        Build output. Maps each buildId a build produced to its physical table.
-        Returned inline; the caller persists it.
+        Build output. Maps each sourceEntityId a build produced to its physical
+        table. Returned inline; the caller persists it.
       properties:
         builtAt:
           type: string
@@ -4133,7 +4270,7 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of buildId to manifest entry.
+          description: Map of sourceEntityId to manifest entry.
         strict:
           type: boolean
           description: Whether unresolved references should error.
@@ -4141,9 +4278,9 @@ components:
     ManifestEntry:
       type: object
       description: A single entry in the build manifest.
-      required: [buildId, physicalTableName]
+      required: [sourceEntityId, physicalTableName]
       properties:
-        buildId:
+        sourceEntityId:
           type: string
         sourceName:
           type: string
@@ -4162,6 +4299,23 @@ components:
           $ref: "#/components/schemas/Realization"
         rowCount:
           type: ["integer", "null"]
+        dataAsOf:
+          type: string
+          format: date-time
+          description: >-
+            Instant up to which the materialized artifact provably reflects its
+            sources (full build: snapshot start). The freshness age anchor:
+            age = now - dataAsOf. NOT build-completion time.
+        freshnessWindowSeconds:
+          type: integer
+          format: int64
+          description: Effective freshness window (SLO). Absent => un-gated (never stale).
+        freshnessFallback:
+          type: string
+          enum: [live, stale_ok, fail]
+          description: >-
+            Per-version read-time policy when the entry is stale. Never combined
+            across versions; each version's entries carry its own declared fallback.
 
   parameters:
     environmentName:

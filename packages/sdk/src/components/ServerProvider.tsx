@@ -101,6 +101,15 @@ export interface ServerProviderProps {
     * @default true
     */
    mutable?: boolean;
+   /** An optional theme supplied by the embedding app, for a host that wants its
+    * own brand palette and fonts on the rendered charts and tables. It is added
+    * as the highest-precedence base layer, so it wins over the operator's
+    * instance theme from `/status`, while per-chart `# theme` annotations still
+    * layer on top. Omit to use only the instance theme. Mode (light/dark) is
+    * unaffected, so set both variants of any per-mode key if the host is
+    * single-mode.
+    */
+   theme?: Theme;
 }
 
 const getApiClients = (
@@ -162,6 +171,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    getAccessToken,
    baseURL,
    mutable: mutableProp,
+   theme: themeProp,
 }) => {
    const apiClients = useMemo(
       () => getApiClients(baseURL, getAccessToken),
@@ -206,9 +216,14 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
       mutable = mutableProp ?? true;
    }
 
-   // Stable layers reference so ThemeProvider's useMemo doesn't reshuffle
-   // on every render when instanceTheme is unchanged.
-   const themeLayers = useMemo(() => [instanceTheme], [instanceTheme]);
+   // Stable layers reference so ThemeProvider's useMemo doesn't reshuffle on
+   // every render when the inputs are unchanged. Layers are low-to-high
+   // precedence, so the embedder-supplied theme (if any) comes last and
+   // overrides the operator's instance theme from /status.
+   const themeLayers = useMemo(
+      () => [instanceTheme, themeProp],
+      [instanceTheme, themeProp],
+   );
 
    // Viewer's light/dark/auto preference. localStorage is the source of
    // truth across reloads; matchMedia provides the OS hint that 'auto'

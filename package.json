@@ -75,10 +75,10 @@
   "resolutions": {
     "pg": "8.16.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.421",
+    "@malloydata/malloy-interfaces": "^0.0.422",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.421",
-    "@malloydata/malloy-filter": "^0.0.421",
-    "@malloydata/malloy-tag": "^0.0.421"
+    "@malloydata/malloy-query-builder": "^0.0.422",
+    "@malloydata/malloy-filter": "^0.0.422",
+    "@malloydata/malloy-tag": "^0.0.422"
   }
 }

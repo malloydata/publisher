@@ -62,6 +62,15 @@ export interface MetricsHarness {
     * fired for this gauge yet.
     */
    collectGauge(name: string): Promise<number | undefined>;
+   /**
+    * Force a collection cycle and return the aggregate `count`/`sum` across all
+    * data points for the named histogram (optionally scoped to one label set).
+    * `count` is 0 when the histogram has not been emitted yet.
+    */
+   collectHistogram(
+      name: string,
+      attributeFilter?: Record<string, string | number | boolean>,
+   ): Promise<{ count: number; sum: number; boundaries: number[] }>;
    shutdown(): Promise<void>;
 }
 
@@ -99,6 +108,37 @@ export async function startMetricsHarness(): Promise<MetricsHarness> {
             }
          }
          return total;
+      },
+      async collectHistogram(
+         name: string,
+         attributeFilter?: Record<string, string | number | boolean>,
+      ): Promise<{ count: number; sum: number; boundaries: number[] }> {
+         const result = await reader.collect();
+         let count = 0;
+         let sum = 0;
+         let boundaries: number[] = [];
+         for (const rm of result.resourceMetrics.scopeMetrics) {
+            for (const metric of rm.metrics) {
+               if (metric.descriptor.name !== name) continue;
+               for (const dp of metric.dataPoints) {
+                  if (attributeFilter) {
+                     const allMatch = Object.entries(attributeFilter).every(
+                        ([k, v]) => dp.attributes?.[k] === v,
+                     );
+                     if (!allMatch) continue;
+                  }
+                  const point = dp.value as {
+                     count: number;
+                     sum?: number;
+                     buckets?: { boundaries: number[] };
+                  };
+                  count += point.count;
+                  sum += point.sum ?? 0;
+                  if (point.buckets) boundaries = point.buckets.boundaries;
+               }
+            }
+         }
+         return { count, sum, boundaries };
       },
       async collectGauge(name: string): Promise<number | undefined> {
          const result = await reader.collect();

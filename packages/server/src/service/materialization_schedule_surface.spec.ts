@@ -53,6 +53,30 @@ describe("materialization schedule surfacing", () => {
          const pkg = await env.getPackage("pkg", false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: "0 6 * * *",
+            freshness: null,
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "surfaces the manifest's materialization.freshness on load",
+      async () => {
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            materialization: {
+               freshness: { window: "24h", fallback: "stale_ok" },
+            },
+         });
+         await env.addPackage("pkg");
+
+         // Freshness rides the same channel as schedule: present-and-verbatim
+         // when declared, null when unset — the control plane owns the
+         // scheduling/gating logic and only needs the values surfaced.
+         const pkg = await env.getPackage("pkg", false);
+         expect(pkg.getPackageMetadata().materialization).toEqual({
+            schedule: null,
+            freshness: { window: "24h", fallback: "stale_ok" },
          });
       },
       { timeout: 20000 },
@@ -71,6 +95,7 @@ describe("materialization schedule surfacing", () => {
          const pkg = await env.getPackage("pkg", false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: null,
+            freshness: null,
          });
       },
       { timeout: 20000 },
@@ -91,11 +116,15 @@ describe("materialization schedule surfacing", () => {
             name: "pkg",
             description: "updated",
          });
-         expect(updated.materialization).toEqual({ schedule: "0 6 * * *" });
+         expect(updated.materialization).toEqual({
+            schedule: "0 6 * * *",
+            freshness: null,
+         });
 
          const pkg = await env.getPackage("pkg", false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: "0 6 * * *",
+            freshness: null,
          });
       },
       { timeout: 20000 },
