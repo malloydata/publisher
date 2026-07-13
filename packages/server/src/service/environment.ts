@@ -158,6 +158,11 @@ export class Environment {
       return this.environmentPath;
    }
 
+   /** This environment's name (the canonical key used by the API/service). */
+   public getEnvironmentName(): string {
+      return this.environmentName;
+   }
+
    constructor(
       environmentName: string,
       environmentPath: string,
@@ -566,6 +571,17 @@ export class Environment {
             this.releaseRetiredConnectionGeneration(generation),
          ),
       );
+   }
+
+   /**
+    * Snapshot of the packages currently loaded in memory (does not trigger a
+    * load or reload). Used by the standalone materialization scheduler to sweep
+    * only already-loaded packages — a not-yet-loaded package is simply not
+    * scheduled until something else loads it, so the scheduler never forces a
+    * load of its own.
+    */
+   public getLoadedPackages(): Package[] {
+      return [...this.packages.values()];
    }
 
    public async listPackages(): Promise<ApiPackage[]> {

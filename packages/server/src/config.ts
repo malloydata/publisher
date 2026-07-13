@@ -257,6 +257,65 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
 };
 
 /**
+ * Tunables for the standalone {@link MaterializationScheduler}. Sourced from
+ * environment variables at startup; see {@link getMaterializationSchedulerConfig}.
+ *
+ * The scheduler fires a package's `materialization.schedule` cron in **standalone**
+ * deployments (no control plane). It is **disabled by default** — an orchestrated
+ * deployment, whose control plane already drives materialization, never sets the
+ * enable flag, so the scheduler is never constructed there.
+ */
+export interface MaterializationSchedulerConfig {
+   /** Cadence of the due-schedule sweep, in milliseconds. */
+   tickIntervalMs: number;
+   /** Max packages fired per tick — a stampede guard for large deployments. */
+   maxFiresPerTick: number;
+}
+
+const DEFAULT_SCHEDULER_INTERVAL_MS = 60_000;
+const MIN_SCHEDULER_INTERVAL_MS = 1_000;
+const DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK = 10;
+
+/**
+ * Parse standalone-scheduler settings and return a validated config, or `null`
+ * when the feature is disabled. Disabled iff
+ * `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is unset/false — the default — so
+ * the scheduler never runs in an orchestrated deployment (where the control
+ * plane drives materialization itself).
+ *
+ * Throws at startup on malformed input so a typo surfaces loudly rather than
+ * silently disabling scheduling.
+ */
+export const getMaterializationSchedulerConfig =
+   (): MaterializationSchedulerConfig | null => {
+      const enabled =
+         parseBoolEnv("PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER") ?? false;
+      if (!enabled) {
+         return null;
+      }
+
+      const tickIntervalMs =
+         parseIntEnv("PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS") ??
+         DEFAULT_SCHEDULER_INTERVAL_MS;
+      const maxFiresPerTick =
+         parseIntEnv("PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK") ??
+         DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK;
+
+      if (tickIntervalMs < MIN_SCHEDULER_INTERVAL_MS) {
+         throw new Error(
+            `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS must be >= ${MIN_SCHEDULER_INTERVAL_MS} (got ${tickIntervalMs})`,
+         );
+      }
+      if (maxFiresPerTick <= 0) {
+         throw new Error(
+            `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK must be a positive integer (got ${maxFiresPerTick})`,
+         );
+      }
+
+      return { tickIntervalMs, maxFiresPerTick };
+   };
+
+/**
  * Resolve the row cap applied to ad-hoc connection SQL queries.
  * Reads `PUBLISHER_MAX_QUERY_ROWS`; falls back to
  * {@link DEFAULT_MAX_QUERY_ROWS} when unset or empty.

@@ -87,6 +87,22 @@ const dropTablesCounter = lazyCounter(
    "publisher_materialization_drop_tables_total",
    "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
 );
+const scheduledFireCounter = lazyCounter(
+   "publisher_materialization_scheduled_fires_total",
+   "Standalone-scheduler attempts to fire a package's materialization.schedule. " +
+      "Label: outcome ('fired'|'conflict'|'error').",
+);
+
+/**
+ * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
+ * `conflict` = a materialization was already active (this occurrence coalesces
+ * into it); `error` = the fire failed unexpectedly.
+ */
+export function recordScheduledFire(
+   outcome: "fired" | "conflict" | "error",
+): void {
+   scheduledFireCounter().add(1, { outcome });
+}
 
 /** Record the outcome and duration of a materialization build. */
 export function recordMaterializationRun(
