@@ -5,6 +5,7 @@ import React, { useEffect } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
+import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
 import { highlight } from "../highlighter";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import ResultsDialog from "../ResultsDialog";
@@ -56,6 +57,7 @@ export function ModelCell({
             },
          ),
       enabled: runOnDemand ? hasRun : true, // Execute on demand or always
+      ...CHART_RESULT_QUERY_OPTIONS,
    });
 
    const { mode } = usePublisherTheme();
