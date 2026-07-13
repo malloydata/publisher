@@ -4,7 +4,7 @@
 
 Publisher speaks the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), so an AI agent can work with your Malloy models over a standard interface. Because a Malloy model already carries the business logic and the relationships between entities, an agent grounds its answers in your definitions instead of guessing at table and column names.
 
-Publisher exposes a single MCP server (port 4040) with every tool an agent needs: it lists environments, packages, and models, reads model source, finds the model entities relevant to a question, searches the Malloy documentation, pulls the bundled agent skills, and runs Malloy queries.
+Publisher exposes a single MCP server (port 4040) with the tools an agent needs: `malloy_getContext` to discover what the deployment exposes (environments, packages, sources, and the fields relevant to a question) and ground answers in real names, `malloy_searchDocs` to search the Malloy documentation, and `malloy_executeQuery` to run Malloy queries. It also serves the bundled agent skills as MCP prompts.
 
 Any MCP-compatible client can connect: a desktop chat app, an IDE assistant, or your own script.
 
@@ -12,16 +12,9 @@ Any MCP-compatible client can connect: a desktop chat app, an IDE assistant, or 
 
 The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port` or `MCP_PORT`). Clients interact with it through tool calls.
 
-### Discovery tools
+### Discovery and grounding
 
-- `malloy_environmentList`: list the available environments.
-- `malloy_packageList`: list the packages in an environment.
-- `malloy_packageGet`: list the models in a package.
-- `malloy_modelGetText`: read the source text of a model file.
-
-### Retrieval tools
-
-- `malloy_getContext`: given a package and a plain-English question, return the model entities most relevant to it (sources, views, named queries, and dimension and measure fields). This lets an agent ground a query in names the model actually defines before writing it. Retrieval is lexical (lunr/BM25) over the model's own text, so it matches the terms your model uses. A field named in `snake_case` (say `dep_delay`) indexes as one token, so a search for "delay" will not surface it; when a first pass comes up empty, query around the source to enumerate its fields rather than forwarding the user's exact words.
+- `malloy_getContext`: the entry point when you do not yet know the environment, package, or model names. It is progressive: call it with no arguments to list the environments (each with its package names), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to return the sources, views, named queries, and dimension and measure fields most relevant to it. This lets an agent discover what a deployment exposes and ground a query in names the model actually defines before writing it. Question-level retrieval is lexical (lunr/BM25) over the model's own text, so it matches the terms your model uses. A field named in `snake_case` (say `dep_delay`) indexes as one token, so a search for "delay" will not surface it; when a first pass comes up empty, list the package's sources or narrow with `sourceName` rather than forwarding the user's exact words.
 - `malloy_searchDocs`: keyword search over a bundled index of the Malloy documentation, returning matching titles, URLs, and excerpts.
 
 ### Query tool
@@ -38,7 +31,7 @@ The server does not require authentication, and `malloy_executeQuery` runs Mallo
 
 ## Connecting a client
 
-These examples assume Publisher is already running. Running it needs Node.js on your PATH (the quick start below uses `npx`), and the Claude Desktop bridge additionally needs Python 3. See the [README](https://github.com/malloydata/publisher) for install and run options.
+These examples assume Publisher is already running. Running it needs Node.js on your PATH (the quick start below uses `npx`). See the [README](https://github.com/malloydata/publisher) for install and run options.
 
 ### Over HTTP
 
@@ -52,33 +45,26 @@ Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The ex
 }
 ```
 
-Add or drop the `"type": "http"` field to match your client. Current Claude Desktop does not accept an HTTP entry here; connect it through the Python bridge below or its Connectors UI.
+Add or drop the `"type": "http"` field to match your client. Clients that speak only stdio (for example older Claude Desktop builds) connect through `mcp-remote`, below.
 
 If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Point the client at the machine's network address instead, or move Publisher's MCP server to another port with `--mcp_port`.
 
-### With Claude Desktop through the Python bridge (older versions)
+### With a stdio-only client through mcp-remote
 
-Older Claude Desktop builds (around 0.11.4) do not speak HTTP MCP directly and need a small bridge script that translates between the client and the server.
+Some clients (for example older Claude Desktop builds) speak only stdio MCP, not HTTP. Bridge them to the HTTP endpoint with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), which needs no extra script. In the client's MCP config (for Claude Desktop, Settings > Developer > Edit Config) add:
 
-1. Start the server. Run from an empty directory and Publisher serves its default DuckDB sample packages (`ecommerce`, `imdb`, `faa`), which it downloads from the malloy-samples repository on first run, so the first start needs network access and can take a minute:
-   ```bash
-   npx @malloy-publisher/server
-   ```
-   You should see `MCP server listening at http://0.0.0.0:4040` (reach it at `http://localhost:4040`). To serve your own models instead, point the server at their directory with `--server_root <path>`.
-2. Download the bridge script: [malloy_bridge.py](https://raw.githubusercontent.com/malloydata/publisher/main/packages/server/dxt/malloy_bridge.py).
-3. In Claude Desktop, open Settings > Developer > Edit Config and add an entry that runs the script:
-   ```json
-   {
-     "mcpServers": {
-       "malloy": {
-         "command": "python3",
-         "args": ["/path/to/malloy_bridge.py"],
-         "env": {}
-       }
-     }
-   }
-   ```
-4. Save the file and start a conversation. Claude discovers your models through the tools and answers questions about them. [Watch a short demo.](https://www.loom.com/share/fcc5112ac1ca4bf78bee0985f1cd31be)
+```json
+{
+  "mcpServers": {
+    "malloy": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:4040/mcp", "--allow-http"]
+    }
+  }
+}
+```
+
+`--allow-http` is required because the endpoint is plain HTTP on localhost. Save the config and start a conversation; the agent discovers your models through the tools and answers questions about them.
 
 Example prompts against the bundled samples:
 
@@ -92,7 +78,7 @@ Connection errors:
 
 - Confirm the server is running and listening on port 4040.
 - Check the URL or file path in your client configuration.
-- For the bridge, confirm Python 3 is installed and on your PATH.
+- For `mcp-remote`, confirm Node.js is installed and on your PATH.
 - If `localhost:4040` does not respond but the machine's network address does, another local process is holding the loopback port (some editor and MCP extensions bind it). See the HTTP section above.
 
 Model or query errors:
@@ -100,7 +86,7 @@ Model or query errors:
 - Confirm your model files are under the directory you pointed the server at.
 - Check the model syntax.
 
-For the bridge, the script writes a detailed log to `/tmp/malloy_bridge.log`, and Claude Desktop keeps its own MCP log under Developer > Open MCP Log file.
+Claude Desktop keeps its own MCP log under Developer > Open MCP Log file, and `mcp-remote` prints connection errors to the client's MCP log.
 
 ## Further reading
 
