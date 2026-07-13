@@ -12,7 +12,7 @@ Watch for these common mistakes throughout the analysis workflow. When you encou
 Using dimensions or measures from a joined source that has a finer grain than the base source can silently multiply rows, inflating aggregates. For example, aggregating revenue while grouping by a line-item field may double- or triple-count totals. If your query touches fields from a joined source, compare `count(key_field)` to `count()`: if the row count is significantly higher than the distinct key count, you likely have fan-out.
 
 ### Invented entity names
-Never guess field names. Use only the exact field paths defined in the model (read it with `malloy_modelGetText`). A plausible-sounding name that does not exist in the model will produce an error, or worse, silently reference the wrong field.
+Never guess field names. Use only the exact field paths defined in the model (find them with `malloy_getContext`). A plausible-sounding name that does not exist in the model will produce an error, or worse, silently reference the wrong field.
 
 ### Mismatched filter values
 Dimensional values are case-sensitive and format-specific. Common mismatches include case differences ("Nike" vs "NIKE" vs "nike, inc."), partial matches ("New York" when the data has "New York City"), and aliased values ("USA" vs "United States"). A filter on a value that doesn't exist in the data silently returns zero rows without erroring. Always use the exact dimensional values from retrieval results, and if in doubt, run a distinct-values query on the dimension to confirm.

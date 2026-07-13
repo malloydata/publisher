@@ -792,7 +792,7 @@ export class Environment {
       // reloadAllModelsForPackage, ...) acquire the lock themselves.
       //
       // INVARIANT: callers that consume the returned Package on the fast
-      // path (notably MCP resource handlers and Model.getModel()) must
+      // path (notably the MCP query tools and Model.getModel()) must
       // remain in-memory only. If any code reachable from a `Package`
       // method ever grows new disk I/O against the canonical tree, that
       // path needs to be bracketed by `withPackageLock`; otherwise a

@@ -1,7 +1,7 @@
 /**
  * Lexical-baseline eval for malloy_getContext.
  *
- * Runs a labeled set of plain-English queries against the live agent MCP endpoint
+ * Runs a labeled set of plain-English queries against the live MCP endpoint
  * and reports recall@K: whether the expected entity appears in the top-K results.
  * This establishes the lexical (lunr/BM25) baseline so retrieval quality is
  * measurable; an embeddings comparison is deferred to if/when an embedding
@@ -9,7 +9,7 @@
  *
  *   bun run packages/server/src/mcp/tools/get_context_eval.ts [K]
  *
- * Targets AGENT_MCP_URL (default http://localhost:4041/mcp) over the demo
+ * Targets MCP_URL (default http://localhost:4040/mcp) over the demo
  * environment (EVAL_ENV, default "samples"); start the server first.
  */
 
@@ -44,7 +44,7 @@ const CASES: EvalCase[] = [
    { pkg: "faa", query: "departure delay", expect: "delay" },
 ];
 
-const ENDPOINT = process.env.AGENT_MCP_URL || "http://localhost:4041/mcp";
+const ENDPOINT = process.env.MCP_URL || "http://localhost:4040/mcp";
 const EVAL_ENV = process.env.EVAL_ENV || "samples";
 const K = Number(process.argv[2] || 5);
 

@@ -58,8 +58,6 @@
       "aws-sdk": "^2.1692.0",
       "body-parser": "^1.20.2",
       "chokidar": "^4.0.3",
-      "class-transformer": "^0.5.1",
-      "class-validator": "^0.14.1",
       "cors": "^2.8.5",
       "express": "^4.21.0",
       "extract-zip": "^2.0.1",
@@ -74,7 +72,6 @@
       "uuid": "^11.0.3"
    },
    "devDependencies": {
-      "@anthropic-ai/dxt": "^0.1.0",
       "@eslint/compat": "^1.2.7",
       "@eslint/eslintrc": "^3.3.1",
       "@eslint/js": "^9.23.0",

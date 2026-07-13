@@ -1,16 +1,17 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { initializeAgentMcpServer } from "./agent_server";
+import { initializeMcpServer } from "./server";
 import type { EnvironmentStore } from "../service/environment_store";
 
 /**
- * End-to-end coverage of the agent MCP server over the real MCP protocol, using
- * the SDK's in-memory transport (no HTTP, no network, no DuckDB). Exercises tool
- * registration, the dual-channel prompts, a real tool call (searchDocs over the
- * bundled index), and the getContext error path.
+ * End-to-end coverage of the unified MCP server over the real MCP protocol,
+ * using the SDK's in-memory transport (no HTTP, no network, no DuckDB).
+ * Exercises tool registration (including the agent retrieval tools that now
+ * live on the same server), the dual-channel skill prompts, a real tool call
+ * (searchDocs over the bundled index), and the getContext error path.
  */
-describe("agent MCP server over the MCP protocol (in-memory)", () => {
+describe("MCP server over the MCP protocol (in-memory)", () => {
    let client: Client;
 
    beforeAll(async () => {
@@ -22,19 +23,20 @@ describe("agent MCP server over the MCP protocol (in-memory)", () => {
          },
       } as unknown as EnvironmentStore;
 
-      const server = initializeAgentMcpServer(stubStore);
+      const server = initializeMcpServer(stubStore);
       const [clientTransport, serverTransport] =
          InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
-      client = new Client({ name: "agent-protocol-test", version: "0.0.0" });
+      client = new Client({ name: "mcp-protocol-test", version: "0.0.0" });
       await client.connect(clientTransport);
    });
 
-   it("exposes exactly the two agent tools", async () => {
+   it("exposes the agent retrieval tools alongside the core tools", async () => {
       const { tools } = await client.listTools();
-      expect(new Set(tools.map((t) => t.name))).toEqual(
-         new Set(["malloy_getContext", "malloy_searchDocs"]),
-      );
+      const names = new Set(tools.map((t) => t.name));
+      expect(names.has("malloy_getContext")).toBe(true);
+      expect(names.has("malloy_searchDocs")).toBe(true);
+      expect(names.has("malloy_executeQuery")).toBe(true);
    });
 
    it("exposes the skill set as dual-channel prompts", async () => {

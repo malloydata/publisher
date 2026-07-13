@@ -1,5 +1,5 @@
 /**
- * Build a bundled JSON of the agent skills so the agent MCP server can expose them as
+ * Build a bundled JSON of the agent skills so the MCP server can expose them as
  * MCP prompts (dual-channel): skill-aware hosts read the skill files directly, while
  * hosts that only ingest MCP get the same guidance through these prompts.
  *

@@ -23,7 +23,7 @@ The reason `public: *` is discouraged is **documentation discipline**, not acces
 ## G-02: Access modifiers are explicit when `##! experimental.access_modifiers` is on
 
 - **Severity:** major (blocking) · **Category:** governance · LLM-judgment (cross-file)
-- **Detection:** if a file has `##! experimental.access_modifiers`, cross-reference columns in `include {}` against the source's full column set. Read the model with `malloy_modelGetText` or `malloy_packageGet` to learn which columns the underlying table exposes (or sample the data with `malloy_executeQuery`: `run: <source> -> { select: * limit: 1 }`). Any column missing from the block is a finding.
+- **Detection:** if a file has `##! experimental.access_modifiers`, cross-reference columns in `include {}` against the source's full column set. Ground yourself with `malloy_getContext` to learn which columns the underlying table exposes (or sample the data with `malloy_executeQuery`: `run: <source> -> { select: * limit: 1 }`). Any column missing from the block is a finding.
 - **Fix:** add every column to `include {}` as `public:` (with `#(doc)`) or `internal:`; confirm `private:` with the user before marking
 - **See:** `skill:malloy-document` § Annotating Columns in Include (Experimental) · `malloy-model/reference/access-modifiers.md`
 

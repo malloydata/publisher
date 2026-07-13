@@ -5,7 +5,7 @@ description: Malloy query patterns, syntax rules, and chart annotation reference
 
 # Malloy Query Reference
 
-Only use field names defined in the model. Read the model first with `malloy_modelGetText`; never invent entities or guess field names.
+Only use field names defined in the model. Ground yourself first with `malloy_getContext`; never invent entities or guess field names.
 
 ## Query Patterns
 

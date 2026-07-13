@@ -65,7 +65,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 ## C-04: Cast strings for aggregates
 
 - **Severity:** major (blocking) · **Category:** correctness-type · LLM-judgment
-- **Detection:** when an aggregate (`avg`, `sum`, etc.) wraps a column whose type is `STRING`, flag. To learn a column's type, read the model with `malloy_modelGetText` or `malloy_packageGet` (the model defines the sources and their fields), or sample the data with `malloy_executeQuery` (`run: <source> -> { select: * limit: 1 }`).
+- **Detection:** when an aggregate (`avg`, `sum`, etc.) wraps a column whose type is `STRING`, flag. To learn a column's type, ground yourself with `malloy_getContext` (it returns the sources and their fields), or sample the data with `malloy_executeQuery` (`run: <source> -> { select: * limit: 1 }`).
 - **Fix:** `avg(score::number)` / `sum(amount::number)`
 - **See:** `skill:gotchas-modeling` § String Columns Need Casts for Aggregates
 

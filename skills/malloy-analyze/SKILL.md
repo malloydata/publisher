@@ -13,7 +13,7 @@ To formalize analysis into a polished semantic model, hand off to the modeling s
 
 ## Prerequisites
 
-- The Publisher MCP tools must be configured (`malloy_modelGetText`, `malloy_packageGet`, `malloy_executeQuery`, `malloy_searchDocs`, `malloy_getContext`). If they are not available, **STOP** and ensure the Publisher MCP server is connected.
+- The Publisher MCP tools must be configured (`malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`). If they are not available, **STOP** and ensure the Publisher MCP server is connected.
 - Call `malloy_searchDocs` liberally: it has powerful analysis patterns (window functions, cohorts, percent-of-total, nested drill-downs).
 
 # EDA WORKFLOW
@@ -35,7 +35,7 @@ The 6-step structure is a framework, not a rigid script.
 
 ## Step 1: ORIENT: Understand the Data
 
-1. Read the model with `malloy_modelGetText` (or `malloy_packageGet` for the package overview). The model defines the sources, their connection, and the available fields, so this is where you learn what data exists.
+1. Ground yourself with `malloy_getContext`. It returns the package's sources, views, and fields (with their docs), so this is where you learn what data exists.
 2. Note the source names, the connection they sit on, and the key tables/fields they expose.
 3. Inspect the existing dimensions, measures, and views the model already defines, then query the data to confirm shape and values.
 4. Create a working analysis file (this grows throughout the session):

@@ -1,6 +1,3 @@
-import { URL } from "url";
-import type { ResourceMetadata } from "@modelcontextprotocol/sdk/server/mcp";
-import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import { EnvironmentStore } from "../service/environment_store";
 import {
    AccessDeniedError,
@@ -18,105 +15,6 @@ import {
 } from "./error_messages";
 import type { Model } from "../service/model";
 import { logger } from "../logger";
-
-// Custom error to wrap specific GetResource application errors
-export class McpGetResourceError extends Error {
-   details: ErrorDetails;
-
-   constructor(details: ErrorDetails) {
-      super(details.message); // Pass message to the base Error constructor
-      this.name = "McpGetResourceError"; // Custom error name
-      this.details = details; // Store the structured details
-
-      // Maintain stack trace (important for V8)
-      if (Error.captureStackTrace) {
-         Error.captureStackTrace(this, McpGetResourceError);
-      }
-   }
-}
-
-// Helper type for the data fetching logic within a resource handler
-type GetDataLogic<TParams, TDefinition> = (
-   params: TParams,
-   uri: URL,
-) => Promise<TDefinition>;
-
-/**
- * Handles the common logic for GetResource handlers, fetching data and formatting the response or error.
- */
-export async function handleResourceGet<
-   TParams extends Record<string, unknown>,
-   TDefinition,
->(
-   uri: URL,
-   params: TParams,
-   resourceType: string, // e.g., 'environment', 'package' for logging/errors
-   getData: GetDataLogic<TParams, TDefinition>,
-   resourceMetadata: ResourceMetadata | undefined,
-): Promise<ReadResourceResult> {
-   try {
-      const definition = await getData(params, uri);
-
-      // Combine definition and metadata
-      const responsePayload = JSON.stringify(
-         { definition: definition, metadata: resourceMetadata },
-         null,
-         2,
-      );
-
-      return {
-         contents: [
-            {
-               type: "application/json",
-               uri: uri.href,
-               text: responsePayload,
-            },
-         ],
-      };
-   } catch (error) {
-      logger.error(
-         `[MCP Server Error] Error reading ${resourceType} ${uri.href}:`,
-         { error },
-      );
-
-      let errorDetails: ErrorDetails;
-
-      // Determine the correct error details based on the error type
-      if (error instanceof McpGetResourceError) {
-         // The getData function already caught, formatted, and wrapped the error
-         errorDetails = error.details;
-      } else {
-         // Catch-all for truly unexpected errors not handled by the specific getData logic
-         logger.error(
-            "[MCP Server Error] Unexpected error type caught in handleResourceGet:",
-            { error },
-         );
-         errorDetails = getInternalError(
-            `GetResource (${resourceType})`,
-            error,
-         );
-      }
-
-      // Format the error response consistently
-      return {
-         isError: true,
-         contents: [
-            {
-               type: "application/json", // Keep JSON for structured error
-               uri: uri.href,
-               text: JSON.stringify(
-                  {
-                     error: errorDetails.message,
-                     suggestions: errorDetails.suggestions,
-                  },
-                  null,
-                  2,
-               ),
-            },
-         ],
-      };
-   }
-}
 
 /**
  * Fetches and validates the Package and Model instances needed for query execution.
@@ -202,28 +100,20 @@ export async function getModelForQuery(
 }
 
 /**
- * Constructs a valid malloy:// URI string from its components.
- * Handles encoding of path segments.
+ * Constructs a malloy:// URI string identifying the model a tool response came
+ * from. Attached as `uri` metadata on tool results (get-context, execute-query,
+ * docs-search); it is not a fetchable MCP resource.
  *
- * @param components An object containing the URI parts (environment, package, model, etc.)
- * @param fragment Optional fragment identifier (e.g., #queryResult)
- * @returns A valid malloy:// URI string.
+ * @param components The URI parts (environment, package, and optionally the model).
+ * @param fragment Optional fragment identifier (e.g., "result", "get-context").
+ * @returns A malloy:// URI string.
  */
 export function buildMalloyUri(
    components: {
       environment?: string;
       package?: string;
-      model?: string;
-      resourceType?:
-         | "models"
-         | "packages"
-         | "notebooks"
-         | "sources"
-         | "queries"
-         | "views"; // Type of resource list or specific resource
-      resourceName?: string; // Specific name for model, query, etc.
-      subResourceType?: "views"; // For views within sources
-      subResourceName?: string; // Name of the view
+      resourceType?: "models";
+      resourceName?: string;
    },
    fragment?: string,
 ): string {
@@ -244,20 +134,11 @@ export function buildMalloyUri(
       path += "/" + components.resourceType;
       if (components.resourceName) {
          path += "/" + encodeURIComponent(components.resourceName);
-
-         if (components.subResourceType && components.subResourceName) {
-            path +=
-               "/" +
-               components.subResourceType +
-               "/" +
-               encodeURIComponent(components.subResourceName);
-         }
       }
    }
 
-   // The URL constructor seems to normalize malloy://path to malloy:///path
-   // which breaks the tests expecting malloy://environment/...
-   // We manually construct the string instead.
+   // The URL constructor normalizes malloy://path to malloy:///path, so we
+   // build the string manually to keep the malloy://environment/... shape.
    let uriString = "malloy:/" + path; // Start with one slash after scheme
 
    if (fragment) {

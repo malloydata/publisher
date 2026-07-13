@@ -9,7 +9,7 @@ description: Present discovery findings and propose an analytical scope before m
 
 **Goal:** Present what you found and recommend an analytical focus. The user selects a direction.
 
-Read the model first with `malloy_modelGetText` (or `malloy_packageGet` for the package overview): the model defines the sources and fields, so it tells you what tables exist, how they relate, and what is already modeled. Query the data with `malloy_executeQuery` to get row counts and spot data-quality issues. Keep your proposal and the user's decision in the conversation; there is no separate scope file to write.
+Ground yourself first with `malloy_getContext`: it returns the package's sources, views, and fields, so it tells you what data exists, how it relates, and what is already modeled. Query the data with `malloy_executeQuery` to get row counts and spot data-quality issues. Keep your proposal and the user's decision in the conversation; there is no separate scope file to write.
 
 ## What to Present
 

@@ -12,7 +12,7 @@ This skill covers two consecutive activities when building or extending a Malloy
 
 Both happen in conversation. Propose, let the user confirm or adjust, then carry the confirmed plan forward into the actual `.malloy` model. There is no separate plan-file store: keep the source plan and field proposals in the conversation, and write the model itself when the user has confirmed. The broader modeling workflow lives in `skill:malloy-modeling`.
 
-Read the existing model first so you propose against what is really there. Use `malloy_modelGetText` (or `malloy_packageGet` to see what is in the package) to inspect the current sources and fields, and `malloy_getContext` with a plain-English description to find the most relevant existing sources. Confirm the scope (which tables are in play) before proposing the source plan.
+Read the existing model first so you propose against what is really there. Use `malloy_getContext` with a plain-English description to inspect the current sources and fields and find the most relevant existing sources. Confirm the scope (which tables are in play) before proposing the source plan.
 
 ## Propose a source plan
 
@@ -157,7 +157,7 @@ Once the definitions are confirmed, write them into the `.malloy` model (see `sk
 
 ## Data-driven proposals
 
-**Every recommendation must be backed by a query result.** Do not propose based on column names or schema structure alone. Always run `malloy_executeQuery` to check the actual data before presenting. To learn what sources and fields exist, read the model with `malloy_modelGetText` or `malloy_packageGet`: the model defines the sources and fields, so there is no separate schema-search step.
+**Every recommendation must be backed by a query result.** Do not propose based on column names or schema structure alone. Always run `malloy_executeQuery` to check the actual data before presenting. To learn what sources and fields exist, ground yourself with `malloy_getContext`: it returns the model's sources, views, and fields, so there is no separate schema-search step.
 
 | Proposal Type | What to query first |
 |--------------|---------------------|
