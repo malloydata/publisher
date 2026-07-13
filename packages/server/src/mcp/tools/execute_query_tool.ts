@@ -20,12 +20,12 @@ const executeQueryShape = {
    environmentName: z
       .string()
       .describe(
-         "Environment name. Names are listed in the malloy resource list.",
+         "Environment name. Call malloy_getContext with no arguments to list the available environments.",
       ),
    packageName: z
       .string()
       .describe(
-         "Package containing the model. Package names are listed in the malloy resource list.",
+         "Package containing the model. Call malloy_getContext with just environmentName to list its packages.",
       ),
    modelPath: z.string().describe("Path to the .malloy model file"),
    query: z.string().optional().describe("Ad-hoc Malloy query code"),

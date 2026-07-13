@@ -22,13 +22,22 @@ interface Entity {
 }
 
 const getContextShape = {
-   environmentName: z.string().describe("Environment name."),
-   packageName: z.string().describe("Package name."),
+   environmentName: z
+      .string()
+      .optional()
+      .describe("Environment name. Omit to list the available environments."),
+   packageName: z
+      .string()
+      .optional()
+      .describe(
+         "Package name. Omit, with environmentName set, to list the packages in that environment.",
+      ),
    query: z
       .string()
       .max(500)
+      .optional()
       .describe(
-         'Plain-English description of what you need, e.g. "revenue by product category" or "customer churn".',
+         'Plain-English description of what you need, e.g. "revenue by product category". Omit, with environmentName and packageName set, to list the package\'s sources.',
       ),
    sourceName: z
       .string()
@@ -42,7 +51,9 @@ const getContextShape = {
       .positive()
       .max(50)
       .optional()
-      .describe("Maximum number of entities to return. Default 10, max 50."),
+      .describe(
+         "Maximum results to return (max 50). Ranked retrieval defaults to 10; the listing tiers return everything unless you set this.",
+      ),
 };
 type GetContextParams = z.infer<z.ZodObject<typeof getContextShape>>;
 
@@ -195,33 +206,58 @@ async function getPackageIndex(
    return built;
 }
 
-const GET_CONTEXT_DESCRIPTION = `Retrieve the model entities (sources, views, named queries, and dimension/measure fields) most relevant to a plain-English question, so you can ground a query in what the model actually defines instead of guessing.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you can ground a query in what the model actually defines instead of guessing. This is the starting point when you do not yet know the environment, package, or model names.
 
-## When to use
-- Before writing a query, to find which source and which prebuilt views fit the question.
-- Two-phase: call once with just a query to discover the most relevant sources and views (discovery), then optionally call again with sourceName set to focus on one source (drill-down).
+## Progressive discovery
+Call it with as much as you know and omit the rest; it answers at the appropriate level:
+- No arguments: lists the available environments, each with its package names.
+- environmentName only: lists the packages in that environment, with descriptions.
+- environmentName + packageName: lists that package's sources.
+- environmentName + packageName + query: returns the sources, views, named queries, and dimension/measure fields most relevant to the question.
 
 ## Parameters
-- environmentName, packageName (required): where to look.
-- query (required): a plain-English description of what you need.
-- sourceName (optional): narrow to entities within one source.
-- limit (optional): maximum entities to return; default 10.
+- environmentName (optional): omit to list environments.
+- packageName (optional): omit, with environmentName set, to list packages.
+- query (optional): a plain-English description of what you need; omit, with environmentName and packageName set, to list the package's sources.
+- sourceName (optional): narrow retrieval to entities within one source (the drill-down phase).
+- limit (optional): cap the number of results (max 50). Retrieval defaults to 10; the listing tiers return all unless set.
 
 ## Response
-A JSON object with results: a ranked list of entities, each with kind (source / view / query / dimension / measure), name, source, modelPath, and doc. The environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters; for a view or named query, pass its name as queryName with sourceName.
+A JSON object with a results array whose items carry a kind field. For retrieval, each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName.
 
 ## Contract rules
-- Use the names verbatim; do not invent entities not in the results.
-- Results include field-level dimensions and measures. If you need the full field list of a source or want to confirm exact spelling, call malloy_getContext again with sourceName set to drill into that source.
+- Use the names verbatim; do not invent environments, packages, or entities not in the results.
+- Start broad and narrow down: list environments, then packages, then sources, then query.
 
 ## Worked example
-{ "environmentName": "samples", "packageName": "ecommerce", "query": "revenue by product category" }`;
+{ "environmentName": "malloy-samples", "packageName": "ecommerce", "query": "revenue by product category" }`;
 
 /**
- * Registers the malloy_getContext MCP tool: lexical (lunr/BM25) retrieval over a
- * package's model entities (sources, views, dimension/measure fields, named
- * queries). The entity index is built once per Package and cached (see
- * getPackageIndex), rebuilding automatically when the package reloads.
+ * Wrap a JSON payload in the MCP resource-content shape every tier of this tool
+ * returns. isError marks a tool-level error (e.g. an unknown environment/package).
+ */
+function jsonResource(uri: string, payload: unknown, isError = false) {
+   const content = [
+      {
+         type: "resource" as const,
+         resource: {
+            type: "application/json",
+            uri,
+            text: JSON.stringify(payload),
+         },
+      },
+   ];
+   return isError ? { isError: true, content } : { content };
+}
+
+/**
+ * Registers the malloy_getContext MCP tool. It is a progressive-discovery tool:
+ * with no environment it lists environments, with an environment but no package
+ * it lists packages, with a package but no query it lists the package's sources,
+ * and with a query it runs lexical (lunr/BM25) retrieval over the package's model
+ * entities (sources, views, dimension/measure fields, named queries). The entity
+ * index is built once per Package and cached (see getPackageIndex), rebuilding
+ * automatically when the package reloads.
  */
 export function registerGetContextTool(
    mcpServer: McpServer,
@@ -243,6 +279,76 @@ export function registerGetContextTool(
             limit,
          });
 
+         // Tier 1: no environment -> enumerate the available environments, each
+         // with its package names, so an agent with no prior knowledge can start.
+         if (!environmentName) {
+            try {
+               const environments = await environmentStore.listEnvironments();
+               const results = environments.map((env) => ({
+                  kind: "environment" as const,
+                  name: env.name,
+                  packages: (env.packages ?? [])
+                     .map((p) => p.name)
+                     .filter((n): n is string => Boolean(n)),
+               }));
+               return jsonResource(buildMalloyUri({}, "get-context"), {
+                  results,
+               });
+            } catch (error) {
+               const message =
+                  error instanceof Error ? error.message : "Unknown error";
+               logger.warn(
+                  "[MCP Tool getContext] listing environments failed",
+                  { error: message },
+               );
+               return jsonResource(
+                  buildMalloyUri({}, "get-context"),
+                  { error: message, results: [] },
+                  true,
+               );
+            }
+         }
+
+         // Tier 2: environment but no package -> enumerate its packages.
+         if (!packageName) {
+            try {
+               const environment = await environmentStore.getEnvironment(
+                  environmentName,
+                  false,
+               );
+               const packages = await environment.listPackages();
+               const results = packages.map((pkg) => ({
+                  kind: "package" as const,
+                  name: pkg.name,
+                  description: pkg.description,
+                  environmentName,
+               }));
+               return jsonResource(
+                  buildMalloyUri(
+                     { environment: environmentName },
+                     "get-context",
+                  ),
+                  { results },
+               );
+            } catch (error) {
+               const message =
+                  error instanceof Error ? error.message : "Unknown error";
+               logger.warn("[MCP Tool getContext] listing packages failed", {
+                  environmentName,
+                  error: message,
+               });
+               return jsonResource(
+                  buildMalloyUri(
+                     { environment: environmentName },
+                     "get-context",
+                  ),
+                  { error: message, results: [] },
+                  true,
+               );
+            }
+         }
+
+         // Tiers 3 and 4 need the package's entity index.
          let pkgIndex: PackageIndex;
          try {
             pkgIndex = await getPackageIndex(
@@ -259,41 +365,55 @@ export function registerGetContextTool(
                sourceName,
                error: message,
             });
-            return {
-               isError: true,
-               content: [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri: buildMalloyUri(
-                           {
-                              environment: environmentName,
-                              package: packageName,
-                           },
-                           "get-context",
-                        ),
-                        text: JSON.stringify({ error: message, results: [] }),
-                     },
-                  },
-               ],
-            };
+            return jsonResource(
+               buildMalloyUri(
+                  { environment: environmentName, package: packageName },
+                  "get-context",
+               ),
+               { error: message, results: [] },
+               true,
+            );
          }
 
          const { byId, index } = pkgIndex;
+         const uri = buildMalloyUri(
+            { environment: environmentName, package: packageName },
+            "get-context",
+         );
 
-         const sanitized = sanitize(query);
+         // Tier 3: package but no query -> list the package's sources as an
+         // overview the agent can then query or drill into.
+         const sanitized = query ? sanitize(query) : "";
+         if (!sanitized) {
+            // Enumeration: return every source unless the caller sets an explicit
+            // limit. slice(0, undefined) keeps the whole list, so discovery is
+            // not silently capped the way ranked retrieval (tier 4) is.
+            const results = Array.from(byId.values())
+               .filter((e) => e.kind === "source")
+               .filter((e) => !sourceName || e.source === sourceName)
+               .slice(0, limit)
+               .map((e) => ({
+                  kind: e.kind,
+                  name: e.name,
+                  source: e.source,
+                  environmentName,
+                  packageName,
+                  modelPath: e.modelPath,
+                  doc: e.doc,
+               }));
+            return jsonResource(uri, { results });
+         }
+
+         // Tier 4: retrieval over the package's entities.
          let hits: lunr.Index.Result[] = [];
-         if (sanitized) {
-            try {
-               hits = index.search(sanitized);
-            } catch (error) {
-               logger.warn("[MCP Tool getContext] lunr search failed", {
-                  query,
-                  error: error instanceof Error ? error.message : String(error),
-               });
-               hits = [];
-            }
+         try {
+            hits = index.search(sanitized);
+         } catch (error) {
+            logger.warn("[MCP Tool getContext] lunr search failed", {
+               query,
+               error: error instanceof Error ? error.message : String(error),
+            });
+            hits = [];
          }
 
          // Defensive: skip any hit whose ref is missing from the entity map.
@@ -313,21 +433,7 @@ export function registerGetContextTool(
                doc: e.doc,
             }));
 
-         return {
-            content: [
-               {
-                  type: "resource" as const,
-                  resource: {
-                     type: "application/json",
-                     uri: buildMalloyUri(
-                        { environment: environmentName, package: packageName },
-                        "get-context",
-                     ),
-                     text: JSON.stringify({ results }),
-                  },
-               },
-            ],
-         };
+         return jsonResource(uri, { results });
       },
    );
 }
