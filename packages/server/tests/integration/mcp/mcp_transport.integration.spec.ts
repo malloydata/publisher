@@ -41,9 +41,9 @@ describe.serial("MCP Transport Tests (E2E Integration)", () => {
             // Assert based on actual successful response structure
             expect(result).toHaveProperty("tools");
             expect(Array.isArray(result.tools)).toBe(true);
-            expect(result.tools.some((t) => t.name === "malloy_executeQuery")).toBe(
-               true,
-            );
+            expect(
+               result.tools.some((t) => t.name === "malloy_executeQuery"),
+            ).toBe(true);
          },
          { timeout: 30000 },
       );
