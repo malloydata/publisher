@@ -34,7 +34,10 @@ import {
 } from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 
-import { getMemoryGovernorConfig } from "./config";
+import {
+   getMaterializationSchedulerConfig,
+   getMemoryGovernorConfig,
+} from "./config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
@@ -44,6 +47,7 @@ import { initializeMcpServer } from "./mcp/server";
 import { startAgentMcpServer } from "./mcp/agent_server";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
+import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
 import { normalizeQueryArray } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
@@ -187,7 +191,7 @@ app.use(httpMetricsMiddleware);
 // looks low for the default caps" advisory so operators don't
 // chase OOMKills before checking the obvious config.
 checkHeapConfiguration();
-const environmentStore = new EnvironmentStore(SERVER_ROOT);
+export const environmentStore = new EnvironmentStore(SERVER_ROOT);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
@@ -210,6 +214,18 @@ const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
 );
+// Standalone materialization scheduler: opt-in via
+// PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER (default off, so an orchestrated
+// deployment — whose control plane drives materialization — never runs it).
+const materializationSchedulerConfig = getMaterializationSchedulerConfig();
+const materializationScheduler = materializationSchedulerConfig
+   ? new MaterializationScheduler(
+        environmentStore,
+        materializationService,
+        materializationSchedulerConfig,
+     )
+   : null;
+materializationScheduler?.start();
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore, SERVER_ROOT);
 
