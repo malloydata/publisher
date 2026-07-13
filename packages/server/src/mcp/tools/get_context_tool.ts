@@ -22,16 +22,8 @@ interface Entity {
 }
 
 const getContextShape = {
-   environmentName: z
-      .string()
-      .describe(
-         "Environment name. Names are listed in the malloy_environmentList tool.",
-      ),
-   packageName: z
-      .string()
-      .describe(
-         "Package name. Package names are listed in malloy_packageList.",
-      ),
+   environmentName: z.string().describe("Environment name."),
+   packageName: z.string().describe("Package name."),
    query: z
       .string()
       .max(500)
@@ -220,7 +212,7 @@ A JSON object with results: a ranked list of entities, each with kind (source / 
 
 ## Contract rules
 - Use the names verbatim; do not invent entities not in the results.
-- Results include field-level dimensions and measures. If you need the full field list of a source or want to confirm exact spelling, read the model with malloy_modelGetText on the modelPath this returns.
+- Results include field-level dimensions and measures. If you need the full field list of a source or want to confirm exact spelling, call malloy_getContext again with sourceName set to drill into that source.
 
 ## Worked example
 { "environmentName": "samples", "packageName": "ecommerce", "query": "revenue by product category" }`;

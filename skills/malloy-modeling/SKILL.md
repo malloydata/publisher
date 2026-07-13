@@ -9,7 +9,7 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 
 ## Pre-Flight Checklist
 
-1. **Discover first**: read the model with `malloy_modelGetText` (or `malloy_packageGet` for the whole package) before writing ANY code. The model defines the sources, fields, and connection names. Never guess connection names.
+1. **Discover first**: ground yourself with `malloy_getContext` before writing ANY code. It returns the package's sources, views, and fields (with their docs), so you build on what actually exists. Never guess field names.
 2. **Search docs proactively**: call `malloy_searchDocs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
 3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
@@ -96,12 +96,11 @@ Ensure the Publisher MCP tools are configured before modeling.
 
 | Tool | Purpose |
 |------|---------|
-| `malloy_packageGet` | Read the package: its models, sources, and connection names |
-| `malloy_modelGetText` | Read a model's source text to learn its sources and fields |
+| `malloy_getContext` | Ground yourself in a package: its sources, views, and fields |
 | `malloy_executeQuery` | Run ad-hoc queries for validation |
 | `malloy_searchDocs` | Search Malloy docs (call BEFORE unfamiliar patterns) |
 
-Never guess connection names. Read them from the model with `malloy_modelGetText` or `malloy_packageGet`.
+Never guess field names. Ground yourself with `malloy_getContext` to see the sources and fields a package defines.
 
 ## SQL-to-Malloy Quick Reference
 

@@ -116,11 +116,6 @@ async function startServer(opts: { watch: boolean }): Promise<TestServer> {
    const port = await getFreePort();
    let mcpPort = await getFreePort();
    while (mcpPort === port) mcpPort = await getFreePort();
-   // The agent MCP server binds its own listener; give it a distinct free port
-   // too, otherwise every spawned child binds the fixed default and collides.
-   let agentMcpPort = await getFreePort();
-   while (agentMcpPort === port || agentMcpPort === mcpPort)
-      agentMcpPort = await getFreePort();
    const baseUrl = `http://127.0.0.1:${port}`;
 
    const env: NodeJS.ProcessEnv = {
@@ -129,7 +124,6 @@ async function startServer(opts: { watch: boolean }): Promise<TestServer> {
       PUBLISHER_HOST: "127.0.0.1",
       PUBLISHER_PORT: String(port),
       MCP_PORT: String(mcpPort),
-      AGENT_MCP_PORT: String(agentMcpPort),
    };
    if (opts.watch) env.PUBLISHER_WATCH = ENV_NAME;
 

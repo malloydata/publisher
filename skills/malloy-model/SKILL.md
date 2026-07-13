@@ -263,7 +263,7 @@ Check diagnostics after writing. Errors cascade, fix the FIRST error only, then 
 
 **Validate with `malloy_executeQuery`:** Run queries, check distributions, verify measures, confirm joins (no fan-out).
 
-To inspect the sources and fields a model already defines, read the model with `malloy_modelGetText` (or `malloy_packageGet` for the package layout). The model itself is the schema; there is no separate schema-search tool. When you're unsure of Malloy syntax, call `malloy_searchDocs` rather than guessing.
+To inspect the sources and fields a model already defines, ground yourself with `malloy_getContext`. It returns the package's sources, views, and fields, so there is no separate schema-search step. When you're unsure of Malloy syntax, call `malloy_searchDocs` rather than guessing.
 
 ## Advanced Patterns
 

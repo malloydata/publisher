@@ -7,13 +7,13 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 
 > **CRITICAL**: Read the model before writing ANY Malloy code. The model defines the sources, connection names, and fields. Never guess connection names.
 
-> **PREREQUISITE:** Make sure the Publisher MCP tools (`malloy_packageGet`, `malloy_modelGetText`, `malloy_executeQuery`, `malloy_searchDocs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
+> **PREREQUISITE:** Make sure the Publisher MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
 
 **This step is silent.** The agent does not present findings to the user yet. That happens in the next step (PROPOSE SCOPE).
 
 ## Tools
 
-- **`malloy_packageGet`** / **`malloy_modelGetText`**: Read the model to see the sources, connection names, and fields it already defines. Call FIRST. The sources and their join paths are the schema you build on.
+- **`malloy_getContext`**: Ground yourself in the package's sources, views, and fields (with their docs). Call FIRST. The sources and their join paths are the schema you build on.
 - **`malloy_executeQuery`**: Run ad-hoc queries to preview data, verify values, check NULLs, validate assumptions.
 - **`malloy_searchDocs`**: Get Malloy syntax help when needed.
 
@@ -22,7 +22,7 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 ```
 1. Check for prior art signals                 → If found, ask user: "I found [LookML/dbt] files, use as prior art?"
 2. If user confirms: read adapter reference        → Follow skill:lookml-review, keep prior-art notes in-conversation
-3. malloy_packageGet / malloy_modelGetText     → Read the model: sources, connection names, fields
+3. malloy_getContext                           → Ground yourself: sources, views, fields
 4. Inspect source definitions                  → See ALL fields and join paths for key sources
 5. Derive candidate joins/dimensions/measures  → Read them off the model and the data, not a suggestion tool
 6. Define a minimal source if one is missing   → Just enough to run malloy_executeQuery for previews
