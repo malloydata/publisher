@@ -134,6 +134,10 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          const entries = (built.manifest as { entries: Record<string, unknown> })
             .entries;
          expect(Object.keys(entries).length).toBe(1);
+         // The SCHEDULER trigger must survive the build commit (not just exist
+         // while the run is in-flight) — otherwise a completed scheduled run is
+         // indistinguishable from a manual one.
+         expect(triggerOf(built)).toBe("SCHEDULER");
 
          // Cleanup: drop the table + record so the negative case starts clean.
          const del = await fetch(

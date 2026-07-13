@@ -251,11 +251,12 @@ export class MaterializationService {
       }
 
       const forceRefresh = options.forceRefresh ?? false;
+      const trigger = options.trigger ?? "ON_DEMAND";
       const metadata = {
          forceRefresh,
          sourceNames: options.sourceNames ?? null,
          mode: orchestrated ? "orchestrated" : "auto",
-         trigger: options.trigger ?? "ON_DEMAND",
+         trigger,
       };
 
       let created: Materialization;
@@ -288,6 +289,7 @@ export class MaterializationService {
                buildInstructions,
                referenceManifest: options.referenceManifest,
                strictUpstreams: options.strictUpstreams,
+               trigger,
             },
             signal,
          ),
@@ -314,6 +316,7 @@ export class MaterializationService {
          buildInstructions: BuildInstruction[] | undefined;
          referenceManifest: ManifestReference[] | undefined;
          strictUpstreams: boolean | undefined;
+         trigger: "ON_DEMAND" | "SCHEDULER";
       },
       signal: AbortSignal,
    ): Promise<void> {
@@ -387,6 +390,7 @@ export class MaterializationService {
             forceRefresh: opts.forceRefresh,
             sourceNames: opts.sourceNames ?? null,
             mode,
+            trigger: opts.trigger,
             sourcesBuilt,
             sourcesReused,
             durationMs,
