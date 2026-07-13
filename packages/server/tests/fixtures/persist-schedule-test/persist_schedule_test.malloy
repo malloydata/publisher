@@ -1,0 +1,11 @@
+##! experimental.persistence
+
+source: raw_orders is duckdb.table('data/orders.csv')
+
+#@ persist name="order_summary"
+source: order_summary is raw_orders -> {
+  group_by: category
+  aggregate:
+    total_orders is count()
+    total_revenue is amount.sum()
+}
