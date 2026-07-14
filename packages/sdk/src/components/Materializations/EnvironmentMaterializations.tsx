@@ -249,6 +249,7 @@ export default function EnvironmentMaterializations({
          <MaterializationDetailDialog
             materialization={selected}
             buildPlan={null}
+            showBuildPlan={false}
             onClose={() => setSelectedId(null)}
          />
 
