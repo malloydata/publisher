@@ -137,6 +137,17 @@ describe("failed reload does not destroy a serving package", () => {
       await env.addPackage("pkg");
       expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
 
+      // Record retirements rather than scheduling the real drain, which is a
+      // 30s timer this test has no reason to wait on.
+      const retiredLabels: string[] = [];
+      (
+         env as unknown as {
+            retireConnectionGeneration: (label: string) => void;
+         }
+      ).retireConnectionGeneration = (label: string) => {
+         retiredLabels.push(label);
+      };
+
       // The tree disappears from under Publisher, so the reinstall has nothing
       // to retire and the rollback has nothing to restore.
       await fs.rm(pkgDir, { recursive: true, force: true });
@@ -154,6 +165,15 @@ describe("failed reload does not destroy a serving package", () => {
       expect((await env.listPackages()).map((p) => p.name)).not.toContain(
          "pkg",
       );
+      // Assert the packages map too, not just the status: asserting only the
+      // status leaves the half that actually strands a package untested.
+      await expect(env.getPackage("pkg", false)).rejects.toThrow();
+
+      // Evicting must retire the old package's connections. Once it leaves
+      // this.packages, closeAllConnections cannot reach its MalloyConfig, so
+      // skipping the retire orphans its native handles for the process's life.
+      // The drain is timer-based, so assert it was scheduled, not that it ran.
+      expect(retiredLabels).toContain("package pkg");
    });
 
    it("recovers on the next reload once the model compiles again", async () => {

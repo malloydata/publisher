@@ -1093,6 +1093,19 @@ export class Environment {
                // package no longer matches disk and must not be advertised as
                // serving. Drop both, and keep the two maps agreeing.
                this.deletePackageStatus(packageName);
+               if (oldPackage) {
+                  // Retire before dropping it, the same way every other eviction
+                  // here does: once it leaves this.packages, closeAllConnections
+                  // can no longer reach its MalloyConfig, so its native handles
+                  // would never be released. Retire rather than shut down
+                  // inline, because withPackageLock does not cover queries that
+                  // already took this Package from an earlier getPackage; the
+                  // drain lets those finish first.
+                  this.retireConnectionGeneration(
+                     `package ${packageName}`,
+                     () => oldPackage.getMalloyConfig().shutdown("close"),
+                  );
+               }
                this.packages.delete(packageName);
             }
             logger.debug("install.phase2.rollback", {
