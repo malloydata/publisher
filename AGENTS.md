@@ -77,3 +77,13 @@ Ask "what can I explore here?" A good sequence is:
 ## 5. Skills
 
 The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness.
+
+## 6. Iterating on a model (watch mode)
+
+For your own fast checks while authoring, use `malloy_compile`; it validates a change and returns diagnostics with no server restart. Watch mode is a separate, optional thing for a human: it is how someone launches the server so that they and any open browser tab see model edits live. It is a launch-time choice for whoever starts the server, not something to turn on by restarting a server that is already running. To use it, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`), which names an environment whose packages Publisher mounts in place (as symlinks) and watches, so edits to the source recompile. Requirements:
+
+- The environment's packages must be LOCAL directories, not `github`, `gcs`, or `s3` URLs. The bundled `malloy-samples` env is remote, so it is not watch-eligible; point `--watch-env` at a local env of your own.
+- The in-place mount is set up when the environment is first loaded from config: the first boot on a fresh server root (empty `publisher_data/` storage), or any boot with `--init`. If you previously started the env WITHOUT `--watch-env`, its packages were copied into `publisher_data/` and edits to your source do nothing; run once with both flags together, `--watch-env <env> --init`, to re-mount them in place (`--init` alone re-copies, it does not symlink). You do NOT need `--init` on every boot: once a package is mounted as a symlink it stays one, and later boots keep watching.
+- Only the first environment in the watch list auto-reloads.
+
+A save that fails to compile is skipped without a signal, so if a change does not appear, compile-check it first with `malloy_compile`.

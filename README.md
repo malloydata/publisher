@@ -349,6 +349,8 @@ A package can ship a `public/` directory of web files (an `index.html` plus CSS,
 
 For local development, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`). Publisher then mounts that environment's local-dir packages in place and watches them: editing a `.malloy` recompiles the package, editing an asset refreshes the page, and open pages live-reload over a server-sent-events stream at `GET .../packages/<pkg>/events`. See `examples/html-data-app/` for a worked example, and [docs/html-data-apps.md](docs/html-data-apps.md) for the full authoring reference (the `Publisher.query` / `Publisher.embed` API, the page and event contracts, and the security model).
 
+For this to work the environment's packages must be local directories, not `github`/`gcs`/`s3` URLs (the bundled `malloy-samples` env is remote, so it is not watch-eligible), and they must be mounted in place. That in-place mount happens when the env is first loaded from config: the first boot on a fresh server root, or any boot with `--init`. If the env was previously loaded without `--watch-env` its packages were copied into `publisher_data/`, and edits to your source do nothing until you re-mount them by running once with both flags, `--watch-env <env> --init` (`--init` alone re-copies rather than symlinks). You do not need `--init` on every boot. Only the first environment in the watch list auto-reloads.
+
 ## Controlling the discovery surface
 
 Declaring `explores` in `publisher.json` is the **single opt-in** for curated discovery. When absent or empty, every model is listed with its full source set — today's backward-compatible behavior.
