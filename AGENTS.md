@@ -33,6 +33,8 @@ curl -s http://localhost:4000/api/v0/status | jq .operationalState   # -> "servi
 
 Publisher exposes one MCP endpoint: `http://localhost:4040/mcp` (streamable HTTP, stateless, unauthenticated; put it behind a gateway if you expose it beyond localhost).
 
+Connect the client after the server is up. An MCP client discovers a server's tools when it connects, so if the client was already running when you started the server (for example you asked the agent to start it), its `malloy_*` tools stay missing until it reconnects. In Claude Code, reconnect with `/mcp` or restart Claude. The simplest path is to start the server first, then launch the agent.
+
 Claude Code: this repo ships a project `.mcp.json`, so from a clone Claude Code offers to connect on first run. Approve it once. To add it elsewhere:
 
 ```bash
