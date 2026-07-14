@@ -2105,6 +2105,44 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/materializations:
+    get:
+      tags:
+        - materializations
+      operationId: list-environment-materializations
+      summary: List all materializations in an environment
+      description:
+        Returns every materialization across all packages in the environment,
+        ordered by most recent first. Each item carries its `packageName`, so an
+        environment-scoped view can group or label by package.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Maximum number of materializations to return
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Number of materializations to skip
+      responses:
+        "200":
+          description: List of materializations across the environment
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /environments/{environmentName}/packages/{packageName}/materializations:
     post:
       tags:

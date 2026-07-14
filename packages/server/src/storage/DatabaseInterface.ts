@@ -59,6 +59,10 @@ export interface ResourceRepository {
       packageName: string,
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]>;
+   listMaterializationsByEnvironment(
+      environmentId: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]>;
    getMaterializationById(id: string): Promise<Materialization | null>;
    getActiveMaterialization(
       environmentId: string,

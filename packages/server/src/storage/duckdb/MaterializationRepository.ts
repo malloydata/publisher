@@ -23,6 +23,15 @@ function activeKeyFor(environmentId: string, packageName: string): string {
 }
 
 /**
+ * Default cap for the environment-wide materialization list. That query spans
+ * every package in the environment, so on a busy env (e.g. a frequent schedule)
+ * the history grows without bound; when a caller passes no explicit limit, fall
+ * back to this bound rather than loading and serializing every row. Callers that
+ * page (the SDK "show more") always pass their own limit and are unaffected.
+ */
+const DEFAULT_ENVIRONMENT_LIST_LIMIT = 500;
+
+/**
  * Thrown when an atomic insert loses a race on (environment, package) active
  * materialization. Surfaced separately from a generic DB error so the service
  * layer can translate to `MaterializationConflictError`.
@@ -65,6 +74,25 @@ export class MaterializationRepository {
          sql += " LIMIT ?";
          params.push(options.limit);
       }
+      if (options?.offset !== undefined) {
+         sql += " OFFSET ?";
+         params.push(options.offset);
+      }
+      const rows = await this.db.all<Record<string, unknown>>(sql, params);
+      return rows.map(this.mapRow);
+   }
+
+   /** All materializations across every package in an environment, newest first. */
+   async listByEnvironment(
+      environmentId: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
+      let sql =
+         "SELECT * FROM materializations WHERE environment_id = ? ORDER BY created_at DESC";
+      const params: unknown[] = [environmentId];
+      // Always bound the result: an uncapped env-wide fetch is unbounded.
+      sql += " LIMIT ?";
+      params.push(options?.limit ?? DEFAULT_ENVIRONMENT_LIST_LIMIT);
       if (options?.offset !== undefined) {
          sql += " OFFSET ?";
          params.push(options.offset);

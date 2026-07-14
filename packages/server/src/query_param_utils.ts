@@ -16,3 +16,14 @@ export function normalizeQueryArray(value: unknown): string[] | undefined {
    if (Array.isArray(value)) return value.map(String);
    return [String(value)];
 }
+
+/**
+ * Parse an Express query param as a non-negative integer, or `undefined` when
+ * it is absent or not a finite integer. Degrades a garbage value (`?limit=abc`)
+ * to "unset" rather than passing `NaN` down into a SQL `LIMIT`/`OFFSET` bind.
+ */
+export function parseNonNegativeIntParam(value: unknown): number | undefined {
+   if (value === undefined || value === null) return undefined;
+   const parsed = parseInt(String(value), 10);
+   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}

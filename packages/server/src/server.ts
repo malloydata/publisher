@@ -49,7 +49,10 @@ import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
-import { normalizeQueryArray } from "./query_param_utils";
+import {
+   normalizeQueryArray,
+   parseNonNegativeIntParam,
+} from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
@@ -1655,6 +1658,28 @@ app.post(
 
 // ==================== MATERIALIZATION ROUTES ====================
 
+// Environment-scoped: every materialization across all packages in the env.
+// Distinct path shape from the per-package routes below
+// (`/packages/:packageName/materializations`), so there is no collision.
+app.get(
+   `${API_PREFIX}/environments/:environmentName/materializations`,
+   async (req, res) => {
+      try {
+         const limit = parseNonNegativeIntParam(req.query.limit);
+         const offset = parseNonNegativeIntParam(req.query.offset);
+         const builds =
+            await materializationController.listEnvironmentMaterializations(
+               req.params.environmentName,
+               { limit, offset },
+            );
+         res.status(200).json(builds);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
@@ -1676,12 +1701,8 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
       try {
-         const limit = req.query.limit
-            ? parseInt(req.query.limit as string, 10)
-            : undefined;
-         const offset = req.query.offset
-            ? parseInt(req.query.offset as string, 10)
-            : undefined;
+         const limit = parseNonNegativeIntParam(req.query.limit);
+         const offset = parseNonNegativeIntParam(req.query.offset);
          const builds = await materializationController.listMaterializations(
             req.params.environmentName,
             req.params.packageName,

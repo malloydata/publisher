@@ -177,6 +177,22 @@ export class MaterializationService {
       );
    }
 
+   /**
+    * Every materialization across all packages in an environment, newest first.
+    * Each record carries its `packageName`, so an env-scoped view can group or
+    * label by package without a per-package fan-out.
+    */
+   async listEnvironmentMaterializations(
+      environmentName: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      return this.repository.listMaterializationsByEnvironment(
+         environmentId,
+         options,
+      );
+   }
+
    async getMaterialization(
       environmentName: string,
       packageName: string,
