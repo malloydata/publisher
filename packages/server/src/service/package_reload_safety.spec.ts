@@ -3,7 +3,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
-import { Environment } from "./environment";
+import { Environment, PackageStatus } from "./environment";
 
 /**
  * Regression tests for RELOAD data loss.
@@ -35,6 +35,11 @@ describe("failed reload does not destroy a serving package", () => {
          JSON.stringify({ name: "pkg", description: "reload fixture" }),
       );
       await fs.writeFile(path.join(dir, "model.malloy"), model);
+   }
+
+   async function copyDir(src: string, dst: string): Promise<void> {
+      await fs.mkdir(dst, { recursive: true });
+      await fs.cp(src, dst, { recursive: true });
    }
 
    beforeEach(async () => {
@@ -72,14 +77,48 @@ describe("failed reload does not destroy a serving package", () => {
       await writePackageDir(pkgDir, GOOD_MODEL);
       await env.addPackage("pkg");
 
+      const servingBefore = await env.getPackage("pkg", false);
+
       await fs.writeFile(path.join(pkgDir, "model.malloy"), BROKEN_MODEL);
       await expect(env.getPackage("pkg", true)).rejects.toThrow();
 
       // The package is still loaded and answerable: a failed reload reports the
-      // compile error, it does not take the package down.
+      // compile error, it does not take the package down. Assert the exact
+      // state, not just that something is there: a status stranded at LOADING
+      // would satisfy toBeDefined() while listPackages skips it, so the package
+      // would answer getPackage and be invisible to listings and discovery.
       const stillServing = await env.getPackage("pkg", false);
-      expect(stillServing).toBeDefined();
-      expect(env.getPackageStatus("pkg")).toBeDefined();
+      expect(stillServing).toBe(servingBefore);
+      expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
+      expect((await env.listPackages()).map((p) => p.name)).toContain("pkg");
+   });
+
+   it("keeps a rolled-back reinstall listed and serving", async () => {
+      // The other reload path. A package with an install location reloads via
+      // installPackage, whose rollback restores the previous tree but used to
+      // drop the status while `packages` kept the old package: it answered
+      // getPackage but vanished from listPackages and discovery until a
+      // restart. Both maps must agree that it is still serving.
+      const env = await Environment.create("testEnv", envPath, []);
+      const goodFixture = path.join(rootDir, "good");
+      const brokenFixture = path.join(rootDir, "broken");
+      await writePackageDir(goodFixture, GOOD_MODEL);
+      await writePackageDir(brokenFixture, BROKEN_MODEL);
+
+      await env.installPackage("pkg", (stagingPath) =>
+         copyDir(goodFixture, stagingPath),
+      );
+      const servingBefore = await env.getPackage("pkg", false);
+
+      await expect(
+         env.installPackage("pkg", (stagingPath) =>
+            copyDir(brokenFixture, stagingPath),
+         ),
+      ).rejects.toThrow();
+
+      expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
+      expect((await env.listPackages()).map((p) => p.name)).toContain("pkg");
+      expect(await env.getPackage("pkg", false)).toBe(servingBefore);
    });
 
    it("recovers on the next reload once the model compiles again", async () => {

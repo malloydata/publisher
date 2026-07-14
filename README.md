@@ -21,7 +21,7 @@ The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.d
 npx @malloy-publisher/server --port 4000
 ```
 
-Open http://localhost:4000 to explore the sample models. Three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`) are cloned from GitHub on first launch — expect a 30–60s wait before `operationalState` reports `serving`. No credentials required.
+Open http://localhost:4000 to explore the sample models. Three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`) are cloned from GitHub on first launch, so expect to wait 10 to 60 seconds before `operationalState` reports `serving`. No credentials required.
 
 > **Heads up — npx + DuckDB native binding.** On some Node 24 setups, `npx` does not install DuckDB's native binding (`node_modules/duckdb/lib/binding/duckdb.node`), so the server exits at startup with `Cannot find module ...duckdb.node`. This is an upstream `duckdb` install-script issue tracked separately. Workaround until that's fixed: clone this repo and run `make start-init` (or `bun run build && bun run start`) from the repo root — the workspace's `install-duckdb-bindings` script handles the binding install during `bun run build`.
 

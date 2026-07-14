@@ -1077,7 +1077,19 @@ export class Environment {
             await fs.promises
                .rm(stagingPath, { recursive: true, force: true })
                .catch(() => {});
-            this.deletePackageStatus(packageName);
+            if (oldPackage) {
+               // A reinstall that rolled back left the previous package in
+               // `this.packages` (it is only replaced on success below), and the
+               // rollback restored its tree, so it is still serving. Deleting
+               // its status would strand it: listPackages enumerates
+               // packageStatuses, so the package would answer getPackage while
+               // being invisible to listings and discovery until a restart.
+               this.setPackageStatus(packageName, PackageStatus.SERVING);
+            } else {
+               // A first install that failed has nothing to fall back to, so
+               // clear the LOADING status set above.
+               this.deletePackageStatus(packageName);
+            }
             logger.debug("install.phase2.rollback", {
                environmentName: this.environmentName,
                packageName,
