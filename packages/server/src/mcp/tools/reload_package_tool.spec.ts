@@ -45,6 +45,36 @@ function storeReturning(
    };
 }
 
+// A store whose cached package metadata carries `location`, so PackageController
+// takes the re-fetch branch: installPackage instead of an in-place recompile.
+// This is the only remaining path that overwrites on-disk edits, so it is worth
+// pinning that the routing and the reported mode both match.
+function storeWithInstallLocation(installed: Record<string, unknown>): {
+   store: Partial<EnvironmentStore>;
+   installCalls: string[];
+} {
+   const installCalls: string[] = [];
+   return {
+      installCalls,
+      store: {
+         getEnvironment: async () =>
+            ({
+               getPackage: async () =>
+                  ({
+                     getPackageMetadata: () => ({
+                        name: "ecommerce",
+                        location: "https://github.com/example/pkg",
+                     }),
+                  }) as never,
+               installPackage: async (pkg: string) => {
+                  installCalls.push(pkg);
+                  return { getPackageMetadata: () => installed } as never;
+               },
+            }) as never,
+      },
+   };
+}
+
 const args = { environmentName: "malloy-samples", packageName: "ecommerce" };
 
 describe("malloy_reloadPackage tool", () => {
@@ -52,7 +82,11 @@ describe("malloy_reloadPackage tool", () => {
       const handler = captureHandler(storeReturning({ name: "ecommerce" }));
       const result = await handler(args);
       expect(result.isError).toBe(false);
-      expect(parse(result)).toEqual({ status: "reloaded", name: "ecommerce" });
+      expect(parse(result)).toEqual({
+         status: "reloaded",
+         mode: "in-place",
+         name: "ecommerce",
+      });
    });
 
    it("includes description and non-empty warnings", async () => {
@@ -69,6 +103,7 @@ describe("malloy_reloadPackage tool", () => {
       const parsed = parse(await handler(args));
       expect(parsed).toEqual({
          status: "reloaded",
+         mode: "in-place",
          name: "ecommerce",
          description: "shop",
          warnings,
@@ -121,6 +156,38 @@ describe("malloy_reloadPackage tool", () => {
       const result = await handler(args);
       expect(result.isError).toBe(true);
       expect(parse(result).error).toBeDefined();
+   });
+
+   it("reports mode in-place for a package with no install location", async () => {
+      const handler = captureHandler(storeReturning({ name: "ecommerce" }));
+      expect(parse(await handler(args)).mode).toBe("in-place");
+   });
+
+   it("re-fetches and reports mode reinstalled when the package carries an install location", async () => {
+      // The one path that still overwrites on-disk edits. It must route through
+      // installPackage, and the payload must say so, since an agent cannot
+      // otherwise tell that its saved edit was just re-fetched over.
+      const { store, installCalls } = storeWithInstallLocation({
+         name: "ecommerce",
+         location: "https://github.com/example/pkg",
+      });
+      const handler = captureHandler(store);
+      const result = await handler(args);
+      expect(result.isError).toBe(false);
+      expect(installCalls).toEqual(["ecommerce"]);
+      expect(parse(result).mode).toBe("reinstalled");
+   });
+
+   it("never echoes the package location back to the caller", async () => {
+      // The payload hand-picks fields; REST spreads the whole ApiPackage. Pin
+      // that the allowlist holds, since location is the one field here that is
+      // deployment detail rather than something an agent needs.
+      const { store } = storeWithInstallLocation({
+         name: "ecommerce",
+         location: "https://github.com/example/pkg",
+      });
+      const parsed = parse(await captureHandler(store)(args));
+      expect(parsed.location).toBeUndefined();
    });
 
    it("surfaces exploresWarnings (a mistyped explores entry is not swallowed)", async () => {

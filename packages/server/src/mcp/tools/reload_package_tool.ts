@@ -32,7 +32,7 @@ A reload that fails to compile is safe: your files on disk are left alone, the p
 Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package whose stored metadata carries an install location (only a PATCH that supplies one sets it) is re-fetched from that source instead, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). A reload that hits a hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.`;
 
 /**
  * Registers the malloy_reloadPackage MCP tool: recompiles a package from its
@@ -68,14 +68,19 @@ export function registerReloadPackageTool(
          );
 
          try {
-            const pkg = await packageController.getPackage(
-               environmentName,
-               packageName,
-               true,
-            );
+            const { metadata: pkg, mode } =
+               await packageController.reloadPackage(
+                  environmentName,
+                  packageName,
+               );
 
             const payload = {
                status: "reloaded" as const,
+               // Which path ran. "in-place" recompiled the tree on disk and left
+               // it alone; "reinstalled" re-fetched from the package's install
+               // location, so any on-disk edits are gone. The caller cannot tell
+               // these apart otherwise, and only one of them keeps their work.
+               mode,
                name: pkg.name,
                ...(pkg.description !== undefined && {
                   description: pkg.description,
