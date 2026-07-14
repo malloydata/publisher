@@ -69,6 +69,13 @@ export interface MaterializationMetadata {
    forceRefresh?: boolean;
    sourceNames?: string[];
    mode?: "auto" | "orchestrated";
+   /**
+    * What initiated the run. `SCHEDULER` = the standalone scheduler fired the
+    * package's `materialization.schedule` cron; `ON_DEMAND` (default) = an
+    * explicit API/UI create. Recorded on the run so a scheduled rebuild is
+    * distinguishable from a manual one.
+    */
+   trigger?: "ON_DEMAND" | "SCHEDULER";
    sourcesBuilt?: number;
    sourcesReused?: number;
 }
@@ -77,6 +84,13 @@ export function parseMetadata(
    materialization: Materialization,
 ): MaterializationMetadata {
    return (materialization.metadata ?? {}) as MaterializationMetadata;
+}
+
+/** Human label for how a run was initiated. */
+export function triggerLabel(
+   meta: MaterializationMetadata,
+): "Scheduled" | "Manual" {
+   return meta.trigger === "SCHEDULER" ? "Scheduled" : "Manual";
 }
 
 /** Human-readable elapsed time between two ISO timestamps (to now if open). */

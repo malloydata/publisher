@@ -17,9 +17,12 @@ import {
 import { BuildPlan, Materialization } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
 import ManifestView from "./ManifestView";
+import SectionLabel from "./SectionLabel";
+import TriggerChip from "./TriggerChip";
 import {
    formatDuration,
    formatTimestamp,
+   isActiveStatus,
    parseMetadata,
    statusColor,
    statusLabel,
@@ -28,7 +31,9 @@ import {
 type MaterializationDetailDialogProps = {
    materialization: Materialization | null;
    // The compiled package's current build plan (Package.buildPlan), shown for
-   // context. It is a property of the package version, not the historical run.
+   // context. It is a property of the package version, not the historical run,
+   // and is not available in the environment-scoped view (null) — the section
+   // is simply omitted then.
    buildPlan: BuildPlan | null;
    onClose: () => void;
 };
@@ -51,20 +56,41 @@ export default function MaterializationDetailDialog({
       >
          {materialization && (
             <>
-               <DialogTitle sx={{ pr: 6 }} id="materialization-detail-title">
-                  <Stack direction="row" alignItems="center" spacing={1.5}>
+               <DialogTitle
+                  sx={{ pr: 6, pb: 1.5 }}
+                  id="materialization-detail-title"
+               >
+                  <Stack
+                     direction="row"
+                     alignItems="center"
+                     spacing={1}
+                     sx={{ mb: 0.75 }}
+                  >
                      <Chip
                         size="small"
                         label={statusLabel(materialization.status)}
                         color={statusColor(materialization.status)}
+                        variant={
+                           isActiveStatus(materialization.status)
+                              ? "filled"
+                              : "outlined"
+                        }
                      />
-                     <Typography
-                        variant="subtitle1"
-                        sx={{ fontFamily: MONO_FONT_FAMILY }}
-                     >
-                        {materialization.id}
-                     </Typography>
+                     <TriggerChip meta={meta} />
                   </Stack>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                     {materialization.packageName ?? "Materialization"}
+                  </Typography>
+                  <Typography
+                     variant="caption"
+                     color="text.secondary"
+                     sx={{
+                        fontFamily: MONO_FONT_FAMILY,
+                        wordBreak: "break-all",
+                     }}
+                  >
+                     {materialization.id}
+                  </Typography>
                   <IconButton
                      aria-label="close"
                      onClick={onClose}
@@ -76,21 +102,16 @@ export default function MaterializationDetailDialog({
                <DialogContent dividers>
                   <Box
                      sx={{
+                        bgcolor: "action.hover",
+                        borderRadius: 2,
+                        p: 2,
+                        mb: 3,
                         display: "grid",
                         gridTemplateColumns:
-                           "repeat(auto-fit, minmax(150px, 1fr))",
+                           "repeat(auto-fit, minmax(140px, 1fr))",
                         gap: 2,
-                        mb: 3,
                      }}
                   >
-                     <DetailField
-                        label="Package"
-                        value={materialization.packageName ?? "—"}
-                     />
-                     <DetailField
-                        label="Force refresh"
-                        value={meta.forceRefresh ? "Yes" : "No"}
-                     />
                      <DetailField
                         label="Started"
                         value={formatTimestamp(
@@ -110,32 +131,30 @@ export default function MaterializationDetailDialog({
                         )}
                      />
                      <DetailField
-                        label="Sources built"
-                        value={`${meta.sourcesBuilt ?? 0}`}
+                        label="Sources"
+                        value={`${meta.sourcesBuilt ?? 0} built · ${meta.sourcesReused ?? 0} reused`}
                      />
                      <DetailField
-                        label="Sources reused"
-                        value={`${meta.sourcesReused ?? 0}`}
-                     />
-                     <DetailField
-                        label="Created"
-                        value={formatTimestamp(materialization.createdAt)}
-                     />
-                     <DetailField
-                        label="Updated"
-                        value={formatTimestamp(materialization.updatedAt)}
+                        label="Force refresh"
+                        value={meta.forceRefresh ? "Yes" : "No"}
                      />
                   </Box>
 
                   {materialization.error && (
-                     <Box sx={{ mb: 3 }}>
-                        <Typography
-                           variant="subtitle2"
-                           color="error"
-                           gutterBottom
-                        >
-                           Error
-                        </Typography>
+                     <Box
+                        sx={{
+                           borderRadius: 2,
+                           p: 2,
+                           mb: 3,
+                           border: "1px solid",
+                           borderColor: "error.main",
+                        }}
+                     >
+                        <SectionLabel>
+                           <Box component="span" sx={{ color: "error.main" }}>
+                              Error
+                           </Box>
+                        </SectionLabel>
                         <Typography
                            variant="body2"
                            sx={{
@@ -148,19 +167,9 @@ export default function MaterializationDetailDialog({
                      </Box>
                   )}
 
-                  <Box sx={{ mb: 3 }}>
-                     <Typography variant="subtitle2" gutterBottom>
-                        Build plan
-                     </Typography>
-                     {planSources.length === 0 ? (
-                        <Typography
-                           variant="body2"
-                           color="text.secondary"
-                           sx={{ fontStyle: "italic" }}
-                        >
-                           This package has no persist sources.
-                        </Typography>
-                     ) : (
+                  {planSources.length > 0 && (
+                     <Box sx={{ mb: 3 }}>
+                        <SectionLabel>Build plan</SectionLabel>
                         <Table size="small">
                            <TableHead>
                               <TableRow>
@@ -204,8 +213,8 @@ export default function MaterializationDetailDialog({
                               ))}
                            </TableBody>
                         </Table>
-                     )}
-                  </Box>
+                     </Box>
+                  )}
 
                   <ManifestView
                      entries={materialization.manifest?.entries}

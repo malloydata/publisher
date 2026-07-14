@@ -9,7 +9,11 @@ import {
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { Materialization, MaterializationActionActionEnum } from "../../client";
+import {
+   Materialization,
+   MaterializationActionActionEnum,
+   PackageScopeEnum,
+} from "../../client";
 import {
    useMutationWithApiError,
    useQueryWithApiError,
@@ -21,6 +25,7 @@ import { useServer } from "../ServerProvider";
 import CreateMaterializationDialog from "./CreateMaterializationDialog";
 import MaterializationDetailDialog from "./MaterializationDetailDialog";
 import MaterializationRunsList from "./MaterializationRunsList";
+import ScheduleCard from "./ScheduleCard";
 import { isActiveStatus } from "./utils";
 
 const MATERIALIZATION_POLL_MS = 3000;
@@ -144,6 +149,35 @@ export default function Materializations({
       },
    });
 
+   const currentPackage = packageQuery.data?.data;
+
+   // Edit the package's materialization.schedule (persisted to publisher.json).
+   // A schedule is legal only on a version-scoped package, so enabling one also
+   // sets scope: version; clearing (null) leaves scope untouched. The running
+   // scheduler re-arms from the new cron on its next tick — no reload needed.
+   const updateSchedule = useMutationWithApiError({
+      mutationFn: (schedule: string | null) =>
+         apiClients.packages.updatePackage(environmentName, packageName, {
+            name: packageName,
+            // updatePackage overwrites description from the body — carry the
+            // current value through so a schedule edit doesn't drop it.
+            description: currentPackage?.description,
+            ...(schedule ? { scope: PackageScopeEnum.Version } : {}),
+            materialization: { schedule },
+         }),
+      onSuccess(_data, schedule) {
+         setNotificationMessage(
+            schedule ? "Schedule updated" : "Schedule cleared",
+         );
+         queryClient.invalidateQueries({
+            queryKey: ["package", environmentName, packageName],
+         });
+      },
+      onError(error) {
+         setNotificationMessage(error.message);
+      },
+   });
+
    const materializations = (listQuery.data?.data ?? []) as Materialization[];
    const selected =
       materializations.find((row) => row.id === selectedId) ?? null;
@@ -212,6 +246,19 @@ export default function Materializations({
                )}
             </Stack>
          </Box>
+
+         {packageQuery.isSuccess && (
+            <ScheduleCard
+               schedule={currentPackage?.materialization?.schedule ?? null}
+               manifestLocation={currentPackage?.manifestLocation ?? null}
+               hasFreshness={Boolean(
+                  currentPackage?.materialization?.freshness,
+               )}
+               mutable={mutable}
+               isSubmitting={updateSchedule.isPending}
+               onSubmit={(schedule) => updateSchedule.mutateAsync(schedule)}
+            />
+         )}
 
          <Box sx={{ mb: 6 }}>
             <Typography
