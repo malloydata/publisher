@@ -37,6 +37,8 @@ Publisher exposes one MCP endpoint: `http://localhost:4040/mcp` (streamable HTTP
 
 Connect the client after the server is up. An MCP client discovers a server's tools when it connects, so if the client was already running when you started the server (for example you asked the agent to start it), its `malloy_*` tools stay missing until it reconnects. In Claude Code, reconnect with `/mcp` or restart Claude. The simplest path is to start the server first, then launch the agent.
 
+If you are the agent and you started the server during this session, your `malloy_*` tools will not show up however long you wait: your tool list was fixed when you connected. You cannot reconnect yourself. Say so and ask the user to run `/mcp` (or restart Claude). Do not quietly fall back to calling the REST API with curl instead. It looks like it is working, but it hides a fixable problem the user can clear in seconds, and it gives up the grounded discovery, compile checks, and reload that the tools exist to provide.
+
 Claude Code: this repo ships a project `.mcp.json`, so from a clone Claude Code offers to connect on first run. Approve it once. To add it elsewhere:
 
 ```bash
