@@ -6,7 +6,9 @@ Publisher is the open-source semantic model server for [Malloy](https://malloyda
 
 - Discover what data exists: environments, packages, models, sources, and fields, without knowing any names in advance.
 - Answer plain-English questions by running Malloy queries, which Publisher compiles to SQL and runs against the connected database.
-- Build and validate Malloy models, guided by the bundled skills.
+- Build and change Malloy models: validate an edit with `malloy_compile`, save it, then `malloy_reloadPackage` to run it by name. The `malloy-modeling` skill covers the workflow.
+- Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `html-data-apps` skill covers it.
+- Review Malloy for correctness with the `malloy-review` skill.
 
 All of it runs against a local server you start in step 1 and reach over MCP in step 2.
 
