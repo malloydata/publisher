@@ -21,15 +21,15 @@ const reloadShape = {
       ),
 };
 
-const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles a package on first use and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
+const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-Validate the change with malloy_compile FIRST, because a reload is destructive when the models do not compile: it removes the package's on-disk copy under publisher_data/ and drops the cached package, so a second reload cannot recover it. Recovery is a server restart with --init, which re-copies or re-downloads the package from publisher.config.json; a package that exists only under publisher_data/ cannot be recovered at all. A watch-mode symlink mount is exempt. A clean compile is the safety gate here, not just a speed-up.
+Validate the change with malloy_compile FIRST. A reload is destructive when the models do not compile: it removes the package's on-disk copy under publisher_data/ and drops the cached package, so a second reload cannot bring it back. Restarting with --init restores the package as configured, but it wipes all of publisher_data/ first, so it does not recover your edits and it discards every other in-place edit too. A watch-mode symlink mount is exempt from the removal. A clean compile is the safety gate here, not just a speed-up, so keep anything you cannot lose outside publisher_data/.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names malloy_getContext returns.
 
 ## Behavior
-Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. A package whose metadata carries an install location (only set by an API addPackage or a PATCH that supplies one, never by publisher.config.json) is re-fetched from that source instead, which overwrites on-disk edits. Packages loaded from publisher.config.json always recompile in place.
+Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package whose stored metadata carries an install location (only a PATCH that supplies one sets it) is re-fetched from that source instead, which overwrites on-disk edits.
 
 ## Response
 A JSON object with status "reloaded", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). A reload that hits a hard compile error returns an error payload instead.`;

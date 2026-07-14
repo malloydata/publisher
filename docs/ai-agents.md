@@ -23,8 +23,8 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 
 ### Authoring tools
 
-- `malloy_compile`: compile Malloy source against a model and return structured diagnostics (severity, message, line and column) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query. Diagnostic positions are relative to the model file with the submitted source appended to it.
-- `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after the package was first loaded becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. Compile first is a safety gate: a reload whose models do not compile removes the package's on-disk copy under `publisher_data/`.
+- `malloy_compile`: compile Malloy source against a model and return structured diagnostics (`severity`, `message`, `line`, `character`) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query. Positions are 0-based and relative to the model file with the submitted source appended to it.
+- `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after boot becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. Compile first is a safety gate: a reload whose models do not compile removes the package's on-disk copy under `publisher_data/`.
 
 ### Skills as MCP prompts
 
