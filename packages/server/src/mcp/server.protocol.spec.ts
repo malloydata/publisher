@@ -46,6 +46,12 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(prompts.some((p) => p.name === "malloy-analysis")).toBe(true);
    });
 
+   it("delivers orientation instructions to the connecting client", () => {
+      const instructions = client.getInstructions();
+      expect(instructions).toBeDefined();
+      expect(instructions).toContain("malloy_getContext");
+   });
+
    it("malloy_searchDocs returns relevant docs over the protocol", async () => {
       const res = await client.callTool({
          name: "malloy_searchDocs",

@@ -23,13 +23,31 @@ const AGENT_SKILLS = (
    }
 ).skills;
 
+// Orientation delivered to any connecting MCP client via the initialize
+// response (the on-the-wire analog of AGENTS.md), so an agent that reached the
+// server over npx without cloning the repo still knows how to work. Kept
+// workflow-focused rather than a tool catalog, which the client already gets
+// from listTools, so it does not drift as the tool set changes.
+// SECURITY: this is delivered pre-authorization to any connecting client, so it
+// must stay STATIC and must never interpolate live environment, package, or
+// connection data.
+const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
+
+Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery, and validate model edits with malloy_compile before running them when that tool is available.
+
+Task-specific guidance is served as prompts you can fetch by name: getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
+
+Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
+
 export function initializeMcpServer(
    environmentStore: EnvironmentStore,
 ): McpServer {
    logger.info("[MCP Init] Starting initializeMcpServer...");
    const startTime = performance.now();
 
-   const mcpServer = new McpServer(testServerInfo);
+   const mcpServer = new McpServer(testServerInfo, {
+      instructions: MCP_INSTRUCTIONS,
+   });
 
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
