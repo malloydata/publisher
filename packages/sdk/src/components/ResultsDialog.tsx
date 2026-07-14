@@ -1,5 +1,6 @@
 import CloseIcon from "@mui/icons-material/Close";
 import { Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
+import { LogMessage } from "../client";
 import ResultContainer from "./RenderedResult/ResultContainer";
 
 interface ResultsDialogProps {
@@ -7,6 +8,7 @@ interface ResultsDialogProps {
    onClose: () => void;
    result: string;
    title?: string;
+   renderLogs?: LogMessage[];
 }
 
 export default function ResultsDialog({
@@ -14,6 +16,7 @@ export default function ResultsDialog({
    onClose,
    result,
    title = "Results",
+   renderLogs,
 }: ResultsDialogProps) {
    return (
       <Dialog
@@ -52,6 +55,7 @@ export default function ResultsDialog({
                result={result}
                maxHeight={800}
                maxResultSize={1000000}
+               renderLogs={renderLogs}
             />
          </DialogContent>
       </Dialog>

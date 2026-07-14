@@ -1,7 +1,10 @@
 import { Warning } from "@mui/icons-material";
-import { Box, Button, Typography } from "@mui/material";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import { Box, Button, IconButton, Tooltip, Typography } from "@mui/material";
 import { lazy, Suspense, useRef, useState } from "react";
+import { LogMessage } from "../../client";
 import { Loading } from "../Loading";
+import { summarizeRenderLogs } from "./renderLogs";
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 
@@ -12,6 +15,9 @@ interface ResultContainerProps {
    // this is to prevent performance issues with large results.
    // the default is 0, which means no warning will be shown.
    maxResultSize?: number;
+   // Render tag findings from the query response. Callers whose result did not
+   // come from a query response have none to pass.
+   renderLogs?: LogMessage[];
 }
 
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
@@ -22,10 +28,12 @@ export default function ResultContainer({
    result,
    maxHeight,
    maxResultSize = 0,
+   renderLogs,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
    const [measuredHeight, setMeasuredHeight] = useState(maxHeight);
    const [userAcknowledged, setUserAcknowledged] = useState(false);
+   const renderLogSummary = summarizeRenderLogs(renderLogs);
 
    if (!result) {
       return null;
@@ -89,6 +97,37 @@ export default function ResultContainer({
                   onSizeChange={setMeasuredHeight}
                />
             </Suspense>
+         )}
+         {renderLogSummary && (
+            // Overlaid rather than stacked, so the note cannot change the height
+            // the container just measured. The button is what makes the message
+            // reachable: an icon alone is aria-hidden and cannot take focus.
+            <Box sx={{ position: "absolute", top: 4, right: 4, zIndex: 1 }}>
+               <Tooltip
+                  title={renderLogSummary.title}
+                  slotProps={{ tooltip: { sx: { whiteSpace: "pre-line" } } }}
+               >
+                  <IconButton
+                     size="small"
+                     aria-label="Render tag warnings"
+                     sx={{
+                        backgroundColor: "rgba(255, 255, 255, 0.9)",
+                        "&:hover": {
+                           backgroundColor: "rgba(255, 255, 255, 1)",
+                        },
+                     }}
+                  >
+                     <InfoOutlinedIcon
+                        fontSize="small"
+                        color={
+                           renderLogSummary.severity === "error"
+                              ? "error"
+                              : "warning"
+                        }
+                     />
+                  </IconButton>
+               </Tooltip>
+            </Box>
          )}
       </Box>
    );
