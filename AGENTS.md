@@ -58,10 +58,11 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 { "mcpServers": { "malloy": { "command": "npx", "args": ["-y", "mcp-remote", "http://localhost:4040/mcp", "--allow-http"] } } }
 ```
 
-## 3. The three MCP tools
+## 3. The MCP tools
 
 - `malloy_getContext`: discovery and grounding. Call it with as much as you know and omit the rest. No arguments lists the environments, an environment lists its packages, a package lists its sources, and a plain-English query returns the most relevant sources, views, and fields. Use the names it returns verbatim.
 - `malloy_executeQuery`: run a Malloy query (a named view or query, or ad-hoc code) against a model and get JSON back.
+- `malloy_compile`: compile-check Malloy source against a model and get structured diagnostics back (severity, message, line and column) without running a query. Use it to validate a model or a change while authoring, instead of firing a throwaway query.
 - `malloy_searchDocs`: search the Malloy language documentation when you need syntax.
 
 ## 4. A first run, end to end

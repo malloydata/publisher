@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { EnvironmentStore } from "../service/environment_store";
 
 import { formatDuration, logger } from "../logger";
+import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
 import { registerGetContextTool } from "./tools/get_context_tool";
@@ -33,6 +34,7 @@ export function initializeMcpServer(
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
+   registerCompileTool(mcpServer, environmentStore);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the
