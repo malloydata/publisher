@@ -102,14 +102,16 @@ A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compo
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
 
-## Agent retrieval tools
+## Agent tools
 
-The MCP server on `:4040` also exposes two read-only retrieval tools aimed at AI agents:
+The MCP server on `:4040` exposes a small set of tools aimed at AI agents. See [`AGENTS.md`](AGENTS.md) for the full connect-and-use workflow.
 
-- **`malloy_getContext`**: given a plain-English question, returns the most relevant model entities (sources, views, named queries, and dimension/measure fields) for a package, so an agent can ground a query in what the model actually defines instead of guessing names.
+- **`malloy_getContext`**: progressive discovery and grounding. Call it with as much as you know and omit the rest: no arguments lists the environments, an environment lists its packages, a package lists its sources, and a plain-English query returns the most relevant sources, views, and fields. Use the names it returns verbatim.
+- **`malloy_executeQuery`**: run a Malloy query (a named view or query, or ad-hoc code) against a model and get JSON back.
+- **`malloy_compile`**: compile-check Malloy source against a model and get structured diagnostics (severity, message, line and column) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query.
 - **`malloy_searchDocs`**: keyword search over a bundled index of the Malloy documentation.
 
-It also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4040/mcp`. The server is stateless and unauthenticated; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
+The server also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4040/mcp`. The server is stateless and unauthenticated; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
 
 ## Documentation
 
@@ -145,7 +147,7 @@ When Malloy executes a query, the result includes both **data** and **rendering 
 
 An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the network and provides a professional UI for data exploration.
 
-- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, including [agent retrieval tools](#agent-retrieval-tools) and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
+- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, including [agent tools](#agent-tools) and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
 - **App:** Web interface for browsing Malloy content, exploring models with a no-code query builder, and viewing results.
 
 ### Publisher SDK
@@ -259,7 +261,7 @@ Publisher reads its runtime configuration from `publisher.config.json` (see [Dev
 | ----------------------------------------- | ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `PUBLISHER_PORT`                          | `--port <n>`                                    | `4000`    | REST + static-app HTTP port.                                                                                                                                                                           |
 | `PUBLISHER_HOST`                          | `--host <addr>`                                 | `0.0.0.0` | Host binding for the main server.                                                                                                                                                                      |
-| `MCP_PORT`                                | `--mcp_port <n>`                                | `4040`    | MCP HTTP port. Serves the core MCP tools plus the agent retrieval tools (`malloy_getContext`, `malloy_searchDocs`) and the agent skills as MCP prompts.                                                 |
+| `MCP_PORT`                                | `--mcp_port <n>`                                | `4040`    | MCP HTTP port. Serves the MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_searchDocs`) and the agent skills as MCP prompts.                                                 |
 | `SERVER_ROOT`                             | `--server_root <dir>`                           | `.` (cwd) | Directory containing `publisher.config.json`.                                                                                                                                                          |
 | `INITIALIZE_STORAGE`                      | `--init`                                        | _unset_   | Set to `true` (or pass `--init`) to initialize storage on boot. Set on the first run with new persistent storage; safe to omit afterward. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS`         | `--shutdown_drain_duration_seconds <s>`         | `0`       | Time to keep `/health` returning OK after SIGTERM before refusing new traffic.                                                                                                                         |
