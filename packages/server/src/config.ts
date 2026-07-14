@@ -298,8 +298,9 @@ export const getMaterializationSchedulerConfig =
          parseIntEnv("PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS") ??
          DEFAULT_SCHEDULER_INTERVAL_MS;
       const maxFiresPerTick =
-         parseIntEnv("PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK") ??
-         DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK;
+         parseIntEnv(
+            "PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK",
+         ) ?? DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK;
 
       if (tickIntervalMs < MIN_SCHEDULER_INTERVAL_MS) {
          throw new Error(

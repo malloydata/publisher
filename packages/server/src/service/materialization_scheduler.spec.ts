@@ -14,8 +14,11 @@ interface FakePkgOpts {
 }
 
 function fakePackage(name: string, opts: FakePkgOpts = {}) {
-   const { schedule = null, manifestLocation = null, policyWarnings = [] } =
-      opts;
+   const {
+      schedule = null,
+      manifestLocation = null,
+      policyWarnings = [],
+   } = opts;
    return {
       getPackageName: () => name,
       getPackageMetadata: () => ({
@@ -45,7 +48,9 @@ interface FireCall {
    opts: { forceRefresh?: boolean; trigger?: string };
 }
 
-function fakeService(opts: { throwConflict?: boolean; throwError?: boolean } = {}) {
+function fakeService(
+   opts: { throwConflict?: boolean; throwError?: boolean } = {},
+) {
    const calls: FireCall[] = [];
    const service = {
       calls,
@@ -68,10 +73,13 @@ function fakeService(opts: { throwConflict?: boolean; throwError?: boolean } = {
 }
 
 // A deterministic cron: nextAfter is always `from + 60s`; isValid configurable.
-function fakeCron(isValid: (expr: string) => boolean = () => true): CronEvaluator {
+function fakeCron(
+   isValid: (expr: string) => boolean = () => true,
+): CronEvaluator {
    return {
       isValid,
-      nextAfter: (_expr: string, from: Date) => new Date(from.getTime() + 60_000),
+      nextAfter: (_expr: string, from: Date) =>
+         new Date(from.getTime() + 60_000),
    } as unknown as CronEvaluator;
 }
 
@@ -112,7 +120,11 @@ describe("MaterializationScheduler", () => {
       await sched.tick(t0); // arm
       await sched.tick(dueLater); // due -> fire
       expect(service.calls).toEqual([
-         { env: "env1", pkg: "p", opts: { forceRefresh: true, trigger: "SCHEDULER" } },
+         {
+            env: "env1",
+            pkg: "p",
+            opts: { forceRefresh: true, trigger: "SCHEDULER" },
+         },
       ]);
    });
 

@@ -71,7 +71,9 @@ describe("Editable materialization schedule (PATCH)", () => {
       return (await res.json()) as Record<string, unknown>;
    }
 
-   function scheduleOf(pkg: Record<string, unknown>): string | null | undefined {
+   function scheduleOf(
+      pkg: Record<string, unknown>,
+   ): string | null | undefined {
       return (pkg.materialization as { schedule?: string | null } | null)
          ?.schedule;
    }
@@ -91,7 +93,9 @@ describe("Editable materialization schedule (PATCH)", () => {
    });
 
    it("edits and persists a new schedule", async () => {
-      const res = await patch({ materialization: { schedule: "*/30 * * * *" } });
+      const res = await patch({
+         materialization: { schedule: "*/30 * * * *" },
+      });
       expect(res.ok).toBe(true);
       expect(scheduleOf(await getPackage())).toBe("*/30 * * * *");
    });

@@ -40,7 +40,9 @@ describe("Environment-scoped materialization list", () => {
             `${baseUrl}/api/v0/environments/${PROJECT}/packages/${pkg}/materializations/${created.id}`,
          );
          const m = (await poll.json()) as { status: string };
-         if (["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status)) {
+         if (
+            ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status)
+         ) {
             break;
          }
          await new Promise((r) => setTimeout(r, 250));

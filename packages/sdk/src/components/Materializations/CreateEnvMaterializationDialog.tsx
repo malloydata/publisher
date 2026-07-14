@@ -115,7 +115,9 @@ export default function CreateEnvMaterializationDialog({
                               }}
                            />
                         }
-                        label={<Typography variant="body2">Select all</Typography>}
+                        label={
+                           <Typography variant="body2">Select all</Typography>
+                        }
                      />
                      <Box
                         sx={{

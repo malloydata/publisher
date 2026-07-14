@@ -131,8 +131,9 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          // The real build settles at MANIFEST_FILE_READY, producing the table.
          const built = await pollTerminal(scheduled[0].id as string);
          expect(built.status).toBe("MANIFEST_FILE_READY");
-         const entries = (built.manifest as { entries: Record<string, unknown> })
-            .entries;
+         const entries = (
+            built.manifest as { entries: Record<string, unknown> }
+         ).entries;
          expect(Object.keys(entries).length).toBe(1);
          // The SCHEDULER trigger must survive the build commit (not just exist
          // while the run is in-flight) — otherwise a completed scheduled run is
@@ -188,7 +189,10 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          await fetch(`${baseUrl}${API}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
+            body: JSON.stringify({
+               name: PACKAGE_NAME,
+               manifestLocation: null,
+            }),
          });
       },
       { timeout: 60_000 },
