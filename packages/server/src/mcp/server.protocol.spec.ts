@@ -38,6 +38,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("malloy_searchDocs")).toBe(true);
       expect(names.has("malloy_executeQuery")).toBe(true);
       expect(names.has("malloy_compile")).toBe(true);
+      expect(names.has("malloy_reloadPackage")).toBe(true);
    });
 
    it("exposes the skill set as dual-channel prompts", async () => {

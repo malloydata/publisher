@@ -6,6 +6,7 @@ import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
 import { registerGetContextTool } from "./tools/get_context_tool";
+import { registerReloadPackageTool } from "./tools/reload_package_tool";
 import skillsBundle from "./skills/skills_bundle.json";
 
 export const testServerInfo = {
@@ -33,7 +34,7 @@ const AGENT_SKILLS = (
 // connection data.
 const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
 
-Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery, and validate model edits with malloy_compile before running them when that tool is available.
+Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery, and validate model edits with malloy_compile before running them when that tool is available. After you save a model edit to disk, call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server.
 
 Task-specific guidance is served as prompts you can fetch by name: getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
 
@@ -53,6 +54,7 @@ export function initializeMcpServer(
    registerGetContextTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
    registerCompileTool(mcpServer, environmentStore);
+   registerReloadPackageTool(mcpServer, environmentStore);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the
