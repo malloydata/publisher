@@ -21,15 +21,15 @@ const reloadShape = {
       ),
 };
 
-const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles each package once at boot and serves that cached model, so a source or view you add to a .malloy file after boot is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
+const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles a package on first use and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-Validate the change with malloy_compile FIRST. Reloading a package whose models do not compile can remove its on-disk copy (recoverable only if the package has a remote source it can be re-fetched from), so a clean compile is a safety check here, not just a speed-up.
+Validate the change with malloy_compile FIRST, because a reload is destructive when the models do not compile: it removes the package's on-disk copy under publisher_data/ and drops the cached package, so a second reload cannot recover it. Recovery is a server restart with --init, which re-copies or re-downloads the package from publisher.config.json; a package that exists only under publisher_data/ cannot be recovered at all. A watch-mode symlink mount is exempt. A clean compile is the safety gate here, not just a speed-up.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names malloy_getContext returns.
 
 ## Behavior
-Recompiles the package from its current on-disk content, so your saved edits are picked up. A package with any configured install location (a github, git, gcs, s3, or absolute-path source) is re-fetched or re-mounted from that source on reload, which can overwrite local edits; only a package with no install location recompiles in place.
+Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. A package whose metadata carries an install location (only set by an API addPackage or a PATCH that supplies one, never by publisher.config.json) is re-fetched from that source instead, which overwrites on-disk edits. Packages loaded from publisher.config.json always recompile in place.
 
 ## Response
 A JSON object with status "reloaded", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). A reload that hits a hard compile error returns an error payload instead.`;
@@ -40,9 +40,9 @@ A JSON object with status "reloaded", the package name, any render-tag warnings,
  * server restart. Wraps the same PackageController.getPackage(reload=true) path
  * the REST GET /environments/:env/packages/:pkg?reload=true endpoint uses, so it
  * adds no capability beyond that already-exposed endpoint (SECURITY: parity with
- * REST — the MCP surface is unauthenticated, and so is that endpoint; a reload
- * mutates the shared in-memory package but returns only names + warnings, never
- * row data).
+ * REST. The MCP surface is unauthenticated, and so is that endpoint; a reload
+ * mutates the shared in-memory package but returns only names and warnings,
+ * never row data or the package's location).
  */
 export function registerReloadPackageTool(
    mcpServer: McpServer,

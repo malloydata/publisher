@@ -4,7 +4,7 @@
 
 Publisher speaks the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), so an AI agent can work with your Malloy models over a standard interface. Because a Malloy model already carries the business logic and the relationships between entities, an agent grounds its answers in your definitions instead of guessing at table and column names.
 
-Publisher exposes a single MCP server (port 4040) with the tools an agent needs: `malloy_getContext` to discover what the deployment exposes (environments, packages, sources, and the fields relevant to a question) and ground answers in real names, `malloy_searchDocs` to search the Malloy documentation, and `malloy_executeQuery` to run Malloy queries. It also serves the bundled agent skills as MCP prompts.
+Publisher exposes a single MCP server (port 4040) with the tools an agent needs: `malloy_getContext` to discover what the deployment exposes (environments, packages, sources, and the fields relevant to a question) and ground answers in real names, `malloy_searchDocs` to search the Malloy documentation, `malloy_executeQuery` to run Malloy queries, and, for authoring, `malloy_compile` to validate a model change without running it and `malloy_reloadPackage` to make a saved change queryable. It also serves the bundled agent skills as MCP prompts.
 
 Any MCP-compatible client can connect: a desktop chat app, an IDE assistant, or your own script.
 
@@ -21,13 +21,18 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 
 - `malloy_executeQuery`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md), and the deprecated `filterParams` argument for the legacy [`#(filter)` path](filters.md).
 
+### Authoring tools
+
+- `malloy_compile`: compile Malloy source against a model and return structured diagnostics (severity, message, line and column) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query. Diagnostic positions are relative to the model file with the submitted source appended to it.
+- `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after the package was first loaded becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. Compile first is a safety gate: a reload whose models do not compile removes the package's on-disk copy under `publisher_data/`.
+
 ### Skills as MCP prompts
 
 The server also serves the bundled agent [skills](../skills/) as MCP prompts. A host that ingests MCP but does not read skill files from disk (for example Codex, ChatGPT, or Cursor) can pull the same guidance through this channel. MCP prompts are on-demand: a client lists them and the user or host selects one, so guidance that is always-on for skill-aware hosts becomes opt-in here. For authoring or contributing skills, see [docs/agent-skills](agent-skills/).
 
 MCP also defines resources (for example links to a data dictionary). These are a newer part of the standard and many clients do not use them yet; a tool like the MCP Inspector lets you explore them.
 
-The server does not require authentication, and `malloy_executeQuery` runs Malloy against the databases your models connect to, so anyone who can reach this port can read that data. The server binds `0.0.0.0` by default, which also exposes it on your network. Bind it to loopback with `--host 127.0.0.1` for local-only use, and put an authenticating gateway in front before exposing it more widely.
+The server does not require authentication, and `malloy_executeQuery` runs Malloy against the databases your models connect to, so anyone who can reach this port can read that data. The surface is not read-only either: `malloy_reloadPackage` mutates server state, and a reload can re-fetch a package or remove its on-disk content. The same effects are already reachable through the equivalent REST endpoints, so this is a reason to gate the deployment rather than a reason to avoid the tools. The server binds `0.0.0.0` by default, which also exposes it on your network. Bind it to loopback with `--host 127.0.0.1` for local-only use, and put an authenticating gateway in front before exposing it more widely.
 
 ## Connecting a client
 
