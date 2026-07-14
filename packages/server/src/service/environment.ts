@@ -1077,18 +1077,23 @@ export class Environment {
             await fs.promises
                .rm(stagingPath, { recursive: true, force: true })
                .catch(() => {});
-            if (oldPackage) {
-               // A reinstall that rolled back left the previous package in
-               // `this.packages` (it is only replaced on success below), and the
-               // rollback restored its tree, so it is still serving. Deleting
-               // its status would strand it: listPackages enumerates
-               // packageStatuses, so the package would answer getPackage while
-               // being invisible to listings and discovery until a restart.
+            if (oldPackage && restored) {
+               // The rollback put the old tree back and the previous package is
+               // still in `this.packages` (it is only replaced on success
+               // below), so it is genuinely still serving. Deleting its status
+               // would strand it: listPackages enumerates packageStatuses, so
+               // the package would answer getPackage while being invisible to
+               // listings and discovery until a restart.
                this.setPackageStatus(packageName, PackageStatus.SERVING);
             } else {
-               // A first install that failed has nothing to fall back to, so
-               // clear the LOADING status set above.
+               // Either there was nothing to fall back to (a first install), or
+               // the restore did not happen: the rename-back threw, or the old
+               // tree was never on disk to retire. The canonical path is then
+               // missing or still holds the rejected content, so the cached
+               // package no longer matches disk and must not be advertised as
+               // serving. Drop both, and keep the two maps agreeing.
                this.deletePackageStatus(packageName);
+               this.packages.delete(packageName);
             }
             logger.debug("install.phase2.rollback", {
                environmentName: this.environmentName,

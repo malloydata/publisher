@@ -119,6 +119,41 @@ describe("failed reload does not destroy a serving package", () => {
       expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
       expect((await env.listPackages()).map((p) => p.name)).toContain("pkg");
       expect(await env.getPackage("pkg", false)).toBe(servingBefore);
+      // The on-disk half of the same claim: the rejected tree is gone and the
+      // user's is back. Without this, nothing pins "your files are left alone".
+      expect(
+         await fs.readFile(path.join(envPath, "pkg", "model.malloy"), "utf-8"),
+      ).toBe(GOOD_MODEL);
+   });
+
+   it("does not advertise a package as serving when the rollback could not restore it", async () => {
+      // Keeping the last-good package served is only honest when the rollback
+      // actually put its tree back. If nothing was restored, the cached package
+      // no longer matches disk, and claiming SERVING would advertise a package
+      // over a canonical path that is missing or still holds rejected content.
+      const env = await Environment.create("testEnv", envPath, []);
+      const pkgDir = path.join(envPath, "pkg");
+      await writePackageDir(pkgDir, GOOD_MODEL);
+      await env.addPackage("pkg");
+      expect(env.getPackageStatus("pkg")?.status).toBe(PackageStatus.SERVING);
+
+      // The tree disappears from under Publisher, so the reinstall has nothing
+      // to retire and the rollback has nothing to restore.
+      await fs.rm(pkgDir, { recursive: true, force: true });
+
+      const brokenFixture = path.join(rootDir, "broken-nofallback");
+      await writePackageDir(brokenFixture, BROKEN_MODEL);
+      await expect(
+         env.installPackage("pkg", (stagingPath) =>
+            copyDir(brokenFixture, stagingPath),
+         ),
+      ).rejects.toThrow();
+
+      // Eviction is the honest outcome here, and both maps must agree on it.
+      expect(env.getPackageStatus("pkg")).toBeUndefined();
+      expect((await env.listPackages()).map((p) => p.name)).not.toContain(
+         "pkg",
+      );
    });
 
    it("recovers on the next reload once the model compiles again", async () => {
