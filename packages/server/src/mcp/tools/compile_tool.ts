@@ -4,8 +4,8 @@ import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { CompileController } from "../../controller/compile.controller";
-import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
-import { buildMalloyUri } from "../handler_utils";
+import { type ErrorDetails } from "../error_messages";
+import { buildMalloyUri, classifyToolError } from "../handler_utils";
 
 // Zod shape for malloy_compile. environmentName/packageName mirror the other
 // tools and point the agent at malloy_getContext for name discovery.
@@ -150,7 +150,7 @@ export function registerCompileTool(
                modelPath,
                error: error instanceof Error ? error.message : String(error),
             });
-            const errorDetails: ErrorDetails = getMalloyErrorDetails(
+            const errorDetails: ErrorDetails = classifyToolError(
                "compile",
                `${environmentName}/${packageName}/${modelPath}`,
                error,

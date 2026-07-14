@@ -17,6 +17,44 @@ import type { Model } from "../service/model";
 import { logger } from "../logger";
 
 /**
+ * Turns a thrown error into agent-facing ErrorDetails, homed by error class.
+ *
+ * Without this, a tool that funnels every failure through getMalloyErrorDetails
+ * dresses each one up as a Malloy language problem: a missing package tells the
+ * agent to check its Malloy syntax, and a back-pressure rejection sends it
+ * hunting for a typo instead of retrying. Only errors that really are about the
+ * Malloy fall through to the Malloy advice.
+ *
+ * @param operation The operation that failed (e.g. 'compile', 'reloadPackage').
+ * @param identifier The resource it failed on (e.g. 'env/package').
+ */
+export function classifyToolError(
+   operation: string,
+   identifier: string,
+   error: unknown,
+): ErrorDetails {
+   if (
+      error instanceof EnvironmentNotFoundError ||
+      error instanceof PackageNotFoundError ||
+      error instanceof ModelNotFoundError
+   ) {
+      return getNotFoundError(identifier);
+   }
+   if (error instanceof ServiceUnavailableError) {
+      // Back-pressure: surface the server's own message so the caller knows to
+      // retry rather than to go edit its Malloy.
+      return {
+         message: error.message,
+         suggestions: [
+            "Retry once the publisher is below its configured memory or concurrency limit.",
+            "If this persists, raise the limit or scale up the pod.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   return getMalloyErrorDetails(operation, identifier, error);
+}
+
+/**
  * Fetches and validates the Package and Model instances needed for query execution.
  * Handles errors related to package/model access and initial compilation.
  * @returns An object containing the Model instance or a pre-formatted ErrorDetails object.

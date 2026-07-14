@@ -14,6 +14,18 @@ import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, getModelForQuery } from "../handler_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 
+/**
+ * Malloy's two ways of saying a name is not in the model's namespace: a bare
+ * reference ("Reference to undefined object 'x'") and a name used where the
+ * compiler expected a definition ("'x' is not defined").
+ */
+function isUndefinedNameError(message: string): boolean {
+   return (
+      message.includes("is not defined") ||
+      message.includes("Reference to undefined object")
+   );
+}
+
 // Zod shape defining required/optional params for executeQuery
 const executeQueryShape = {
    // environmentName is required; other fields mirror SDK expectations
@@ -273,11 +285,24 @@ export function registerExecuteQueryTool(
                queryError,
             );
 
+            // A name the model does not define reads as a typo, and the
+            // suggestions say so. But the same error is what an author gets
+            // after saving a new source or view: the served model is the one
+            // compiled at boot, so the name exists on disk and not in memory.
+            // Point at the reload rather than let them hunt for a typo that
+            // isn't there.
+            const suggestions = [...errorDetails.suggestions];
+            if (isUndefinedNameError(errorDetails.message)) {
+               suggestions.push(
+                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call malloy_reloadPackage for this package, then retry.",
+               );
+            }
+
             // Format error details as structured JSON
             const errorJson = JSON.stringify(
                {
                   error: errorDetails.message,
-                  suggestions: errorDetails.suggestions,
+                  suggestions,
                },
                null,
                2,

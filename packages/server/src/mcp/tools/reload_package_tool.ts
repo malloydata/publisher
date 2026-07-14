@@ -3,8 +3,8 @@ import { z } from "zod";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { PackageController } from "../../controller/package.controller";
-import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
-import { buildMalloyUri } from "../handler_utils";
+import { type ErrorDetails } from "../error_messages";
+import { buildMalloyUri, classifyToolError } from "../handler_utils";
 
 // Zod shape for malloy_reloadPackage. environmentName/packageName mirror the
 // other tools and point the agent at malloy_getContext for name discovery.
@@ -23,7 +23,7 @@ const reloadShape = {
 
 const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-Validate the change with malloy_compile FIRST. A reload is destructive when the models do not compile: it removes the package's on-disk copy under publisher_data/ and drops the cached package, so a second reload cannot bring it back. Restarting with --init restores the package as configured, but it wipes all of publisher_data/ first, so it does not recover your edits and it discards every other in-place edit too. A watch-mode symlink mount is exempt from the removal. A clean compile is the safety gate here, not just a speed-up, so keep anything you cannot lose outside publisher_data/.
+A reload that fails to compile is safe: your files on disk are left alone, the previously compiled model keeps serving, and the compile errors come back in the response. Running malloy_compile first is still the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names malloy_getContext returns.
@@ -114,7 +114,7 @@ export function registerReloadPackageTool(
                packageName,
                error: error instanceof Error ? error.message : String(error),
             });
-            const errorDetails: ErrorDetails = getMalloyErrorDetails(
+            const errorDetails: ErrorDetails = classifyToolError(
                "reloadPackage",
                `${environmentName}/${packageName}`,
                error,

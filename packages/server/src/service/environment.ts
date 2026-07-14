@@ -860,8 +860,17 @@ export class Environment {
          return _package;
       } catch (error) {
          logger.error(`Failed to load package ${packageName}`, { error });
-         this.packages.delete(packageName);
-         this.packageStatuses.delete(packageName);
+         if (existingPackage !== undefined && reload) {
+            // A failed RELOAD must not take down a package that is already
+            // serving. The compiled model in `packages` is still the last good
+            // one (it is only replaced on success), so keep serving it and let
+            // the caller surface the error instead of evicting the package and
+            // leaving the environment with nothing to answer from.
+            this.setPackageStatus(packageName, PackageStatus.SERVING);
+         } else {
+            this.packages.delete(packageName);
+            this.packageStatuses.delete(packageName);
+         }
          throw error;
       }
    }
@@ -1019,6 +1028,10 @@ export class Environment {
                packageName,
                canonicalPath,
                () => this.malloyConfig.malloyConfig,
+               // This tree was just staged into place by the rename above, so a
+               // failed load leaves a half-built directory that is ours to
+               // remove; the rollback below restores the previous one.
+               true,
             );
             // Strict-reject hook (publish/update only — reload passes no
             // validator and stays fail-safe). Throw INSIDE the try so the

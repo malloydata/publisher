@@ -237,6 +237,17 @@ export class Package {
       packageName: string,
       packagePath: string,
       environmentMalloyConfig: PackageConnectionInput,
+      /**
+       * Delete `packagePath` if the load fails. Opt-in, and only correct for a
+       * caller that created the directory itself (an install staged into place),
+       * where the half-built tree is Publisher's to clean up and `installPackage`
+       * rolls the previous one back. Every other caller loads a directory that
+       * already existed: a reload of a package that is currently serving, or a
+       * user directory registered via addPackage. Deleting those on a transient
+       * compile error destroys the source and takes the package offline, so the
+       * default is to leave the directory alone.
+       */
+      cleanupDirectoryOnFailure: boolean = false,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -278,15 +289,20 @@ export class Package {
             malloy_package_name: packageName,
             status: packageLoadFailureStatus(error),
          });
-         // Clean up the package directory on failure, but NOT when packagePath
-         // is an in-place mount symlink (watch mode). Removing it would unmount
-         // the package, so a transient compile error from a half-typed model
-         // saved mid-edit would brick the package until a restart. The symlink
-         // points at the user's live source, which is left untouched; the next
-         // save recompiles against it.
+         // Clean up the package directory only when the caller opted in (an
+         // install that staged this tree), and never when packagePath is an
+         // in-place mount symlink (watch mode). Removing it would unmount the
+         // package, so a transient compile error from a half-typed model saved
+         // mid-edit would brick the package until a restart. The symlink points
+         // at the user's live source, which is left untouched; the next save
+         // recompiles against it.
          try {
             const stat = await fs.lstat(packagePath).catch(() => null);
-            if (stat?.isSymbolicLink()) {
+            if (!cleanupDirectoryOnFailure) {
+               logger.info(
+                  `Preserving existing package directory after failed load: ${packagePath}`,
+               );
+            } else if (stat?.isSymbolicLink()) {
                logger.info(
                   `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
                );
