@@ -36,6 +36,7 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
+import { CronEvaluator } from "./cron_evaluator";
 import { fetchManifestEntries } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
@@ -1264,6 +1265,8 @@ export class Environment {
          explores?: string[];
          queryableSources?: "declared" | "all";
          manifestLocation?: string | null;
+         scope?: ApiPackage["scope"];
+         materialization?: ApiPackage["materialization"];
       },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
@@ -1295,6 +1298,10 @@ export class Environment {
                : {}),
             ...(metadata.manifestLocation !== undefined
                ? { manifestLocation: metadata.manifestLocation }
+               : {}),
+            ...(metadata.scope !== undefined ? { scope: metadata.scope } : {}),
+            ...(metadata.materialization !== undefined
+               ? { materialization: metadata.materialization }
                : {}),
          };
 
@@ -1348,6 +1355,20 @@ export class Environment {
             body.manifestLocation !== undefined
                ? body.manifestLocation
                : existing.manifestLocation;
+         // Persist `scope` and `materialization` (the schedule cron) are
+         // editable via the API — both are writable in the schema. When the
+         // body carries them, apply the new value; otherwise preserve the
+         // manifest-derived one (a name/description-only PATCH must not wipe
+         // them, and the control plane must not misread the gap as a removal).
+         // Changing the schedule re-arms the standalone scheduler on its next
+         // tick — no reload needed.
+         const editingPolicy =
+            body.scope !== undefined || body.materialization !== undefined;
+         const scope = body.scope !== undefined ? body.scope : existing.scope;
+         const materialization =
+            body.materialization !== undefined
+               ? body.materialization
+               : existing.materialization;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
@@ -1356,25 +1377,35 @@ export class Environment {
             explores,
             queryableSources,
             manifestLocation,
-            // Carry the manifest-derived materialization policy through the
-            // PATCH. `setPackageMetadata` replaces the whole object, so omitting
-            // this wipes the in-memory `materialization` until the next reload —
-            // which makes a later getPackage report no schedule and lets the
-            // control plane misread the gap as a schedule removal. It is not a
-            // PATCH-editable field, so always preserve the existing value.
-            materialization: existing.materialization,
-            // Same rationale for the manifest-derived persist `scope`: not
-            // PATCH-editable, so preserve it rather than dropping it to the
-            // default until the next reload.
-            scope: existing.scope,
+            materialization,
+            scope,
          });
 
          // Strict-reject, symmetric with the publish path
          // (package.controller.addPackage): validate the resulting explores
          // against the live model set and restore the prior metadata before
          // rejecting, so a bad update neither persists nor mutates the served
-         // surface.
-         const invalidMsg = _package.formatInvalidExplores();
+         // surface. When the body edits the persistence policy (scope /
+         // materialization), also enforce the same scope/schedule/freshness
+         // rules a publish enforces, plus a valid 5-field cron — but only then,
+         // so a description-only PATCH on a package with a pre-existing
+         // (load-tolerated) policy warning is not newly rejected.
+         const policyMsg = editingPolicy
+            ? [
+                 _package.formatInvalidPersistencePolicy(),
+                 materialization?.schedule &&
+                 !new CronEvaluator().isValid(materialization.schedule)
+                    ? `materialization.schedule is not a valid 5-field UNIX cron: ${JSON.stringify(
+                         materialization.schedule,
+                      )}`
+                    : "",
+              ]
+                 .filter(Boolean)
+                 .join("\n")
+            : "";
+         const invalidMsg = [_package.formatInvalidExplores(), policyMsg]
+            .filter(Boolean)
+            .join("\n");
          if (invalidMsg) {
             _package.setPackageMetadata(existing);
             throw new BadRequestError(invalidMsg);
@@ -1386,6 +1417,8 @@ export class Environment {
             explores: normalizedExplores,
             queryableSources: body.queryableSources,
             manifestLocation: body.manifestLocation,
+            scope: body.scope,
+            materialization: body.materialization,
          });
 
          // When the body changes manifestLocation, apply it now so the new
