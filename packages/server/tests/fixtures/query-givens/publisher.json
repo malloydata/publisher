@@ -1,0 +1,5 @@
+{
+  "name": "query-givens",
+  "version": "1.0.0",
+  "description": "Fixture for /query givens forwarding (server + SDK)"
+}

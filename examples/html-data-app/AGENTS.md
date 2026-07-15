@@ -63,9 +63,10 @@ It adds one global, `window.Publisher`:
 
 `modelPath` is the model FILE path within the package (`"carriers.malloy"`), with
 `/` separators. It is not the source name. `opts` may carry `sourceName`,
-`queryName`, `filterParams` (values for the model's declared givens),
-`bypassFilters`, and `environment` / `package` (only for pages served outside
-`/environments/<env>/packages/<pkg>/`).
+`queryName`, `givens` (a `{ name: value }` map bound to the model's Malloy
+`given:` runtime parameters), `filterParams` (the legacy `#(filter)` source-filter
+API, distinct from givens), `bypassFilters`, and `environment` / `package` (only
+for pages served outside `/environments/<env>/packages/<pkg>/`).
 
 ## Query patterns
 
@@ -93,8 +94,10 @@ const rows = await Publisher.query(
 These values are interpolated into the query string, so they must come from
 trusted, constrained sources (a dropdown populated from the model's own distinct
 values, for example). For free-text or untrusted input, declare a `given:` on the
-model and pass the value through `opts.filterParams`, which the server formats
-safely by type; do not hand-build the `where:` from raw input.
+model and pass the value through `opts.givens`, which the runtime binds safely by
+type (parameterization, not string interpolation); do not hand-build the `where:`
+from raw input. Note this is not an authorization boundary: a client-supplied
+given is trusted unless a server upstream strips or finalizes it.
 
 A single-row KPI view returns a one-element array; read element zero:
 
@@ -131,6 +134,11 @@ gives an `n` column), so confirm those names against real output.
   real names.
 - Promise rejects with a message starting `Publisher.query:`: read `error.status`
   and `error.response` for the server's reason.
+- 400 on a bad given (ungated source): an unknown name (check spelling; names are
+  case-sensitive) or a wrong-typed value; Malloy rejects it when preparing the query.
+- 403 on a bad given (source with `#(authorize)`): an unknown name or wrong-typed
+  value fails closed in the authorize check, so it looks like access denied rather
+  than validation. Check the given names and values against the model.
 - Empty array when you expect rows: a filter value mismatch (case, spelling, type,
   or a non-ASCII character such as the `≤` or en-dash this model uses in its size
   buckets). Copy the literal verbatim from the model; confirm with a
