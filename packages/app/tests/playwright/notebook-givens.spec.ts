@@ -7,34 +7,35 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
  * End-to-end coverage for the Notebook "Parameters" panel that surfaces
- * Malloy `given:` runtime parameters. The publisher's malloy-samples
+ * Malloy `given:` runtime parameters. The publisher's storefront
  * fixture set doesn't ship a model with `given:` declarations, so the
- * spec writes its own .malloy + .malloynb into the `faa` package directory
+ * spec writes its own .malloy + .malloynb into the `storefront` package directory
  * before the suite runs, triggers a package reload, and cleans up after.
  */
 
 const FIXTURE_MODEL = "test_givens.malloy";
 const FIXTURE_NOTEBOOK = "test_givens_notebook.malloynb";
 
-const FAA_DIR = path.resolve(
+const PKG_DIR = path.resolve(
    path.dirname(fileURLToPath(import.meta.url)),
-   "../../../server/publisher_data/malloy-samples/faa",
+   "../../../server/publisher_data/examples/storefront",
 );
 
 const MODEL_SOURCE = `##! experimental.givens
 
-#(description="Two-letter IATA carrier code")
-given: target_code :: string is 'WN'
+#(description="Product category to spotlight")
+given: target_code :: string is 'Jeans'
 given: cutoff :: date is @2024-01-01
 given: include_x :: boolean is true
 
-source: carriers_with_given is duckdb.table('data/carriers.parquet') extend {
-  primary_key: code
-  measure: carrier_count is count()
+source: products_with_given is duckdb.table('data/products.parquet') extend {
+  primary_key: product_id
+  measure: product_count is count()
 
   view: by_code is {
-    where: code = $target_code
-    select: code, name, nickname
+    where: category = $target_code
+    select: product_id, name, brand
+    order_by: product_id
     limit: 1
   }
 }
@@ -47,11 +48,11 @@ const NOTEBOOK_SOURCE = `>>>markdown
 import "test_givens.malloy"
 
 >>>malloy
-run: carriers_with_given -> by_code
+run: products_with_given -> by_code
 `;
 
 async function reloadFaaPackage(baseURL: string): Promise<void> {
-   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.faa}?reload=true`;
+   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}?reload=true`;
    const res = await fetch(url);
    if (!res.ok) {
       throw new Error(`Package reload failed: ${res.status} ${res.statusText}`);
@@ -60,15 +61,15 @@ async function reloadFaaPackage(baseURL: string): Promise<void> {
 
 test.describe("notebook-givens", () => {
    test.beforeAll(async ({ baseURL }) => {
-      await fs.writeFile(path.join(FAA_DIR, FIXTURE_MODEL), MODEL_SOURCE);
-      await fs.writeFile(path.join(FAA_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
+      await fs.writeFile(path.join(PKG_DIR, FIXTURE_MODEL), MODEL_SOURCE);
+      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
       await reloadFaaPackage(baseURL!);
    });
 
    test.afterAll(async ({ baseURL }) => {
-      await fs.unlink(path.join(FAA_DIR, FIXTURE_MODEL)).catch(() => undefined);
+      await fs.unlink(path.join(PKG_DIR, FIXTURE_MODEL)).catch(() => undefined);
       await fs
-         .unlink(path.join(FAA_DIR, FIXTURE_NOTEBOOK))
+         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
          .catch(() => undefined);
       await reloadFaaPackage(baseURL!).catch(() => undefined);
    });
@@ -76,7 +77,7 @@ test.describe("notebook-givens", () => {
    async function openGivensNotebook(page: import("@playwright/test").Page) {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.faa);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
       await expect(page).toHaveURL(/test_givens_notebook\.malloynb/);
    }
@@ -87,7 +88,7 @@ test.describe("notebook-givens", () => {
       // Sanity-check the wire shape before driving the UI: if this fails,
       // the test fixture is wrong or the introspection regressed, not the
       // SDK widgets.
-      const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.faa}/notebooks/${FIXTURE_NOTEBOOK}`;
+      const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}/notebooks/${FIXTURE_NOTEBOOK}`;
       const res = await fetch(url);
       expect(res.ok).toBe(true);
       const body = (await res.json()) as {
@@ -118,18 +119,18 @@ test.describe("notebook-givens", () => {
 
       // Not exact: the helper line now also carries the `Default: …` caption.
       await expect(
-         page.getByText("Two-letter IATA carrier code", { exact: false }),
+         page.getByText("Product category to spotlight", { exact: false }),
       ).toBeVisible();
    });
 
    test("model default surfaces as a helper line", async ({ page }) => {
       await openGivensNotebook(page);
 
-      // target_code defaults to 'WN' (string literal unquoted) and cutoff to
+      // target_code defaults to 'Jeans' (string literal unquoted) and cutoff to
       // @2024-01-01 (date, @ stripped). Both shown as a Default caption while
       // the inputs stay empty — the value still comes from the model default.
       await expect(
-         page.getByText("Default: WN", { exact: false }),
+         page.getByText("Default: Jeans", { exact: false }),
       ).toBeVisible();
       await expect(
          page.getByText("Default: 2024-01-01", { exact: false }),
@@ -141,8 +142,8 @@ test.describe("notebook-givens", () => {
    }) => {
       await openGivensNotebook(page);
 
-      // Default `target_code` is 'WN' → carrier row should be Southwest Airlines.
-      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+      // Default `target_code` is 'Jeans' -> first Jeans product by id.
+      await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
    test("typing a value updates the cell result and × clears it", async ({
@@ -151,8 +152,8 @@ test.describe("notebook-givens", () => {
       await openGivensNotebook(page);
       const input = page.getByLabel("target_code");
 
-      await input.fill("AA");
-      await expect(page.getByText("American Airlines").first()).toBeVisible();
+      await input.fill("Tops");
+      await expect(page.getByText("Aurora Boxy Blouse").first()).toBeVisible();
 
       const clearBtn = page.getByRole("button", { name: "clear value" });
       await expect(clearBtn).toBeVisible();
@@ -160,21 +161,21 @@ test.describe("notebook-givens", () => {
 
       // After clear, the input is empty and the cell reverts to the default.
       await expect(input).toHaveValue("");
-      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+      await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
    test("Reset button clears all given values", async ({ page }) => {
       await openGivensNotebook(page);
       const input = page.getByLabel("target_code");
 
-      await input.fill("DL");
+      await input.fill("Shorts");
       const resetBtn = page.getByRole("button", { name: "Reset" });
       await expect(resetBtn).toBeVisible();
       await resetBtn.click();
 
       await expect(input).toHaveValue("");
       await expect(resetBtn).toBeHidden();
-      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+      await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
    test("empty string is a deliberate override, distinct from revert-to-default", async ({
@@ -183,26 +184,26 @@ test.describe("notebook-givens", () => {
       await openGivensNotebook(page);
       const input = page.getByLabel("target_code");
 
-      // Default WN → Southwest.
-      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+      // Default Jeans -> Cobalt Bootcut Jean.
+      await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
 
-      // Explicit AA → American.
-      await input.fill("AA");
-      await expect(page.getByText("American Airlines").first()).toBeVisible();
+      // Explicit Tops -> Aurora Boxy Blouse.
+      await input.fill("Tops");
+      await expect(page.getByText("Aurora Boxy Blouse").first()).toBeVisible();
 
       // Typing the field empty is an explicit "" override, NOT a revert: the
-      // cell re-runs with "" (no carrier matches), so American disappears and
-      // the default (WN/Southwest) does not come back.
+      // cell re-runs with "" (no category matches), so the Tops row disappears and
+      // the default (Jeans/Cobalt Bootcut Jean) does not come back.
       await input.fill("");
-      await expect(page.getByText("American Airlines")).toHaveCount(0);
-      await expect(page.getByText("Southwest Airlines")).toHaveCount(0);
+      await expect(page.getByText("Aurora Boxy Blouse")).toHaveCount(0);
+      await expect(page.getByText("Cobalt Bootcut Jean")).toHaveCount(0);
 
       // The × is present even though the field is empty — an override is active,
       // distinct from unset. Clicking it reverts to the model default.
       const clearBtn = page.getByRole("button", { name: "clear value" });
       await expect(clearBtn).toBeVisible();
       await clearBtn.click();
-      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+      await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
    test("boolean reflects the default when unset, and toggles/reverts as an explicit override", async ({

@@ -8,7 +8,7 @@ test.describe("package-databases — embedded", () => {
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
       // Redesigned package page lists databases under a "Package Data"
       // section as flat rows (no <table>). The h6 heading + at least one
@@ -24,7 +24,7 @@ test.describe("package-databases — embedded", () => {
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
       await page
          .getByText(/\.parquet/)

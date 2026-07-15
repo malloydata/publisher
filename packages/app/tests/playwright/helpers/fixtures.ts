@@ -1,9 +1,16 @@
-export const DEFAULT_ENV = "malloy-samples";
+export const DEFAULT_ENV = "examples";
 
 export const PACKAGES = {
-   imdb: "imdb",
-   ecommerce: "ecommerce",
-   faa: "faa",
+   /**
+    * Ecommerce model, notebook, and parquet data. The general-purpose package:
+    * the model, notebook, and database screens read it, and the notebook specs
+    * write their own throwaway fixtures into it.
+    */
+   storefront: "storefront",
+   /** Givens, `#(authorize)` gates, and row-level access. */
+   governed: "governed-analytics",
+   /** A no-build HTML dashboard served from the package's `public/`. */
+   dataApp: "html-data-app",
 } as const;
 
 /**
