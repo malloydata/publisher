@@ -22,6 +22,24 @@ describe("CronEvaluator", () => {
          // Out-of-range field.
          expect(cron.isValid("99 * * * *")).toBe(false);
       });
+
+      it("rejects cron-parser / Quartz extensions the UNIX parser lacks", () => {
+         // These parse under cron-parser but the control plane's cron-utils
+         // UNIX parser rejects them — pinning the grammar keeps a cron from
+         // validating locally yet silently never arming in production.
+         expect(cron.isValid("0 6 L * *")).toBe(false); // last day of month
+         expect(cron.isValid("0 6 15W * *")).toBe(false); // nearest weekday
+         expect(cron.isValid("0 6 * * 1#2")).toBe(false); // 2nd Monday
+         expect(cron.isValid("0 0 ? * *")).toBe(false); // Quartz no-specific
+         expect(cron.isValid("0 6 LW * *")).toBe(false); // last weekday
+      });
+
+      it("accepts UNIX month/day names (not mistaken for extensions)", () => {
+         expect(cron.isValid("0 6 * JUL *")).toBe(true); // JUL contains 'L'
+         expect(cron.isValid("0 6 * * WED")).toBe(true); // WED contains 'W'
+         expect(cron.isValid("0 6 * * THU")).toBe(true); // THU contains 'H'
+         expect(cron.isValid("0 6 * * MON-FRI")).toBe(true);
+      });
    });
 
    describe("nextAfter (UTC, strictly after)", () => {

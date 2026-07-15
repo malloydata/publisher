@@ -42,6 +42,7 @@ import {
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
+import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
@@ -845,6 +846,20 @@ export class Package {
                   `or freshness (objective tier), never both.`,
             );
          }
+      }
+
+      // Rule 4: the cron must be a valid 5-field UNIX expression (no L/W/#/?
+      // extensions — see CronEvaluator). Enforced here so publish (strict),
+      // PATCH (strict), package load (warn), and the standalone scheduler all
+      // apply the identical rule — a garbage cron can no longer pass publish
+      // and then silently never arm.
+      if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
+         warnings.push(
+            `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
+               `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +
+               `"minute hour day-of-month month day-of-week" (no L/W/#/? ` +
+               `extensions).`,
+         );
       }
 
       return warnings;

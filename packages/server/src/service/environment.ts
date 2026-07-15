@@ -36,7 +36,6 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
-import { CronEvaluator } from "./cron_evaluator";
 import { fetchManifestEntries } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
@@ -1395,22 +1394,14 @@ export class Environment {
          // against the live model set and restore the prior metadata before
          // rejecting, so a bad update neither persists nor mutates the served
          // surface. When the body edits the persistence policy (scope /
-         // materialization), also enforce the same scope/schedule/freshness
-         // rules a publish enforces, plus a valid 5-field cron — but only then,
-         // so a description-only PATCH on a package with a pre-existing
-         // (load-tolerated) policy warning is not newly rejected.
+         // materialization), also enforce the same scope/schedule/freshness/cron
+         // rules a publish enforces — but only then, so a description-only PATCH
+         // on a package with a pre-existing (load-tolerated) policy warning is
+         // not newly rejected. Cron validity is one of these rules
+         // (persistencePolicyWarnings Rule 4), so publish, PATCH, load, and the
+         // scheduler all enforce it identically.
          const policyMsg = editingPolicy
-            ? [
-                 _package.formatInvalidPersistencePolicy(),
-                 materialization?.schedule &&
-                 !new CronEvaluator().isValid(materialization.schedule)
-                    ? `materialization.schedule is not a valid 5-field UNIX cron: ${JSON.stringify(
-                         materialization.schedule,
-                      )}`
-                    : "",
-              ]
-                 .filter(Boolean)
-                 .join("\n")
+            ? _package.formatInvalidPersistencePolicy()
             : "";
          const invalidMsg = [_package.formatInvalidExplores(), policyMsg]
             .filter(Boolean)
