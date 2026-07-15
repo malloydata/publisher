@@ -270,6 +270,8 @@ source: orders is duckdb.table('orders.parquet') extend {
 - The expression may reference only givens and literals, never a column of the gated source; the check runs against a synthetic probe row, not your data.
 
 > **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(authorize)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
+>
+> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** — reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override — turning `#(authorize)` into a standalone boundary. Model access on `given:` + `#(authorize)` now; it is the surface that carries forward. See `docs/authorize.md` § Security model.
 
 Full syntax, OR/override semantics, validation, and the error contract: `docs/authorize.md`.
 
