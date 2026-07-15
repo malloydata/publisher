@@ -477,6 +477,10 @@ export class Environment {
                   // Map it to a 400 rather than silently omitting `sql` (which is
                   // indistinguishable from "no runnable query"). Duck-type on
                   // `.code`; let a MalloyError fall to the outer catch → problems.
+                  // The `runtime-given-` prefix is pinned to Malloy's error codes
+                  // (given_binding.ts / runtime.ts, same as model.ts) — if they're
+                  // renamed upstream a bad given would silently revert to the omit
+                  // branch below, so keep the two in sync.
                   const givenCode = (error as { code?: string })?.code;
                   if (
                      typeof givenCode === "string" &&

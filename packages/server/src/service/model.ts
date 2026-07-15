@@ -1350,7 +1350,11 @@ export class Model {
          // `runtime-given-*` error. Malloy is the single validator; the publisher
          // just maps its rejection to a clean 400. Duck-type on `.code`
          // (MalloyCompileError extends Error, not MalloyError, and isn't
-         // root-exported).
+         // root-exported). The `runtime-given-` prefix is a pinned coupling to
+         // Malloy's error codes (@malloydata/malloy given_binding.ts / runtime.ts);
+         // if they're renamed upstream, update it here (and in environment.ts) —
+         // otherwise these fall through to the generic 400 below with a worse
+         // message, and the /compile path silently omits `sql`.
          const givenCode = (error as { code?: string })?.code;
          if (
             typeof givenCode === "string" &&
