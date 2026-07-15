@@ -1,23 +1,23 @@
 {
-  "frozenConfig": false,
-  "environments": [
-    {
-      "name": "examples",
-      "packages": [
-        {
-          "name": "storefront",
-          "location": "https://github.com/malloydata/publisher/tree/main/examples/storefront"
-        },
-        {
-          "name": "governed-analytics",
-          "location": "https://github.com/malloydata/publisher/tree/main/examples/governed-analytics"
-        },
-        {
-          "name": "html-data-app",
-          "location": "https://github.com/malloydata/publisher/tree/main/examples/html-data-app"
-        }
-      ],
-      "connections": []
-    }
-  ]
+   "frozenConfig": false,
+   "environments": [
+      {
+         "name": "examples",
+         "packages": [
+            {
+               "name": "storefront",
+               "location": "../../examples/storefront"
+            },
+            {
+               "name": "governed-analytics",
+               "location": "../../examples/governed-analytics"
+            },
+            {
+               "name": "html-data-app",
+               "location": "../../examples/html-data-app"
+            }
+         ],
+         "connections": []
+      }
+   ]
 }

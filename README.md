@@ -36,10 +36,6 @@ all DuckDB-backed, no credentials required. Give the server a moment to report `
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # → "serving"
 ```
 
-> **Heads up:** on some Node 24 setups `npx` skips DuckDB's native binding and the server exits with
-> `Cannot find module ...duckdb.node`. Until that upstream fix lands, run from a clone instead
-> (`bun install && bun run build && bun run start`). See [deployment.md](docs/deployment.md).
-
 ## Point your agent at it
 
 This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the

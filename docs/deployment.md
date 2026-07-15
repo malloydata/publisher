@@ -14,13 +14,6 @@ Open http://localhost:4000 to explore the bundled example packages. `storefront`
 `governed-analytics`, and `html-data-app` are cloned from GitHub on first launch — expect a short wait
 before `operationalState` reports `serving`. No credentials required.
 
-> **Heads up — npx + DuckDB native binding.** On some Node 24 setups, `npx` does not install
-> DuckDB's native binding (`node_modules/duckdb/lib/binding/duckdb.node`), so the server exits at
-> startup with `Cannot find module ...duckdb.node`. This is an upstream `duckdb` install-script issue
-> tracked separately. Workaround until that's fixed: clone this repo and run
-> `bun install && bun run build && bun run start` from the repo root — the server build's
-> `bake-duckdb-extensions` step handles the DuckDB binding during `bun run build`.
-
 ## Verify it's working
 
 ```bash
