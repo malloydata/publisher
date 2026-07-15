@@ -283,6 +283,12 @@ const DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK = 10;
  * the scheduler never runs in an orchestrated deployment (where the control
  * plane drives materialization itself).
  *
+ * **Never set `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` on an orchestrated
+ * worker.** It is the primary safety guard: a control-plane-loaded package that
+ * is serving live has `manifestLocation === null`, so the scheduler's
+ * per-package `manifestLocation` skip does not cover it — only this flag being
+ * off keeps the standalone scheduler from double-driving the control plane.
+ *
  * Throws at startup on malformed input so a typo surfaces loudly rather than
  * silently disabling scheduling.
  */

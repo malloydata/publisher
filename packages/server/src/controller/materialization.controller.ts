@@ -20,6 +20,11 @@ export class MaterializationController {
       );
    }
 
+   // Whitelist: only these fields are read off the client body. `trigger` is
+   // deliberately NOT accepted here — it is service-level-only, defaulted to
+   // `ON_DEMAND` and set to `SCHEDULER` solely by the in-process scheduler
+   // (which calls the service directly, not this HTTP path). Do not add
+   // `trigger` to this parser, or an API caller could forge a scheduled run.
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
       sourceNames?: string[];

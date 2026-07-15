@@ -1357,18 +1357,27 @@ export class Environment {
                : existing.manifestLocation;
          // Persist `scope` and `materialization` (the schedule cron) are
          // editable via the API — both are writable in the schema. When the
-         // body carries them, apply the new value; otherwise preserve the
+         // body carries a value, apply it; otherwise preserve the
          // manifest-derived one (a name/description-only PATCH must not wipe
          // them, and the control plane must not misread the gap as a removal).
          // Changing the schedule re-arms the standalone scheduler on its next
          // tick — no reload needed.
-         const editingPolicy =
-            body.scope !== undefined || body.materialization !== undefined;
-         const scope = body.scope !== undefined ? body.scope : existing.scope;
-         const materialization =
-            body.materialization !== undefined
-               ? body.materialization
-               : existing.materialization;
+         //
+         // A *null* scope/materialization is treated the same as omitted
+         // (preserve), NOT a wipe: the control plane's post-build rebind PATCH
+         // carries only name/location/manifestLocation, but a client that
+         // serializes unset fields as explicit null must not thereby trip the
+         // policy gate below (a rejection there fails the orchestrated run) or
+         // reset the persisted policy. `manifestLocation` is deliberately
+         // different — null there means "clear" (revert to live), which the
+         // orchestrator relies on.
+         const scopeProvided = body.scope != null;
+         const materializationProvided = body.materialization != null;
+         const editingPolicy = scopeProvided || materializationProvided;
+         const scope = scopeProvided ? body.scope : existing.scope;
+         const materialization = materializationProvided
+            ? body.materialization
+            : existing.materialization;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
@@ -1417,8 +1426,13 @@ export class Environment {
             explores: normalizedExplores,
             queryableSources: body.queryableSources,
             manifestLocation: body.manifestLocation,
-            scope: body.scope,
-            materialization: body.materialization,
+            // Only write when explicitly provided (non-null): mirrors the
+            // null-as-absent rule above, so a rebind PATCH neither wipes the
+            // persisted policy nor writes a stray `scope: null`.
+            scope: scopeProvided ? body.scope : undefined,
+            materialization: materializationProvided
+               ? body.materialization
+               : undefined,
          });
 
          // When the body changes manifestLocation, apply it now so the new

@@ -4085,7 +4085,11 @@ components:
           type: ["object", "null"]
           description:
             Materialization metadata including build options, source counts,
-            and durations
+            and durations. Free-form object — fields such as `trigger`
+            (ON_DEMAND | SCHEDULER) live here deliberately, so a strict-schema
+            client does not need to know them. Promoting any such field to a
+            top-level `Materialization` property is a breaking schema change
+            that orchestrated clients must adopt first; do not do it casually.
         createdAt:
           type: string
           format: date-time

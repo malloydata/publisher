@@ -62,6 +62,10 @@ export class MaterializationRepository {
       return new Date();
    }
 
+   // Per-package list: intentionally UNBOUNDED when no limit is passed —
+   // existing callers may rely on the full history for a single package. Only
+   // the environment-wide `listByEnvironment` (which spans every package)
+   // applies a default cap; do not add one here.
    async list(
       environmentId: string,
       packageName: string,

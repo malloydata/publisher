@@ -31,6 +31,12 @@ interface ScheduleState {
  *      control-plane-driven) is skipped — the CP already fires it, so we never
  *      double-drive.
  *
+ * These guards are **independent and both load-bearing — never collapse them to
+ * just the `manifestLocation` check.** A control-plane-loaded package that is
+ * *serving live* has `manifestLocation === null`, so Guard 2 does not cover it;
+ * only Guard 1 (the opt-in flag, which an orchestrated worker must never set —
+ * see {@link getMaterializationSchedulerConfig}) keeps the scheduler off there.
+ *
  * It only sweeps **already-loaded** packages (never forces a load), fires the
  * existing `createMaterialization` auto-run path tagged `trigger=SCHEDULER`, and
  * only fires packages whose persistence policy is valid (`scope: version`, no
