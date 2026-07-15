@@ -26,6 +26,10 @@ const reloadShape = {
  * rather than restated there. Both surfaces describe the same behavior, and
  * keeping one copy is what stops them drifting: they have already had to be
  * resynchronized twice, and disagreed both times.
+ *
+ * SECURITY: interpolated into MCP_INSTRUCTIONS, which is delivered
+ * pre-authorization to any connecting client. Keep this a static string
+ * literal; never derive it from config, environment, or request data.
  */
 export const RELOAD_FAILURE_IS_SAFE =
    "A reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors.";

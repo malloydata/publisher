@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
+import { RELOAD_FAILURE_IS_SAFE } from "./tools/reload_package_tool";
 import type { EnvironmentStore } from "../service/environment_store";
 
 /**
@@ -51,6 +52,11 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       const instructions = client.getInstructions();
       expect(instructions).toBeDefined();
       expect(instructions).toContain("malloy_getContext");
+      // Pin the shared fragment, not just that instructions exist. The whole
+      // point of exporting it is that this surface and the tool description
+      // cannot drift, and they have drifted twice. Without this, deleting the
+      // interpolation leaves the suite green and the drift comes back.
+      expect(instructions).toContain(RELOAD_FAILURE_IS_SAFE);
    });
 
    it("malloy_searchDocs returns relevant docs over the protocol", async () => {

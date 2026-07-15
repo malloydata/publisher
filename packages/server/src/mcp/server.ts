@@ -33,10 +33,11 @@ const AGENT_SKILLS = (
 // workflow-focused rather than a tool catalog, which the client already gets
 // from listTools, so it does not drift as the tool set changes.
 // SECURITY: this is delivered pre-authorization to any connecting client, so it
-// must stay STATIC. It may interpolate module-scope constants (see
+// must stay STATIC. It may interpolate module-scope string LITERALS (see
 // RELOAD_FAILURE_IS_SAFE, shared with the tool description so the two cannot
-// drift), and must never interpolate live environment, package, connection, or
-// request data.
+// drift). Not "constants": `const x = process.env.FOO` is a module-scope
+// constant and would put deployment config into an unauthenticated string. It
+// must never interpolate environment, package, connection, or request data.
 const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
 
 Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE}
