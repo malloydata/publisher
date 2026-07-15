@@ -21,9 +21,18 @@ const reloadShape = {
       ),
 };
 
+/**
+ * What a failed reload does, in one sentence, shared with MCP_INSTRUCTIONS
+ * rather than restated there. Both surfaces describe the same behavior, and
+ * keeping one copy is what stops them drifting: they have already had to be
+ * resynchronized twice, and disagreed both times.
+ */
+export const RELOAD_FAILURE_IS_SAFE =
+   "A reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors.";
+
 const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-A reload that fails to compile is safe: your files on disk are left alone, the previously compiled model keeps serving, and the compile errors come back in the response. Running malloy_compile first is still the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload.
+${RELOAD_FAILURE_IS_SAFE} Running malloy_compile first is still the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names malloy_getContext returns.

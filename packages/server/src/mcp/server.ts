@@ -6,7 +6,10 @@ import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
 import { registerGetContextTool } from "./tools/get_context_tool";
-import { registerReloadPackageTool } from "./tools/reload_package_tool";
+import {
+   registerReloadPackageTool,
+   RELOAD_FAILURE_IS_SAFE,
+} from "./tools/reload_package_tool";
 import skillsBundle from "./skills/skills_bundle.json";
 
 export const testServerInfo = {
@@ -30,11 +33,13 @@ const AGENT_SKILLS = (
 // workflow-focused rather than a tool catalog, which the client already gets
 // from listTools, so it does not drift as the tool set changes.
 // SECURITY: this is delivered pre-authorization to any connecting client, so it
-// must stay STATIC and must never interpolate live environment, package, or
-// connection data.
+// must stay STATIC. It may interpolate module-scope constants (see
+// RELOAD_FAILURE_IS_SAFE, shared with the tool description so the two cannot
+// drift), and must never interpolate live environment, package, connection, or
+// request data.
 const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
 
-Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. A reload that fails to compile leaves your files alone and keeps serving the previous model, returning the compile errors.
+Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE}
 
 Task-specific guidance is served as prompts you can fetch by name: getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
 

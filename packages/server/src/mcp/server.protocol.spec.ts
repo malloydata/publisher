@@ -80,6 +80,29 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(res.isError).toBe(true);
    });
 
+   it("malloy_compile fails gracefully (isError) over the protocol", async () => {
+      // The stub store rejects on getEnvironment, so this exercises the tool's
+      // catch through a real client rather than only asserting it is listed.
+      const res = await client.callTool({
+         name: "malloy_compile",
+         arguments: {
+            environmentName: "nope",
+            packageName: "nope",
+            modelPath: "x.malloy",
+            source: "run: x -> { aggregate: c is count() }",
+         },
+      });
+      expect(res.isError).toBe(true);
+   });
+
+   it("malloy_reloadPackage fails gracefully (isError) over the protocol", async () => {
+      const res = await client.callTool({
+         name: "malloy_reloadPackage",
+         arguments: { environmentName: "nope", packageName: "nope" },
+      });
+      expect(res.isError).toBe(true);
+   });
+
    it("a skill prompt returns its body", async () => {
       const res = await client.getPrompt({ name: "malloy-analysis" });
       const content = res.messages[0].content as { text?: string };

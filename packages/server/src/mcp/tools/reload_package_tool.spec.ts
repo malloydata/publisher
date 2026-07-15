@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { registerReloadPackageTool } from "./reload_package_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
+import { PackageNotFoundError, ServiceUnavailableError } from "../../errors";
 
 // Capture the handler registerReloadPackageTool passes to McpServer.tool, so it
 // can be exercised against a mocked EnvironmentStore. The tool builds a
@@ -139,6 +140,33 @@ describe("malloy_reloadPackage tool", () => {
       const result = await handler({ ...args, environmentName: "nope" });
       expect(result.isError).toBe(true);
       expect(parse(result).error).toBeDefined();
+   });
+
+   it("reports a missing package as not-found, not as a Malloy syntax problem", async () => {
+      // Pin the remediation text, not just that an error came back. Asserting
+      // only that `error` is defined is what let every error class funnel
+      // through the Malloy helper unnoticed: a typo'd package name told the
+      // caller to go check its Malloy syntax.
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new PackageNotFoundError("Package 'nope' not found");
+         },
+      });
+      const parsed = parse(await handler({ ...args, packageName: "nope" }));
+      expect(parsed.error).toContain("Resource not found");
+      expect(JSON.stringify(parsed.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("reports back-pressure as retryable, not as a Malloy syntax problem", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new ServiceUnavailableError("Memory limit reached");
+         },
+      });
+      const parsed = parse(await handler(args));
+      expect(parsed.error).toContain("Memory limit reached");
+      expect(JSON.stringify(parsed.suggestions)).toContain("Retry");
+      expect(JSON.stringify(parsed.suggestions)).not.toContain("Malloy file");
    });
 
    it("surfaces a hard compile failure on reload as a tool error", async () => {
