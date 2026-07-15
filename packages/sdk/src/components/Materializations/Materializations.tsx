@@ -153,8 +153,10 @@ export default function Materializations({
 
    // Edit the package's materialization.schedule (persisted to publisher.json).
    // A schedule is legal only on a version-scoped package, so enabling one also
-   // sets scope: version; clearing (null) leaves scope untouched. The running
-   // scheduler re-arms from the new cron on its next tick — no reload needed.
+   // sets scope: version; clearing (null) leaves scope untouched — scope is an
+   // explicit control (updateScope below), so clearing a schedule no longer
+   // strands scope: version with no way back. The running scheduler re-arms from
+   // the new cron on its next tick — no reload needed.
    const updateSchedule = useMutationWithApiError({
       mutationFn: (schedule: string | null) =>
          apiClients.packages.updatePackage(environmentName, packageName, {
@@ -169,6 +171,29 @@ export default function Materializations({
          setNotificationMessage(
             schedule ? "Schedule updated" : "Schedule cleared",
          );
+         queryClient.invalidateQueries({
+            queryKey: ["package", environmentName, packageName],
+         });
+      },
+      onError(error) {
+         setNotificationMessage(error.message);
+      },
+   });
+
+   // Set the persist scope explicitly (package | version). Independent of the
+   // schedule so the version flip a schedule requires can be undone after the
+   // schedule is cleared. The server rejects scope: package while a schedule is
+   // still set (publish-gate Rule 2), so the UI only offers this when no
+   // schedule is active.
+   const updateScope = useMutationWithApiError({
+      mutationFn: (scope: PackageScopeEnum) =>
+         apiClients.packages.updatePackage(environmentName, packageName, {
+            name: packageName,
+            description: currentPackage?.description,
+            scope,
+         }),
+      onSuccess() {
+         setNotificationMessage("Scope updated");
          queryClient.invalidateQueries({
             queryKey: ["package", environmentName, packageName],
          });
@@ -250,13 +275,26 @@ export default function Materializations({
          {packageQuery.isSuccess && (
             <ScheduleCard
                schedule={currentPackage?.materialization?.schedule ?? null}
+               scope={
+                  currentPackage?.scope === PackageScopeEnum.Version
+                     ? "version"
+                     : "package"
+               }
                manifestLocation={currentPackage?.manifestLocation ?? null}
                hasFreshness={Boolean(
                   currentPackage?.materialization?.freshness,
                )}
                mutable={mutable}
                isSubmitting={updateSchedule.isPending}
+               isScopeMutating={updateScope.isPending}
                onSubmit={(schedule) => updateSchedule.mutateAsync(schedule)}
+               onScopeChange={(scope) =>
+                  updateScope.mutateAsync(
+                     scope === "version"
+                        ? PackageScopeEnum.Version
+                        : PackageScopeEnum.Package,
+                  )
+               }
             />
          )}
 

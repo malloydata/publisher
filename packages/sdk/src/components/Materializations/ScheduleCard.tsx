@@ -1,31 +1,56 @@
 import ScheduleIcon from "@mui/icons-material/Schedule";
-import { Box, Card, CardContent, Chip, Stack, Typography } from "@mui/material";
+import {
+   Box,
+   Card,
+   CardContent,
+   Chip,
+   Stack,
+   ToggleButton,
+   ToggleButtonGroup,
+   Tooltip,
+   Typography,
+} from "@mui/material";
 import { MONO_FONT_FAMILY } from "../styles";
 import { describeCron, formatNextRun } from "./cron";
 import SetScheduleDialog from "./SetScheduleDialog";
 
+type Scope = "package" | "version";
+
 type ScheduleCardProps = {
    /** The package's cron, or null when no schedule is declared. */
    schedule: string | null;
+   /** The package's persist scope. */
+   scope: Scope;
    /** When set, the package is control-plane-driven (orchestrated). */
    manifestLocation: string | null;
    /** True when the package declares a freshness policy (schedule N/A). */
    hasFreshness: boolean;
    mutable: boolean;
    isSubmitting: boolean;
+   /** True while a scope change is in flight. */
+   isScopeMutating?: boolean;
    onSubmit: (schedule: string | null) => Promise<unknown>;
+   /** Persist a new scope (package | version). */
+   onScopeChange?: (scope: Scope) => Promise<unknown>;
 };
 
 export default function ScheduleCard({
    schedule,
+   scope,
    manifestLocation,
    hasFreshness,
    mutable,
    isSubmitting,
+   isScopeMutating,
    onSubmit,
+   onScopeChange,
 }: ScheduleCardProps) {
    const orchestrated = Boolean(manifestLocation);
    const info = schedule ? describeCron(schedule) : null;
+   // A schedule requires version scope, so scope is locked while one is set —
+   // the server would reject scope: package (publish-gate Rule 2). Clearing the
+   // schedule unlocks it, giving an explicit way back to package scope.
+   const scopeLocked = Boolean(schedule);
 
    return (
       <Card variant="outlined" sx={{ borderRadius: 2, mb: 6 }}>
@@ -117,12 +142,73 @@ export default function ScheduleCard({
                      </Typography>
                   )}
 
+                  {!orchestrated && (
+                     <Box sx={{ mt: 2 }}>
+                        <Typography
+                           variant="caption"
+                           color="text.secondary"
+                           sx={{ display: "block", mb: 0.5 }}
+                        >
+                           Scope
+                        </Typography>
+                        <Tooltip
+                           title={
+                              scopeLocked
+                                 ? "A schedule requires version scope. Clear the schedule to change it."
+                                 : ""
+                           }
+                        >
+                           <span>
+                              <ToggleButtonGroup
+                                 size="small"
+                                 exclusive
+                                 value={scope}
+                                 disabled={
+                                    !mutable ||
+                                    !onScopeChange ||
+                                    scopeLocked ||
+                                    Boolean(isScopeMutating)
+                                 }
+                                 onChange={(_e, next: Scope | null) => {
+                                    if (next && next !== scope) {
+                                       onScopeChange?.(next);
+                                    }
+                                 }}
+                              >
+                                 <ToggleButton value="package">
+                                    package
+                                 </ToggleButton>
+                                 <ToggleButton value="version">
+                                    version
+                                 </ToggleButton>
+                              </ToggleButtonGroup>
+                           </span>
+                        </Tooltip>
+                        <Typography
+                           variant="caption"
+                           color="text.secondary"
+                           sx={{ display: "block", mt: 0.5 }}
+                        >
+                           {scope === "version"
+                              ? "Materialized artifacts are per version (required for a schedule)."
+                              : "Materialized artifacts are shared across versions."}
+                        </Typography>
+                     </Box>
+                  )}
+
                   <Typography
                      variant="caption"
                      color="text.secondary"
                      sx={{ display: "block", mt: 1.5 }}
                   >
                      Declared in <code>publisher.json</code>.
+                     {!orchestrated && (
+                        <>
+                           {" "}
+                           In a hosted deployment, a change takes effect on your
+                           next publish.
+                        </>
+                     )}
                   </Typography>
                </Box>
 

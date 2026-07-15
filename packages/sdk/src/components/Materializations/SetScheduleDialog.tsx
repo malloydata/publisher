@@ -92,7 +92,9 @@ export default function SetScheduleDialog({
             <DialogContent>
                <DialogContentText sx={{ mb: 2 }}>
                   The publisher rebuilds the materializations in this package on
-                  this cadence. Enter a 5-field UNIX cron, evaluated in UTC.
+                  this cadence. Enter a 5-field UNIX cron, evaluated in UTC. In
+                  a hosted deployment, the change takes effect on your next
+                  publish.
                </DialogContentText>
                <TextField
                   autoFocus
