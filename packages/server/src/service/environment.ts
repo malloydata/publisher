@@ -471,9 +471,26 @@ export class Environment {
             if (includeSql && queryMaterializer) {
                try {
                   sql = await queryMaterializer.getSQL({ givens });
-               } catch {
-                  // Source may not contain a runnable query (e.g. only source definitions),
-                  // in which case we simply omit the sql field.
+               } catch (error) {
+                  // A bad caller given (unknown name, wrong-typed value, finalized
+                  // override, ...) surfaces as a Malloy `runtime-given-*` error.
+                  // Map it to a 400 rather than silently omitting `sql` (which is
+                  // indistinguishable from "no runnable query"). Duck-type on
+                  // `.code`; let a MalloyError fall to the outer catch → problems.
+                  const givenCode = (error as { code?: string })?.code;
+                  if (
+                     typeof givenCode === "string" &&
+                     givenCode.startsWith("runtime-given-")
+                  ) {
+                     throw new BadRequestError(
+                        error instanceof Error ? error.message : String(error),
+                     );
+                  }
+                  if (error instanceof MalloyError) {
+                     throw error;
+                  }
+                  // Otherwise the source may just not contain a runnable query
+                  // (e.g. only source definitions) — omit the sql field.
                }
             }
 

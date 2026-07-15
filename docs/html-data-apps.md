@@ -155,14 +155,17 @@ The third argument, `opts`, is optional:
 |---|---|---|
 | `sourceName` | string | Run against a named source instead of passing a full `run:` string |
 | `queryName` | string | Run a saved query by name |
-| `filterParams` | object | Values for the model's declared runtime parameters (givens; see [givens](./givens.md)) |
+| `givens` | object | Values for the model's Malloy `given:` runtime parameters; a `{ name: value }` map bound for this query (see [givens](./givens.md)) |
+| `filterParams` | object | Values for the model's legacy `#(filter)` source filters (distinct from givens) |
 | `bypassFilters` | boolean | Skip required-filter enforcement (use sparingly) |
 | `environment`, `package` | string | Override the environment or package the query targets, for pages not served under `/environments/<env>/packages/<pkg>/` |
 
 `sourceName` and `queryName` are alternatives to passing a `run:` string as the
 second argument; use one path or the other. When a filter value comes from
-untrusted input, prefer a model `given:` plus `filterParams` over building the
-`where:` string by hand, so the server formats the value safely by type.
+untrusted input, prefer a model `given:` plus `opts.givens` over building the
+`where:` string by hand, so the runtime binds the value safely by type. (This is
+safe parameterization, not authorization: a client-supplied given is trusted
+unless a server upstream strips or finalizes it.)
 
 `Publisher.queryFull(...)` takes the same arguments but resolves to the full
 Malloy result envelope rather than just the rows. Use it when you want to hand
@@ -173,6 +176,22 @@ On a failed query the returned promise rejects with an `Error` whose message is
 prefixed `Publisher.query:`. The error carries `error.status` (the HTTP status)
 and `error.response` (the parsed JSON body), so you can branch on a missing
 filter, a compile error, or a permission failure.
+
+Given-related failures map to status like this:
+
+| Case | Status |
+|---|---|
+| Unknown given name, or a bad value, on an ungated source | 400 |
+| Unknown given name, or a bad value, on a source guarded by `#(authorize)` | 403 |
+| `#(authorize)` denies the caller | 403 |
+
+Malloy is the validator: an unknown given name or a wrong-typed value is
+rejected when the query is prepared, and the publisher maps that to a 400. On a
+source guarded by `#(authorize)`, though, the authorize check binds the supplied
+givens and fails closed, so a bad given there surfaces as a 403 that looks like
+access denied rather than validation. If a gated query returns 403 unexpectedly,
+check the given names and values against the model. (`opts.givens` is
+parameterization, not an authorization boundary.)
 
 ### Context
 
@@ -362,4 +381,4 @@ See also:
 - [Embedded Data Apps (React SDK)](./embedded-data-apps.md) for the React
   component embedding path and the signed-token exchange.
 - [Givens (runtime parameters)](./givens.md) for declaring model parameters and
-  passing them through `filterParams`.
+  passing them through `opts.givens`.
