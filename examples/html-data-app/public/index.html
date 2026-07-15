@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Airline Carriers</title>
+  <title>SaaS Subscriptions</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
@@ -74,7 +74,6 @@
     }
     .kpi .label { color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
     .kpi .value { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-top: 4px; }
-    .kpi .delta { font-size: 12px; color: var(--good); margin-top: 4px; }
 
     /* Charts grid */
     .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 20px; }
@@ -92,12 +91,14 @@
       font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
       color: var(--ink-soft); font-weight: 600;
     }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     tbody tr:hover { background: var(--bg); }
     .pill {
-      display: inline-block; font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
-      font-size: 12px; padding: 2px 8px; background: var(--accent-soft);
-      color: var(--accent); border-radius: 6px; font-weight: 600;
+      display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600;
     }
+    .pill.active { background: rgba(16,185,129,.12); color: #047857; }
+    .pill.trial { background: var(--accent-soft); color: var(--accent); }
+    .pill.churned { background: #fdecef; color: #b42318; }
 
     .err {
       background: #fff5f5; color: #b00020; border: 1px solid #fcc;
@@ -116,63 +117,55 @@
 <main>
   <header class="page">
     <div>
-      <h1>Airline Carriers</h1>
-      <p>Live data from <code>carriers.malloy</code> · edits hot-reload automatically</p>
+      <h1>SaaS Subscriptions</h1>
+      <p>Live data from <code>subscriptions.malloy</code> · edits hot-reload automatically</p>
     </div>
     <span class="badge">connected</span>
   </header>
 
   <div class="filters" id="filters">
     <label>
-      First letter
-      <select id="f-letter">
-        <option value="">All letters</option>
-      </select>
+      Plan
+      <select id="f-plan"><option value="">All plans</option></select>
     </label>
     <label>
-      Name length
-      <select id="f-bucket">
-        <option value="">All sizes</option>
-        <option>Short (≤12)</option>
-        <option>Medium (13–20)</option>
-        <option>Long (21+)</option>
-      </select>
+      Industry
+      <select id="f-industry"><option value="">All industries</option></select>
     </label>
     <label>
-      Sort table
-      <select id="f-sort">
-        <option value="name">Name (A→Z)</option>
-        <option value="code">Code (A→Z)</option>
-        <option value="name_chars">Name length</option>
-      </select>
+      Country
+      <select id="f-country"><option value="">All countries</option></select>
     </label>
     <span class="count" id="row-count">…</span>
     <button class="reset" id="reset">Reset</button>
   </div>
 
   <div class="kpis">
-    <div class="kpi"><div class="label">Total carriers</div><div class="value" id="kpi-total">…</div></div>
-    <div class="kpi"><div class="label">Avg name length</div><div class="value" id="kpi-avg">…</div></div>
-    <div class="kpi"><div class="label">Distinct first letters</div><div class="value" id="kpi-distinct">…</div></div>
+    <div class="kpi"><div class="label">Active MRR</div><div class="value" id="kpi-mrr">…</div></div>
+    <div class="kpi"><div class="label">Active subscriptions</div><div class="value" id="kpi-active">…</div></div>
+    <div class="kpi"><div class="label">Churn rate</div><div class="value" id="kpi-churn">…</div></div>
   </div>
 
   <div class="grid">
     <div class="card">
-      <h2>Carriers by first letter</h2>
-      <div class="chart-wrap"><canvas id="byLetter"></canvas></div>
+      <h2>New MRR by month</h2>
+      <div class="chart-wrap"><canvas id="mrrByMonth"></canvas></div>
     </div>
     <div class="card">
-      <h2>By name length</h2>
-      <div class="chart-wrap"><canvas id="byBucket"></canvas></div>
+      <h2>Plan mix</h2>
+      <div class="chart-wrap"><canvas id="planMix"></canvas></div>
     </div>
   </div>
 
   <div class="card">
-    <h2>All carriers</h2>
+    <h2>Accounts</h2>
     <div style="overflow-x: auto">
       <table id="rows">
         <thead>
-          <tr><th>Code</th><th>Name</th><th>Nickname</th><th>Letter</th><th style="text-align:right">Length</th><th>Bucket</th></tr>
+          <tr>
+            <th>Account</th><th>Plan</th><th>Industry</th><th>Country</th>
+            <th class="num">Seats</th><th class="num">MRR</th><th>Status</th>
+          </tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -185,11 +178,11 @@
 <script src="/sdk/publisher.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
 <script type="module">
-  // ---- helpers --------------------------------------------------------
-  function esc(s) {
-    return String(s ?? "").replace(/[<>&"]/g, c =>
-      ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
-  }
+  const MODEL = "subscriptions.malloy";
+  const usd = (n) => (n ?? 0).toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  const pct = (n) => `${((n ?? 0) * 100).toFixed(1)}%`;
+  const esc = (s) => String(s ?? "").replace(/[<>&"]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;" }[c]));
+
   function showError(where, e) {
     console.error(where, e);
     const div = document.createElement("div");
@@ -199,165 +192,120 @@
   }
 
   // ---- query builder --------------------------------------------------
-  // Compose a `where:` clause from the current filter state, then run Malloy
-  // queries that reuse the views defined in carriers.malloy.
-  function whereClause(state) {
-    const conds = [];
-    if (state.letter) conds.push(`letter = '${state.letter.replace(/'/g, "''")}'`);
-    if (state.bucket) conds.push(`size_bucket = '${state.bucket.replace(/'/g, "''")}'`);
-    return conds.length ? `where: ${conds.join(" and ")}\n` : "";
+  // Compose a where: clause from the current filter state. Values come only
+  // from the model's own distinct dimension values (the dropdowns below), so
+  // they're safe to interpolate. For free-text input, declare a given: instead.
+  const state = { plan: "", industry: "", country: "" };
+  function whereClause() {
+    const c = [];
+    if (state.plan) c.push(`plan = '${state.plan.replace(/'/g, "''")}'`);
+    if (state.industry) c.push(`industry = '${state.industry.replace(/'/g, "''")}'`);
+    if (state.country) c.push(`country = '${state.country.replace(/'/g, "''")}'`);
+    return c.length ? ` + { where: ${c.join(" and ")} }` : "";
   }
-  function runQuery(viewName, state, extra = "") {
-    const base = `run: carriers extend { ${extra} } -> ${viewName} + { ${whereClause(state)} }`;
-    return Publisher.query("carriers.malloy", base);
-  }
-  function runRowsQuery(state, sortKey) {
-    const orderBy = sortKey === "name_chars" ? "name_chars desc" : `${sortKey} asc`;
-    const q = `
-run: carriers -> {
-  ${whereClause(state)}select: code, name, nickname, letter, name_chars, size_bucket
-  order_by: ${orderBy}
-}`;
-    return Publisher.query("carriers.malloy", q);
-  }
-  function runKpis(state) {
-    return Publisher.query("carriers.malloy",
-      `run: carriers -> kpis + { ${whereClause(state)} }`);
-  }
+  const q = (body) => Publisher.query(MODEL, `${body}${whereClause()}`);
 
-  // ---- chart instances (kept so we can update on filter change) -------
-  let chartLetter = null, chartBucket = null;
+  // ---- charts ---------------------------------------------------------
+  let monthChart = null, planChart = null;
+  const PLAN_COLORS = ["#4f46e5", "#7c3aed", "#ec4899", "#10b981", "#f59e0b"];
 
-  function renderLetterChart(rows) {
-    const labels = rows.map(r => r.letter);
-    const data = rows.map(r => r.n);
-    if (chartLetter) {
-      chartLetter.data.labels = labels;
-      chartLetter.data.datasets[0].data = data;
-      chartLetter.update();
-      return;
-    }
-    chartLetter = new Chart(document.getElementById("byLetter"), {
-      type: "bar",
-      data: {
-        labels,
-        datasets: [{
-          label: "Carriers", data,
-          backgroundColor: "#4f46e5",
-          borderRadius: 6,
-          maxBarThickness: 36,
-        }],
-      },
+  function renderMonth(rows) {
+    const labels = rows.map(r => String(r.cohort_month ?? "").slice(0, 7));  // YYYY-MM
+    const data = rows.map(r => r.new_mrr);
+    if (monthChart) { monthChart.data.labels = labels; monthChart.data.datasets[0].data = data; monthChart.update(); return; }
+    monthChart = new Chart(document.getElementById("mrrByMonth"), {
+      type: "line",
+      data: { labels, datasets: [{ label: "New MRR", data, borderColor: "#4f46e5", backgroundColor: "rgba(79,70,229,.1)", fill: true, tension: 0.3, pointRadius: 2 }] },
       options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: "#eef0ff" } },
-          x: { grid: { display: false } },
-        },
+        responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, ticks: { callback: v => usd(v) }, grid: { color: "#eef0ff" } }, x: { grid: { display: false } } },
       },
     });
   }
 
-  function renderBucketChart(rows) {
-    const labels = rows.map(r => r.size_bucket);
-    const data = rows.map(r => r.n);
-    const colors = ["#4f46e5", "#7c3aed", "#ec4899"];
-    if (chartBucket) {
-      chartBucket.data.labels = labels;
-      chartBucket.data.datasets[0].data = data;
-      chartBucket.update();
-      return;
-    }
-    chartBucket = new Chart(document.getElementById("byBucket"), {
+  function renderPlanMix(rows) {
+    const labels = rows.map(r => r.plan);
+    const data = rows.map(r => r.account_count);
+    if (planChart) { planChart.data.labels = labels; planChart.data.datasets[0].data = data; planChart.update(); return; }
+    planChart = new Chart(document.getElementById("planMix"), {
       type: "doughnut",
-      data: {
-        labels,
-        datasets: [{ data, backgroundColor: colors, borderWidth: 0 }],
-      },
+      data: { labels, datasets: [{ data, backgroundColor: PLAN_COLORS, borderWidth: 0 }] },
       options: {
         responsive: true, maintainAspectRatio: false, cutout: "60%",
-        plugins: {
-          legend: { position: "bottom", labels: { boxWidth: 10, boxHeight: 10, padding: 12 } },
-        },
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 10, boxHeight: 10, padding: 12 } } },
       },
     });
   }
 
   function renderTable(rows) {
+    const cls = (s) => ({ Active: "active", Trial: "trial", Churned: "churned" }[s] || "");
     const tbody = document.querySelector("#rows tbody");
     tbody.innerHTML = rows.map(r => `
       <tr>
-        <td><span class="pill">${esc(r.code)}</span></td>
-        <td>${esc(r.name)}</td>
-        <td>${esc(r.nickname ?? "")}</td>
-        <td>${esc(r.letter)}</td>
-        <td style="text-align:right; font-variant-numeric: tabular-nums">${r.name_chars}</td>
-        <td>${esc(r.size_bucket)}</td>
+        <td>${esc(r.account_name)}</td>
+        <td>${esc(r.plan)}</td>
+        <td>${esc(r.industry)}</td>
+        <td>${esc(r.country)}</td>
+        <td class="num">${(r.seats ?? 0).toLocaleString()}</td>
+        <td class="num">${usd(r.mrr)}</td>
+        <td><span class="pill ${cls(r.status)}">${esc(r.status)}</span></td>
       </tr>`).join("");
     document.getElementById("row-count").textContent =
-      `${rows.length.toLocaleString()} ${rows.length === 1 ? "carrier" : "carriers"}`;
+      `${rows.length.toLocaleString()} ${rows.length === 1 ? "account" : "accounts"}`;
   }
 
   function renderKpis(k) {
-    document.getElementById("kpi-total").textContent = k.total ?? 0;
-    document.getElementById("kpi-avg").textContent =
-      k.avg_name_length != null ? k.avg_name_length.toFixed(1) : "—";
-    document.getElementById("kpi-distinct").textContent = k.distinct_letters ?? 0;
+    document.getElementById("kpi-mrr").textContent = usd(k.active_mrr);
+    document.getElementById("kpi-active").textContent = (k.active_count ?? 0).toLocaleString();
+    document.getElementById("kpi-churn").textContent = pct(k.churn_rate);
   }
 
-  // ---- top-level state and refresh -----------------------------------
-  const state = { letter: "", bucket: "", sort: "name" };
-
-  async function populateLetterDropdown() {
-    // Pull the unfiltered set of letters so the dropdown always shows
-    // every option, regardless of current filters.
-    const letters = await Publisher.query("carriers.malloy", "run: carriers -> by_letter");
-    const select = document.getElementById("f-letter");
-    for (const r of letters) {
-      const opt = document.createElement("option");
-      opt.value = r.letter;
-      opt.textContent = `${r.letter}  (${r.n})`;
-      select.appendChild(opt);
-    }
+  // ---- load + refresh -------------------------------------------------
+  async function populateFilters() {
+    // Unfiltered distinct values so the dropdowns always list every option.
+    const [plans, industries, countries] = await Promise.all([
+      Publisher.query(MODEL, "run: subscriptions -> plan_mix"),
+      Publisher.query(MODEL, "run: subscriptions -> mrr_by_industry"),
+      Publisher.query(MODEL, "run: subscriptions -> mrr_by_country"),
+    ]);
+    const fill = (id, rows, key) => {
+      const sel = document.getElementById(id);
+      for (const r of rows) { const o = document.createElement("option"); o.value = o.textContent = r[key]; sel.appendChild(o); }
+    };
+    fill("f-plan", plans, "plan");
+    fill("f-industry", industries, "industry");
+    fill("f-country", countries, "country");
   }
 
   async function refresh() {
     try {
-      const [byLetter, byBucket, rows, kpisArr] = await Promise.all([
-        runQuery("by_letter", state),
-        runQuery("by_size_bucket", state),
-        runRowsQuery(state, state.sort),
-        runKpis(state),
+      const [kpiRows, byMonth, planMix, accounts] = await Promise.all([
+        q("run: subscriptions -> kpis"),
+        q("run: subscriptions -> mrr_by_month"),
+        q("run: subscriptions -> plan_mix"),
+        q("run: subscriptions -> accounts + { limit: 100 }"),
       ]);
-      renderLetterChart(byLetter);
-      renderBucketChart(byBucket);
-      renderTable(rows);
-      renderKpis(kpisArr[0] ?? {});
+      renderKpis(kpiRows[0] ?? {});
+      renderMonth(byMonth);
+      renderPlanMix(planMix);
+      renderTable(accounts);
     } catch (e) {
       showError("Refresh", e);
     }
   }
 
-  // ---- wire up UI ----------------------------------------------------
-  document.getElementById("f-letter").addEventListener("change", e => {
-    state.letter = e.target.value; refresh();
-  });
-  document.getElementById("f-bucket").addEventListener("change", e => {
-    state.bucket = e.target.value; refresh();
-  });
-  document.getElementById("f-sort").addEventListener("change", e => {
-    state.sort = e.target.value; refresh();
-  });
+  document.getElementById("f-plan").addEventListener("change", e => { state.plan = e.target.value; refresh(); });
+  document.getElementById("f-industry").addEventListener("change", e => { state.industry = e.target.value; refresh(); });
+  document.getElementById("f-country").addEventListener("change", e => { state.country = e.target.value; refresh(); });
   document.getElementById("reset").addEventListener("click", () => {
-    state.letter = ""; state.bucket = ""; state.sort = "name";
-    document.getElementById("f-letter").value = "";
-    document.getElementById("f-bucket").value = "";
-    document.getElementById("f-sort").value = "name";
+    state.plan = ""; state.industry = ""; state.country = "";
+    document.getElementById("f-plan").value = "";
+    document.getElementById("f-industry").value = "";
+    document.getElementById("f-country").value = "";
     refresh();
   });
 
-  populateLetterDropdown().catch(e => showError("Loading filters", e));
+  populateFilters().catch(e => showError("Loading filters", e));
   refresh();
 </script>
 </body>

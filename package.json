@@ -47,7 +47,10 @@
     "prettier:check": "bunx prettier './packages/**/*.{ts,tsx}' --check",
     "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
-    "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js"
+    "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js",
+    "generate:example-data": "node scripts/generate-example-data.mjs",
+    "docs:screenshots": "node scripts/capture-screenshots.mjs",
+    "docs:recordings": "node scripts/capture-recordings.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",

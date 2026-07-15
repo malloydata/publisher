@@ -230,7 +230,7 @@ A JSON object with a results array whose items carry a kind field. For retrieval
 - Start broad and narrow down: list environments, then packages, then sources, then query.
 
 ## Worked example
-{ "environmentName": "malloy-samples", "packageName": "ecommerce", "query": "revenue by product category" }`;
+{ "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
 
 /**
  * Wrap a JSON payload in the MCP resource-content shape every tier of this tool

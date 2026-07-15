@@ -1040,8 +1040,8 @@ describe("Config path resolution (--config and bundled default)", () => {
 
       expect(result.environments.length).toBeGreaterThan(0);
       const env = result.environments[0];
-      expect(env.name).toBe("malloy-samples");
-      expect(env.packages.some((p) => p.name === "ecommerce")).toBe(true);
+      expect(env.name).toBe("examples");
+      expect(env.packages.some((p) => p.name === "storefront")).toBe(true);
       expect(env.packages.some((p) => p.name === "bigquery-hackernews")).toBe(
          false,
       );

@@ -1,5 +1,11 @@
 # Authorize (Source Access Gates)
 
+> What this is: how `#(authorize)` annotations gate *who* may query a source (HTTP 403 otherwise).
+> Runnable example: [examples/governed-analytics](../examples/governed-analytics). For the base
+> mechanism, see [givens.md](givens.md); for row scoping, see [row-level-access.md](row-level-access.md).
+
+`#(authorize)` is the **source-authorization** application of [givens](givens.md): it allows or denies access to an *entire* source. (To scope *which rows* a caller sees within an allowed source, see [Row-level access](row-level-access.md).)
+
 `#(authorize)` annotations gate query access to a Malloy source based on the request's [givens](givens.md). Before Publisher runs any query that reads a gated source, it evaluates the source's in-scope authorize expressions against the supplied givens; if **at least one** returns `true` the request proceeds, otherwise it is rejected with **HTTP 403**. A source with no in-scope annotations is unrestricted.
 
 Authorize is evaluated by Publisher (not core Malloy) using a synthetic probe query against bundled DuckDB (a one-row `SELECT 1`), so the expression language is Malloy's, but the gate runs entirely over `given:` values — it never touches your warehouse data.
@@ -160,29 +166,40 @@ Authorize expressions are validated at **model load** (compile-only, no executio
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.
 - **No per-request caching.** Each gate runs a fresh probe against bundled DuckDB (microseconds); a security decision is intentionally not memoized.
 
-## Worked example
+## Runnable example
+
+[`examples/governed-analytics`](../examples/governed-analytics) gates a real source with two stacked
+annotations — an admin override plus a tenant allow-list — in
+[`secured.malloy`](../examples/governed-analytics/secured.malloy):
 
 ```malloy
-##! experimental.givens
-
 given:
-  ROLE :: string
+  ROLE :: string is ''
+  TENANT :: string is ''
 
-#(authorize) "$ROLE = 'analyst'"
-source: orders is duckdb.table('orders.parquet') extend {
-  measure: order_count is count()
+#(authorize) "$ROLE = 'admin'"
+#(authorize) "$TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'"
+source: orders_secured is orders_base extend {
+  where: $ROLE = 'admin' or tenant = $TENANT   // row-level scoping
+  ...
 }
 ```
 
-```bash
-# Denied (no satisfying given) → 403
-curl -X POST .../models/orders.malloy/query \
-  -H 'content-type: application/json' \
-  -d '{"query":"run: orders -> { aggregate: order_count }","givens":{}}'
-#   → {"code":403,"message":"Access denied for source \"orders\"."}
+Empty defaults keep each given bound so supplying just one still grants (the other annotation simply
+doesn't match). Against a running server, the `governed-analytics` package ships in the default
+`examples` environment (see the [example's README](../examples/governed-analytics/README.md)):
 
-# Allowed → 200
-curl -X POST .../models/orders.malloy/query \
-  -H 'content-type: application/json' \
-  -d '{"query":"run: orders -> { aggregate: order_count }","givens":{"ROLE":"analyst"}}'
+```bash
+API=http://localhost:4000/api/v0/environments/examples/packages/governed-analytics/models
+
+# No identity → denied
+curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+  -d '{"query":"run: orders_secured -> by_status"}'                            # → 403
+
+# Admin → allowed (all rows)
+curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+  -d '{"query":"run: orders_secured -> by_status","givens":{"ROLE":"admin"}}'  # → 200
 ```
+
+The row-level half of that source — how `where:` narrows an *allowed* caller to their own rows — is
+covered in [row-level-access.md](row-level-access.md).

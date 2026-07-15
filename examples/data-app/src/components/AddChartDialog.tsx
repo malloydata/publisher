@@ -55,7 +55,7 @@ export default function AddChartDialog({
     if (event) {
       event.preventDefault();
     }
-    // Parse package name from navigation path (e.g., "names/" -> "names")
+    // Parse package name from navigation path (e.g., "storefront/" -> "storefront")
     const packageName = to.replace(/\/$/, "");
     setSelectedPackage(packageName);
     setSelectedModel(""); // Reset model selection when package changes

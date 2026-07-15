@@ -68,11 +68,16 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 
 Ask "what can I explore here?" A good sequence is:
 
-1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `malloy-samples`).
-2. `malloy_getContext` with that environment, then pick a package (the samples include `ecommerce`, `imdb`, and `faa`).
+1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `examples`).
+2. `malloy_getContext` with that environment, then pick a package (the bundled packages are `storefront`, `governed-analytics`, and `html-data-app`).
 3. `malloy_getContext` with the package and your question, to get the source, view, and field names.
 4. `malloy_executeQuery` with those names, to get the answer. Charts and dashboards defined in the model render in the UI at http://localhost:4000.
 
 ## 5. Skills
 
 The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness.
+
+## 6. Going deeper
+
+- [`docs/`](docs/) is the reference hub — see its [index](docs/README.md). Start with [docs/ai-agents.md](docs/ai-agents.md) for per-client MCP config and the MCP tool reference.
+- [`examples/`](examples/) holds the three served packages — [`storefront`](examples/storefront) (ecommerce model + dashboards), [`governed-analytics`](examples/governed-analytics) (givens, authorize, row-level access), [`html-data-app`](examples/html-data-app) (a no-build HTML dashboard) — plus [`data-app`](examples/data-app), a standalone React SDK app (not a served package).

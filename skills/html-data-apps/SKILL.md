@@ -23,8 +23,8 @@ Pick an HTML data app when the user wants full control of the markup and only pl
 ```
 my-package/
   publisher.json        # name, version, description
-  carriers.malloy       # the model(s), stays private
-  carriers.parquet      # data, stays private
+  subscriptions.malloy  # the model(s), stays private
+  subscriptions.parquet # data, stays private
   public/               # ONLY this directory is web-served
     index.html
     app.js
@@ -74,7 +74,7 @@ You are building for someone who cannot tell a correct dashboard from a broken o
 { "name": "my-package", "version": "0.0.1", "description": "..." }
 ```
 
-`public/index.html` is a NEW file you create (make the `public/` directory if it does not exist). Load the runtime root-relative, then query. The examples below use the shipped `carriers` package; swap in your own model and a view it defines.
+`public/index.html` is a NEW file you create (make the `public/` directory if it does not exist). Load the runtime root-relative, then query. The examples below use the shipped `html-data-app` package (source `subscriptions`); swap in your own model and a view it defines.
 
 Start with the smallest page that proves the wiring, dumping the rows:
 
@@ -84,7 +84,7 @@ Start with the smallest page that proves the wiring, dumping the rows:
 <pre id="out"></pre>
 <script src="/sdk/publisher.js"></script>
 <script>
-  Publisher.query("carriers.malloy", "run: carriers -> by_letter").then((rows) => {
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix").then((rows) => {
     document.getElementById("out").textContent = JSON.stringify(rows, null, 2);
   });
 </script>
@@ -94,11 +94,11 @@ Then render the rows. This page builds a table from whatever columns the view re
 
 ```html
 <!doctype html>
-<title>Carriers by letter</title>
+<title>Account mix by plan</title>
 <table id="t"><thead></thead><tbody></tbody></table>
 <script src="/sdk/publisher.js"></script>
 <script>
-  Publisher.query("carriers.malloy", "run: carriers -> by_letter").then((rows) => {
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix").then((rows) => {
     const t = document.getElementById("t");
     if (!rows.length) { t.textContent = "No rows."; return; }
     const cols = Object.keys(rows[0]);
@@ -123,7 +123,7 @@ Two invariants break a page most often:
 - **The file must live under `public/`.** Publisher serves only `public/`, so a page written anywhere else (for example `/tmp`) is never reachable at `/environments/<env>/packages/<pkg>/<file>`.
 - **The script src must be the root-relative `/sdk/publisher.js`**, not a relative path.
 
-A third gotcha: the first argument to `Publisher.query` is the model FILE path (`"carriers.malloy"`), not the source name.
+A third gotcha: the first argument to `Publisher.query` is the model FILE path (`"subscriptions.malloy"`), not the source name.
 
 ## Authoring loop and publishing
 

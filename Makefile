@@ -82,8 +82,8 @@ status: ## GET /api/v0/status
 environments: ## List environments
 	@curl -sf $(URL)/api/v0/environments | python3 -m json.tool
 
-packages: ## List packages in the default `malloy-samples` env (override: ENV=foo make packages)
-	@curl -sf $(URL)/api/v0/environments/$(or $(ENV),malloy-samples)/packages | python3 -m json.tool
+packages: ## List packages in the default `examples` env (override: ENV=foo make packages)
+	@curl -sf $(URL)/api/v0/environments/$(or $(ENV),examples)/packages | python3 -m json.tool
 
 open: ## Open the Publisher UI in the default browser (macOS)
 	@open $(URL)

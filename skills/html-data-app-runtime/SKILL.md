@@ -16,7 +16,7 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 | `Publisher.query(modelPath, malloy, opts?)` | `Promise<Array>` of rows | driving your own charts and tables |
 | `Publisher.queryFull(modelPath, malloy, opts?)` | `Promise<MalloyResult>` | handing to `<malloy-render>` |
 
-- `modelPath` is the model FILE path within the package, with `/` separators (`"carriers.malloy"`, `"models/events.malloy"`). It is not the source name.
+- `modelPath` is the model FILE path within the package, with `/` separators (`"subscriptions.malloy"`, `"models/events.malloy"`). It is not the source name.
 - `malloy` is any query string, written in standard Malloy. This skill covers only the JavaScript glue, not Malloy syntax.
 - `opts` (all optional): `sourceName`, `queryName`, `filterParams` (values for the model's legacy `#(filter)` source filters; `Publisher.query` does not forward Malloy `given:` values), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`).
 
@@ -43,12 +43,12 @@ Declare each tile's source and view names once, in `tiles.js`, and have everythi
 
 ## Patterns that work
 
-These run against the example `carriers` package (source `carriers`; views `by_letter`, `by_size_bucket`, `kpis`). Swap in your own model and view names.
+These run against the example `html-data-app` package (source `subscriptions`; views `plan_mix`, `mrr_by_industry`, `kpis`). Swap in your own model and view names.
 
 Run a named view:
 
 ```js
-const rows = await Publisher.query("carriers.malloy", "run: carriers -> by_letter");
+const rows = await Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix");
 ```
 
 Refine a view from UI state by appending a `where:`. Restrict the values to ones you control (for example a dropdown populated from the model's own distinct values) and escape each interpolated value with a backslash before quotes and backslashes (Malloy rejects the SQL-style `''` doubling). An unescaped apostrophe in a value breaks out of the literal:
@@ -57,13 +57,13 @@ Refine a view from UI state by appending a `where:`. Restrict the values to ones
 function whereClause(state) {
   const q = (s) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'"); // backslash-escape for Malloy
   const parts = [];
-  if (state.letter) parts.push(`letter = '${q(state.letter)}'`);
-  if (state.bucket) parts.push(`size_bucket = '${q(state.bucket)}'`);
+  if (state.plan) parts.push(`plan = '${q(state.plan)}'`);
+  if (state.industry) parts.push(`industry = '${q(state.industry)}'`);
   return parts.length ? `where: ${parts.join(", ")}` : "";
 }
 const rows = await Publisher.query(
-  "carriers.malloy",
-  `run: carriers -> by_letter + { ${whereClause(state)} }`,
+  "subscriptions.malloy",
+  `run: subscriptions -> plan_mix + { ${whereClause(state)} }`,
 );
 ```
 
@@ -72,17 +72,17 @@ Do not interpolate free-text or otherwise untrusted input. A data-app page has n
 KPI or single-row view. Destructure element zero:
 
 ```js
-const [kpis] = await Publisher.query("carriers.malloy", "run: carriers -> kpis");
-el.textContent = kpis.total;   // the result is an array; kpis.total, not rows.total
+const [kpis] = await Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis");
+el.textContent = kpis.active_mrr;   // the result is an array; kpis.active_mrr, not rows.active_mrr
 ```
 
 Refresh a dashboard. Fire the tiles together:
 
 ```js
-const [byLetter, byBucket, kpisRows] = await Promise.all([
-  Publisher.query("carriers.malloy", "run: carriers -> by_letter"),
-  Publisher.query("carriers.malloy", "run: carriers -> by_size_bucket"),
-  Publisher.query("carriers.malloy", "run: carriers -> kpis"),
+const [planMix, byIndustry, kpisRows] = await Promise.all([
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix"),
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> mrr_by_industry"),
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis"),
 ]);
 ```
 
@@ -113,7 +113,7 @@ Loading, empty, and error states. Handle all three; a bare `.then()` that assume
 ```js
 const el = document.getElementById("out");
 el.textContent = "Loading...";
-Publisher.query("carriers.malloy", "run: carriers -> by_letter")
+Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix")
   .then((rows) => {
     if (!rows.length) { el.textContent = "No data."; return; }
     render(rows);
@@ -127,12 +127,12 @@ Render through `<malloy-render>`. `queryFull` returns the full Malloy result env
 
 ```js
 const el = document.querySelector("malloy-render");
-el.result = await Publisher.queryFull("carriers.malloy", "run: carriers -> by_letter");
+el.result = await Publisher.queryFull("subscriptions.malloy", "run: subscriptions -> plan_mix");
 ```
 
 Publisher does not serve or bundle `<malloy-render>`; you must obtain a built component bundle matched to your model's Malloy version and vendor it into `public/` yourself, then confirm it accepts the envelope as-is. The shipped example renders rows with a plain chart library instead, so this path is not exercised there. A view tagged in the model (for example `# bar_chart`) drives how it draws.
 
-Validate every query before wiring it into render code, using whatever query tool your environment provides, or by POSTing the query to a running Publisher at `/api/v0/environments/<env>/packages/<pkg>/models/<modelPath>/query` with body `{"compactJson":true,"query":"..."}`, or by running `Publisher.query` once and logging the rows. Malloy names result columns after the `group_by` / `aggregate` field names (`group_by: letter` gives a `letter` column; `aggregate: n is count()` gives an `n` column), so confirm those names against real output before you read them.
+Validate every query before wiring it into render code, using whatever query tool your environment provides, or by POSTing the query to a running Publisher at `/api/v0/environments/<env>/packages/<pkg>/models/<modelPath>/query` with body `{"compactJson":true,"query":"..."}`, or by running `Publisher.query` once and logging the rows. Malloy names result columns after the `group_by` / `aggregate` field names (`group_by: plan` gives a `plan` column; `aggregate: account_count` gives an `account_count` column), so confirm those names against real output before you read them.
 
 If you validate the rendered page in a headless browser (Playwright or Puppeteer), do not wait for network idle: `publisher.js` holds the live-reload SSE stream open, so the page never reaches it. Wait on `domcontentloaded` or `load` plus a content selector instead.
 
@@ -146,7 +146,7 @@ If you validate the rendered page in a headless browser (Playwright or Puppeteer
 
 | Symptom | Likely cause and fix |
 |---|---|
-| 404 or "model not found" | `modelPath` wrong. It is the file path (`"carriers.malloy"`), with `/` separators, not the source name. |
+| 404 or "model not found" | `modelPath` wrong. It is the file path (`"subscriptions.malloy"`), with `/` separators, not the source name. |
 | "source/view not defined" | View or source name guessed. Read the model (your environment's context tool, or open the `.malloy` file) and use the real names. |
 | Promise rejects, message starts `Publisher.query:` | Read `error.status` and `error.response` for the server's reason (compile error, missing required parameter, permission). |
 | Empty array when you expect rows | Filter value mismatch (case, spelling, type, or a non-ASCII character like `≤` or an en-dash in the literal). Copy the literal verbatim from the model, do not retype the user's paraphrase, and confirm it with a distinct-values query (`run: src -> { group_by: the_dimension }`). Quote strings, use `@` for dates. |

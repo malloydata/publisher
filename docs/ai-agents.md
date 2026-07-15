@@ -19,7 +19,7 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 
 ### Query tool
 
-- `malloy_executeQuery`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md), and the deprecated `filterParams` argument for the legacy [`#(filter)` path](filters.md).
+- `malloy_executeQuery`: run a Malloy query and return the results as JSON. Accepts `givens` for supplying values to model-declared [runtime parameters](givens.md).
 
 ### Skills as MCP prompts
 
@@ -31,7 +31,7 @@ The server does not require authentication, and `malloy_executeQuery` runs Mallo
 
 ## Connecting a client
 
-These examples assume Publisher is already running. Running it needs Node.js on your PATH (the quick start below uses `npx`). See the [README](https://github.com/malloydata/publisher) for install and run options.
+These examples assume Publisher is already running (`npx @malloy-publisher/server --port 4000` needs only Node.js on your PATH). See the [README](https://github.com/malloydata/publisher) for install and run options.
 
 ### Over HTTP
 
@@ -68,9 +68,9 @@ Some clients (for example older Claude Desktop builds) speak only stdio MCP, not
 
 Example prompts against the bundled samples:
 
-- "Use Malloy to run an exploratory analysis on the FAA flight data."
-- "Use Malloy to help me understand the ecommerce data, and chart the results."
-- "Use Malloy to check how many movies Tom Hanks has been in."
+- "Use Malloy to explore the storefront sales data and chart revenue by category."
+- "Use Malloy to find the top products and top brands in the storefront package."
+- "Use Malloy to break down storefront sales by customer state."
 
 ## Troubleshooting
 
@@ -90,6 +90,7 @@ Claude Desktop keeps its own MCP log under Developer > Open MCP Log file, and `m
 
 ## Further reading
 
-- [Publisher README](https://github.com/malloydata/publisher): build and run instructions, configuration, and the full environment-variable reference (including `MCP_PORT`).
+- [Publisher README](https://github.com/malloydata/publisher): build and run instructions and the product overview.
+- [configuration.md](configuration.md): the full environment-variable and CLI-flag reference (including `MCP_PORT`).
 - [docs/agent-skills](agent-skills/): the agent skills and how to author them.
-- [givens.md](givens.md) and [filters.md](filters.md): runtime parameters and source filters.
+- [givens.md](givens.md): runtime parameters.

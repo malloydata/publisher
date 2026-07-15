@@ -1,0 +1,176 @@
+// Storefront — a small but complete ecommerce semantic model.
+//
+// A classic star schema: an `order_items` fact joined to `customers` and
+// `products` dimensions. It shows the things Malloy is good at — joins,
+// symmetric aggregates, reusable measures, and nested `# dashboard` views —
+// on data that needs no cloud credentials (DuckDB reads the local Parquet).
+//
+// Data is ~25k order lines across ~11k orders over three years, so the trend,
+// map, and category charts all have something real to say. Regenerate it with
+// `bun run generate:example-data`.
+
+// A shared chart palette so every view in this model renders on-brand.
+## theme.palette.series = ["#4f46e5", "#7c3aed", "#ec4899", "#10b981", "#f59e0b", "#06b6d4"]
+
+#(doc) People who have placed orders — one row per customer, keyed by `customer_id`
+source: customers is duckdb.table('data/customers.parquet') extend {
+  primary_key: customer_id
+  #(doc) Distinct customers
+  measure: customer_count is count()
+}
+
+#(doc) Catalog of products, one row per product, with cost and retail price
+source: products is duckdb.table('data/products.parquet') extend {
+  primary_key: product_id
+  #(doc) Distinct products
+  measure: product_count is count()
+}
+
+#(doc) Order line items — the fact table, one row per product sold on an order
+source: order_items is duckdb.table('data/order_items.parquet') extend {
+  primary_key: id
+
+  join_one:
+    #(doc) Customer who placed the order
+    customers with customer_id
+    #(doc) Product sold on this line
+    products with product_id
+
+  dimension:
+    #(doc) Gross margin on this line (sale price minus product cost)
+    # currency=usd
+    gross_margin is sale_price - products.cost
+
+  measure:
+    #(doc) Distinct orders
+    order_count is count(order_id)
+    #(doc) Line items sold
+    order_item_count is count()
+    #(doc) Total revenue
+    # currency
+    total_sales is sale_price.sum()
+    #(doc) Total gross margin (revenue minus cost of goods sold), summed per line
+    # currency
+    total_margin is gross_margin.sum()
+    #(doc) Gross margin as a share of revenue
+    # percent
+    margin_rate is total_margin / nullif(total_sales, 0)
+    #(doc) Average order value
+    # currency
+    avg_order_value is total_sales / nullif(order_count, 0)
+    #(doc) Distinct customers
+    customer_count is customers.count()
+    #(doc) Average orders placed per customer
+    # number=auto
+    orders_per_customer is order_count / nullif(customer_count, 0)
+    #(doc) Share of line items that were returned
+    # percent
+    return_rate is order_item_count { where: status = 'Returned' } / nullif(order_item_count, 0)
+    #(doc) Share of total sales
+    # percent
+    percent_of_sales is total_sales / nullif(all(total_sales), 0)
+
+  // ── Reusable views (one idea each; chart tag lives on the view) ──────
+  #(doc) Top products by revenue
+  view: top_products is {
+    top: 10
+    group_by: products.name
+    aggregate: total_sales, total_margin, order_item_count
+  }
+  #(doc) Revenue by product category
+  # bar_chart
+  view: by_category is {
+    group_by: products.category
+    aggregate: total_sales
+    order_by: total_sales desc
+  }
+  #(doc) Gross margin by product category
+  # bar_chart
+  view: margin_by_category is {
+    group_by: products.category
+    aggregate: total_margin
+    order_by: total_margin desc
+  }
+  #(doc) Top brands by revenue
+  # bar_chart
+  view: top_brands is {
+    top: 8
+    group_by: products.brand
+    aggregate: total_sales
+    order_by: total_sales desc
+  }
+  #(doc) Top customers by spend
+  view: top_customers is {
+    top: 10
+    group_by: customers.full_name, customer_id
+    aggregate: total_sales, order_count
+  }
+  #(doc) Revenue by customer state (US choropleth)
+  # shape_map
+  view: sales_by_state is {
+    group_by: customers.state
+    aggregate: total_sales
+  }
+  #(doc) Monthly revenue trend
+  # line_chart
+  view: sales_by_month is {
+    group_by: order_month is created_at.month
+    aggregate: total_sales
+    order_by: order_month
+  }
+  #(doc) Annual revenue (shows the growth trend)
+  # bar_chart
+  view: sales_by_year is {
+    group_by:
+      # number=id
+      order_year is year(created_at)
+    aggregate: total_sales
+    order_by: order_year
+  }
+  #(doc) Seasonality: monthly revenue with one line per year (holiday spikes)
+  # line_chart
+  view: seasonality is {
+    group_by: month_of_year is month(created_at)
+    group_by:
+      # number=id
+      order_year is year(created_at)
+    aggregate: total_sales
+    order_by: month_of_year
+  }
+  #(doc) Order counts by fulfillment status
+  # bar_chart
+  view: by_status is {
+    group_by: status
+    aggregate: order_count
+    order_by: order_count desc
+  }
+
+  // ── Dashboard (KPI tiles + nested charts, one query) ────────────────
+  #(doc) Business overview: KPIs, monthly trend, geography, and top sellers
+  # dashboard
+  view: business_overview is {
+    nest:
+      # big_value
+      kpis is {
+        aggregate:
+          # label="Revenue"
+          # currency
+          total_sales
+          # label="Gross margin"
+          # currency
+          total_margin
+          # label="Orders"
+          order_count
+          # label="Customers"
+          customer_count
+          # label="Avg order value"
+          # currency
+          avg_order_value
+      }
+    nest:
+      sales_by_month
+      sales_by_state
+      by_category
+      top_products
+  }
+}

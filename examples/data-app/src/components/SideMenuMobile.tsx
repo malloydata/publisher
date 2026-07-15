@@ -15,8 +15,8 @@ import CardAlert from "./CardAlert";
 interface SideMenuMobileProps {
   open: boolean | undefined;
   toggleDrawer: (newOpen: boolean) => () => void;
-  selectedView: "malloySamples" | "singleEmbed" | "dynamicDashboard" | "interactive";
-  setSelectedView: (view: "malloySamples" | "singleEmbed" | "dynamicDashboard" | "interactive") => void;
+  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
+  setSelectedView: (view: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive") => void;
 }
 
 export default function SideMenuMobile({

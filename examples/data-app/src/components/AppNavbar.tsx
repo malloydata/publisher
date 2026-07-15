@@ -28,8 +28,8 @@ const Toolbar = styled(MuiToolbar)({
 });
 
 interface AppNavbarProps {
-  selectedView: "malloySamples" | "singleEmbed" | "dynamicDashboard" | "interactive";
-  setSelectedView: (view: "malloySamples" | "singleEmbed" | "dynamicDashboard" | "interactive") => void;
+  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
+  setSelectedView: (view: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive") => void;
 }
 
 export default function AppNavbar({ selectedView, setSelectedView }: AppNavbarProps) {

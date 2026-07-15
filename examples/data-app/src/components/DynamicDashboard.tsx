@@ -5,7 +5,7 @@ export default function DynamicDashboard({
   resourceUri,
 }: {
   selectedView:
-    | "malloySamples"
+    | "storefront"
     | "singleEmbed"
     | "dynamicDashboard"
     | "interactive";
