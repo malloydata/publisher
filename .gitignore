@@ -20,6 +20,10 @@ packages/server/k6-tests/results/
 packages/app/test-results/
 packages/app/playwright-report/
 
+# SPA bundle copied next to the from-source server so it can serve the web UI
+# (the server looks for app/ beside the running server file).
+packages/server/src/app/
+
 # Publisher runtime artifacts (DuckDB metadata + per-env package clones).
 # Created wherever the server is launched from; already covered by
 # packages/server/.gitignore for the canonical launch location, but

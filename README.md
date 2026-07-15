@@ -1,12 +1,15 @@
-<p align="center">
-  <img src="docs/malloy-publisher-demo.png" alt="Malloy Publisher — the semantic modeling server for Malloy" width="640">
-</p>
+<h1 align="center">Malloy Publisher</h1>
+
+<p align="center"><b>The open-source semantic model server for <a href="https://malloydata.dev">Malloy</a></b><br>
+Serve governed data models to applications, BI tools, and AI agents — over REST and MCP.</p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
 </p>
 
-**Publisher** is the open-source semantic model server for [Malloy](https://malloydata.dev).
+<p align="center">
+  <img src="docs/malloy-publisher-demo.png" alt="Malloy Publisher serving the bundled storefront dashboard" width="800">
+</p>
 
 When an AI queries your database directly, it writes its own SQL — and gets it subtly wrong: the wrong
 join, an invented column, a fan-out that double-counts but still looks plausible. Publisher puts a

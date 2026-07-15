@@ -30,12 +30,15 @@ const SHOTS = [
     fullPage: false,
   },
   {
-    // README hero — the storefront dashboard at a wide, cropped viewport.
+    // README hero — the storefront Business overview dashboard, with the
+    // dashboard cell expanded past its internal scroll so every chart shows.
     file: "../malloy-publisher-demo.png",
     url: `${BASE}/examples/storefront/storefront.malloynb`,
-    viewport: { width: 1600, height: 1000 },
+    viewport: { width: 1600, height: 1440 },
     waitFor: "svg, canvas",
     settle: 6000,
+    expandDashboard: true,
+    scrollY: 292,
     fullPage: false,
   },
   {
@@ -86,6 +89,27 @@ for (const s of SHOTS) {
       await page.waitForSelector(s.waitFor, { timeout: 15000 }).catch(() => {});
     }
     await sleep(s.settle);
+    if (s.expandDashboard) {
+      // Dashboard cells cap their height and scroll internally; lift the cap
+      // on the cell and its ancestors so the whole dashboard is visible.
+      await page.evaluate(() => {
+        let el = document.querySelector(".malloy-dashboard");
+        for (let i = 0; i < 7 && el; i++) {
+          el.style.setProperty("height", "auto", "important");
+          el.style.setProperty("max-height", "none", "important");
+          el.style.setProperty("overflow", "visible", "important");
+          el = el.parentElement;
+        }
+      });
+      await sleep(1500);
+    }
+    if (s.scrollY) {
+      // Some pages scroll an inner container, so scroll via the mouse wheel
+      // over the page center rather than window.scrollTo.
+      await page.mouse.move(s.viewport.width / 2, s.viewport.height / 2);
+      await page.mouse.wheel(0, s.scrollY);
+      await sleep(1000);
+    }
     await page.screenshot({ path: `${OUT}/${s.file}`, fullPage: s.fullPage });
     console.log(`✓ ${s.file}`);
     ok++;
