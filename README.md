@@ -72,7 +72,9 @@ semantic model. No schema spelunking, no hallucinated column names.
   [Publisher App](docs/publisher-app.md), or ship a no-build
   [HTML data app](docs/html-data-apps.md) that Publisher hosts inside a package.
 - **Build & validate models.** Author Malloy models guided by the bundled [skills](skills/), then
-  publish them for serving.
+  publish them for serving. Agents get the same loop over MCP: `malloy_compile` checks an edit and
+  returns diagnostics without running it, and `malloy_reloadPackage` recompiles a package from disk
+  so a new source or view is queryable by name, no restart.
 - **Govern access.** [Givens](docs/givens.md) are one runtime-parameter mechanism that powers filter
   widgets, [row-level access](docs/row-level-access.md) (which rows a caller sees), and
   [`#(authorize)`](docs/authorize.md) source gates (who can query). Separately, curate *what* is
