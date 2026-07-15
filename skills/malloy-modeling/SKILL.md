@@ -98,9 +98,22 @@ Ensure the Publisher MCP tools are configured before modeling.
 |------|---------|
 | `malloy_getContext` | Ground yourself in a package: its sources, views, and fields |
 | `malloy_executeQuery` | Run ad-hoc queries for validation |
+| `malloy_compile` | Compile-check a change and get diagnostics back without running a query |
+| `malloy_reloadPackage` | Recompile a package from disk so a saved edit becomes queryable by name |
 | `malloy_searchDocs` | Search Malloy docs (call BEFORE unfamiliar patterns) |
 
 Never guess field names. Ground yourself with `malloy_getContext` to see the sources and fields a package defines.
+
+### The edit-and-run loop
+
+Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until you reload the package. The loop is:
+
+1. **Validate** the change with `malloy_compile`, which reads the model fresh from disk and returns diagnostics without running anything.
+2. **Save** it to the package's model file.
+3. **Reload** with `malloy_reloadPackage`.
+4. **Run** the new view with `malloy_executeQuery`.
+
+A reload that fails to compile is safe: your files are left alone and the previously compiled model keeps serving, with the compile errors returned to you. Compile first anyway for faster feedback. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these two tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `malloy_executeQuery`.
 
 ## SQL-to-Malloy Quick Reference
 

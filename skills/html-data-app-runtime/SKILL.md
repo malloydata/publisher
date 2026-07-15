@@ -18,7 +18,7 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 
 - `modelPath` is the model FILE path within the package, with `/` separators (`"subscriptions.malloy"`, `"models/events.malloy"`). It is not the source name.
 - `malloy` is any query string, written in standard Malloy. This skill covers only the JavaScript glue, not Malloy syntax.
-- `opts` (all optional): `sourceName`, `queryName`, `filterParams` (values for the model's legacy `#(filter)` source filters; `Publisher.query` does not forward Malloy `given:` values), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`).
+- `opts` (all optional): `sourceName`, `queryName`, `givens` (a `{ name: value }` map bound to the model's Malloy `given:` runtime parameters for this query; safe parameterization, values are bound by the runtime, not string-interpolated), `filterParams` (values for the model's legacy `#(filter)` source filters), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`). `givens` and `filterParams` compose (both apply).
 
 ## Structure the app as modules, not one inline script
 
@@ -67,7 +67,7 @@ const rows = await Publisher.query(
 );
 ```
 
-Do not interpolate free-text or otherwise untrusted input. A data-app page has no clean server-side parameterization for arbitrary input today: `Publisher.query` forwards `opts.filterParams` (the deprecated `#(filter)` source-filter API), not Malloy `given:` values. So constrain the input to a known set and escape it, or keep the filtering in model-defined views.
+Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: those values are bound by the runtime as typed parameters, not string-interpolated, so they can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a server upstream (the Credible router, or an operator's per-package config) strips or finalizes it. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
 
 KPI or single-row view. Destructure element zero:
 
@@ -150,7 +150,8 @@ If you validate the rendered page in a headless browser (Playwright or Puppeteer
 | "source/view not defined" | View or source name guessed. Read the model (your environment's context tool, or open the `.malloy` file) and use the real names. |
 | Promise rejects, message starts `Publisher.query:` | Read `error.status` and `error.response` for the server's reason (compile error, missing required parameter, permission). |
 | Empty array when you expect rows | Filter value mismatch (case, spelling, type, or a non-ASCII character like `≤` or an en-dash in the literal). Copy the literal verbatim from the model, do not retype the user's paraphrase, and confirm it with a distinct-values query (`run: src -> { group_by: the_dimension }`). Quote strings, use `@` for dates. |
-| 400, required parameter | The model marks a runtime parameter (given) as required. Supply it via `opts.filterParams`, or pass `bypassFilters: true` only if you are a trusted caller. |
+| 400 on a given (ungated source) | An unknown given name (check spelling; names are case-sensitive), a required given left unset, or a value that doesn't fit the declared type. Malloy rejects it when preparing the query; supply declared givens via `opts.givens` with the right shape (see the givens type table). |
+| 403 on a query that should be allowed, when passing givens to a gated source | On a source with `#(authorize)`, a bad given (unknown name or wrong-typed value) fails closed in the authorize check, so it looks like access denied rather than validation. Check the given names and values against the model. |
 | KPI shows `undefined` | The result is an array. Read `rows[0].field` (or destructure `const [k] = ...`), not `rows.field`. |
 | Page loads in dev but is not listed or not served | The file is not under the package's `public/` directory. Publisher serves only `public/`; a page written anywhere else (for example `/tmp`) is never reachable at `/environments/<env>/packages/<pkg>/<file>`. |
 | Queries fail only when embedded cross-origin | Cookies are not sent cross-site. Serve same-origin, or pass a bearer token. |

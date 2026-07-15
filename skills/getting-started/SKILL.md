@@ -9,7 +9,13 @@ Goal: go from "connected" to a correct, grounded answer without guessing any nam
 
 ## 0. Confirm the tools are reachable
 
-You need `malloy_getContext`, `malloy_executeQuery`, and `malloy_searchDocs`. If they are not available, the Publisher server is not running or the MCP client is not connected. Start the server (`npx @malloy-publisher/server --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`, then reconnect.
+At minimum you need `malloy_getContext`, `malloy_executeQuery`, and `malloy_searchDocs`. Authoring a model also needs `malloy_compile` and `malloy_reloadPackage` (see section 4); an older Publisher may not serve those two.
+
+If none of the tools are there, either the server is not running or your client connected before it was. Start the server (`npx @malloy-publisher/server --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`.
+
+If you started the server yourself in this session, the tools still will not appear: your tool list was fixed when you connected, and you cannot reconnect yourself. Tell the user the tools are missing for that reason and ask them to run `/mcp`, select `malloy`, and choose Reconnect. The panel offers `Authenticate` first and reports `Auth: not authenticated`; that is a red herring, the endpoint has no auth. Restarting Claude Code also works. Continue once the tools are there.
+
+Do not route around it by calling the REST API with curl. It appears to work, so the user never learns their session is missing the tools, and you lose what they are for: grounded discovery instead of guessed names, `malloy_compile` instead of throwaway queries, and `malloy_reloadPackage` instead of a restart. Say the tools are missing and let the user fix it in five seconds.
 
 ## 1. Discover what exists (never guess names)
 
@@ -33,7 +39,16 @@ The result is JSON. Charts and dashboards defined in the model render in the Pub
 
 ## 3. When you need Malloy syntax
 
-Use `malloy_searchDocs` for language questions (filters, aggregates, joins, nesting, renderers). For deeper work, switch to the `malloy-modeling`, `malloy-analysis`, or `malloy-review` skills.
+Use `malloy_searchDocs` for language questions (filters, aggregates, joins, nesting, renderers).
+
+## 4. What else you can do here
+
+Answering questions is the start, not the whole surface. When the user asks what is possible, say so rather than offering queries alone. Switch skills for the deeper work:
+
+- `malloy-modeling`: build or change a model. Validate the edit with `malloy_compile`, save it, then `malloy_reloadPackage` so the new sources and views run by name without restarting the server.
+- `malloy-analysis`: explore a package and answer data questions.
+- `html-data-apps`: build a data app, a hand-authored HTML page in the package's `public/` directory that Publisher serves, backed by the package's models and needing no build step.
+- `malloy-review`: check Malloy for correctness.
 
 ## Contract
 
