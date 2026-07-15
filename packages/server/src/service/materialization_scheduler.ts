@@ -40,11 +40,13 @@ interface ScheduleState {
  * It only sweeps **already-loaded** packages (never forces a load), fires the
  * existing `createMaterialization` auto-run path tagged `trigger=SCHEDULER`, and
  * only fires packages whose persistence policy is valid (`scope: version`, no
- * `freshness` — the same rule a publish enforces). Arming state is in memory:
- * on restart it re-arms from `cron.nextAfter(now)`, so a fire that came due
- * during downtime is skipped (never double-fired). A freshly-armed package
- * never fires on the arming tick (`nextAfter` is strictly future), so a restart
- * does not trigger a rebuild.
+ * `freshness` — the same rule a publish enforces). Arming state is in memory,
+ * but on the first arm after a (re)start it re-anchors from the newest recorded
+ * `SCHEDULER` fire (see {@link arm}), so an occurrence that came due during
+ * downtime fires exactly once and then jumps forward — recovery matches the
+ * control plane's persisted-`next_fire_at` behavior rather than silently
+ * skipping. A never-fired schedule still does not fire on the arming tick
+ * (`nextAfter(now)` is strictly future).
  */
 export class MaterializationScheduler {
    private timer: ReturnType<typeof setInterval> | null = null;
@@ -106,7 +108,13 @@ export class MaterializationScheduler {
                }
                seen.add(key);
 
-               const armed = this.arm(key, schedule, nowMs);
+               const armed = await this.arm(
+                  environmentName,
+                  packageName,
+                  key,
+                  schedule,
+                  nowMs,
+               );
                if (nowMs < armed.nextFireAtMs) continue; // not due yet
 
                if (fired >= this.config.maxFiresPerTick) {
@@ -175,21 +183,77 @@ export class MaterializationScheduler {
 
    /**
     * Return the package's arming state, (re)arming when it is new or its cron
-    * changed. A fresh arm computes `nextAfter(now)` (strictly future), so a
-    * newly-seen or restarted package never fires on the arming tick.
+    * changed.
+    *
+    * **First arm of a package this process** (no in-memory state — a fresh start
+    * or a newly-loaded package): anchor `nextFireAt` to the newest recorded
+    * `SCHEDULER` fire, `nextAfter(lastScheduledFire)`. If that instant is already
+    * past (an occurrence came due while the publisher was down), it fires once
+    * on this tick and then jumps forward to `nextAfter(now)` — exactly one
+    * catch-up, matching the control plane's persisted-`next_fire_at` recovery
+    * contract, never a burst. With no prior `SCHEDULER` fire on record we fall
+    * back to `nextAfter(now)` (strictly future), so a never-fired schedule does
+    * not fire on the arming tick. (Residual divergence: a schedule set while the
+    * scheduler was disabled has no prior fire, so it is not caught up on first
+    * enable.)
+    *
+    * **Cron changed**: re-arm from `nextAfter(now)` — an edited cadence starts
+    * fresh, with no catch-up for the old cron.
     */
-   private arm(key: string, schedule: string, nowMs: number): ScheduleState {
+   private async arm(
+      environmentName: string,
+      packageName: string,
+      key: string,
+      schedule: string,
+      nowMs: number,
+   ): Promise<ScheduleState> {
       const existing = this.state.get(key);
       if (existing && existing.schedule === schedule) {
          return existing;
       }
+
+      const anchor =
+         existing === undefined
+            ? await this.recoveryAnchor(environmentName, packageName, nowMs)
+            : new Date(nowMs);
+
       const armed: ScheduleState = {
          schedule,
-         nextFireAtMs: this.cron.nextAfter(schedule, new Date(nowMs)).getTime(),
+         nextFireAtMs: this.cron.nextAfter(schedule, anchor).getTime(),
          lastFiredAtMs: existing?.lastFiredAtMs ?? null,
       };
       this.state.set(key, armed);
       return armed;
+   }
+
+   /**
+    * The instant to compute the first `nextFireAt` from after a (re)start: the
+    * newest recorded `SCHEDULER` fire if any, else `now`. Any lookup failure
+    * degrades to `now` (no catch-up) so arming always succeeds.
+    */
+   private async recoveryAnchor(
+      environmentName: string,
+      packageName: string,
+      nowMs: number,
+   ): Promise<Date> {
+      try {
+         const last =
+            await this.materializationService.getLatestScheduledFireAt(
+               environmentName,
+               packageName,
+            );
+         return last ?? new Date(nowMs);
+      } catch (err) {
+         logger.warn(
+            "MaterializationScheduler: could not read last scheduled fire; arming from now",
+            {
+               environmentName,
+               packageName,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+         return new Date(nowMs);
+      }
    }
 
    /**

@@ -193,6 +193,22 @@ export class MaterializationService {
       );
    }
 
+   /**
+    * `created_at` of the newest scheduler-fired materialization for a package,
+    * or null if none. The standalone scheduler uses this on its first arm to
+    * recover a fire missed during downtime (see MaterializationScheduler.arm).
+    */
+   async getLatestScheduledFireAt(
+      environmentName: string,
+      packageName: string,
+   ): Promise<Date | null> {
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      return this.repository.getLatestScheduledFireAt(
+         environmentId,
+         packageName,
+      );
+   }
+
    async getMaterialization(
       environmentName: string,
       packageName: string,

@@ -63,6 +63,10 @@ export interface ResourceRepository {
       environmentId: string,
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]>;
+   getLatestScheduledFireAt(
+      environmentId: string,
+      packageName: string,
+   ): Promise<Date | null>;
    getMaterializationById(id: string): Promise<Materialization | null>;
    getActiveMaterialization(
       environmentId: string,

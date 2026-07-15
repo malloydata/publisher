@@ -105,6 +105,30 @@ export class MaterializationRepository {
       return rows.map(this.mapRow);
    }
 
+   /**
+    * `created_at` of the newest scheduler-fired (metadata.trigger=SCHEDULER)
+    * materialization for (env, package), or null if none. The standalone
+    * scheduler uses this to recover a missed occurrence across a restart:
+    * re-anchoring `nextFireAt` to `nextAfter(lastScheduledFire)` fires exactly
+    * one catch-up after downtime (then jumps forward), rather than skipping the
+    * occurrence entirely. `metadata` is a JSON column, so the trigger is read
+    * with `json_extract_string`.
+    */
+   async getLatestScheduledFireAt(
+      environmentId: string,
+      packageName: string,
+   ): Promise<Date | null> {
+      const row = await this.db.get<{ created_at: unknown }>(
+         `SELECT created_at FROM materializations
+           WHERE environment_id = ? AND package_name = ?
+             AND json_extract_string(metadata, '$.trigger') = 'SCHEDULER'
+           ORDER BY created_at DESC
+           LIMIT 1`,
+         [environmentId, packageName],
+      );
+      return row?.created_at ? new Date(row.created_at as string) : null;
+   }
+
    async getById(id: string): Promise<Materialization | null> {
       const row = await this.db.get<Record<string, unknown>>(
          "SELECT * FROM materializations WHERE id = ?",

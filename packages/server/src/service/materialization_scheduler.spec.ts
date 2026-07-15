@@ -49,7 +49,12 @@ interface FireCall {
 }
 
 function fakeService(
-   opts: { throwConflict?: boolean; throwError?: boolean } = {},
+   opts: {
+      throwConflict?: boolean;
+      throwError?: boolean;
+      // Newest recorded SCHEDULER fire, used by the restart-recovery anchor.
+      lastFireAt?: Date | null;
+   } = {},
 ) {
    const calls: FireCall[] = [];
    const service = {
@@ -68,6 +73,7 @@ function fakeService(
          }
          return Promise.resolve({});
       },
+      getLatestScheduledFireAt: () => Promise.resolve(opts.lastFireAt ?? null),
    };
    return service as unknown as MaterializationService & { calls: FireCall[] };
 }
@@ -103,6 +109,34 @@ describe("MaterializationScheduler", () => {
 
    it("does not fire on the arming tick (nextFire is strictly future)", async () => {
       const service = fakeService();
+      const sched = makeScheduler(
+         [fakePackage("p", { schedule: "* * * * *" })],
+         service,
+      );
+      await sched.tick(t0);
+      expect(service.calls.length).toBe(0);
+   });
+
+   it("recovers a missed occurrence on first arm, firing once then jumping forward", async () => {
+      // A prior SCHEDULER fire well in the past: anchoring nextFire to
+      // nextAfter(lastFire) lands before t0, so the occurrence missed during
+      // "downtime" is due on the very first tick (a restart recovering).
+      const service = fakeService({ lastFireAt: new Date(t0 - 10 * 60_000) });
+      const sched = makeScheduler(
+         [fakePackage("p", { schedule: "* * * * *" })],
+         service,
+      );
+      await sched.tick(t0);
+      expect(service.calls.length).toBe(1); // one catch-up fire
+      // Jumped forward to nextAfter(now); not due again on the next tick.
+      await sched.tick(t0 + 1);
+      expect(service.calls.length).toBe(1);
+   });
+
+   it("does not catch up a never-fired schedule on first arm", async () => {
+      // No prior SCHEDULER fire on record -> anchor is now -> strictly future,
+      // so a freshly-scheduled (never-fired) package does not fire on arm.
+      const service = fakeService({ lastFireAt: null });
       const sched = makeScheduler(
          [fakePackage("p", { schedule: "* * * * *" })],
          service,

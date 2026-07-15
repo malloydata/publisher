@@ -160,6 +160,16 @@ export class DuckDBRepository implements ResourceRepository {
       return this.materializationRepo.listByEnvironment(environmentId, options);
    }
 
+   async getLatestScheduledFireAt(
+      environmentId: string,
+      packageName: string,
+   ): Promise<Date | null> {
+      return this.materializationRepo.getLatestScheduledFireAt(
+         environmentId,
+         packageName,
+      );
+   }
+
    async getMaterializationById(id: string): Promise<Materialization | null> {
       return this.materializationRepo.getById(id);
    }
