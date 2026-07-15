@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { registerCompileTool } from "./compile_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
+import { PackageNotFoundError, ServiceUnavailableError } from "../../errors";
 
 // Capture the handler registerCompileTool passes to McpServer.tool, so it can
 // be exercised against a mocked EnvironmentStore. The tool builds a
@@ -127,6 +128,46 @@ describe("malloy_compile tool", () => {
       expect(result.isError).toBe(true);
       const parsed = parse(result);
       expect(parsed.error).toBeDefined();
+   });
+
+   it("reports a missing package as not-found, not as a Malloy syntax problem", async () => {
+      // Pin the remediation text, not just that an error came back. Asserting
+      // only that `error` is defined passes even when every class funnels
+      // through the Malloy helper, which is the bug classifyToolError exists to
+      // fix: a typo'd package name told the caller to check its Malloy syntax.
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new PackageNotFoundError("Package 'nope' not found");
+         },
+      });
+      const parsed = parse(await handler({ ...args, packageName: "nope" }));
+      expect(parsed.error).toContain("Resource not found");
+      expect(JSON.stringify(parsed.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("reports back-pressure as retryable, not as a Malloy syntax problem", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new ServiceUnavailableError("Memory limit reached");
+         },
+      });
+      const parsed = parse(await handler(args));
+      expect(parsed.error).toContain("Memory limit reached");
+      expect(JSON.stringify(parsed.suggestions)).toContain("Retry");
+      expect(JSON.stringify(parsed.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("reports an unexpected internal error without blaming the Malloy", async () => {
+      // The catch-all used to hand a TypeError to the Malloy helper, so a bug
+      // in our own code told the agent to go edit a model that was fine.
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new TypeError("cannot read properties of undefined");
+         },
+      });
+      const parsed = parse(await handler(args));
+      expect(parsed.error).toContain("unexpected internal error");
+      expect(JSON.stringify(parsed.suggestions)).not.toContain("Malloy file");
    });
 
    it("omits position fields when a diagnostic has no location", async () => {

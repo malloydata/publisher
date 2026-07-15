@@ -6,6 +6,13 @@ import { EnvironmentStore } from "../service/environment_store";
 type ApiPackage = components["schemas"]["Package"];
 
 /**
+ * Which path a reload took. `in-place` recompiles the tree already on disk and
+ * leaves it alone; `reinstalled` re-fetches from the package's install location,
+ * which overwrites on-disk edits.
+ */
+export type PackageReloadMode = "in-place" | "reinstalled";
+
+/**
  * Everything that is strict-at-publish, joined into one 400 message (or
  * undefined when the package is publishable): invalid explores entries plus
  * the Malloy Persistence policy gate (scope is package-level; a
@@ -50,43 +57,67 @@ export class PackageController {
       packageName: string,
       reload: boolean,
    ): Promise<ApiPackage> {
+      if (reload) {
+         return (await this.reloadPackage(environmentName, packageName))
+            .metadata;
+      }
+
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const _package = await environment.getPackage(packageName, false);
+      return _package.getPackageMetadata();
+   }
+
+   /**
+    * Reload a package and report WHICH path ran. The two are not equivalent to
+    * anyone holding on-disk edits: an in-place reload recompiles the tree that
+    * is already there, while a reinstall re-fetches from the package's install
+    * location and overwrites it. A caller that surfaces the reload to a user
+    * needs to be able to say which happened, so it is returned rather than
+    * inferred. `getPackage` keeps returning bare metadata, so the REST contract
+    * is unchanged.
+    */
+   public async reloadPackage(
+      environmentName: string,
+      packageName: string,
+   ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
       );
 
-      if (reload) {
-         // Resolve the package's source location from the currently-cached
-         // metadata WITHOUT triggering a stale-state reload. If a `location`
-         // is set, route the reload through `installPackage` so that
-         // download-then-load happens atomically; otherwise fall back to an
-         // in-place reload of the existing on-disk content.
-         let location: string | undefined;
-         try {
-            const cached = await environment.getPackage(packageName, false);
-            location = cached.getPackageMetadata().location;
-         } catch {
-            // Not previously loaded — nothing to reinstall from.
-         }
-         if (location) {
-            const reinstalled = await environment.installPackage(
-               packageName,
-               (stagingPath) =>
-                  this.downloadInto(
-                     environmentName,
-                     packageName,
-                     location,
-                     stagingPath,
-                  ),
-            );
-            return reinstalled.getPackageMetadata();
-         }
-         const _package = await environment.getPackage(packageName, true);
-         return _package.getPackageMetadata();
+      // Resolve the package's source location from the currently-cached
+      // metadata WITHOUT triggering a stale-state reload. If a `location`
+      // is set, route the reload through `installPackage` so that
+      // download-then-load happens atomically; otherwise fall back to an
+      // in-place reload of the existing on-disk content.
+      let location: string | undefined;
+      try {
+         const cached = await environment.getPackage(packageName, false);
+         location = cached.getPackageMetadata().location;
+      } catch {
+         // Not previously loaded, so there is nothing to reinstall from.
       }
-
-      const _package = await environment.getPackage(packageName, false);
-      return _package.getPackageMetadata();
+      if (location) {
+         const reinstalled = await environment.installPackage(
+            packageName,
+            (stagingPath) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  location,
+                  stagingPath,
+               ),
+         );
+         return {
+            metadata: reinstalled.getPackageMetadata(),
+            mode: "reinstalled",
+         };
+      }
+      const _package = await environment.getPackage(packageName, true);
+      return { metadata: _package.getPackageMetadata(), mode: "in-place" };
    }
 
    async addPackage(environmentName: string, body: ApiPackage) {

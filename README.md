@@ -21,7 +21,7 @@ The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.d
 npx @malloy-publisher/server --port 4000
 ```
 
-Open http://localhost:4000 to explore the sample models. Three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`) are cloned from GitHub on first launch — expect a 30–60s wait before `operationalState` reports `serving`. No credentials required.
+Open http://localhost:4000 to explore the sample models. Three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`) are cloned from GitHub on first launch, so expect to wait 10 to 60 seconds before `operationalState` reports `serving`. No credentials required.
 
 > **Heads up — npx + DuckDB native binding.** On some Node 24 setups, `npx` does not install DuckDB's native binding (`node_modules/duckdb/lib/binding/duckdb.node`), so the server exits at startup with `Cannot find module ...duckdb.node`. This is an upstream `duckdb` install-script issue tracked separately. Workaround until that's fixed: clone this repo and run `make start-init` (or `bun run build && bun run start`) from the repo root — the workspace's `install-duckdb-bindings` script handles the binding install during `bun run build`.
 
@@ -109,7 +109,7 @@ The MCP server on `:4040` exposes a small set of tools aimed at AI agents. See [
 - **`malloy_getContext`**: progressive discovery and grounding. Call it with as much as you know and omit the rest: no arguments lists the environments, an environment lists its packages, a package lists its sources, and a plain-English query returns the most relevant sources, views, and fields. Use the names it returns verbatim.
 - **`malloy_executeQuery`**: run a Malloy query (a named view or query, or ad-hoc code) against a model and get JSON back.
 - **`malloy_compile`**: compile-check Malloy source against a model and get structured diagnostics (severity, message, line and column) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query.
-- **`malloy_reloadPackage`**: recompile a package from its on-disk model files so a source or view added after boot becomes queryable by name without restarting the server, closing the edit-and-run loop. Compile-check with `malloy_compile` first: a reload whose models do not compile removes the package's on-disk copy under `publisher_data/`.
+- **`malloy_reloadPackage`**: recompile a package from its on-disk model files so a source or view added after boot becomes queryable by name without restarting the server, closing the edit-and-run loop. A reload that fails to compile leaves the package's files alone and keeps serving the previously compiled model.
 - **`malloy_searchDocs`**: keyword search over a bundled index of the Malloy documentation.
 
 The server also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4040/mcp`. The server is stateless and unauthenticated; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).

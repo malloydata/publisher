@@ -113,7 +113,7 @@ Publisher compiles each configured package at boot and serves that cached model,
 3. **Reload** with `malloy_reloadPackage`.
 4. **Run** the new view with `malloy_executeQuery`.
 
-Compile first is a safety gate, not just a speed-up: a reload whose models do not compile removes the package's on-disk copy under `publisher_data/` and drops the cached package, and a second reload cannot bring it back. Watch-mode symlink mounts are exempt. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these two tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `malloy_executeQuery`.
+A reload that fails to compile is safe: your files are left alone and the previously compiled model keeps serving, with the compile errors returned to you. Compile first anyway for faster feedback. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these two tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `malloy_executeQuery`.
 
 ## SQL-to-Malloy Quick Reference
 

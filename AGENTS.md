@@ -25,7 +25,7 @@ bun run build && bun run start        # REST on :4000, MCP on :4040
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build.
 
-First boot clones the DuckDB sample packages, so wait for the server to report `serving` (about 30 to 60 seconds):
+First boot clones the DuckDB sample packages, so poll until the server reports `serving` rather than assuming a fixed wait. From a clone it is usually seconds; a first `npx` run also has to download the package, which can push it to a minute or two. Both steps are network-bound:
 
 ```bash
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # -> "serving"
@@ -35,7 +35,9 @@ curl -s http://localhost:4000/api/v0/status | jq .operationalState   # -> "servi
 
 Publisher exposes one MCP endpoint: `http://localhost:4040/mcp` (streamable HTTP, stateless, unauthenticated; put it behind a gateway if you expose it beyond localhost).
 
-Connect the client after the server is up. An MCP client discovers a server's tools when it connects, so if the client was already running when you started the server (for example you asked the agent to start it), its `malloy_*` tools stay missing until it reconnects. In Claude Code, reconnect with `/mcp` or restart Claude. The simplest path is to start the server first, then launch the agent.
+Connect the client after the server is up. An MCP client discovers a server's tools when it connects, so if the client was already running when you started the server (for example you asked the agent to start it), its `malloy_*` tools stay missing until it reconnects. In Claude Code: run `/mcp`, select `malloy`, then choose **Reconnect**. That panel reports `Auth: not authenticated` and offers `Authenticate` as its first option, which does not apply here because the endpoint has no auth; Reconnect is the one that works. Restarting Claude also works. The simplest path is to start the server first, then launch the agent.
+
+If you are the agent and you started the server during this session, your `malloy_*` tools will not show up however long you wait: your tool list was fixed when you connected. You cannot reconnect yourself. Say so and ask the user to run `/mcp`, select `malloy`, and choose Reconnect (the panel offers `Authenticate` first, which is not it), or to restart Claude. Do not quietly fall back to calling the REST API with curl instead. It looks like it is working, but it hides a fixable problem the user can clear in seconds, and it gives up the grounded discovery, compile checks, and reload that the tools exist to provide.
 
 Claude Code: this repo ships a project `.mcp.json`, so from a clone Claude Code offers to connect on first run. Approve it once. To add it elsewhere:
 
@@ -87,7 +89,7 @@ The [`skills/`](skills/) directory holds task-specific guides. They are symlinke
 
 For your own fast checks while authoring, use `malloy_compile`; it validates a change and returns diagnostics with no server restart. When you save a model edit and want its new sources and views queryable by name, call `malloy_reloadPackage` (or `GET /api/v0/environments/<env>/packages/<pkg>?reload=true`), which recompiles just that package from disk in place, with no restart. Publisher compiles each configured package at boot and serves that cached model, so a source you add afterwards is not resolvable by name until the package is reloaded. That closes the edit-and-run loop without watch mode.
 
-Compile-check with `malloy_compile` before you reload. A reload whose models do not compile removes the package's on-disk copy under `publisher_data/` and drops the cached package, and a second reload cannot bring it back. Restarting with `--init` restores the package as configured, but it wipes all of `publisher_data/` first, so it does not recover your edits and it discards every other in-place edit too. Watch-mode symlink mounts are exempt from the removal.
+A reload that fails to compile is safe: your files are left alone, the previously compiled model keeps serving, and the compile errors come back in the response. Compile-check with `malloy_compile` first anyway; it is faster feedback and keeps a broken model from reaching the reload at all.
 
 Both tools read the copy under `publisher_data/<env>/<pkg>/`. For an env that is not in watch mode, that is a copy Publisher made of the configured source, so editing the original source directory does nothing until you re-copy it. Editing the `publisher_data/` copy is fine for a quick iteration, but keep the source of truth outside it: nothing there is version-controlled and `--init` wipes the whole tree. Watch mode mounts your own source directory in place, which is the durable way to iterate.
 

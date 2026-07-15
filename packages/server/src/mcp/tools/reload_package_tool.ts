@@ -3,8 +3,8 @@ import { z } from "zod";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { PackageController } from "../../controller/package.controller";
-import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
-import { buildMalloyUri } from "../handler_utils";
+import { type ErrorDetails } from "../error_messages";
+import { buildMalloyUri, classifyToolError } from "../handler_utils";
 
 // Zod shape for malloy_reloadPackage. environmentName/packageName mirror the
 // other tools and point the agent at malloy_getContext for name discovery.
@@ -21,9 +21,21 @@ const reloadShape = {
       ),
 };
 
+/**
+ * What a failed reload does, in one sentence, shared with MCP_INSTRUCTIONS
+ * rather than restated there. Both surfaces describe the same behavior, so one
+ * copy is what stops them drifting.
+ *
+ * SECURITY: interpolated into MCP_INSTRUCTIONS, which is delivered
+ * pre-authorization to any connecting client. Keep this a static string
+ * literal; never derive it from config, environment, or request data.
+ */
+export const RELOAD_FAILURE_IS_SAFE =
+   "A reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors.";
+
 const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-Validate the change with malloy_compile FIRST. A reload is destructive when the models do not compile: it removes the package's on-disk copy under publisher_data/ and drops the cached package, so a second reload cannot bring it back. Restarting with --init restores the package as configured, but it wipes all of publisher_data/ first, so it does not recover your edits and it discards every other in-place edit too. A watch-mode symlink mount is exempt from the removal. A clean compile is the safety gate here, not just a speed-up, so keep anything you cannot lose outside publisher_data/.
+${RELOAD_FAILURE_IS_SAFE} Running malloy_compile first is still the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names malloy_getContext returns.
@@ -32,7 +44,7 @@ Validate the change with malloy_compile FIRST. A reload is destructive when the 
 Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package whose stored metadata carries an install location (only a PATCH that supplies one sets it) is re-fetched from that source instead, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). A reload that hits a hard compile error returns an error payload instead.`;
+A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.`;
 
 /**
  * Registers the malloy_reloadPackage MCP tool: recompiles a package from its
@@ -68,14 +80,19 @@ export function registerReloadPackageTool(
          );
 
          try {
-            const pkg = await packageController.getPackage(
-               environmentName,
-               packageName,
-               true,
-            );
+            const { metadata: pkg, mode } =
+               await packageController.reloadPackage(
+                  environmentName,
+                  packageName,
+               );
 
             const payload = {
                status: "reloaded" as const,
+               // Which path ran. "in-place" recompiled the tree on disk and left
+               // it alone; "reinstalled" re-fetched from the package's install
+               // location, so any on-disk edits are gone. The caller cannot tell
+               // these apart otherwise, and only one of them keeps their work.
+               mode,
                name: pkg.name,
                ...(pkg.description !== undefined && {
                   description: pkg.description,
@@ -114,7 +131,7 @@ export function registerReloadPackageTool(
                packageName,
                error: error instanceof Error ? error.message : String(error),
             });
-            const errorDetails: ErrorDetails = getMalloyErrorDetails(
+            const errorDetails: ErrorDetails = classifyToolError(
                "reloadPackage",
                `${environmentName}/${packageName}`,
                error,

@@ -24,7 +24,7 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 ### Authoring tools
 
 - `malloy_compile`: compile Malloy source against a model and return structured diagnostics (`severity`, `message`, `line`, `character`) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query. Positions are 0-based and relative to the model file with the submitted source appended to it.
-- `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after boot becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. Compile first is a safety gate: a reload whose models do not compile removes the package's on-disk copy under `publisher_data/`.
+- `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after boot becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. A reload that fails to compile leaves the package's files alone and keeps serving the previously compiled model, returning the compile errors.
 
 ### Skills as MCP prompts
 
@@ -32,7 +32,7 @@ The server also serves the bundled agent [skills](../skills/) as MCP prompts. A 
 
 MCP also defines resources (for example links to a data dictionary). These are a newer part of the standard and many clients do not use them yet; a tool like the MCP Inspector lets you explore them.
 
-The server does not require authentication, and `malloy_executeQuery` runs Malloy against the databases your models connect to, so anyone who can reach this port can read that data. The surface is not read-only either: `malloy_reloadPackage` mutates server state, and a reload can re-fetch a package or remove its on-disk content. The same effects are already reachable through the equivalent REST endpoints, so this is a reason to gate the deployment rather than a reason to avoid the tools. The server binds `0.0.0.0` by default, which also exposes it on your network. Bind it to loopback with `--host 127.0.0.1` for local-only use, and put an authenticating gateway in front before exposing it more widely.
+The server does not require authentication, and `malloy_executeQuery` runs Malloy against the databases your models connect to, so anyone who can reach this port can read that data. The surface is not read-only either: `malloy_reloadPackage` mutates server state, and for a package that carries an install location a reload re-fetches it, overwriting on-disk edits. The same effects are already reachable through the equivalent REST endpoints, so this is a reason to gate the deployment rather than a reason to avoid the tools. The server binds `0.0.0.0` by default, which also exposes it on your network. Bind it to loopback with `--host 127.0.0.1` for local-only use, and put an authenticating gateway in front before exposing it more widely.
 
 ## Connecting a client
 
