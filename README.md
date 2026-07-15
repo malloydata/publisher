@@ -9,7 +9,7 @@
 | Tool                              | Version                     | Required for                                                                  |
 | --------------------------------- | --------------------------- | ----------------------------------------------------------------------------- |
 | [Bun](https://bun.sh/)            | ≥ 1.3.13                    | Primary runtime + package manager                                             |
-| [Node.js](https://nodejs.org/)    | ≥ 20                        | DuckDB postinstall scripts and the `npx @malloy-publisher/server` bin shebang |
+| [Node.js](https://nodejs.org/)    | ≥ 20                        | Running `npx @malloy-publisher/server` (the published bin runs under Node)    |
 | [Python](https://www.python.org/) | ≥ 3.12                      | Only if you build the Python client (`packages/python-client`)                |
 | Java                              | ≥ 21 (Corretto recommended) | Only if you regenerate API clients via `bun run generate-api-types`           |
 
@@ -21,9 +21,9 @@ The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.d
 npx @malloy-publisher/server --port 4000
 ```
 
-Open http://localhost:4000 to explore the sample models. Three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`) are cloned from GitHub on first launch, so expect to wait 10 to 60 seconds before `operationalState` reports `serving`. No credentials required.
+Open http://localhost:4000 to explore the sample models. No credentials required.
 
-> **Heads up — npx + DuckDB native binding.** On some Node 24 setups, `npx` does not install DuckDB's native binding (`node_modules/duckdb/lib/binding/duckdb.node`), so the server exits at startup with `Cannot find module ...duckdb.node`. This is an upstream `duckdb` install-script issue tracked separately. Workaround until that's fixed: clone this repo and run `make start-init` (or `bun run build && bun run start`) from the repo root — the workspace's `install-duckdb-bindings` script handles the binding install during `bun run build`.
+The first run is the slow one, usually a minute or two. `npx` downloads the package, then Publisher clones the sample repo from GitHub for its three DuckDB-backed samples (`ecommerce`, `imdb`, `faa`). The download dominates on a cold npm cache and is near-instant once cached. Both steps are network-bound, so your times will vary, and later runs reach `serving` in a couple of seconds. Instead of watching the clock, see [Verify it's working](#verify-its-working).
 
 ### Bring your own config
 
@@ -50,7 +50,7 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
 `operationalState` reports the current server lifecycle:
 
 - **`serving`** — ready to handle requests.
-- **`initializing`** — loading packages and connections from `publisher.config.json`. Normal on boot, and especially noticeable on the first run when sample packages need to be cloned from GitHub. Wait for `serving`.
+- **`initializing`** — loading packages and connections from `publisher.config.json`. Normal on boot, and especially noticeable on the first run when sample packages need to be cloned from GitHub. Wait for `serving`. The clone logs one line when it starts and then works quietly, so a silent log is expected here; if it never finishes, check that you can reach `github.com`.
 - **`draining`** — graceful shutdown in progress: the server is waiting for in-flight requests to finish before closing. Controlled by `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` (see [Configuration](#configuration)).
 - **`throttled`** — the memory governor has hit its back-pressure limit and is rejecting new package loads and queries to stay under `PUBLISHER_MAX_MEMORY_BYTES`. Already-loaded packages remain serviceable; the control plane should treat the worker as unhealthy for new load until memory drops. Only reported when the memory governor is enabled.
 
@@ -178,7 +178,7 @@ Publisher consists of four packages:
 
 This project uses [bun](https://bun.sh/) as the JavaScript runtime. Sample packages are fetched at runtime per [`publisher.config.json`](packages/server/publisher.config.json) — no submodule checkout needed.
 
-The bundled `publisher.config.json` ships three samples (`ecommerce`, `imdb`, `faa`) that run via per-package DuckDB sandboxes — no GCP credentials needed. To enable the BigQuery-required `bigquery-hackernews` sample, copy [`publisher.config.example.bigquery.json`](packages/server/publisher.config.example.bigquery.json) over `publisher.config.json` (or point `--server_root` at a directory containing it) and set `GOOGLE_APPLICATION_CREDENTIALS`.
+The bundled `publisher.config.json` ships four samples (`ecommerce`, `imdb`, `faa`, `faa-givens-demo`) that run via per-package DuckDB sandboxes — no GCP credentials needed. To enable the BigQuery-required `bigquery-hackernews` sample, copy [`publisher.config.example.bigquery.json`](packages/server/publisher.config.example.bigquery.json) over `publisher.config.json` (or point `--server_root` at a directory containing it) and set `GOOGLE_APPLICATION_CREDENTIALS`.
 
 ### Makefile shortcuts
 
