@@ -297,20 +297,22 @@ export class Package {
          // at the user's live source, which is left untouched; the next save
          // recompiles against it.
          try {
-            const stat = await fs.lstat(packagePath).catch(() => null);
             if (!cleanupDirectoryOnFailure) {
                logger.info(
                   `Preserving existing package directory after failed load: ${packagePath}`,
                );
-            } else if (stat?.isSymbolicLink()) {
-               logger.info(
-                  `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
-               );
             } else {
-               await fs.rm(packagePath, { recursive: true, force: true });
-               logger.info(
-                  `Cleaned up failed package directory: ${packagePath}`,
-               );
+               const stat = await fs.lstat(packagePath).catch(() => null);
+               if (stat?.isSymbolicLink()) {
+                  logger.info(
+                     `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
+                  );
+               } else {
+                  await fs.rm(packagePath, { recursive: true, force: true });
+                  logger.info(
+                     `Cleaned up failed package directory: ${packagePath}`,
+                  );
+               }
             }
          } catch (cleanupError) {
             logger.warn(`Failed to clean up package directory ${packagePath}`, {

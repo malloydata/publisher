@@ -23,9 +23,8 @@ const reloadShape = {
 
 /**
  * What a failed reload does, in one sentence, shared with MCP_INSTRUCTIONS
- * rather than restated there. Both surfaces describe the same behavior, and
- * keeping one copy is what stops them drifting: they have already had to be
- * resynchronized twice, and disagreed both times.
+ * rather than restated there. Both surfaces describe the same behavior, so one
+ * copy is what stops them drifting.
  *
  * SECURITY: interpolated into MCP_INSTRUCTIONS, which is delivered
  * pre-authorization to any connecting client. Keep this a static string

@@ -25,7 +25,7 @@ bun run build && bun run start        # REST on :4000, MCP on :4040
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build.
 
-First boot clones the DuckDB sample packages, so wait for the server to report `serving`. That is usually 10 to 60 seconds, depending on how fast the samples clone:
+First boot clones the DuckDB sample packages, so poll until the server reports `serving` rather than assuming a fixed wait. From a clone it is usually seconds; a first `npx` run also has to download the package, which can push it to a minute or two. Both steps are network-bound:
 
 ```bash
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # -> "serving"

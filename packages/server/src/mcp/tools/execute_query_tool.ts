@@ -10,8 +10,12 @@ import {
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
 import { EnvironmentStore } from "../../service/environment_store";
-import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
-import { buildMalloyUri, getModelForQuery } from "../handler_utils";
+import { type ErrorDetails } from "../error_messages";
+import {
+   buildMalloyUri,
+   classifyToolError,
+   getModelForQuery,
+} from "../handler_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 
 /**
@@ -279,7 +283,11 @@ export function registerExecuteQueryTool(
                `[MCP Server Error] Error executing query in ${environmentName}/${packageName}/${modelPath}:`,
                { error: queryError },
             );
-            const errorDetails: ErrorDetails = getMalloyErrorDetails(
+            // Home the error by class first. tryAcquireQuerySlot runs inside
+            // this try, so at the concurrency cap a ServiceUnavailableError
+            // lands here; funnelling that through the Malloy helper told the
+            // agent to check its syntax when the answer was to retry.
+            const errorDetails: ErrorDetails = classifyToolError(
                "executeQuery",
                `${environmentName}/${packageName}/${modelPath}`, // Include environment
                queryError,
