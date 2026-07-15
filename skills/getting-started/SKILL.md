@@ -9,7 +9,7 @@ Goal: go from "connected" to a correct, grounded answer without guessing any nam
 
 ## 0. Confirm the tools are reachable
 
-You need `malloy_getContext`, `malloy_executeQuery`, and `malloy_searchDocs`. If they are not available, the Publisher server is not running or the MCP client is not connected. Start the server (`npx @malloy-publisher/server --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`, then reconnect.
+At minimum you need `malloy_getContext`, `malloy_executeQuery`, and `malloy_searchDocs`. Authoring a model also needs `malloy_compile` and `malloy_reloadPackage` (see section 4); an older Publisher may not serve those two. If the tools are not available at all, the Publisher server is not running or the MCP client is not connected. Start the server (`npx @malloy-publisher/server --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`, then reconnect.
 
 ## 1. Discover what exists (never guess names)
 
@@ -33,7 +33,16 @@ The result is JSON. Charts and dashboards defined in the model render in the Pub
 
 ## 3. When you need Malloy syntax
 
-Use `malloy_searchDocs` for language questions (filters, aggregates, joins, nesting, renderers). For deeper work, switch to the `malloy-modeling`, `malloy-analysis`, or `malloy-review` skills.
+Use `malloy_searchDocs` for language questions (filters, aggregates, joins, nesting, renderers).
+
+## 4. What else you can do here
+
+Answering questions is the start, not the whole surface. When the user asks what is possible, say so rather than offering queries alone. Switch skills for the deeper work:
+
+- `malloy-modeling`: build or change a model. Validate the edit with `malloy_compile`, save it, then `malloy_reloadPackage` so the new sources and views run by name without restarting the server.
+- `malloy-analysis`: explore a package and answer data questions.
+- `html-data-apps`: build a data app, a hand-authored HTML page in the package's `public/` directory that Publisher serves, backed by the package's models and needing no build step.
+- `malloy-review`: check Malloy for correctness.
 
 ## Contract
 

@@ -102,14 +102,17 @@ A ready-to-use Compose file lives at [`docker-compose.example.yml`](docker-compo
 
 For env-var configuration, persistent `publisher_data/` volumes, and advanced options, see [`packages/server/README.docker.md`](packages/server/README.docker.md).
 
-## Agent retrieval tools
+## Agent tools
 
-The MCP server on `:4040` also exposes two read-only retrieval tools aimed at AI agents:
+The MCP server on `:4040` exposes a small set of tools aimed at AI agents. See [`AGENTS.md`](AGENTS.md) for the full connect-and-use workflow.
 
-- **`malloy_getContext`**: given a plain-English question, returns the most relevant model entities (sources, views, named queries, and dimension/measure fields) for a package, so an agent can ground a query in what the model actually defines instead of guessing names.
+- **`malloy_getContext`**: progressive discovery and grounding. Call it with as much as you know and omit the rest: no arguments lists the environments, an environment lists its packages, a package lists its sources, and a plain-English query returns the most relevant sources, views, and fields. Use the names it returns verbatim.
+- **`malloy_executeQuery`**: run a Malloy query (a named view or query, or ad-hoc code) against a model and get JSON back.
+- **`malloy_compile`**: compile-check Malloy source against a model and get structured diagnostics (severity, message, line and column) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query.
+- **`malloy_reloadPackage`**: recompile a package from its on-disk model files so a source or view added after boot becomes queryable by name without restarting the server, closing the edit-and-run loop. Compile-check with `malloy_compile` first: a reload whose models do not compile removes the package's on-disk copy under `publisher_data/`.
 - **`malloy_searchDocs`**: keyword search over a bundled index of the Malloy documentation.
 
-It also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4040/mcp`. The server is stateless and unauthenticated; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
+The server also serves the bundled agent **skills** (under [`skills/`](skills/)) as MCP prompts, so hosts that ingest MCP but do not load skill files can pull the same guidance. Point an MCP client at `http://<host>:4040/mcp`. The server is stateless and unauthenticated; run it behind your own gateway if you need access control. For authoring or contributing skills, see [`docs/agent-skills/`](docs/agent-skills/).
 
 ## Documentation
 
@@ -145,7 +148,7 @@ When Malloy executes a query, the result includes both **data** and **rendering 
 
 An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the network and provides a professional UI for data exploration.
 
-- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, including [agent retrieval tools](#agent-retrieval-tools) and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
+- **Server:** REST API for listing content, managing database connections, compiling models, and executing queries. Also provides an MCP API for AI agent integration, including [agent tools](#agent-tools) and the agent skills as MCP prompts. Supports [source filters](docs/filters.md) for model-driven, server-side query filtering.
 - **App:** Web interface for browsing Malloy content, exploring models with a no-code query builder, and viewing results.
 
 ### Publisher SDK
@@ -259,7 +262,7 @@ Publisher reads its runtime configuration from `publisher.config.json` (see [Dev
 | ----------------------------------------- | ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `PUBLISHER_PORT`                          | `--port <n>`                                    | `4000`    | REST + static-app HTTP port.                                                                                                                                                                           |
 | `PUBLISHER_HOST`                          | `--host <addr>`                                 | `0.0.0.0` | Host binding for the main server.                                                                                                                                                                      |
-| `MCP_PORT`                                | `--mcp_port <n>`                                | `4040`    | MCP HTTP port. Serves the core MCP tools plus the agent retrieval tools (`malloy_getContext`, `malloy_searchDocs`) and the agent skills as MCP prompts.                                                 |
+| `MCP_PORT`                                | `--mcp_port <n>`                                | `4040`    | MCP HTTP port. Serves the MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`) and the agent skills as MCP prompts.                                                 |
 | `SERVER_ROOT`                             | `--server_root <dir>`                           | `.` (cwd) | Directory containing `publisher.config.json`.                                                                                                                                                          |
 | `INITIALIZE_STORAGE`                      | `--init`                                        | _unset_   | Set to `true` (or pass `--init`) to initialize storage on boot. Set on the first run with new persistent storage; safe to omit afterward. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS`         | `--shutdown_drain_duration_seconds <s>`         | `0`       | Time to keep `/health` returning OK after SIGTERM before refusing new traffic.                                                                                                                         |
@@ -348,6 +351,8 @@ See [Theming Publisher](https://docs.malloydata.dev/documentation/user_guides/pu
 A package can ship a `public/` directory of web files (an `index.html` plus CSS, JS, and images) next to its `.malloy` files. Publisher serves only that directory at `/environments/<env>/packages/<pkg>/<file>`, so models, data, and the `publisher.json` manifest stay private and are reachable only through the query API. It lists the pages at `GET .../packages/<pkg>/pages`. Pages render inside the Publisher app by default and can also be embedded in another page as an auto-resizing iframe. A small runtime at `/sdk/publisher.js` exposes `Publisher.query(...)` and `Publisher.embed(...)` for talking to the REST API from the page, with no build step.
 
 For local development, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`). Publisher then mounts that environment's local-dir packages in place and watches them: editing a `.malloy` recompiles the package, editing an asset refreshes the page, and open pages live-reload over a server-sent-events stream at `GET .../packages/<pkg>/events`. See `examples/html-data-app/` for a worked example, and [docs/html-data-apps.md](docs/html-data-apps.md) for the full authoring reference (the `Publisher.query` / `Publisher.embed` API, the page and event contracts, and the security model).
+
+For this to work the environment's packages must be local directories, not `github`/`gcs`/`s3` URLs (the bundled `malloy-samples` env is remote, so it is not watch-eligible), and they must be mounted in place. That in-place mount happens when the env is first loaded from config: the first boot on a fresh server root, or any boot with `--init`. If the env was previously loaded without `--watch-env` its packages were copied into `publisher_data/`, and edits to your source do nothing until you re-mount them by running once with both flags, `--watch-env <env> --init` (`--init` alone re-copies rather than symlinks). You do not need `--init` on every boot. Only the first environment in the watch list auto-reloads.
 
 ## Controlling the discovery surface
 

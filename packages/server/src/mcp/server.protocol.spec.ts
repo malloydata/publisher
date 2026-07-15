@@ -37,12 +37,20 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("malloy_getContext")).toBe(true);
       expect(names.has("malloy_searchDocs")).toBe(true);
       expect(names.has("malloy_executeQuery")).toBe(true);
+      expect(names.has("malloy_compile")).toBe(true);
+      expect(names.has("malloy_reloadPackage")).toBe(true);
    });
 
    it("exposes the skill set as dual-channel prompts", async () => {
       const { prompts } = await client.listPrompts();
       expect(prompts.length).toBeGreaterThanOrEqual(24);
       expect(prompts.some((p) => p.name === "malloy-analysis")).toBe(true);
+   });
+
+   it("delivers orientation instructions to the connecting client", () => {
+      const instructions = client.getInstructions();
+      expect(instructions).toBeDefined();
+      expect(instructions).toContain("malloy_getContext");
    });
 
    it("malloy_searchDocs returns relevant docs over the protocol", async () => {
