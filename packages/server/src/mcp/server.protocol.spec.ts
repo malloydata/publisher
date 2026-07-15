@@ -86,9 +86,30 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(res.isError).toBe(true);
    });
 
-   it("malloy_compile fails gracefully (isError) over the protocol", async () => {
-      // The stub store rejects on getEnvironment, so this exercises the tool's
-      // catch through a real client rather than only asserting it is listed.
+   /**
+    * Assert the tool's OWN error payload, not just isError. The SDK sets
+    * isError for any uncaught throw, so `expect(res.isError).toBe(true)` passes
+    * even with the tool's catch deleted entirely. Only these tools emit a
+    * resource block carrying structured JSON; a raw throw yields the SDK's text
+    * content instead, so this shape is what actually pins the catch.
+    */
+   function expectToolErrorPayload(result: unknown): {
+      error: string;
+      suggestions: string[];
+   } {
+      const res = result as {
+         isError?: boolean;
+         content?: Array<{ type?: string; resource?: { text?: string } }>;
+      };
+      expect(res.isError).toBe(true);
+      expect(res.content?.[0]?.type).toBe("resource");
+      const payload = JSON.parse(res.content?.[0]?.resource?.text ?? "{}");
+      expect(typeof payload.error).toBe("string");
+      expect(Array.isArray(payload.suggestions)).toBe(true);
+      return payload;
+   }
+
+   it("malloy_compile returns its own error payload over the protocol", async () => {
       const res = await client.callTool({
          name: "malloy_compile",
          arguments: {
@@ -98,15 +119,15 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
             source: "run: x -> { aggregate: c is count() }",
          },
       });
-      expect(res.isError).toBe(true);
+      expect(expectToolErrorPayload(res).error).toContain("nope");
    });
 
-   it("malloy_reloadPackage fails gracefully (isError) over the protocol", async () => {
+   it("malloy_reloadPackage returns its own error payload over the protocol", async () => {
       const res = await client.callTool({
          name: "malloy_reloadPackage",
          arguments: { environmentName: "nope", packageName: "nope" },
       });
-      expect(res.isError).toBe(true);
+      expect(expectToolErrorPayload(res).error).toContain("nope");
    });
 
    it("a skill prompt returns its body", async () => {
