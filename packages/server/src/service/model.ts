@@ -1147,6 +1147,7 @@ export class Model {
             `Model compilation failed: ${this.compilationError.message}`,
          );
       }
+
       let runnable: QueryMaterializer;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
@@ -1309,16 +1310,23 @@ export class Model {
       // (for the row limit) and the run so a stale persist source falls back per
       // its declared policy — and prep/run agree on the same substitution.
       const buildManifest = this.resolveFreshBuildManifest();
-      const rowLimit = resolveModelQueryRowLimit(
-         (await runnable.getPreparedResult({ givens, buildManifest }))
-            .resultExplore.limit,
-         { defaultLimit: getDefaultQueryRowLimit(), maxRows },
-      );
-      const endTime = performance.now();
-      const executionTime = endTime - startTime;
 
+      // Prepare INSIDE the run try/catch: a bad-given / value-type throw at
+      // prepare time (getPreparedResult binds the givens) gets the same
+      // MalloyError→rethrow / else→400 handling as run, instead of escaping as
+      // a 500. `executionTime` is still captured after prepare and before run,
+      // preserving the pre-existing timing recorded by the success histogram.
+      let rowLimit = 0;
+      let executionTime = 0;
       let queryResults;
       try {
+         rowLimit = resolveModelQueryRowLimit(
+            (await runnable.getPreparedResult({ givens, buildManifest }))
+               .resultExplore.limit,
+            { defaultLimit: getDefaultQueryRowLimit(), maxRows },
+         );
+         executionTime = performance.now() - startTime;
+
          queryResults = await runnable.run({
             rowLimit,
             givens,
@@ -1336,6 +1344,31 @@ export class Model {
             "malloy.model.query.query": query,
             "malloy.model.query.status": "error",
          });
+
+         // Bad client-supplied givens (unknown name, wrong-typed value, an
+         // operator-finalized override, ...) all surface as a Malloy
+         // `runtime-given-*` error. Malloy is the single validator; the publisher
+         // just maps its rejection to a clean 400. Duck-type on `.code`
+         // (MalloyCompileError extends Error, not MalloyError, and isn't
+         // root-exported). The `runtime-given-` prefix is a pinned coupling to
+         // Malloy's error codes (@malloydata/malloy given_binding.ts / runtime.ts);
+         // if they're renamed upstream, update it here (and in environment.ts) —
+         // otherwise these fall through to the generic 400 below with a worse
+         // message, and the /compile path silently omits `sql`.
+         const givenCode = (error as { code?: string })?.code;
+         if (
+            typeof givenCode === "string" &&
+            givenCode.startsWith("runtime-given-")
+         ) {
+            logger.debug("Rejected client-supplied given", {
+               environmentName: this.packageName,
+               modelPath: this.modelPath,
+               error: error instanceof Error ? error.message : String(error),
+            });
+            throw new BadRequestError(
+               error instanceof Error ? error.message : String(error),
+            );
+         }
 
          // Re-throw Malloy errors as-is (they will be handled by error handler)
          if (error instanceof MalloyError) {
@@ -1606,6 +1639,24 @@ export class Model {
          } catch (error) {
             if (error instanceof FilterValidationError) {
                throw new BadRequestError(error.message);
+            }
+            // Bad client-supplied givens (unknown name, wrong-typed value,
+            // finalized override, ...) surface as a Malloy `runtime-given-*`
+            // error; see getQueryResults. Malloy validates, the publisher maps
+            // to 400. Duck-type on `.code` (not a MalloyError, not root-exported).
+            const givenCode = (error as { code?: string })?.code;
+            if (
+               typeof givenCode === "string" &&
+               givenCode.startsWith("runtime-given-")
+            ) {
+               logger.debug("Rejected client-supplied given", {
+                  environmentName: this.packageName,
+                  modelPath: this.modelPath,
+                  error: error instanceof Error ? error.message : String(error),
+               });
+               throw new BadRequestError(
+                  error instanceof Error ? error.message : String(error),
+               );
             }
             if (error instanceof MalloyError) {
                throw error;
