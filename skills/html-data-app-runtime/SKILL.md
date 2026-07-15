@@ -67,7 +67,7 @@ const rows = await Publisher.query(
 );
 ```
 
-Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: those values are bound by the runtime as typed parameters, not string-interpolated, so they can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a server upstream (the Credible router, or an operator's per-package config) strips or finalizes it. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
+Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: those values are bound by the runtime as typed parameters, not string-interpolated, so they can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a server upstream (a trusted gateway, or an operator's per-package config) strips or finalizes it. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
 
 KPI or single-row view. Destructure element zero:
 

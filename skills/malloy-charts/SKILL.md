@@ -122,20 +122,75 @@ view: summary is {
 
 ### `# dashboard`
 
-Multi-tile layout. Use `# break` to force new row.
+Card-based multi-tile layout. Apply to a view whose body is a nested query; the view's own fields lay out automatically:
+
+- `group_by` dimensions -> a row header (repeats once per row; omit for a single block)
+- `aggregate` measures -> KPI cards, one per measure
+- each `nest:` -> a tile, rendered by the tag above it (`# table` default, or `# bar_chart` / `# line_chart` / `# big_value`)
+
+**Two modes.** Flex (default): tiles flow and wrap; `# break` forces a new row. Columns: `# dashboard { columns=N }` lays tiles into N equal columns, `# colspan=n` widens a tile, `# break` starts a new row, overflow wraps.
+
+```malloy
+// Flex: measures become KPI cards, the nest becomes a tile
+# dashboard
+view: overview is {
+  group_by: category
+  # currency
+  aggregate:
+    avg_retail is retail_price.avg()
+    sum_retail is retail_price.sum()
+  nest:
+    # bar_chart
+    by_brand is { group_by: brand, aggregate: avg_retail is retail_price.avg(), limit: 10 }
+}
+
+// Columns: # colspan widens tiles, # break ends a row
+# dashboard { columns=12 }
+view: layout is {
+  group_by: category
+  # currency
+  aggregate:
+    # colspan=4
+    avg_retail is retail_price.avg()
+    # colspan=4
+    sum_retail is retail_price.sum()
+    # colspan=4
+    max_retail is retail_price.max()
+  nest:
+    # break
+    # colspan=6
+    # bar_chart
+    # subtitle="Top brands"
+    by_brand_chart is { group_by: brand, aggregate: avg_retail is retail_price.avg(), limit: 8 }
+    # colspan=6
+    by_brand_table is { group_by: brand, aggregate: product_count is count(), limit: 8 }
+}
+```
+
+**Tags:** `# dashboard { columns=N }` (columns mode), `{ gap=PX }` (tile spacing, default 16; never a mode), `{ table.max_height=PX|none }` (cap table tiles). On a measure or nest: `# colspan=N` (columns mode only), `# break` (both modes), `# subtitle="..."` (tile), `# borderless` (drop card chrome), `# label="..."` (card title).
+
+For rich KPI cards (sparklines, comparison deltas, several metrics on one card) nest a `# big_value` view instead of relying on the dashboard's own measures:
 
 ```malloy
 # dashboard
-view: overview is {
-  nest: # big_value
-    kpis is { ... }
-  nest: # line_chart
-    trend is { ... }
-  # break
-  nest: # bar_chart
-    breakdown is { ... }
+view: kpis is {
+  group_by: category
+  nest:
+    # big_value
+    revenue_card is {
+      aggregate:
+        # label="Revenue"
+        # currency
+        # big_value { sparkline=trend }
+        total_revenue is retail_price.sum()
+      # line_chart { size=spark y.independent=true }
+      # hidden
+      nest: trend is { group_by: bucket is floor(id / 100)::number, aggregate: total_revenue is retail_price.sum(), order_by: bucket, limit: 20 }
+    }
 }
 ```
+
+**Rules:** `# dashboard` needs a nested-query view (no effect on a scalar). `# colspan` works only in columns mode and is ignored (warns) in flex. `columns` is any positive integer; a `# colspan` over the column count clamps to a full row. Style tiles via the instance theme, or theme the views inside with `# theme.*` (see Theming below).
 
 ### `# pivot`
 

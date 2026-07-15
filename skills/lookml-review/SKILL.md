@@ -23,6 +23,17 @@ description: Analyze LookML files as prior art for Malloy modeling. Used during 
 
 If in LookML-only mode, warn the user: "No database connection found. I'll use LookML as the sole source of context, but proposals cannot be validated against live data."
 
+## Numeric Parity Validation (preflight before you trust the Looker path)
+
+To prove the Malloy numbers match Looker, there are two channels, and the "obvious" one fails silently more often than you'd expect.
+
+**Preflight the Looker-API path before attempting it.** Running the original explore through the Looker API only works if the API service account **satisfies that explore's `required_access_grants`**. A service account that doesn't (e.g. its `org_id` user attribute is empty/`NULL`, or an `*_user_id` attribute the grant keys on is unset) gets a **404 on every restricted explore**, indistinguishable at a glance from "explore not found", and cannot self-provision without `administer`/`sudo`. So before you build a parity harness on the Looker API:
+
+1. Identify the target explore's `required_access_grants` and the user attributes they key on.
+2. Verify the service account actually has non-empty values for those attributes. If it doesn't, the Looker path is a dead end: don't spend time discovering that through 404s.
+
+**SQL-level parity against the same warehouse is a first-class fallback, not a consolation prize.** When the Looker path is blocked (or just as the primary method), validate by running equivalent SQL directly against the **same warehouse** the LookML explore reads and comparing to the Malloy result (`malloy_executeQuery`). This is what actually validates the numbers in practice: reach for it first if access grants are in doubt.
+
 ## Reference Files
 
 Each reference file is loaded by the workflow phase that needs it (via dispatch tables in each phase skill). You do not need to read them all at once.

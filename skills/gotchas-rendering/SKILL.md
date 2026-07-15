@@ -92,6 +92,28 @@ view: rev_delta is {
 
 Use `down_is_good=true` for metrics where decrease is positive (churn, defects).
 
+## `# dashboard` Layout
+
+In a `# dashboard` view, fields render by role: `group_by` -> a repeating row header, `aggregate` measures -> KPI cards, each `nest:` -> a tile. Put each tile tag on its own line above the nested view. A lone renderer tag also works on the `nest:` line, but a tile usually carries several tags (`# break`, `# colspan`, `# subtitle`, then `# bar_chart`), and only the own-line form keeps each tag on its own line.
+
+```malloy
+// RIGHT: tag above the nested view; the measure auto-renders as a card
+# dashboard
+view: overview is {
+  group_by: category
+  # currency
+  aggregate: avg_retail is retail_price.avg()
+  nest:
+    # bar_chart
+    by_brand is { group_by: brand, aggregate: avg_retail is retail_price.avg(), limit: 10 }
+}
+```
+
+- **`# colspan` only works in columns mode.** Set `# dashboard { columns=N }` first; in flex mode `# colspan` is ignored. `# break` (new row) works in both modes.
+- **`gap` is spacing, not a mode.** `columns=N` enters columns mode; `# dashboard { gap=24 }` only changes tile spacing.
+- **`# dashboard` needs a row-producing view (no effect on a scalar).** A flat view of top-level `aggregate:` measures still renders KPI cards; add `nest:` for chart and table tiles.
+- **Use `# colspan`, not the old `# span`.** Tile styling comes from the instance theme.
+
 ## Theming
 
 - **Per-chart theme keys are nested, not flat.** In Publisher, `# theme.palette.tableHeader.dark = "#94a3b8"` works; a flat `# theme.tableHeaderColor = "#94a3b8"` is silently dropped. Publisher's annotation reader only understands the structured `palette.*` / `font.*` form (the same vocabulary as the config), not the renderer's flat `MalloyExplicitTheme` key names.

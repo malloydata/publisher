@@ -44,6 +44,32 @@ dimension: dow is created_at.day_of_week   dimension: dow is day_of_week(created
 **Property access:** `.month`, `.year`, `.quarter`, `.day`, `::date`
 **Function call required:** `day_of_week()`, `week()`, `hour()`, `minute()`, `second()`
 
+## `.date` Is a Cast, Not a Truncation
+
+Calendar truncations are `.day`, `.week`, `.month`, `.quarter`, `.year` (plus `.hour`, `.minute`, `.second` for timestamps). `.date` is **not** among them: it's a **cast** (`::date`), not a truncation, so `created_at.date` does not compile. This bites twice: once at compile time, and again as a latent bad `#(doc)` comment that only a review pass catches ("truncated to date" is a doc smell; it should say "to day").
+
+```malloy
+// WRONG                          // RIGHT
+created_at.date                   created_at.day     // truncate to day
+                                   created_at::date   // cast to a date
+```
+
+## Interval Functions: Only `seconds` / `minutes` / `hours` / `days`
+
+`weeks()`, `months()`, `quarters()`, `years()` are **documented but don't work** in this build; only `seconds`, `minutes`, `hours`, `days` actually function. Compute in days and derive the larger unit: a *units conversion*, not a calendar-floored duration:
+
+```malloy
+// WRONG: weeks()/months() don't compile
+dimension: weeks_open is weeks(opened_at to closed_at)
+
+// RIGHT: measure in days, convert (documents that it's approximate)
+dimension: days_open  is days(opened_at to closed_at)
+dimension: weeks_open is days(opened_at to closed_at) / 7      // ≈ weeks
+dimension: months_open is days(opened_at to closed_at) / 30.44 // ≈ months
+```
+
+(Contrast: `malloy_searchDocs` gets this right when asked narrowly; trust the docs on the supported units, not on the missing ones.)
+
 ## Safe Division: Always `nullif`
 
 ```malloy
@@ -75,6 +101,30 @@ count() { where: complaint = 'true' }        count() { where: complaint = true }
 ```
 
 Check schema: if `BOOL`, use `true`/`false`. If `STRING`, use `'true'`/`'false'`.
+
+## `greatest()` / `least()` Are Null-Poisoning
+
+Malloy's `greatest()` / `least()` return **NULL if *any* argument is null**, unlike Postgres `GREATEST`/`LEAST`, which ignore nulls. Porting a LookML/SQL expression verbatim is a silent parity bug: the number just goes null for any row with a missing input. Coalesce the result back to a non-null argument:
+
+```malloy
+// WRONG: one null input nulls the whole thing
+dimension: last_touch is greatest(email_at, call_at)
+
+// RIGHT: fall back so a null arg can't poison the result
+dimension: last_touch is greatest(email_at, call_at) ?? email_at ?? call_at
+```
+
+## No Scalar Median; Raw-SQL Aggregates Don't Compile
+
+**There is no scalar `median`, and `PERCENTILE_CONT` cannot be expressed as a measure in this build.** Every documented form for a custom SQL aggregate — `percentile_cont!(x, 0.5)`, `sql_number(...)`, `sql_number(...) { is_aggregate: true }`, and the `# is_aggregate` annotation — resolves as a **scalar** and fails with *"Cannot use a scalar field in a measure declaration."* The docs' own `avg_dist` example fails the same way. This is a deployed-runtime limitation, not a syntax error you can fix: **do not** burn cycles trying `!`, `sql_number`, or `is_aggregate` variations to get a median.
+
+```malloy
+// DOES NOT COMPILE in this build (all forms resolve as scalar):
+measure: median_x is percentile_cont!(x, 0.5)
+measure: median_x is sql_number("PERCENTILE_CONT(...) ...") { is_aggregate: true }
+```
+
+**Ship `avg` instead, or defer median with a documented gap** ("median deferred: no scalar median / runtime rejects raw-SQL aggregates"). Tell the user; don't silently substitute `avg` for a metric that was specified as median.
 
 ## Field Management: `extend {}` vs `include {}` Don't Compose
 
@@ -219,7 +269,7 @@ Malloy compiles top-to-bottom. Define lookup/dimension tables before the source 
 Call `malloy_searchDocs` BEFORE first use of any of these. Don't guess the syntax:
 - `pick` expressions
 - Window functions (`calculate`)
-- `percentile` or statistical functions
-- Time interval functions (`days()`, `seconds()`)
+- `percentile` or statistical functions: but see the hard limit above, raw-SQL aggregates (`sql_number` / `is_aggregate` / `percentile_cont!`) do **not** compile as measures in this build; there is no scalar median
+- Time interval functions (`days()`, `seconds()`): only `seconds`/`minutes`/`hours`/`days` exist (see above)
 - Query-based sources (`from()`)
 - `!` operator / `sql_number()`

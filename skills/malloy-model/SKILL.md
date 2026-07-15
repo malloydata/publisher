@@ -249,6 +249,30 @@ Publisher formats values based on the dimension's data type, `string` → `'valu
 
 Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip filter injection entirely. Use sparingly, required-filter governance only works if bypass is restricted to trusted callers.
 
+## Access Control: Source Gating with `#(authorize)`
+
+Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`; see `docs/givens.md`). Publisher evaluates a source's in-scope `#(authorize)` expressions against the request's supplied givens before running the query; if **any** expression returns `true` the request proceeds, otherwise it is denied with **403**. A source with no in-scope `#(authorize)` annotations is unrestricted.
+
+```malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: orders is duckdb.table('orders.parquet') extend {
+  measure: order_count is count()
+}
+```
+
+- **Source-level** `#(authorize) "<expr>"` gates that one source. **File-level** `##(authorize) "<expr>"` applies to every source in the file. Multiple gates combine as an OR, access is granted if any one is true, so a permissive file-level gate is a **model-wide override**, not an added restriction.
+- **Not inherited, not joined.** The gate applies only to the source a query directly runs against. A source that `extend`s a locked base does **not** inherit the base's gate, and a gate on a source reached only via `join_*` never fires. Pair a locked base (`#(authorize) "false"`) with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface instead of leaking the base's data through the join or extend.
+- The expression may reference only givens and literals, never a column of the gated source; the check runs against a synthetic probe row, not your data.
+
+> **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(authorize)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
+
+Full syntax, OR/override semantics, validation, and the error contract: `docs/authorize.md`.
+
 ## Join Syntax
 
 - Simple join: `join_one: users with user_id`

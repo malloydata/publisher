@@ -36,6 +36,33 @@ If it doesn't exist, create one. Suggest a package name based on the model conte
 - `name`: lowercase, hyphens allowed (e.g., `ecommerce`, `sales-analytics`)
 - `version`: semver format (e.g., `0.0.1`, `1.2.3`)
 
+### Curating discovery & the query boundary (optional)
+
+By default a package exposes **everything**: every model is listed and every source is directly queryable. That's the right behavior for most packages, and it's the safe default: **omit these fields and nothing changes.** Reach for them when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on (or querying) them directly.
+
+Two optional fields opt the package into curation:
+
+```json
+{
+  "name": "ecommerce",
+  "version": "0.0.1",
+  "description": "Orders, customers, and revenue analysis",
+  "explores": ["order_analysis.malloy", "customer_health.malloy"],
+  "queryableSources": "declared"
+}
+```
+
+- **`explores`** (`string[]`) — an allowlist of **model file paths** (relative to the package root, not source or view names) whose models agents should discover and land on. Declaring it is the single opt-in for all discovery curation. With `explores` set, listings narrow to those files, and within each file to its `export { ... }` closure (below), so anything a listed file doesn't export is also dropped. Other files still compile, and can still be imported or joined, but are hidden from listings. Leaving `explores` **absent or empty** means every model is listed, unchanged from today, so existing packages don't break when this field is added. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`; publishing a package that has any is rejected, so fix the path before publishing.
+- **`queryableSources`** (`"declared"` | `"all"`, default `"declared"`) — the query boundary. Only takes effect once `explores` is set. `"declared"` makes queryable == discoverable: only the `explores` files and their `export {}` closure are valid top-level query targets; other sources still compile, import, and join, but a direct query against one is denied. `"all"` curates discovery only: every compiled source stays queryable even though `explores` narrows what's listed.
+
+**About `export { … }`:** `explores` filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, the two compose. You usually don't write it: a file with **no** `export` exposes all of its own top-level sources. Add `export { orders, customers }` to a file to expose only those and keep imported/scaffolding helpers out of discovery (it must appear after the definitions it names). See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
+
+**Why curate here:** declaring `explores` routes agents to the well-documented curated sources instead of raw tables, and `queryableSources: "declared"` keeps them from reaching the hidden sources by name. The two axes compose: list a file in `explores` for its models to be discoverable, and `export` a source within that file for it to be a landing point.
+
+> **Not access control.** `queryableSources` gates the query surface (query / compile / MCP), not raw file retrieval by exact path, and it doesn't restrict *who* may query, only *what* is queryable by name. To gate access by caller-supplied identity/role, use `#(authorize)` on the source, see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and `#(authorize)` are independent layers.
+
+The manifest also carries a `scope` field (`"package"` | `"version"`, default `"package"`) controlling whether persisted/materialized artifacts are shared across published versions or owned by a single version, and a `materialization` field configuring that persistence policy (a cron `schedule` or a `freshness` window). Both are unrelated to discovery curation; there is no per-source `sharing` or `schedule` field, that was retired in favor of the single package-level `scope` and `materialization`.
+
 ## Step 2: Confirm the package layout
 
 With a valid `publisher.json` in place, confirm the package is in the flat, publishable shape described below. There is no publish tool to call in open-source v1; hand the package off to the host's publish path (git plus the deploy step for your Publisher instance).
