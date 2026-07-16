@@ -87,7 +87,7 @@ run: orders -> by_month
 
 Interactive filters are common and important. Add them to most notebooks. Filters are declared **once, on the model's source**, using `#(filter)` annotations. The notebook itself does not declare or list filters. Publisher reads the source's filter metadata and renders the widgets above the notebook automatically, then injects `where:` clauses server-side on every cell.
 
-Filter declarations live in the `.malloy` model file, above the source, using key=value parameters. The full reference (syntax, filter types, `required` / `implicit` flags) is in `skill:malloy-model` § Parameterizable Filters with `#(filter)`. Short example:
+Filter declarations live in the `.malloy` model file, above the source, using key=value parameters. The full reference (syntax, filter types, `required` / `implicit` flags) lives with the `#(filter)` guidance in the `malloy-model` skill's Parameterizable Filters section. Short example:
 
 ```malloy
 #(filter) name=Manufacturer dimension=Manufacturer type=in
@@ -203,7 +203,7 @@ run: main_source -> [further breakdown]
 |---------|-----|
 | `view_name { limit: 10 }` | Use `+`: `view_name + { limit: 10 }` |
 | `# currency` on non-money | Only use `# currency` for monetary values |
-| `#(filter) {"type": "Star"}` (JSON-blob form, on a dimension) | Unsupported legacy syntax. `#(filter)` goes **above the source** with key=value parameters (`name=`, `dimension=`, `type=`). See `skill:malloy-model` § Parameterizable Filters. |
+| `#(filter) {"type": "Star"}` (JSON-blob form, on a dimension) | Unsupported legacy syntax. `#(filter)` goes **above the source** with key=value parameters (`name=`, `dimension=`, `type=`). See the `malloy-model` skill's Parameterizable Filters section. |
 | `##(filters) [...]` annotation in the notebook | Unsupported. The notebook does not declare or list filters. Publisher renders widgets automatically from the source's `#(filter)` annotations. |
 | Creating MalloySQL cells | **NEVER use `>>>malloysql`**, only `>>>malloy` and `>>>markdown` |
 | Data-specific insights in markdown | Don't write "Revenue grew 23%." Frame questions instead. Data refreshes will make findings stale. |
