@@ -86,7 +86,7 @@ const SEARCH_DOCS_DESCRIPTION = `Search the Malloy documentation by keyword and 
 
 ## When to use
 - Before writing unfamiliar Malloy syntax (window functions, autobin, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
-- Do NOT use it to look up field or source names in a model; use malloy_getContext or malloy_modelGetText for that.
+- Do NOT use it to look up field or source names in a model; use malloy_getContext for that.
 
 ## Parameters
 - query (required): keywords describing what you need.

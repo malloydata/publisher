@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
-import { 
-  Box, 
-  Typography, 
-  Card, 
-  Stack, 
-  Tabs, 
-  Tab, 
-  FormControl, 
-  InputLabel, 
-  Select, 
-  MenuItem, 
+import {
+  Box,
+  Typography,
+  Card,
+  Stack,
+  Tabs,
+  Tab,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
   Paper,
   CircularProgress,
   Alert,
@@ -32,6 +32,9 @@ import {
 } from "recharts";
 import Header from "./Header";
 
+const usd = (value: number) =>
+  value.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+
 // Custom hook to fetch raw query data using the existing API
 const useRawQueryData = ({ modelPath, query }: { modelPath: string; query: string }) => {
   const [data, setData] = React.useState<any[]>([]);
@@ -43,8 +46,8 @@ const useRawQueryData = ({ modelPath, query }: { modelPath: string; query: strin
       setIsLoading(true);
       setIsError(false);
       try {
-        // Using the names package which is DuckDB based and doesn't require BQ credentials
-        const response = await fetch(`/api/v0/projects/malloy-samples/packages/names/models/${modelPath}/query`, {
+        // Using the storefront package, which is DuckDB based and needs no cloud credentials
+        const response = await fetch(`/api/v0/environments/examples/packages/storefront/models/${modelPath}/query`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -53,16 +56,16 @@ const useRawQueryData = ({ modelPath, query }: { modelPath: string; query: strin
         });
 
         if (!response.ok) throw new Error('Failed to fetch');
-        
+
         const result = await response.json();
         const parsed = typeof result.result === 'string' ? JSON.parse(result.result) : result;
-        
+
         // Convert the Malloy result format to simple objects
         const arrayData = parsed.data?.array_value || [];
         const processedData = arrayData.map((row: any) => {
           const record = row.record_value || [];
           const obj: any = {};
-          
+
           // Map field values based on schema
           record.forEach((cell: any, index: number) => {
             const fieldName = parsed.schema?.fields[index]?.name;
@@ -74,10 +77,10 @@ const useRawQueryData = ({ modelPath, query }: { modelPath: string; query: strin
               }
             }
           });
-          
+
           return obj;
         });
-        
+
         setData(processedData);
       } catch (error) {
         console.error('Failed to fetch query results:', error);
@@ -124,21 +127,31 @@ function TabPanel(props: TabPanelProps) {
 
 const COLORS = {
   primary: '#3B82F6',
-  secondary: '#10B981', 
+  secondary: '#10B981',
   accent: '#F59E0B',
   purple: '#8B5CF6',
   pink: '#EC4899',
   chartColors: ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#6B7280', '#818CF8', '#F472B6']
 };
 
+// Order fulfillment statuses present in the storefront sample, in chart-stacking order.
+const STATUSES = ['Complete', 'Shipped', 'Processing', 'Returned', 'Cancelled'];
+const STATUS_COLORS: { [key: string]: string } = {
+  Complete: COLORS.secondary,
+  Shipped: COLORS.primary,
+  Processing: COLORS.accent,
+  Returned: COLORS.pink,
+  Cancelled: COLORS.purple,
+};
+
 export default function InteractiveDashboard({
   selectedView,
 }: {
-  selectedView: "malloySamples" | "singleEmbed" | "dynamicDashboard" | "interactive";
+  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
 }) {
   const [tabValue, setTabValue] = useState(0);
   const [stateFilter, setStateFilter] = useState('');
-  const [genderFilter, setGenderFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   // Store scroll position to prevent auto-scroll to top
@@ -156,13 +169,13 @@ export default function InteractiveDashboard({
   const handleTabChange = React.useCallback((event: React.SyntheticEvent, newValue: number) => {
     event.preventDefault();
     event.stopPropagation();
-    
+
     // Store current scroll position
     const currentScroll = window.pageYOffset;
     scrollPositionRef.current = currentScroll;
-    
+
     setTabValue(newValue);
-    
+
     // Prevent scroll to top by restoring position immediately
     requestAnimationFrame(() => {
       window.scrollTo(0, currentScroll);
@@ -171,28 +184,28 @@ export default function InteractiveDashboard({
 
   const handleStateFilterChange = React.useCallback((event: SelectChangeEvent) => {
     event.preventDefault();
-    
+
     // Store current scroll position
     const currentScroll = window.pageYOffset;
     scrollPositionRef.current = currentScroll;
-    
+
     setStateFilter(event.target.value);
-    
+
     // Prevent scroll to top by restoring position immediately
     requestAnimationFrame(() => {
       window.scrollTo(0, currentScroll);
     });
   }, []);
 
-  const handleGenderFilterChange = React.useCallback((event: SelectChangeEvent) => {
+  const handleStatusFilterChange = React.useCallback((event: SelectChangeEvent) => {
     event.preventDefault();
-    
+
     // Store current scroll position
     const currentScroll = window.pageYOffset;
     scrollPositionRef.current = currentScroll;
-    
-    setGenderFilter(event.target.value);
-    
+
+    setStatusFilter(event.target.value);
+
     // Prevent scroll to top by restoring position immediately
     requestAnimationFrame(() => {
       window.scrollTo(0, currentScroll);
@@ -203,55 +216,55 @@ export default function InteractiveDashboard({
   const buildFilteredQuery = (baseQuery: string) => {
     const conditions = [];
     if (stateFilter) {
-      conditions.push(`state = '${stateFilter}'`);
+      conditions.push(`customers.state = '${stateFilter}'`);
     }
-    if (genderFilter) {
-      conditions.push(`gender = '${genderFilter}'`);
+    if (statusFilter) {
+      conditions.push(`status = '${statusFilter}'`);
     }
-    
+
     if (conditions.length > 0) {
       return `${baseQuery} + { where: ${conditions.join(' and ')} }`;
     }
     return baseQuery;
   };
 
-  // Use names1.malloynb - the actual model file in the malloy-samples package
-  const MODEL_PATH = 'names1.malloynb'; 
+  // Query against order_items, the fact source in storefront.malloy
+  const MODEL_PATH = 'storefront.malloy';
 
   // Queries for the dashboard
-  const topNamesQuery = buildFilteredQuery(`run: names -> { 
-    group_by: name
-    aggregate: total_population
+  const topProductsQuery = buildFilteredQuery(`run: order_items -> {
+    group_by: products.name
+    aggregate: total_sales
     limit: 10
   }`);
-  
-  const byStateQuery = buildFilteredQuery(`run: names -> { 
-    group_by: state
-    aggregate: total_population
-    limit: 10 
-  }`);
-  
-  const byGenderQuery = buildFilteredQuery(`run: names -> { 
-    group_by: gender
-    aggregate: total_population 
-  }`);
-  
-  const namesByDecadeQuery = buildFilteredQuery(`run: names -> { 
-    group_by: decade
-    aggregate: total_population
-    order_by: decade
+
+  const byStateQuery = buildFilteredQuery(`run: order_items -> {
+    group_by: customers.state
+    aggregate: total_sales
+    limit: 10
   }`);
 
-  const namesByStateGenderQuery = buildFilteredQuery(`run: names -> { 
-    group_by: state, gender
-    aggregate: total_population
-    limit: 20
+  const byStatusQuery = buildFilteredQuery(`run: order_items -> {
+    group_by: status
+    aggregate: total_sales
+  }`);
+
+  const byYearQuery = buildFilteredQuery(`run: order_items -> {
+    group_by: created_year is year(created_at)
+    aggregate: total_sales
+    order_by: created_year
+  }`);
+
+  const byStateStatusQuery = buildFilteredQuery(`run: order_items -> {
+    group_by: customers.state, status
+    aggregate: total_sales
+    limit: 60
   }`);
 
   // Use the custom hook to fetch raw data
-  const { data: topNamesData, isLoading: topNamesLoading, isError: topNamesError } = useRawQueryData({
+  const { data: topProductsData, isLoading: topProductsLoading, isError: topProductsError } = useRawQueryData({
     modelPath: MODEL_PATH,
-    query: topNamesQuery,
+    query: topProductsQuery,
   });
 
   const { data: byStateData, isLoading: byStateLoading, isError: byStateError } = useRawQueryData({
@@ -259,80 +272,83 @@ export default function InteractiveDashboard({
     query: byStateQuery,
   });
 
-  const { data: byGenderData, isLoading: byGenderLoading, isError: byGenderError } = useRawQueryData({
+  const { data: byStatusData, isLoading: byStatusLoading, isError: byStatusError } = useRawQueryData({
     modelPath: MODEL_PATH,
-    query: byGenderQuery,
+    query: byStatusQuery,
   });
 
-  const { data: byDecadeData, isLoading: byDecadeLoading, isError: byDecadeError } = useRawQueryData({
+  const { data: byYearData, isLoading: byYearLoading, isError: byYearError } = useRawQueryData({
     modelPath: MODEL_PATH,
-    query: namesByDecadeQuery,
+    query: byYearQuery,
   });
 
-  const { data: namesByStateGenderData, isLoading: namesByStateGenderLoading, isError: namesByStateGenderError } = useRawQueryData({
+  const { data: byStateStatusData, isLoading: byStateStatusLoading, isError: byStateStatusError } = useRawQueryData({
     modelPath: MODEL_PATH,
-    query: namesByStateGenderQuery,
+    query: byStateStatusQuery,
   });
 
   // Process data for charts
-  const processedTopNamesData = topNamesData?.map((item: any, index: number) => ({
+  const processedTopProductsData = topProductsData?.map((item: any, index: number) => ({
     name: item.name || 'Unknown',
-    count: Number(item.total_population) || 0,
+    sales: Number(item.total_sales) || 0,
     fill: COLORS.chartColors[index % COLORS.chartColors.length]
   })) || [];
 
   const processedByStateData = byStateData?.map((item: any, index: number) => ({
     name: item.state || 'Unknown',
-    value: Number(item.total_population) || 0,
+    value: Number(item.total_sales) || 0,
     fill: COLORS.chartColors[index % COLORS.chartColors.length]
   })) || [];
 
-  const processedByGenderData = byGenderData?.map((item: any, index: number) => ({
-    name: item.gender === 'F' ? 'Female' : item.gender === 'M' ? 'Male' : item.gender,
-    count: Number(item.total_population) || 0,
-    fill: item.gender === 'F' ? COLORS.pink : COLORS.primary
+  const processedByStatusData = byStatusData?.map((item: any) => ({
+    name: item.status || 'Unknown',
+    sales: Number(item.total_sales) || 0,
+    fill: STATUS_COLORS[item.status] || COLORS.primary
   })) || [];
 
-  const processedByDecadeData = byDecadeData?.map((item: any) => ({
-    decade: item.decade?.toString() || 'Unknown',
-    'Population': Number(item.total_population) || 0
+  const processedByYearData = byYearData?.map((item: any) => ({
+    year: item.created_year?.toString() || 'Unknown',
+    'Sales': Number(item.total_sales) || 0
   })) || [];
 
-  // Process mekko/stacked bar data
+  // Process stacked bar data: sales by state, stacked by fulfillment status
   const processedStackedData = React.useMemo(() => {
-    if (!namesByStateGenderData || namesByStateGenderData.length === 0) return [];
-    
+    if (!byStateStatusData || byStateStatusData.length === 0) return [];
+
     const stateMap: {[key: string]: any} = {};
-    namesByStateGenderData.forEach((item: any) => {
+    byStateStatusData.forEach((item: any) => {
       const state = item.state;
       if (!stateMap[state]) {
-        stateMap[state] = { name: state, Male: 0, Female: 0 };
+        stateMap[state] = { name: state };
+        STATUSES.forEach((s) => { stateMap[state][s] = 0; });
       }
-      const gender = item.gender === 'M' ? 'Male' : 'Female';
-      stateMap[state][gender] = Number(item.total_population);
+      if (item.status) {
+        stateMap[state][item.status] = Number(item.total_sales);
+      }
     });
-    
-    return Object.values(stateMap).sort((a: any, b: any) => (b.Male + b.Female) - (a.Male + a.Female)).slice(0, 10);
-  }, [namesByStateGenderData]);
+
+    const total = (row: any) => STATUSES.reduce((sum, s) => sum + (row[s] || 0), 0);
+    return Object.values(stateMap).sort((a: any, b: any) => total(b) - total(a)).slice(0, 10);
+  }, [byStateStatusData]);
 
   const tabs = [
-    { id: 0, label: 'Top Names' },
+    { id: 0, label: 'Top Products' },
     { id: 1, label: 'By State' },
-    { id: 2, label: 'By Gender' },
-    { id: 3, label: 'State & Gender' },
+    { id: 2, label: 'By Status' },
+    { id: 3, label: 'State & Status' },
     { id: 4, label: 'Over Time' }
   ];
 
   // Calculate scale to fit content in viewport
   const [scale, setScale] = React.useState(1);
-  
+
   React.useEffect(() => {
     const calculateScale = () => {
       const viewportHeight = window.innerHeight;
       const headerHeight = 100; // Approximate header height
       const availableHeight = viewportHeight - headerHeight;
       const contentHeight = 900; // Approximate content height (reduced)
-      
+
       if (contentHeight > availableHeight) {
         const newScale = Math.max(0.7, Math.min(availableHeight / contentHeight, 1));
         setScale(newScale);
@@ -349,12 +365,12 @@ export default function InteractiveDashboard({
   return (
     <Stack spacing={2} sx={{ mt: { xs: 8, md: 0 }, mb: 8 }}>
       <Header selectedView={selectedView} />
-      
-      <Box 
-        ref={containerRef} 
-        sx={{ 
-          maxWidth: 1400, 
-          mx: 'auto', 
+
+      <Box
+        ref={containerRef}
+        sx={{
+          maxWidth: 1400,
+          mx: 'auto',
           p: 3,
           scrollBehavior: 'smooth',
           transform: `scale(${scale})`,
@@ -362,53 +378,53 @@ export default function InteractiveDashboard({
           width: scale < 1 ? `${100 / scale}%` : '100%',
         }}
       >
-        <Typography 
-          variant="h4" 
-          sx={{ 
-            fontWeight: 'bold', 
-            mb: 2, 
+        <Typography
+          variant="h4"
+          sx={{
+            fontWeight: 'bold',
+            mb: 2,
             background: 'linear-gradient(45deg, #1976d2, #42a5f5)',
             backgroundClip: 'text',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
           }}
         >
-          US Name Popularity Explorer
+          Storefront Sales Explorer
         </Typography>
         <Typography variant="body1" sx={{ mb: 4, color: '#6b7280' }}>
-          Explore historical US baby name trends (SSA dataset) with interactive filtering.
+          Explore the storefront sample's order line items with interactive filtering.
         </Typography>
 
         {/* Statistics Cards */}
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 3 }}>
-          <Card sx={{ 
-            p: 3, 
+          <Card sx={{
+            p: 3,
             background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
             color: 'white',
             boxShadow: '0 8px 32px rgba(102, 126, 234, 0.3)',
             flex: 1
           }}>
-            <Typography variant="h4" sx={{ fontWeight: 'bold' }}>300M+</Typography>
-            <Typography variant="body2">Total Population</Typography>
+            <Typography variant="h4" sx={{ fontWeight: 'bold' }}>$2.1M</Typography>
+            <Typography variant="body2">Total Sales</Typography>
           </Card>
-          <Card sx={{ 
-            p: 3, 
+          <Card sx={{
+            p: 3,
             background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
             color: 'white',
             boxShadow: '0 8px 32px rgba(240, 147, 251, 0.3)',
             flex: 1
           }}>
-            <Typography variant="h4" sx={{ fontWeight: 'bold' }}>100K+</Typography>
-            <Typography variant="body2">Unique Names</Typography>
+            <Typography variant="h4" sx={{ fontWeight: 'bold' }}>11K</Typography>
+            <Typography variant="body2">Orders</Typography>
           </Card>
-          <Card sx={{ 
-            p: 3, 
+          <Card sx={{
+            p: 3,
             background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
             color: 'white',
             boxShadow: '0 8px 32px rgba(79, 172, 254, 0.3)',
             flex: 1
           }}>
-            <Typography variant="h4" sx={{ fontWeight: 'bold' }}>1910-2020</Typography>
+            <Typography variant="h4" sx={{ fontWeight: 'bold' }}>2023–2025</Typography>
             <Typography variant="body2">Years Covered</Typography>
           </Card>
         </Stack>
@@ -421,7 +437,7 @@ export default function InteractiveDashboard({
           <Typography variant="body2" sx={{ mb: 3, color: '#6b7280' }}>
             Apply filters to modify all charts below.
           </Typography>
-          
+
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={3} sx={{ mb: 2 }}>
             <FormControl sx={{ minWidth: 200 }}>
               <InputLabel>Filter by State</InputLabel>
@@ -431,45 +447,48 @@ export default function InteractiveDashboard({
                 onChange={handleStateFilterChange}
               >
                 <MenuItem value="">All States</MenuItem>
-                <MenuItem value="CA">California</MenuItem>
-                <MenuItem value="TX">Texas</MenuItem>
-                <MenuItem value="NY">New York</MenuItem>
-                <MenuItem value="FL">Florida</MenuItem>
-                <MenuItem value="IL">Illinois</MenuItem>
-                <MenuItem value="PA">Pennsylvania</MenuItem>
-                <MenuItem value="OH">Ohio</MenuItem>
-                <MenuItem value="MI">Michigan</MenuItem>
-                <MenuItem value="GA">Georgia</MenuItem>
-                <MenuItem value="NC">North Carolina</MenuItem>
+                <MenuItem value="California">California</MenuItem>
+                <MenuItem value="Texas">Texas</MenuItem>
+                <MenuItem value="New York">New York</MenuItem>
+                <MenuItem value="Illinois">Illinois</MenuItem>
+                <MenuItem value="Florida">Florida</MenuItem>
+                <MenuItem value="Washington">Washington</MenuItem>
+                <MenuItem value="Massachusetts">Massachusetts</MenuItem>
+                <MenuItem value="Georgia">Georgia</MenuItem>
+                <MenuItem value="Colorado">Colorado</MenuItem>
+                <MenuItem value="Oregon">Oregon</MenuItem>
               </Select>
             </FormControl>
 
             <FormControl sx={{ minWidth: 200 }}>
-              <InputLabel>Filter by Gender</InputLabel>
+              <InputLabel>Filter by Status</InputLabel>
               <Select
-                value={genderFilter}
-                label="Filter by Gender"
-                onChange={handleGenderFilterChange}
+                value={statusFilter}
+                label="Filter by Status"
+                onChange={handleStatusFilterChange}
               >
-                <MenuItem value="">All Genders</MenuItem>
-                <MenuItem value="F">Female</MenuItem>
-                <MenuItem value="M">Male</MenuItem>
+                <MenuItem value="">All Statuses</MenuItem>
+                <MenuItem value="Complete">Complete</MenuItem>
+                <MenuItem value="Shipped">Shipped</MenuItem>
+                <MenuItem value="Processing">Processing</MenuItem>
+                <MenuItem value="Returned">Returned</MenuItem>
+                <MenuItem value="Cancelled">Cancelled</MenuItem>
               </Select>
             </FormControl>
           </Stack>
 
-          {(stateFilter || genderFilter) && (
+          {(stateFilter || statusFilter) && (
             <Alert severity="info" sx={{ mt: 2 }}>
               <Typography variant="body2">
                 <strong>Active Filters:</strong>{' '}
                 {stateFilter && `State = "${stateFilter}"`}
-                {stateFilter && genderFilter && ' AND '}
-                {genderFilter && `Gender = "${genderFilter}"`}
+                {stateFilter && statusFilter && ' AND '}
+                {statusFilter && `Status = "${statusFilter}"`}
               </Typography>
               <Typography variant="body2" sx={{ mt: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>
                 Query modification: + where: {[
-                  stateFilter && `state = '${stateFilter}'`,
-                  genderFilter && `gender = '${genderFilter}'`
+                  stateFilter && `customers.state = '${stateFilter}'`,
+                  statusFilter && `status = '${statusFilter}'`
                 ].filter(Boolean).join(' and ')}
               </Typography>
             </Alert>
@@ -478,8 +497,8 @@ export default function InteractiveDashboard({
 
         {/* Tab Navigation */}
         <Paper sx={{ mb: 2 }}>
-          <Tabs 
-            value={tabValue} 
+          <Tabs
+            value={tabValue}
             onChange={handleTabChange}
             sx={{
               '& .MuiTabs-indicator': {
@@ -501,30 +520,30 @@ export default function InteractiveDashboard({
         <TabPanel value={tabValue} index={0}>
           <Card sx={{ p: 3 }}>
             <Typography variant="h5" sx={{ mb: 3, fontWeight: 'bold' }}>
-              Top 10 Most Popular Names
+              Top 10 Products by Sales
             </Typography>
-            {topNamesLoading ? (
+            {topProductsLoading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
                 <CircularProgress />
               </Box>
-            ) : topNamesError ? (
-              <Alert severity="error">Failed to load names data</Alert>
+            ) : topProductsError ? (
+              <Alert severity="error">Failed to load product data</Alert>
             ) : (
               <ResponsiveContainer width="100%" height={350}>
-                <BarChart 
-                  data={processedTopNamesData}
+                <BarChart
+                  data={processedTopProductsData}
                   margin={{ top: 20, right: 30, left: 20, bottom: 50 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis 
-                    dataKey="name" 
-                    stroke="#666" 
+                  <XAxis
+                    dataKey="name"
+                    stroke="#666"
                   />
                   <YAxis stroke="#666" />
-                  <Tooltip 
-                    formatter={(value) => [value.toLocaleString(), 'Births']}
+                  <Tooltip
+                    formatter={(value) => [usd(Number(value)), 'Sales']}
                   />
-                  <Bar dataKey="count" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="sales" fill="#3B82F6" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -534,7 +553,7 @@ export default function InteractiveDashboard({
         <TabPanel value={tabValue} index={1}>
           <Card sx={{ p: 3 }}>
             <Typography variant="h5" sx={{ mb: 3, fontWeight: 'bold' }}>
-              Population by State (Top 10)
+              Sales by State (Top 10)
             </Typography>
             {byStateLoading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
@@ -544,15 +563,15 @@ export default function InteractiveDashboard({
               <Alert severity="error">Failed to load state data</Alert>
             ) : (
               <ResponsiveContainer width="100%" height={350}>
-                <BarChart 
+                <BarChart
                   data={processedByStateData}
                   margin={{ top: 20, right: 30, left: 20, bottom: 50 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="name" stroke="#666" />
                   <YAxis stroke="#666" />
-                  <Tooltip 
-                    formatter={(value) => [value.toLocaleString(), 'Births']}
+                  <Tooltip
+                    formatter={(value) => [usd(Number(value)), 'Sales']}
                   />
                   <Bar dataKey="value" fill={COLORS.secondary} radius={[4, 4, 0, 0]} />
                 </BarChart>
@@ -564,31 +583,31 @@ export default function InteractiveDashboard({
         <TabPanel value={tabValue} index={2}>
           <Card sx={{ p: 3 }}>
             <Typography variant="h5" sx={{ mb: 3, fontWeight: 'bold' }}>
-              Distribution by Gender
+              Sales by Fulfillment Status
             </Typography>
-            {byGenderLoading ? (
+            {byStatusLoading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
                 <CircularProgress />
               </Box>
-            ) : byGenderError ? (
-              <Alert severity="error">Failed to load gender data</Alert>
+            ) : byStatusError ? (
+              <Alert severity="error">Failed to load status data</Alert>
             ) : (
               <ResponsiveContainer width="100%" height={400}>
                 <PieChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                   <Pie
-                    data={processedByGenderData}
+                    data={processedByStatusData}
                     cx="50%"
                     cy="50%"
                     innerRadius={60}
                     outerRadius={140}
-                    dataKey="count"
-                    label={({ name, count }) => `${name}: ${count.toLocaleString()}`}
+                    dataKey="sales"
+                    label={({ name }) => name}
                   >
-                    {processedByGenderData.map((entry: any, index: number) => (
+                    {processedByStatusData.map((entry: any, index: number) => (
                       <Cell key={`cell-${index}`} fill={entry.fill} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value) => [value.toLocaleString(), 'Births']} />
+                  <Tooltip formatter={(value) => [usd(Number(value)), 'Sales']} />
                 </PieChart>
               </ResponsiveContainer>
             )}
@@ -598,13 +617,13 @@ export default function InteractiveDashboard({
         <TabPanel value={tabValue} index={3}>
           <Card sx={{ p: 3 }}>
             <Typography variant="h5" sx={{ mb: 3, fontWeight: 'bold' }}>
-              Births by State and Gender
+              Sales by State and Status
             </Typography>
-            {namesByStateGenderLoading ? (
+            {byStateStatusLoading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
                 <CircularProgress />
               </Box>
-            ) : namesByStateGenderError ? (
+            ) : byStateStatusError ? (
               <Alert severity="error">Failed to load stacked data</Alert>
             ) : (
               <ResponsiveContainer width="100%" height={400}>
@@ -615,10 +634,11 @@ export default function InteractiveDashboard({
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="name" />
                   <YAxis />
-                  <Tooltip formatter={(value) => [value.toLocaleString(), 'Births']} />
+                  <Tooltip formatter={(value) => [usd(Number(value)), 'Sales']} />
                   <Legend />
-                  <Bar dataKey="Female" stackId="a" fill={COLORS.pink} />
-                  <Bar dataKey="Male" stackId="a" fill={COLORS.primary} />
+                  {STATUSES.map((status) => (
+                    <Bar key={status} dataKey={status} stackId="a" fill={STATUS_COLORS[status]} />
+                  ))}
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -628,34 +648,34 @@ export default function InteractiveDashboard({
         <TabPanel value={tabValue} index={4}>
           <Card sx={{ p: 3 }}>
             <Typography variant="h5" sx={{ mb: 3, fontWeight: 'bold' }}>
-              Population Trend Over Decades
+              Sales Trend Over Time
             </Typography>
             <Typography variant="body2" sx={{ mb: 3, color: '#6b7280' }}>
-              Total registered births by decade.
+              Total sales by calendar year.
             </Typography>
-            {byDecadeLoading ? (
+            {byYearLoading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
                 <CircularProgress />
               </Box>
-            ) : byDecadeError ? (
-              <Alert severity="error">Failed to load decade data</Alert>
+            ) : byYearError ? (
+              <Alert severity="error">Failed to load yearly data</Alert>
             ) : (
               <ResponsiveContainer width="100%" height={400}>
-                <LineChart data={processedByDecadeData}>
+                <LineChart data={processedByYearData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis 
-                    dataKey="decade" 
+                  <XAxis
+                    dataKey="year"
                     stroke="#666"
                   />
                   <YAxis stroke="#666" />
-                  <Tooltip 
-                    formatter={(value) => [value.toLocaleString(), 'Births']}
+                  <Tooltip
+                    formatter={(value) => [usd(Number(value)), 'Sales']}
                   />
                   <Legend />
                   <Line
                     type="monotone"
-                    dataKey="Population"
-                    name="Total Births"
+                    dataKey="Sales"
+                    name="Total Sales"
                     stroke={COLORS.primary}
                     strokeWidth={3}
                     dot={{ fill: COLORS.primary, strokeWidth: 2, r: 4 }}

@@ -476,9 +476,30 @@ export class Environment {
             if (includeSql && queryMaterializer) {
                try {
                   sql = await queryMaterializer.getSQL({ givens });
-               } catch {
-                  // Source may not contain a runnable query (e.g. only source definitions),
-                  // in which case we simply omit the sql field.
+               } catch (error) {
+                  // A bad caller given (unknown name, wrong-typed value, finalized
+                  // override, ...) surfaces as a Malloy `runtime-given-*` error.
+                  // Map it to a 400 rather than silently omitting `sql` (which is
+                  // indistinguishable from "no runnable query"). Duck-type on
+                  // `.code`; let a MalloyError fall to the outer catch → problems.
+                  // The `runtime-given-` prefix is pinned to Malloy's error codes
+                  // (given_binding.ts / runtime.ts, same as model.ts) — if they're
+                  // renamed upstream a bad given would silently revert to the omit
+                  // branch below, so keep the two in sync.
+                  const givenCode = (error as { code?: string })?.code;
+                  if (
+                     typeof givenCode === "string" &&
+                     givenCode.startsWith("runtime-given-")
+                  ) {
+                     throw new BadRequestError(
+                        error instanceof Error ? error.message : String(error),
+                     );
+                  }
+                  if (error instanceof MalloyError) {
+                     throw error;
+                  }
+                  // Otherwise the source may just not contain a runnable query
+                  // (e.g. only source definitions) — omit the sql field.
                }
             }
 
@@ -808,7 +829,7 @@ export class Environment {
       // reloadAllModelsForPackage, ...) acquire the lock themselves.
       //
       // INVARIANT: callers that consume the returned Package on the fast
-      // path (notably MCP resource handlers and Model.getModel()) must
+      // path (notably the MCP query tools and Model.getModel()) must
       // remain in-memory only. If any code reachable from a `Package`
       // method ever grows new disk I/O against the canonical tree, that
       // path needs to be bracketed by `withPackageLock`; otherwise a
@@ -876,8 +897,17 @@ export class Environment {
          return _package;
       } catch (error) {
          logger.error(`Failed to load package ${packageName}`, { error });
-         this.packages.delete(packageName);
-         this.packageStatuses.delete(packageName);
+         if (existingPackage !== undefined && reload) {
+            // A failed RELOAD must not take down a package that is already
+            // serving. The compiled model in `packages` is still the last good
+            // one (it is only replaced on success), so keep serving it and let
+            // the caller surface the error instead of evicting the package and
+            // leaving the environment with nothing to answer from.
+            this.setPackageStatus(packageName, PackageStatus.SERVING);
+         } else {
+            this.packages.delete(packageName);
+            this.packageStatuses.delete(packageName);
+         }
          throw error;
       }
    }
@@ -1035,6 +1065,10 @@ export class Environment {
                packageName,
                canonicalPath,
                () => this.malloyConfig.malloyConfig,
+               // This tree was just staged into place by the rename above, so a
+               // failed load leaves a half-built directory that is ours to
+               // remove; the rollback below restores the previous one.
+               true,
             );
             // Strict-reject hook (publish/update only — reload passes no
             // validator and stays fail-safe). Throw INSIDE the try so the
@@ -1080,7 +1114,37 @@ export class Environment {
             await fs.promises
                .rm(stagingPath, { recursive: true, force: true })
                .catch(() => {});
-            this.deletePackageStatus(packageName);
+            if (oldPackage && restored) {
+               // The rollback put the old tree back and the previous package is
+               // still in `this.packages` (it is only replaced on success
+               // below), so it is genuinely still serving. Deleting its status
+               // would strand it: listPackages enumerates packageStatuses, so
+               // the package would answer getPackage while being invisible to
+               // listings and discovery until a restart.
+               this.setPackageStatus(packageName, PackageStatus.SERVING);
+            } else {
+               // Either there was nothing to fall back to (a first install), or
+               // the restore did not happen: the rename-back threw, or the old
+               // tree was never on disk to retire. The canonical path is then
+               // missing or still holds the rejected content, so the cached
+               // package no longer matches disk and must not be advertised as
+               // serving. Drop both, and keep the two maps agreeing.
+               this.deletePackageStatus(packageName);
+               if (oldPackage) {
+                  // Retire before dropping it, the same way every other eviction
+                  // here does: once it leaves this.packages, closeAllConnections
+                  // can no longer reach its MalloyConfig, so its native handles
+                  // would never be released. Retire rather than shut down
+                  // inline, because withPackageLock does not cover queries that
+                  // already took this Package from an earlier getPackage; the
+                  // drain lets those finish first.
+                  this.retireConnectionGeneration(
+                     `package ${packageName}`,
+                     () => oldPackage.getMalloyConfig().shutdown("close"),
+                  );
+               }
+               this.packages.delete(packageName);
+            }
             logger.debug("install.phase2.rollback", {
                environmentName: this.environmentName,
                packageName,

@@ -1,0 +1,34 @@
+##! experimental.givens
+
+given: target_region :: string is 'US'
+given: min_amount :: number is 0
+given: role :: string is 'guest'
+
+#(filter) dimension=status type=equal
+source: orders is duckdb.table('data/orders.csv') extend {
+   primary_key: id
+
+   measure:
+      order_count is count()
+
+   view: by_given_region is {
+      where: region = $target_region and amount >= $min_amount
+      aggregate: order_count
+   }
+}
+
+// Gated variant for authorize-interaction coverage: only $role = 'admin' may
+// read it. Shares the givens above so we can prove the name-vs-value-vs-authorize
+// status matrix on a gated source.
+#(authorize) "$role = 'admin'"
+source: gated_orders is duckdb.table('data/orders.csv') extend {
+   primary_key: id
+
+   measure:
+      order_count is count()
+
+   view: by_given_region is {
+      where: region = $target_region and amount >= $min_amount
+      aggregate: order_count
+   }
+}

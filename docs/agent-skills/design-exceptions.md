@@ -48,12 +48,12 @@ The examples are the most efficient way to disambiguate the parameter shape. The
 owns the reasoning (when to retry, when to widen, when to flag a gap); the description frames
 only the call pattern.
 
-### analysis-report carrying cell-shape examples
+### malloy-analysis-report carrying cell-shape examples
 
 Tension: Principle 3 and the lean-skills norm say structure already on a tool description should
 not be duplicated in a skill.
 
-Decision (when a report-authoring tool ships): `analysis-report` keeps per-cell shape examples
+Decision (when a report-authoring tool ships): `malloy-analysis-report` keeps per-cell shape examples
 (markdown versus Malloy cell variants) and the chart-annotation walk-throughs for the report
 patterns it recommends.
 

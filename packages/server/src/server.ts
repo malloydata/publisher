@@ -44,7 +44,6 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
-import { startAgentMcpServer } from "./mcp/agent_server";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
@@ -56,8 +55,6 @@ import {
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
-
-export { normalizeQueryArray } from "./query_param_utils";
 
 // Parse command line arguments
 function parseArgs() {
@@ -112,7 +109,7 @@ function parseArgs() {
             "  --port <number>        Port to run the server on (default: 4000)",
          );
          console.log(
-            "  --host <string>        Host to bind the server to (default: localhost)",
+            "  --host <string>        Host to bind the REST and MCP servers to (default: 0.0.0.0)",
          );
          console.log(
             "  --server_root <path>   Root directory to serve files from (default: .)",
@@ -130,7 +127,7 @@ function parseArgs() {
             "  --shutdown_graceful_close_timeout_seconds <number>  Time in seconds to wait after closing servers before exit (default: 0)",
          );
          console.log(
-            "  --init                 Initialize the storage (default: false)",
+            "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -157,7 +154,7 @@ function parseArgs() {
    // this — the user told us where to look. Skip in NODE_ENV=test as a
    // belt-and-suspenders so any spec that ends up evaluating this
    // module doesn't accidentally pin the EnvironmentStore to the
-   // bundled malloy-samples config.
+   // bundled examples config.
    if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
@@ -169,7 +166,6 @@ parseArgs();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
-const AGENT_MCP_PORT = Number(process.env.AGENT_MCP_PORT || 4041);
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
@@ -1675,13 +1671,15 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/:modelName/compile`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
    async (req, res) => {
       try {
+         // Express stores wildcard matches in params['0'], so nested model
+         // paths (models in subdirectories) compile just like they query.
          const result = await compileController.compile(
             req.params.environmentName,
             req.params.packageName,
-            req.params.modelName,
+            (req.params as Record<string, string>)["0"],
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,
@@ -1926,21 +1924,9 @@ mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
 
-// Separate, isolated MCP server for the agent retrieval tools (get_context,
-// search_docs) on its own listener. Kept apart from the core MCP server above.
-const agentMcpServer = startAgentMcpServer(
-   environmentStore,
-   PUBLISHER_HOST,
-   AGENT_MCP_PORT,
-);
-agentMcpServer.timeout = 600000;
-agentMcpServer.keepAliveTimeout = 600000;
-agentMcpServer.headersTimeout = 600000;
-
 registerSignalHandlers(
    mainServer,
    mcpServer,
    SHUTDOWN_DRAIN_DURATION_SECONDS,
    SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS,
-   agentMcpServer,
 );

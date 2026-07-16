@@ -27,12 +27,12 @@ export default function SideMenu({
   setSelectedView,
 }: {
   selectedView:
-    | "malloySamples"
+    | "storefront"
     | "singleEmbed"
     | "dynamicDashboard"
     | "interactive";
   setSelectedView: (
-    view: "malloySamples" | "singleEmbed" | "dynamicDashboard" | "interactive"
+    view: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive"
   ) => void;
 }) {
   const { user } = {

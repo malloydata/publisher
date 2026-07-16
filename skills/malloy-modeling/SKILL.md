@@ -5,15 +5,15 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 
 # STOP - READ BEFORE WRITING ANY MALLOY CODE
 
-> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:gotchas-modeling`, `skill:gotchas-queries`, and `skill:gotchas-rendering`.
+> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering`.
 
 ## Pre-Flight Checklist
 
-1. **Discover first**: read the model with `malloy_modelGetText` (or `malloy_packageGet` for the whole package) before writing ANY code. The model defines the sources, fields, and connection names. Never guess connection names.
+1. **Discover first**: ground yourself with `malloy_getContext` before writing ANY code. It returns the package's sources, views, and fields (with their docs), so you build on what actually exists. Never guess field names.
 2. **Search docs proactively**: call `malloy_searchDocs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
 3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
-5. **Read the gotcha skills**: `skill:gotchas-modeling`, `skill:gotchas-queries`, and `skill:gotchas-rendering` prevent the most common mistakes.
+5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering` prevent the most common mistakes.
 
 **Quick syntax reminders:**
 1. **Backtick reserved words:** `` `Date` ``, `` `Hour` ``, `` `Timestamp` ``, `` `Type` ``, `` `number` ``, `` `source` ``
@@ -76,7 +76,7 @@ After analysis completes, **always recommend formalizing into a model.**
 | User says... | Route to |
 |-------------|----------|
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
-| "Model from LookML" | 8-step with prior art via `skill:lookml-review` |
+| "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analyze` (EDA) |
 | "Build a dashboard", "create views" on existing model | `skill:malloy-analyze` (views), plus `skill:malloy-charts` or `skill:malloy-notebooks` as needed |
 | "Build a model but not sure what metrics" | `skill:malloy-analyze` first, then formalize via `skill:malloy-model` |
@@ -96,12 +96,24 @@ Ensure the Publisher MCP tools are configured before modeling.
 
 | Tool | Purpose |
 |------|---------|
-| `malloy_packageGet` | Read the package: its models, sources, and connection names |
-| `malloy_modelGetText` | Read a model's source text to learn its sources and fields |
+| `malloy_getContext` | Ground yourself in a package: its sources, views, and fields |
 | `malloy_executeQuery` | Run ad-hoc queries for validation |
+| `malloy_compile` | Compile-check a change and get diagnostics back without running a query |
+| `malloy_reloadPackage` | Recompile a package from disk so a saved edit becomes queryable by name |
 | `malloy_searchDocs` | Search Malloy docs (call BEFORE unfamiliar patterns) |
 
-Never guess connection names. Read them from the model with `malloy_modelGetText` or `malloy_packageGet`.
+Never guess field names. Ground yourself with `malloy_getContext` to see the sources and fields a package defines.
+
+### The edit-and-run loop
+
+Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until you reload the package. The loop is:
+
+1. **Validate** the change with `malloy_compile`, which reads the model fresh from disk and returns diagnostics without running anything.
+2. **Save** it to the package's model file.
+3. **Reload** with `malloy_reloadPackage`.
+4. **Run** the new view with `malloy_executeQuery`.
+
+A reload that fails to compile is safe: your files are left alone and the previously compiled model keeps serving, with the compile errors returned to you. Compile first anyway for faster feedback. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these two tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `malloy_executeQuery`.
 
 ## SQL-to-Malloy Quick Reference
 
@@ -157,6 +169,6 @@ top, bottom, desc, asc, row, range, current, window, rank
 
 The following skills contain detailed WRONG/RIGHT patterns that prevent the most common Malloy errors. **Read them before writing code:**
 
-- **`skill:gotchas-modeling`**: Reserved words, NULL checks, date functions, type casts, rename pitfalls, query-based source gotchas, `conn.sql()` anti-pattern
-- **`skill:gotchas-queries`**: Chart constraints, aggregate filters, joined field aliasing, time truncation vs extraction
-- **`skill:gotchas-rendering`**: Tag syntax, scale rules, sparkline setup, big_value patterns
+- **`skill:malloy-gotchas-modeling`**: Reserved words, NULL checks, date functions, type casts, rename pitfalls, query-based source gotchas, `conn.sql()` anti-pattern
+- **`skill:malloy-gotchas-queries`**: Chart constraints, aggregate filters, joined field aliasing, time truncation vs extraction
+- **`skill:malloy-gotchas-rendering`**: Tag syntax, scale rules, sparkline setup, big_value patterns

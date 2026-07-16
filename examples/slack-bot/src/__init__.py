@@ -1,1 +1,0 @@
-# Malloy Slack Bot - Main package

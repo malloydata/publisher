@@ -444,6 +444,55 @@ describe("service/model", () => {
             sinon.restore();
          });
 
+         it("maps a finalized-given rejection (code) to BadRequestError, not 500", async () => {
+            // Malloy throws this (extends Error, not MalloyError, not root-exported)
+            // when a client supplies a given an operator finalized. model.ts
+            // duck-types on `.code`; guard against that mapping regressing.
+            const finalizedErr = Object.assign(
+               new Error(
+                  "Given 'region' is finalized and cannot be overridden",
+               ),
+               { code: "runtime-given-finalized" },
+            );
+            const runnableStub = {
+               getPreparedResult: sinon.stub().rejects(finalizedErr),
+               run: sinon.stub(),
+            };
+            const modelMaterializer = {
+               loadQuery: sinon.stub().returns(runnableStub),
+               loadRestrictedQuery: sinon.stub().returns(runnableStub),
+            };
+
+            const model = new Model(
+               packageName,
+               mockModelPath,
+               {},
+               "model",
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               modelMaterializer as any,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               { contents: {}, exports: [], queryList: [] } as any,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+            );
+
+            await expect(
+               model.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: orders -> summary",
+                  undefined,
+                  undefined,
+                  { region: "EU" },
+               ),
+            ).rejects.toThrow(BadRequestError);
+
+            sinon.restore();
+         });
+
          /**
           * The row/byte caps live in `model_limits.ts` (unit-tested in
           * `model_limits.spec.ts`); these tests just confirm the wiring —
@@ -680,6 +729,49 @@ describe("service/model", () => {
             expect(runStub.firstCall.args[0]).toMatchObject({
                givens: givensArg,
             });
+
+            sinon.restore();
+         });
+
+         it("maps a finalized-given rejection (code) to BadRequestError, not 500", async () => {
+            const finalizedErr = Object.assign(
+               new Error(
+                  "Given 'target_code' is finalized and cannot be overridden",
+               ),
+               { code: "runtime-given-finalized" },
+            );
+            const cellRunnable = {
+               getPreparedResult: sinon.stub().rejects(finalizedErr),
+               run: sinon.stub(),
+            };
+            const runnableCells = [
+               {
+                  type: "code" as const,
+                  text: "run: orders -> by_code",
+                  runnable: cellRunnable,
+               },
+            ];
+
+            const model = new Model(
+               packageName,
+               "test.malloynb",
+               {},
+               "notebook",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               runnableCells as any,
+               undefined,
+            );
+
+            await expect(
+               model.executeNotebookCell(0, undefined, undefined, {
+                  target_code: "AA",
+               }),
+            ).rejects.toThrow(BadRequestError);
 
             sinon.restore();
          });

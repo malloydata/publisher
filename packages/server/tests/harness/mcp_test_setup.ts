@@ -30,7 +30,7 @@ let portCounter = 0;
 
 // True mutex: the previous Promise-based lock had a TOCTOU race where two beforeAll hooks
 // could both pass the `if (initializationLock)` check and run setup concurrently, sharing
-// one publisher.db / server singleton and causing flaky listResources and port collisions.
+// one publisher.db / server singleton and causing flaky tool calls and port collisions.
 const e2eSetupMutex = new Mutex();
 
 /**

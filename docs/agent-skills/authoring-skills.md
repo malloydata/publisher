@@ -13,7 +13,7 @@ skills/
     reference/
       access-modifiers.md
       ...
-  gotchas-modeling/
+  malloy-gotchas-modeling/
     SKILL.md
 manifests/
   modeling-ide.json
@@ -57,7 +57,7 @@ sequence and point each step at a focused skill; a focused skill must not name a
 ## Cross-skill references
 
 Refer to another skill with the `skill:` prefix, for example `skill:malloy-model` or
-`skill:gotchas-modeling`. This is a logical name, not a file path. The host resolves it to
+`skill:malloy-gotchas-modeling`. This is a logical name, not a file path. The host resolves it to
 wherever that skill lives in the deployed layout. Reference-file paths inside a skill should
 be relative to the skill, for example `reference/access-modifiers.md`, not an absolute or
 host-specific path.

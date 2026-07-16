@@ -1,13 +1,15 @@
-import { URL } from "url";
-import type { ResourceMetadata } from "@modelcontextprotocol/sdk/server/mcp";
-import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import { MalloyError } from "@malloydata/malloy";
 import { EnvironmentStore } from "../service/environment_store";
 import {
    AccessDeniedError,
+   BadRequestError,
    PackageNotFoundError,
    ModelNotFoundError,
    ModelCompilationError,
    EnvironmentNotFoundError,
+   NotQueryableError,
+   PayloadTooLargeError,
+   QueryTimeoutError,
    ServiceUnavailableError,
 } from "../errors";
 import {
@@ -19,103 +21,96 @@ import {
 import type { Model } from "../service/model";
 import { logger } from "../logger";
 
-// Custom error to wrap specific GetResource application errors
-export class McpGetResourceError extends Error {
-   details: ErrorDetails;
-
-   constructor(details: ErrorDetails) {
-      super(details.message); // Pass message to the base Error constructor
-      this.name = "McpGetResourceError"; // Custom error name
-      this.details = details; // Store the structured details
-
-      // Maintain stack trace (important for V8)
-      if (Error.captureStackTrace) {
-         Error.captureStackTrace(this, McpGetResourceError);
-      }
-   }
-}
-
-// Helper type for the data fetching logic within a resource handler
-type GetDataLogic<TParams, TDefinition> = (
-   params: TParams,
-   uri: URL,
-) => Promise<TDefinition>;
+/**
+ * Remediation for a ServiceUnavailableError, shared by every caller that homes
+ * one. The error covers both the memory governor and the concurrency slots, so
+ * the wording names both rather than only memory.
+ */
+export const BACK_PRESSURE_SUGGESTIONS: readonly string[] = [
+   "Retry once the publisher is below its configured memory or concurrency limit.",
+   "If this persists, raise the limit or scale up the pod.",
+];
 
 /**
- * Handles the common logic for GetResource handlers, fetching data and formatting the response or error.
+ * Turns a thrown error into agent-facing ErrorDetails, homed by error class.
+ *
+ * Without this, a tool that funnels every failure through getMalloyErrorDetails
+ * dresses each one up as a Malloy language problem: a missing package tells the
+ * agent to check its Malloy syntax, and a back-pressure rejection sends it
+ * hunting for a typo instead of retrying.
+ *
+ * Only the classes that really are about the caller's Malloy or request reach
+ * the Malloy advice; anything else is reported as internal rather than blamed
+ * on the model. Routing by class and not by message is deliberate:
+ * getMalloyErrorDetails refines on message patterns that the shipped engine
+ * does not emit (its syntax pattern wants "no viable alternative at input"
+ * where a real error says "unexpected '@'"), so "did it refine?" would send
+ * genuine compile errors to the internal branch.
+ *
+ * @param operation The operation that failed (e.g. 'compile', 'reloadPackage').
+ * @param identifier The resource it failed on (e.g. 'env/package').
  */
-export async function handleResourceGet<
-   TParams extends Record<string, unknown>,
-   TDefinition,
->(
-   uri: URL,
-   params: TParams,
-   resourceType: string, // e.g., 'environment', 'package' for logging/errors
-   getData: GetDataLogic<TParams, TDefinition>,
-   resourceMetadata: ResourceMetadata | undefined,
-): Promise<ReadResourceResult> {
-   try {
-      const definition = await getData(params, uri);
-
-      // Combine definition and metadata
-      const responsePayload = JSON.stringify(
-         { definition: definition, metadata: resourceMetadata },
-         null,
-         2,
-      );
-
-      return {
-         contents: [
-            {
-               type: "application/json",
-               uri: uri.href,
-               text: responsePayload,
-            },
-         ],
-      };
-   } catch (error) {
-      logger.error(
-         `[MCP Server Error] Error reading ${resourceType} ${uri.href}:`,
-         { error },
-      );
-
-      let errorDetails: ErrorDetails;
-
-      // Determine the correct error details based on the error type
-      if (error instanceof McpGetResourceError) {
-         // The getData function already caught, formatted, and wrapped the error
-         errorDetails = error.details;
-      } else {
-         // Catch-all for truly unexpected errors not handled by the specific getData logic
-         logger.error(
-            "[MCP Server Error] Unexpected error type caught in handleResourceGet:",
-            { error },
-         );
-         errorDetails = getInternalError(
-            `GetResource (${resourceType})`,
-            error,
-         );
-      }
-
-      // Format the error response consistently
-      return {
-         isError: true,
-         contents: [
-            {
-               type: "application/json", // Keep JSON for structured error
-               uri: uri.href,
-               text: JSON.stringify(
-                  {
-                     error: errorDetails.message,
-                     suggestions: errorDetails.suggestions,
-                  },
-                  null,
-                  2,
-               ),
-            },
-         ],
-      };
+export function classifyToolError(
+   operation: string,
+   identifier: string,
+   error: unknown,
+): ErrorDetails {
+   if (
+      error instanceof EnvironmentNotFoundError ||
+      error instanceof PackageNotFoundError ||
+      error instanceof ModelNotFoundError ||
+      // A query-boundary denial is a deliberate 404, and reporting it as a
+      // server fault would tell the caller to contact support about a boundary
+      // that is working. getNotFoundError also drops the source name this class
+      // is careful not to confirm.
+      error instanceof NotQueryableError
+   ) {
+      return getNotFoundError(identifier);
    }
+   if (error instanceof ServiceUnavailableError) {
+      // Back-pressure: surface the server's own message so the caller knows to
+      // retry rather than to go edit its Malloy.
+      return {
+         message: error.message,
+         suggestions: [...BACK_PRESSURE_SUGGESTIONS],
+      } satisfies ErrorDetails;
+   }
+   if (
+      error instanceof QueryTimeoutError ||
+      error instanceof PayloadTooLargeError
+   ) {
+      // The query was too slow or too big. Both classes already carry their own
+      // "refine the query" remediation in the message, so the suggestions say
+      // the part the message leaves out and the internal branch got backwards:
+      // this is not transient, and retrying it unchanged fails identically.
+      // That distinction is the whole reason these are 504/413 and not the
+      // retryable 503 (see the QueryTimeoutError docstring in errors.ts).
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+            "If it is already minimal, raise the configured cap named in the message.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (
+      // A raw engine error: what a bad query throws (syntax, undefined name,
+      // field not found). executeQuery's catch sees these, so they must keep
+      // the Malloy advice.
+      error instanceof MalloyError ||
+      // The same thing wrapped: what a failed compile or reload throws.
+      error instanceof ModelCompilationError ||
+      // An #(authorize) denial, whose message getMalloyErrorDetails recognizes.
+      error instanceof AccessDeniedError ||
+      // A malformed request is the caller's to fix, not ours to retry.
+      error instanceof BadRequestError
+   ) {
+      return getMalloyErrorDetails(operation, identifier, error);
+   }
+   // Everything else (a filesystem EACCES, a TypeError, a worker crash, a
+   // timeout) is not the caller's Malloy. Telling them to check their syntax
+   // sends them to edit a model that is fine.
+   return getInternalError(operation, error);
 }
 
 /**
@@ -184,10 +179,7 @@ export async function getModelForQuery(
          // server's own message so the MCP caller knows to retry.
          errorDetails = {
             message: error.message,
-            suggestions: [
-               "Retry after the publisher's memory usage drops below the configured low-water mark.",
-               "If this happens repeatedly, raise PUBLISHER_MAX_MEMORY_BYTES or scale up the pod.",
-            ],
+            suggestions: [...BACK_PRESSURE_SUGGESTIONS],
          } satisfies ErrorDetails;
       } else {
          // Unexpected error during setup
@@ -202,28 +194,20 @@ export async function getModelForQuery(
 }
 
 /**
- * Constructs a valid malloy:// URI string from its components.
- * Handles encoding of path segments.
+ * Constructs a malloy:// URI string identifying the model a tool response came
+ * from. Attached as `uri` metadata on tool results (get-context, execute-query,
+ * docs-search); it is not a fetchable MCP resource.
  *
- * @param components An object containing the URI parts (environment, package, model, etc.)
- * @param fragment Optional fragment identifier (e.g., #queryResult)
- * @returns A valid malloy:// URI string.
+ * @param components The URI parts (environment, package, and optionally the model).
+ * @param fragment Optional fragment identifier (e.g., "result", "get-context").
+ * @returns A malloy:// URI string.
  */
 export function buildMalloyUri(
    components: {
       environment?: string;
       package?: string;
-      model?: string;
-      resourceType?:
-         | "models"
-         | "packages"
-         | "notebooks"
-         | "sources"
-         | "queries"
-         | "views"; // Type of resource list or specific resource
-      resourceName?: string; // Specific name for model, query, etc.
-      subResourceType?: "views"; // For views within sources
-      subResourceName?: string; // Name of the view
+      resourceType?: "models";
+      resourceName?: string;
    },
    fragment?: string,
 ): string {
@@ -244,20 +228,11 @@ export function buildMalloyUri(
       path += "/" + components.resourceType;
       if (components.resourceName) {
          path += "/" + encodeURIComponent(components.resourceName);
-
-         if (components.subResourceType && components.subResourceName) {
-            path +=
-               "/" +
-               components.subResourceType +
-               "/" +
-               encodeURIComponent(components.subResourceName);
-         }
       }
    }
 
-   // The URL constructor seems to normalize malloy://path to malloy:///path
-   // which breaks the tests expecting malloy://environment/...
-   // We manually construct the string instead.
+   // The URL constructor normalizes malloy://path to malloy:///path, so we
+   // build the string manually to keep the malloy://environment/... shape.
    let uriString = "malloy:/" + path; // Start with one slash after scheme
 
    if (fragment) {
