@@ -23,8 +23,8 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
    let env: McpE2ETestEnvironment | null = null;
    let mcpClient: Client;
 
-   const ENVIRONMENT_NAME = "malloy-samples";
-   const PACKAGE_NAME = "faa";
+   const ENVIRONMENT_NAME = "examples";
+   const PACKAGE_NAME = "storefront";
 
    beforeAll(async () => {
       // Setup the E2E environment (starts server, connects client)
@@ -49,8 +49,8 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
                arguments: {
                   environmentName: ENVIRONMENT_NAME,
                   packageName: PACKAGE_NAME,
-                  modelPath: "flights.malloy",
-                  query: "run: flights->{ aggregate: c is count() }",
+                  modelPath: "storefront.malloy",
+                  query: "run: order_items->{ aggregate: c is count() }",
                },
             });
 
@@ -97,9 +97,9 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             const params = {
                environmentName: ENVIRONMENT_NAME,
                packageName: PACKAGE_NAME,
-               modelPath: "flights.malloy",
-               sourceName: "flights", // Added sourceName
-               queryName: "top_carriers",
+               modelPath: "storefront.malloy",
+               sourceName: "order_items", // Added sourceName
+               queryName: "top_products",
             };
 
             // Expect RESOLUTION with success
@@ -142,8 +142,8 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             const params = {
                environmentName: ENVIRONMENT_NAME,
                packageName: PACKAGE_NAME,
-               modelPath: "flights.malloy",
-               query: "run: flights->{BAD SYNTAX aggregate: flight_count is count()}",
+               modelPath: "storefront.malloy",
+               query: "run: order_items->{BAD SYNTAX aggregate: order_count is count()}",
             };
 
             // Application Error (Malloy Compilation): Expect RESOLUTION with isError: true
@@ -181,9 +181,9 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const params = {
             environmentName: ENVIRONMENT_NAME,
             packageName: PACKAGE_NAME,
-            modelPath: "flights.malloy",
-            query: "run: flights->{aggregate: c is count()}",
-            queryName: "top_carriers",
+            modelPath: "storefront.malloy",
+            query: "run: order_items->{aggregate: c is count()}",
+            queryName: "top_products",
          };
 
          // Expect RESOLUTION because the error is thrown *inside* the handler
@@ -209,7 +209,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const params = {
             environmentName: ENVIRONMENT_NAME,
             packageName: PACKAGE_NAME,
-            modelPath: "flights.malloy",
+            modelPath: "storefront.malloy",
             // Missing query AND queryName
          };
 
@@ -237,7 +237,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             // Missing modelPath
             environmentName: ENVIRONMENT_NAME,
             packageName: PACKAGE_NAME,
-            query: "run: flights->{aggregate: flight_count is count()}",
+            query: "run: order_items->{aggregate: c is count()}",
          };
 
          // Protocol Error (Caught by Zod/MCP): Expect REJECTION
@@ -259,8 +259,8 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const params = {
             environmentName: ENVIRONMENT_NAME,
             packageName: "nonexistent_package", // Use a package that doesn't exist
-            modelPath: "flights.malloy",
-            query: "run: flights->{aggregate: c is count()}",
+            modelPath: "storefront.malloy",
+            query: "run: order_items->{aggregate: c is count()}",
          };
 
          // Application Error (Service Layer): Expect RESOLUTION with isError: true
@@ -304,7 +304,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             environmentName: ENVIRONMENT_NAME,
             packageName: PACKAGE_NAME,
             modelPath: "nonexistent_model.malloy", // Use a model that doesn't exist
-            query: "run: flights->{aggregate: c is count()}",
+            query: "run: order_items->{aggregate: c is count()}",
          };
 
          // Application Error (Service Layer): Expect RESOLUTION with isError: true
@@ -364,8 +364,8 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
                arguments: {
                   environmentName: ENVIRONMENT_NAME,
                   packageName: PACKAGE_NAME,
-                  modelPath: "flights.malloy",
-                  query: "run: flights->{aggregate: c is count()}",
+                  modelPath: "storefront.malloy",
+                  query: "run: order_items->{aggregate: c is count()}",
                },
             }),
          ).rejects.toThrow();
@@ -377,8 +377,8 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const params = {
             environmentName: ENVIRONMENT_NAME,
             packageName: PACKAGE_NAME,
-            modelPath: "flights.malloy",
-            queryName: "top_carriers", // Nested view, but sourceName is missing
+            modelPath: "storefront.malloy",
+            queryName: "top_products", // Nested view, but sourceName is missing
          };
 
          // Expect RESOLUTION with error because it's invalid usage processed by the handler
@@ -405,7 +405,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorPayload = JSON.parse(errorJsonText);
          // Expect error about the query/view itself not found
          expect(errorPayload.error).toMatch(
-            /Query 'top_carriers' not found|Reference to undefined object 'top_carriers'/i,
+            /Query 'top_products' not found|Reference to undefined object 'top_products'/i,
          );
          expect(Array.isArray(errorPayload.suggestions)).toBe(true);
       });

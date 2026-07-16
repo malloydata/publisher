@@ -7,21 +7,26 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
  * End-to-end coverage for `#(authorize)` source gates in a notebook. The
- * malloy-samples fixtures ship no gated model, so the spec writes its own
- * .malloy + .malloynb into the `faa` package, reloads, and cleans up.
+ * storefront example ships no gated model, so the spec writes its own
+ * .malloy + .malloynb into the `storefront` package, reloads, and cleans up.
  *
  * The gated source requires `$role = 'analyst'`; `role` has no default, so the
  * gate denies on load (HTTP 403, no cell result) and grants once the user
- * supplies `role = analyst` in the Parameters panel. The query spotlights
- * carrier WN → "Southwest Airlines", the visible signal that the gate passed.
+ * supplies `role = analyst` in the Parameters panel. The query spotlights a
+ * single product in the Jeans category ("Cobalt Bootcut Jean"), the visible
+ * signal that the gate passed.
+ *
+ * Run this against a normal server, not one started with `--watch-env examples`:
+ * watch mode symlinks PKG_DIR to the tracked `examples/storefront` sources, so
+ * the fixture writes below would land in version control.
  */
 
 const FIXTURE_MODEL = "authz_gate.malloy";
 const FIXTURE_NOTEBOOK = "authz_gate_notebook.malloynb";
 
-const FAA_DIR = path.resolve(
+const PKG_DIR = path.resolve(
    path.dirname(fileURLToPath(import.meta.url)),
-   "../../../server/publisher_data/malloy-samples/faa",
+   "../../../server/publisher_data/examples/storefront",
 );
 
 const MODEL_SOURCE = `##! experimental.givens
@@ -29,11 +34,12 @@ const MODEL_SOURCE = `##! experimental.givens
 given: role :: string
 
 #(authorize) "$role = 'analyst'"
-source: gated_carriers is duckdb.table('data/carriers.parquet') extend {
-  primary_key: code
+source: gated_products is duckdb.table('data/products.parquet') extend {
+  primary_key: product_id
   view: spotlight is {
-    where: code = 'WN'
-    select: code, name
+    where: category = 'Jeans'
+    select: product_id, name
+    order_by: product_id
     limit: 1
   }
 }
@@ -46,11 +52,11 @@ source: gated_carriers is duckdb.table('data/carriers.parquet') extend {
 const NOTEBOOK_SOURCE = `>>>malloy
 ##! experimental.givens
 import "authz_gate.malloy"
-run: gated_carriers -> spotlight
+run: gated_products -> spotlight
 `;
 
-async function reloadFaaPackage(baseURL: string): Promise<void> {
-   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.faa}?reload=true`;
+async function reloadPackage(baseURL: string): Promise<void> {
+   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}?reload=true`;
    const res = await fetch(url);
    if (!res.ok) {
       throw new Error(`Package reload failed: ${res.status} ${res.statusText}`);
@@ -59,21 +65,21 @@ async function reloadFaaPackage(baseURL: string): Promise<void> {
 
 test.describe("notebook-authorize", () => {
    test.beforeAll(async ({ baseURL }) => {
-      await fs.writeFile(path.join(FAA_DIR, FIXTURE_MODEL), MODEL_SOURCE);
-      await fs.writeFile(path.join(FAA_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
-      await reloadFaaPackage(baseURL!);
+      await fs.writeFile(path.join(PKG_DIR, FIXTURE_MODEL), MODEL_SOURCE);
+      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
+      await reloadPackage(baseURL!);
    });
 
    test.afterAll(async ({ baseURL }) => {
-      await fs.unlink(path.join(FAA_DIR, FIXTURE_MODEL)).catch(() => undefined);
+      await fs.unlink(path.join(PKG_DIR, FIXTURE_MODEL)).catch(() => undefined);
       await fs
-         .unlink(path.join(FAA_DIR, FIXTURE_NOTEBOOK))
+         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
          .catch(() => undefined);
-      await reloadFaaPackage(baseURL!).catch(() => undefined);
+      await reloadPackage(baseURL!).catch(() => undefined);
    });
 
    const cellUrl = (baseURL: string, givens?: Record<string, string>) => {
-      const base = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.faa}/notebooks/${FIXTURE_NOTEBOOK}/cells/0`;
+      const base = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}/notebooks/${FIXTURE_NOTEBOOK}/cells/0`;
       return givens
          ? `${base}?givens=${encodeURIComponent(JSON.stringify(givens))}`
          : base;
@@ -86,7 +92,7 @@ test.describe("notebook-authorize", () => {
       expect(res.status).toBe(403);
       const body = (await res.json()) as { message?: string };
       // Names the source; never the gate expression.
-      expect(body.message).toContain("gated_carriers");
+      expect(body.message).toContain("gated_products");
       expect(body.message ?? "").not.toContain("analyst");
    });
 
@@ -100,7 +106,7 @@ test.describe("notebook-authorize", () => {
    async function openNotebook(page: import("@playwright/test").Page) {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.faa);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
       await expect(page).toHaveURL(/authz_gate_notebook\.malloynb/);
       await expect(page.getByLabel("role")).toBeVisible();
@@ -124,12 +130,12 @@ test.describe("notebook-authorize", () => {
 
       // Execution finished (no spinner) and, denied, rendered no result.
       await expect(page.getByRole("progressbar")).toHaveCount(0);
-      await expect(page.getByText("Southwest Airlines")).toHaveCount(0);
+      await expect(page.getByText("Cobalt Bootcut Jean")).toHaveCount(0);
 
       // With the notebook idle, supplying the satisfying given re-executes and
       // the result appears.
       await page.getByLabel("role").fill("analyst");
-      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+      await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
    test("UI: a given supplied mid-execution is applied once the run finishes", async ({
@@ -159,6 +165,6 @@ test.describe("notebook-authorize", () => {
 
       // Once the held run finishes, the mid-flight given must be picked up and
       // re-executed — the result appears without any further interaction.
-      await expect(page.getByText("Southwest Airlines").first()).toBeVisible();
+      await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 });

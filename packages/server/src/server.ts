@@ -102,7 +102,7 @@ function parseArgs() {
             "  --port <number>        Port to run the server on (default: 4000)",
          );
          console.log(
-            "  --host <string>        Host to bind the server to (default: localhost)",
+            "  --host <string>        Host to bind the REST and MCP servers to (default: 0.0.0.0)",
          );
          console.log(
             "  --server_root <path>   Root directory to serve files from (default: .)",
@@ -120,7 +120,7 @@ function parseArgs() {
             "  --shutdown_graceful_close_timeout_seconds <number>  Time in seconds to wait after closing servers before exit (default: 0)",
          );
          console.log(
-            "  --init                 Initialize the storage (default: false)",
+            "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -147,7 +147,7 @@ function parseArgs() {
    // this — the user told us where to look. Skip in NODE_ENV=test as a
    // belt-and-suspenders so any spec that ends up evaluating this
    // module doesn't accidentally pin the EnvironmentStore to the
-   // bundled malloy-samples config.
+   // bundled examples config.
    if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
@@ -1613,13 +1613,15 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/:modelName/compile`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
    async (req, res) => {
       try {
+         // Express stores wildcard matches in params['0'], so nested model
+         // paths (models in subdirectories) compile just like they query.
          const result = await compileController.compile(
             req.params.environmentName,
             req.params.packageName,
-            req.params.modelName,
+            (req.params as Record<string, string>)["0"],
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,

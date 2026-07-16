@@ -6,13 +6,10 @@ test.describe("package-notebooks", () => {
    test("Notebooks section lists .malloynb files", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
       await expect(
-         page.getByText("imdb.malloynb", { exact: true }),
-      ).toBeVisible();
-      await expect(
-         page.getByText("README.malloynb", { exact: true }),
+         page.getByText("storefront.malloynb", { exact: true }),
       ).toBeVisible();
    });
 
@@ -21,15 +18,15 @@ test.describe("package-notebooks", () => {
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
-      await page.getByText("imdb.malloynb", { exact: true }).click();
+      await page.getByText("storefront.malloynb", { exact: true }).click();
 
       // Router uses a workbook-scoped path; assert we navigated off the package route.
       await expect(page).not.toHaveURL(
-         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.imdb}/?$`),
+         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/?$`),
       );
-      await expect(page).toHaveURL(/imdb\.malloynb/);
+      await expect(page).toHaveURL(/storefront\.malloynb/);
    });
 
    test("workbook renders authored content from the notebook", async ({
@@ -37,13 +34,13 @@ test.describe("package-notebooks", () => {
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
-      await page.getByText("imdb.malloynb", { exact: true }).click();
-      // The imdb.malloynb renders an authored H1 ("IMDB Analysis in Malloy") —
-      // presence confirms the Workbook mounted and executed the notebook.
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
+      await page.getByText("storefront.malloynb", { exact: true }).click();
+      // The storefront.malloynb renders an authored H1 ("Storefront — a guided
+      // tour"): presence confirms the Workbook mounted and executed the notebook.
       await expect(
          page.getByRole("heading", {
-            name: "IMDB Analysis in Malloy",
+            name: "Storefront — a guided tour",
             level: 1,
          }),
       ).toBeVisible();

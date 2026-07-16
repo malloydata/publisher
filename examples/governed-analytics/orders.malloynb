@@ -1,0 +1,29 @@
+>>>markdown
+# Governed analytics — interactive controls
+
+This notebook imports `orders.malloy`. Because that model declares **givens**
+(`REGION`, `MIN_AMOUNT`), the Publisher UI renders a **Parameters panel** above
+these cells. Change a control and every cell re-runs with the new value. See
+[docs/givens.md](../../docs/givens.md).
+>>>malloy
+import "orders.malloy"
+>>>markdown
+## Overview dashboard
+
+`overview` is a `# dashboard` view: KPI tiles plus a monthly trend and nested
+charts. It respects whatever the Parameters panel currently has set — change
+`REGION` or `MIN_AMOUNT` above and every cell re-runs.
+>>>malloy
+run: sales -> overview
+>>>markdown
+## Monthly trend
+>>>malloy
+run: sales -> amount_by_month
+>>>markdown
+## Order value by region
+>>>malloy
+run: sales -> by_region
+>>>markdown
+## Orders by status
+>>>malloy
+run: sales -> by_status

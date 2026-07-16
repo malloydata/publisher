@@ -117,7 +117,7 @@ export default function AddPackageDialog({
                      Make sure to conform to the{" "}
                      <Box
                         component="a"
-                        href="https://github.com/malloydata/publisher/blob/main/README.md#architecture-overview"
+                        href="https://github.com/malloydata/publisher/blob/main/docs/architecture.md"
                         target="_blank"
                         rel="noopener noreferrer"
                         sx={{
