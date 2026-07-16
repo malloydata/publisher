@@ -257,6 +257,6 @@ Use `+` to modify existing views: `run: source -> my_view + { limit: 15, where: 
 
 ## Done
 
-Step complete. Output: analysis `.malloy` file with views, insights, and reusable building blocks. For chart/renderer details, see `skill:gotchas-rendering` or call `search_malloy_docs`. To formalize into a model, hand off to the modeling skill (`skill:malloy-model`).
+Step complete. Output: analysis `.malloy` file with views, insights, and reusable building blocks. For chart/renderer details, see `skill:malloy-gotchas-rendering` or call `search_malloy_docs`. To formalize into a model, hand off to the modeling skill (`skill:malloy-model`).
 
 Publishing is out of scope for now: open-source Publisher serves the model from disk, and self-hosters publish via git plus their host's publish path.

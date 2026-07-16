@@ -313,7 +313,7 @@ view: revenue_by_month is {
 
 **Precedence**, highest to lowest, per key: `# theme.*` on the view, then `## theme.*` model default, then the instance theme, then Publisher's built-in defaults. A per-chart annotation overrides the instance for the keys it sets; unset keys fall through to the instance. (This is the reverse of a bare `@malloydata/render` embed, where the embedder wins: Publisher reads the annotation itself and layers it on top.)
 
-Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. The gotchas-rendering skill lists the annotation forms that look valid but do nothing.
+Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. The malloy-gotchas-rendering skill lists the annotation forms that look valid but do nothing.
 
 
 ## Advanced Patterns

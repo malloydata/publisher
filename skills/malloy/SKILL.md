@@ -27,7 +27,7 @@ Say "model my data" and the agent will orchestrate the full modeling workflow au
 | `skill:malloy-patterns` | Finding syntax/pattern docs: YoY, cohorts, percent-of-total, window functions |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
 | `skill:malloy-publish` | Moving a finished model into a served package (local-to-served handoff) |
-| `skill:lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
+| `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
 
 > **Adapter pattern:** Each prior art adapter (LookML, future dbt) follows the same structure: a coordinator SKILL.md plus reference files under `reference/` dispatched by phase skills.
 

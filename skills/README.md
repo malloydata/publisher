@@ -1,6 +1,6 @@
 # Publisher skills
 
-Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`getting-started`](getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
+Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`malloy-getting-started`](malloy-getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
 
 ## Where these come from
 
@@ -11,8 +11,8 @@ Most of these skills are **shared, open-source Malloy skills** kept in sync with
 
 ## Shared vs Publisher-specific
 
-- **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `gotchas-*`, `notebook-chat`, `phrase-detection`, `analysis-pitfalls`, `analysis-report`, `html-data-app*`, `lookml-review`, `malloy-patterns`.
-- **Publisher-specific host/router skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `getting-started`, and the root `malloy` index. These are Publisher's own entry points and are free to name Publisher's tools directly.
+- **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
+- **Publisher-specific host/router skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index. These are Publisher's own entry points and are free to name Publisher's tools directly.
 
 ## Tool names in shared skills
 

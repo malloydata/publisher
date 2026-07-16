@@ -7,7 +7,7 @@ Publisher is the open-source semantic model server for [Malloy](https://malloyda
 - Discover what data exists: environments, packages, models, sources, and fields, without knowing any names in advance.
 - Answer plain-English questions by running Malloy queries, which Publisher compiles to SQL and runs against the connected database.
 - Build and change Malloy models: validate an edit with `malloy_compile`, save it, then `malloy_reloadPackage` to run it by name. The `malloy-modeling` skill covers the workflow.
-- Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `html-data-apps` skill covers it.
+- Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `malloy-html-data-apps` skill covers it.
 - Review Malloy for correctness with the `malloy-review` skill.
 
 All of it runs against a local server you start in step 1 and reach over MCP in step 2.
@@ -83,7 +83,7 @@ Ask "what can I explore here?" A good sequence is:
 
 ## 5. Skills
 
-The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness. Most of these are shared, open-source Malloy skills kept in sync with an upstream repo; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills map to this server's `malloy_*` tools.
+The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `malloy-getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness. Most of these are shared, open-source Malloy skills kept in sync with an upstream repo; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills map to this server's `malloy_*` tools.
 
 ## 6. Iterating on a model (watch mode)
 

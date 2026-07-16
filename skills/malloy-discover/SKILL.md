@@ -23,7 +23,7 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 
 ```
 1. Check for prior art signals                 → If found, ask user: "I found [LookML/dbt] files, use as prior art?"
-2. If user confirms: read adapter reference        → Follow skill:lookml-review, keep prior-art notes in-conversation
+2. If user confirms: read adapter reference        → Follow skill:malloy-lookml-review, keep prior-art notes in-conversation
 3. get_context                           → Ground yourself: sources, views, fields
 4. Inspect source definitions                  → See ALL fields and join paths for key sources
 5. Derive candidate joins/dimensions/measures  → Read them off the model and the data, not a suggestion tool
@@ -151,7 +151,7 @@ Check for prior art signals at the start of discovery. If a signal is found and 
 
 | Signal | Source Type | Reference to Read |
 |--------|------------|-------------------|
-| `.lkml` files in project or subdirectories | lookml | `skill:lookml-review` |
+| `.lkml` files in project or subdirectories | lookml | `skill:malloy-lookml-review` |
 | `dbt_project.yml` in project or parent dirs | dbt | dbt review (future) |
 
 The reference handles inventory, classification, and produces prior-art notes. Keep those notes in-conversation, then continue with normal discovery below.

@@ -5,7 +5,7 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 
 # STOP - READ BEFORE WRITING ANY MALLOY CODE
 
-> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:gotchas-modeling`, `skill:gotchas-queries`, and `skill:gotchas-rendering`.
+> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering`.
 
 ## Pre-Flight Checklist
 
@@ -13,7 +13,7 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 2. **Search docs proactively**: call `malloy_searchDocs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
 3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
-5. **Read the gotcha skills**: `skill:gotchas-modeling`, `skill:gotchas-queries`, and `skill:gotchas-rendering` prevent the most common mistakes.
+5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering` prevent the most common mistakes.
 
 **Quick syntax reminders:**
 1. **Backtick reserved words:** `` `Date` ``, `` `Hour` ``, `` `Timestamp` ``, `` `Type` ``, `` `number` ``, `` `source` ``
@@ -76,7 +76,7 @@ After analysis completes, **always recommend formalizing into a model.**
 | User says... | Route to |
 |-------------|----------|
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
-| "Model from LookML" | 8-step with prior art via `skill:lookml-review` |
+| "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analyze` (EDA) |
 | "Build a dashboard", "create views" on existing model | `skill:malloy-analyze` (views), plus `skill:malloy-charts` or `skill:malloy-notebooks` as needed |
 | "Build a model but not sure what metrics" | `skill:malloy-analyze` first, then formalize via `skill:malloy-model` |
@@ -169,6 +169,6 @@ top, bottom, desc, asc, row, range, current, window, rank
 
 The following skills contain detailed WRONG/RIGHT patterns that prevent the most common Malloy errors. **Read them before writing code:**
 
-- **`skill:gotchas-modeling`**: Reserved words, NULL checks, date functions, type casts, rename pitfalls, query-based source gotchas, `conn.sql()` anti-pattern
-- **`skill:gotchas-queries`**: Chart constraints, aggregate filters, joined field aliasing, time truncation vs extraction
-- **`skill:gotchas-rendering`**: Tag syntax, scale rules, sparkline setup, big_value patterns
+- **`skill:malloy-gotchas-modeling`**: Reserved words, NULL checks, date functions, type casts, rename pitfalls, query-based source gotchas, `conn.sql()` anti-pattern
+- **`skill:malloy-gotchas-queries`**: Chart constraints, aggregate filters, joined field aliasing, time truncation vs extraction
+- **`skill:malloy-gotchas-rendering`**: Tag syntax, scale rules, sparkline setup, big_value patterns

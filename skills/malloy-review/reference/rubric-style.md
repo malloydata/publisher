@@ -14,7 +14,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (non-blocking) · **Category:** style · LLM-judgment
 - **Detection:** LLM, flag any dimension declared as `` `reserved_word` is `reserved_word` `` (the backticked-passthrough pattern) and suggest a semantic alias
 - **Fix:** move the raw column to `internal:` and add a re-aliased dimension with a business name
-- **See:** `skill:gotchas-modeling` § Reserved Words, Backtick Them
+- **See:** `skill:malloy-gotchas-modeling` § Reserved Words, Backtick Them
 
 ---
 

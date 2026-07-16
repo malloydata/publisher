@@ -38,7 +38,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (if-minor) · **Category:** docs · machine-checkable
 - **Detection:** regex, a line containing two or more `#` tag openers outside quoted strings
 - **Fix:** split onto separate lines
-- **See:** `skill:gotchas-rendering` § One Tag Per Line
+- **See:** `skill:malloy-gotchas-rendering` § One Tag Per Line
 
 ---
 

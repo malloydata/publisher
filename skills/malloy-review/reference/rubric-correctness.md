@@ -10,8 +10,8 @@ What this rubric covers is the dangerous middle ground: code that **compiles cle
 **Rules we dropped after compiler-source / live-compile validation:**
 
 - **C-07 (missing `primary_key:` on a `join_one:` target).** Reading the Malloy compiler source (`packages/malloy/src/model/field_instance.ts:644-670`, `query_query.ts:946-951`) shows the compiler auto-synthesizes a UUID-based `__distinct_key` when the target lacks a declared PK, so symmetric aggregation is correct either way. The `with` shortcut (which DOES require a declared PK) is enforced by the compiler with a clear error and surfaces as a diagnostic. The remaining concern, "declared PK is a lie", is what C-12 below catches. The hygiene preference (declare a PK when one exists) lives in `rubric-structure.md` § S-02 as a `minor` recommendation; the style preference for using `with` consistently across the project lives in `rubric-style.md` § Y-03.
-- **C-08 (use method syntax for joined-field aggregation, e.g. `sum(items.cost)` → `items.cost.sum()`).** Confirmed against Malloy 0.0.370: `sum(joined.field)`, `avg(joined.field)`, `min(joined.field)`, and `max(joined.field)` are all **compile errors** with the message `Join path is required for this calculation; use 'items.cost.sum()'` (the diagnostic literally suggests the fix). The IDE diagnostic pre-pass surfaces this with a clearer message than the rubric ever could. The `count(joined.field)` carve-out, that it remains the canonical Malloy distinct-count idiom and should not be "fixed" to method syntax, is documented in `skill:gotchas-queries` § Aggregating Joined Fields, Method Syntax, which is where someone would land after seeing the compiler nudge.
-- **C-11 (`?` alternation joined by `and` rather than comma).** Validated against Malloy 0.0.370 across five arrangements. The compiler is never silently wrong here: `is_us = true and party ? 'D' | 'R'` (alternation second) compiles to the SQL the author intended (`WHERE is_us=true AND party IN ('D','R')`); `party ? 'D' | 'R' and is_us = true` (alternation first) and any pair of `?` alternations joined by `and` produce a clean compile error (`'logical operator' Can't use type string`). Either path is reviewer-safe, so the rubric doesn't need to flag it. Comma is still the canonical form because it's unambiguous in every position; that guidance lives in `skill:gotchas-queries` § `?` Alternation, Use Commas to Combine Filters.
+- **C-08 (use method syntax for joined-field aggregation, e.g. `sum(items.cost)` → `items.cost.sum()`).** Confirmed against Malloy 0.0.370: `sum(joined.field)`, `avg(joined.field)`, `min(joined.field)`, and `max(joined.field)` are all **compile errors** with the message `Join path is required for this calculation; use 'items.cost.sum()'` (the diagnostic literally suggests the fix). The IDE diagnostic pre-pass surfaces this with a clearer message than the rubric ever could. The `count(joined.field)` carve-out, that it remains the canonical Malloy distinct-count idiom and should not be "fixed" to method syntax, is documented in `skill:malloy-gotchas-queries` § Aggregating Joined Fields, Method Syntax, which is where someone would land after seeing the compiler nudge.
+- **C-11 (`?` alternation joined by `and` rather than comma).** Validated against Malloy 0.0.370 across five arrangements. The compiler is never silently wrong here: `is_us = true and party ? 'D' | 'R'` (alternation second) compiles to the SQL the author intended (`WHERE is_us=true AND party IN ('D','R')`); `party ? 'D' | 'R' and is_us = true` (alternation first) and any pair of `?` alternations joined by `and` produce a clean compile error (`'logical operator' Can't use type string`). Either path is reviewer-safe, so the rubric doesn't need to flag it. Comma is still the canonical form because it's unambiguous in every position; that guidance lives in `skill:malloy-gotchas-queries` § `?` Alternation, Use Commas to Combine Filters.
 
 For every rule, the linked instruction-skill section is the canonical source for rationale and WRONG/RIGHT examples, read it once, don't paraphrase here.
 
@@ -23,7 +23,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Detection:** regex `!=\s*null` or `=\s*null` in a `where:` clause or boolean-dimension expression. (Malloy uses `=` for equality, not `==`.)
 - **Fix:** `X is not null` or `X is null`
 - **Why non-blocking, Malloy itself recommends the form we're flagging.** The Malloy compiler emits a *warning* suggesting `!= null` over `is not null` ([`malloydata/malloy#1880`](https://github.com/malloydata/malloy/pull/1880)). Both forms compile. The reason this rubric still prefers `is not null` is that for the canonical boolean-dimension pattern `dimension: is_X is column != null`, Malloy evaluates `null != null` as `true` (bug [`malloydata/malloy#1968`](https://github.com/malloydata/malloy/issues/1968); fix proposal [`#2067`](https://github.com/malloydata/malloy/pull/2067) closed unmerged in Jan 2025), so the dimension marks null rows as `true` when the author intended `false`. Until that's resolved, `is not null` is the safer form for column-vs-null checks, even though the IDE will soft-warn the other way. Reviewers should weight this contradiction when assigning per-finding confidence.
-- **See:** `skill:gotchas-modeling` § NULL Checks, `is not null`, NOT `!= null`
+- **See:** `skill:malloy-gotchas-modeling` § NULL Checks, `is not null`, NOT `!= null`
 
 ---
 
@@ -49,7 +49,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   - Timestamp form → `<part>_at` / `<part>_truncated_at` (e.g. `month_truncated_at is created_at.month`).
   - Integer form → `<part>_number` / bare `<part>` (e.g. `month_number is month(created_at)`).
 - **Not a finding (the compiler already catches these).** Using `.day_of_week`, `.hour`, `.minute`, `.second`, or `.week` on a timestamp errors at compile time, those date parts are *functions only*, not properties. The IDE diagnostic pre-pass surfaces them; don't re-emit as C-02.
-- **See:** `skill:gotchas-modeling` § Date Functions vs Properties · `skill:gotchas-queries` § Time Truncation vs Extraction
+- **See:** `skill:malloy-gotchas-modeling` § Date Functions vs Properties · `skill:malloy-gotchas-queries` § Time Truncation vs Extraction
 
 ---
 
@@ -58,7 +58,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** major (blocking) · **Category:** correctness-filter · machine-checkable
 - **Detection:** regex for `/` in measure/dimension expressions where the right-hand side is not a `nullif(...)` call
 - **Fix:** `<numerator> / nullif(<denominator>, 0)`
-- **See:** `skill:gotchas-modeling` § Safe Division, Always `nullif`
+- **See:** `skill:malloy-gotchas-modeling` § Safe Division, Always `nullif`
 
 ---
 
@@ -67,7 +67,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** major (blocking) · **Category:** correctness-type · LLM-judgment
 - **Detection:** when an aggregate (`avg`, `sum`, etc.) wraps a column whose type is `STRING`, flag. To learn a column's type, ground yourself with `get_context` (it returns the sources and their fields), or sample the data with `execute_query` (`run: <source> -> { select: * limit: 1 }`).
 - **Fix:** `avg(score::number)` / `sum(amount::number)`
-- **See:** `skill:gotchas-modeling` § String Columns Need Casts for Aggregates
+- **See:** `skill:malloy-gotchas-modeling` § String Columns Need Casts for Aggregates
 
 ---
 
@@ -76,7 +76,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** major (blocking) · **Category:** correctness-type · machine-checkable
 - **Detection:** regex for `=\s*['"]true['"]` or `=\s*['"]false['"]`
 - **Fix:** remove the quotes
-- **See:** `skill:gotchas-modeling` § Boolean Columns, No Quotes
+- **See:** `skill:malloy-gotchas-modeling` § Boolean Columns, No Quotes
 
 ---
 
@@ -91,7 +91,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Compile-error notes (validated):**
   - `include { ... } extend { rename: A is B }` errors with `Can't find field 'B' to set access modifier` because `rename:` runs first and leaves no `B` for `include` to set a modifier on.
   - `include { internal: X } extend { measure: X is ... }` errors with `Cannot redefine 'X'` because internal columns and measures share a namespace, Malloy disallows shadowing even for internal-tagged columns. The collision is what usually drives someone to add `rename:` in the first place.
-- **See:** `skill:gotchas-modeling` § Field Management, `extend {}` vs `include {}` Don't Compose · `malloy-model/reference/access-modifiers.md` (for the `include {}` capability tradeoffs)
+- **See:** `skill:malloy-gotchas-modeling` § Field Management, `extend {}` vs `include {}` Don't Compose · `malloy-model/reference/access-modifiers.md` (for the `include {}` capability tradeoffs)
 
 ---
 
@@ -100,7 +100,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** major · **Category:** correctness-aggregation · LLM-judgment
 - **Detection:** when a measure name suggests counting a specific entity (`unique_customers`, `distinct_products`) but uses `count()` on a source whose grain is something else, flag
 - **Fix:** `count()` for rows; `count(x)` for distinct values of x. Make the measure name match the grain.
-- **See:** `skill:gotchas-modeling` (count semantics referenced throughout; weak counterpart, relies on reviewer judgment about measure-name-vs-grain mismatch)
+- **See:** `skill:malloy-gotchas-modeling` (count semantics referenced throughout; weak counterpart, relies on reviewer judgment about measure-name-vs-grain mismatch)
 
 ---
 
@@ -136,7 +136,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **The `rename:` chain pattern.** When the original SQL re-used column names via a swap (e.g., `SELECT cash_month AS payment_date, payment_date AS payment_day`), Malloy supports the same swap as two ordered `rename:` clauses: `rename: payment_day is payment_date` (frees the name), then `rename: payment_date is cash_month` (re-uses it). Malloy evaluates renames in source-block order. (`rename:` works inside `extend {}` alongside `except:` / `accept:` but **not** alongside `include {}`, see C-06.)
 - **Fix:** propose the equivalent Malloy when expressible, **preserving the column gating** discovered in the pre-check step. When not expressible, the rule doesn't fire, leave `conn.sql()` alone.
 - **Worked cautionary example:** A reviewer once tier-classified a 6-CTE 148-line `sql()` block (forecast pipeline with multi-key joins, latest-snapshot, custom-frame window function, conditional pivot, transfer-math `GREATEST/LEAST` chains) as "justified, Malloy can't express the window function with `ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING` cleanly." They never called `search_malloy_docs`. After actually searching, the equivalent is `sum_cumulative(x) - x { partition_by: ... }`, eight lines. The port came out 160 lines (12 more than the SQL), byte-identical across 2,160 cells of test data. The "Malloy can't do this" intuition was wrong, and the cost was duplicated review work plus several years of avoidable `conn.sql()` maintenance burden. **If you (the reviewer) catch yourself writing "this is awkward in Malloy" without having searched, stop and search.**
-- **See:** `skill:gotchas-modeling` § Never Use `conn.sql()` When Malloy Has a Native Pattern (canonical equivalence table) · `skill:gotchas-modeling` § Field Management, `extend {}` vs `include {}` Don't Compose
+- **See:** `skill:malloy-gotchas-modeling` § Never Use `conn.sql()` When Malloy Has a Native Pattern (canonical equivalence table) · `skill:malloy-gotchas-modeling` § Field Management, `extend {}` vs `include {}` Don't Compose
 
 ---
 

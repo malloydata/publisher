@@ -35,10 +35,10 @@ If your discovery turned up existing modeling patterns to mirror (a derived tabl
 
 | Pattern found in prior art | Reference to read |
 |---------------------|-------------------|
-| Derived table (PDT/NDT) | `skill:lookml-review` build-derived-tables guidance |
-| UNNEST joins or struct access | `skill:lookml-review` build-unnest guidance |
-| Review pass for coverage | `skill:lookml-review` review-coverage guidance |
-| Curate pass with visibility seeds | `skill:lookml-review` curate-visibility guidance |
+| Derived table (PDT/NDT) | `skill:malloy-lookml-review` build-derived-tables guidance |
+| UNNEST joins or struct access | `skill:malloy-lookml-review` build-unnest guidance |
+| Review pass for coverage | `skill:malloy-lookml-review` review-coverage guidance |
+| Curate pass with visibility seeds | `skill:malloy-lookml-review` curate-visibility guidance |
 
 ## Base Source Templates
 
