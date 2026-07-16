@@ -253,7 +253,7 @@ Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip f
 
 ## Access Control: Source Gating with `#(authorize)`
 
-Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`; see `docs/givens.md`). Publisher evaluates a source's in-scope `#(authorize)` expressions against the request's supplied givens before running the query; if **any** expression returns `true` the request proceeds, otherwise it is denied with **403**. A source with no in-scope `#(authorize)` annotations is unrestricted.
+Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). Publisher evaluates a source's in-scope `#(authorize)` expressions against the request's supplied givens before running the query; if **any** expression returns `true` the request proceeds, otherwise it is denied with **403**. A source with no in-scope `#(authorize)` annotations is unrestricted.
 
 ```malloy
 ##! experimental.givens
@@ -273,9 +273,9 @@ source: orders is duckdb.table('orders.parquet') extend {
 
 > **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(authorize)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
 >
-> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** — reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override — turning `#(authorize)` into a standalone boundary. Model access on `given:` + `#(authorize)` now; it is the surface that carries forward. See `docs/authorize.md` § Security model.
+> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** — reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override — turning `#(authorize)` into a standalone boundary. Model access on `given:` + `#(authorize)` now; it is the surface that carries forward.
 
-Full syntax, OR/override semantics, validation, and the error contract: `docs/authorize.md`.
+Full syntax, OR/override semantics, validation, and the error contract are covered in your deployment's `#(authorize)` reference documentation.
 
 ## Join Syntax
 

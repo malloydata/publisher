@@ -18,7 +18,7 @@ Read these in order:
 4. **`reference/output-template.md`**: the shape of the review file you produce.
 5. **`.malloy-review.local.md`** in the scope folder, if present, project-specific severity overrides or extra rules.
 
-Make sure the Publisher MCP tools are configured before running: this skill uses `execute_query` for data checks and `search_malloy_docs` for verifying Malloy capabilities. Both are optional; the review degrades gracefully if either is unavailable.
+Make sure the Malloy MCP tools are configured before running: this skill uses `execute_query` for data checks and `search_malloy_docs` for verifying Malloy capabilities. Both are optional; the review degrades gracefully if either is unavailable.
 
 ## Inputs
 

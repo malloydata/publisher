@@ -15,7 +15,7 @@ To formalize analysis into a polished semantic model, hand off to the modeling s
 
 ## Prerequisites
 
-- The Publisher MCP tools must be configured (`get_context`, `execute_query`, `search_malloy_docs`). If they are not available, **STOP** and ensure the Publisher MCP server is connected.
+- The Malloy MCP tools must be configured (`get_context`, `execute_query`, `search_malloy_docs`). If they are not available, **STOP** and ensure your host's MCP server is connected.
 - Call `search_malloy_docs` liberally: it has powerful analysis patterns (window functions, cohorts, percent-of-total, nested drill-downs).
 
 # EDA WORKFLOW
