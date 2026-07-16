@@ -15,7 +15,11 @@ test.describe("packages — read", () => {
    test("fixture packages are listed", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      for (const pkg of [PACKAGES.imdb, PACKAGES.ecommerce, PACKAGES.faa]) {
+      for (const pkg of [
+         PACKAGES.storefront,
+         PACKAGES.governed,
+         PACKAGES.dataApp,
+      ]) {
          await expect(page.getByText(pkg, { exact: true })).toBeVisible();
       }
    });
@@ -25,7 +29,7 @@ test.describe("packages — read", () => {
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
    });
 });
 
@@ -50,7 +54,7 @@ test.describe("packages — mutable CRUD", () => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       const actions = page.getByRole("button", {
-         name: `Package actions for ${PACKAGES.imdb}`,
+         name: `Package actions for ${PACKAGES.storefront}`,
       });
       await expect(actions).toBeVisible();
       await actions.click();

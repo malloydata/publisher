@@ -2,7 +2,7 @@
 
 The canonical build is the root [`Dockerfile`](../../Dockerfile) and the CI smoke test (`docker_smoke_test` in `.github/workflows/build.yml`) builds and runs that exact image. The two-port REST + MCP server, the Snowflake ADBC driver, the DuckDB CLI, and the production app bundle all ship in it.
 
-A short Docker section in the [repo root README](../../README.md#docker) covers the canonical build + run; this doc goes deeper on runtime layout, environment variables, persistent storage, and credentials.
+A short Docker section in the [deployment guide](../../docs/deployment.md) covers the canonical build + run; this doc goes deeper on runtime layout, environment variables, persistent storage, and credentials.
 
 ## Build and run
 
@@ -32,7 +32,7 @@ docker run -d \
   ms2data/malloy-publisher
 ```
 
-See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`) lives in the root README's [Docker section](../../README.md#docker).
+See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`) lives in the [deployment guide](../../docs/deployment.md).
 
 ## Runtime layout
 
@@ -70,11 +70,11 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
 | `SERVER_ROOT` | `--server_root <path>` | `.` (cwd) at the server level; overridden to `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--server_root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. If you override CMD with your own entrypoint, set `SERVER_ROOT` yourself to keep this behaviour. |
 | `PUBLISHER_CONFIG_PATH` | `--config <path>` | unset | Absolute path to a `publisher.config.json`. Wins over `<SERVER_ROOT>/publisher.config.json`. Use this if you want to mount your config somewhere other than `/publisher/`. |
-| `INITIALIZE_STORAGE` | `--init` | `false` | Wipes persisted storage state on startup. Useful when `frozenConfig: false` has let `publisher_data/` drift from the on-disk config; destructive otherwise. |
-| `SHUTDOWN_DRAIN_DURATION_SECONDS` | — | `0` | On SIGTERM, how long to keep accepting requests while draining before closing server sockets. Set this to your typical request duration to avoid 502s from K8s rolling deploys. |
-| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | — | `0` | Additional grace period after server close before `process.exit`. |
+| `INITIALIZE_STORAGE` | `--init` | `false` | Wipes `publisher_data/` and re-syncs it from the config on boot. A first boot with empty storage loads the config automatically, so set this only to reset state or resync after the on-disk config has drifted from `publisher_data/`. Re-initializing discards any state there that isn't reproducible from the config. See [configuration.md](../../docs/configuration.md#environment-variables--cli-flags). |
+| `SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown_drain_duration_seconds <s>` | `0` | On SIGTERM, how long to keep serving requests (readiness flips to not-ready immediately) before closing server sockets. Set this to your typical request duration to avoid 502s from K8s rolling deploys. |
+| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown_graceful_close_timeout_seconds <s>` | `0` | Additional grace period after server close before `process.exit`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | — | unset | Path inside the container to a GCP service-account JSON. Required for BigQuery-backed environments. Personal user credentials don't work inside the container — use a service account. |
-| `PUBLISHER_MAX_MEMORY_BYTES` | — | unset (disabled) | Resident-set-size (RSS) cap in bytes. When set, the in-process **memory governor** polls RSS on `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` and rejects new package loads with **HTTP 503** once RSS crosses the high-water mark. Designed to keep the pod under its k8s `resources.limits.memory` instead of getting OOM-killed. Set this to roughly `0.7 × resources.limits.memory` so the back-pressure band has headroom for traffic spikes and per-request DuckDB scratch. |
+| `PUBLISHER_MAX_MEMORY_BYTES` | — | unset (disabled) | Resident-set-size (RSS) cap in bytes. When set, the in-process **memory governor** polls RSS on `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` and rejects new package loads and new queries with **HTTP 503** once RSS crosses the high-water mark. Designed to keep the pod under its k8s `resources.limits.memory` instead of getting OOM-killed. Set this to roughly `0.7 × resources.limits.memory` so the back-pressure band has headroom for traffic spikes and per-request DuckDB scratch. |
 | `PUBLISHER_MEMORY_HIGH_WATER_FRACTION` | — | `0.8` | Fraction of `PUBLISHER_MAX_MEMORY_BYTES` at which back-pressure activates. Must be in `(0, 1)` and strictly greater than the low-water fraction. |
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Fraction at which back-pressure clears. The gap between low and high gives hysteresis so the governor doesn't flap on every GC cycle. |
 | `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | How often the governor samples RSS. Minimum `100`. Smaller values catch spikes faster but burn a few extra microseconds per tick. |
@@ -85,7 +85,7 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 When `PUBLISHER_MAX_MEMORY_BYTES` is unset, the governor is **disabled** and the server's behaviour is identical to prior versions. When it's set, the governor:
 
 - Periodically samples `process.memoryUsage().rss`.
-- Once RSS crosses the high-water mark, **any code path that would allocate a new package into memory returns HTTP 503**. The gate sits at the single choke point inside `Environment.getPackage` / `Environment.addPackage`, so it covers every controller that touches a not-yet-loaded package — including lazy loads on cache miss from `ModelController`, `ConnectionController`, `QueryController`, `DatabaseController`, etc. — not just the explicit `POST /packages` and `?reload=true` paths.
+- Once RSS crosses the high-water mark, **any code path that would allocate a new package into memory returns HTTP 503**, and new queries are rejected the same way. The package gate sits at the single choke point inside `Environment.getPackage` / `Environment.addPackage`, so it covers every controller that touches a not-yet-loaded package — including lazy loads on cache miss from `ModelController`, `ConnectionController`, `QueryController`, `DatabaseController`, etc. — not just the explicit `POST /packages` and `?reload=true` paths.
 - Already-loaded packages remain fully serviceable so dashboards keep rendering under pressure.
 - Once RSS drops back to the low-water mark, back-pressure clears automatically.
 - Recovery happens naturally as in-flight traffic completes and the kernel reclaims pages — the governor does **not** evict, unload, or interrupt loaded packages.
@@ -144,4 +144,4 @@ The Dockerfile creates `/etc/publisher/` as an empty directory outside the appli
 
 ## Deprecated build paths
 
-`docker/production.docker` and `docker/malloy-samples.docker` are leftover from a previous Docker layout. They are not built by CI, are not referenced by any current workflow, and produce a different image than what is deployed. Don't use them. They will be removed in a follow-up cleanup PR; the audit and tracking is in `publisher-audit-docker.md` (finding #1).
+`docker/production.docker` and `docker/malloy-samples.docker` are leftover from a previous Docker layout. They are not built by CI, are not referenced by any current workflow, and produce a different image than what is deployed. Don't use them — build the root [`Dockerfile`](../../Dockerfile) instead. They will be removed in a follow-up cleanup PR.

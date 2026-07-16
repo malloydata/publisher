@@ -8,24 +8,35 @@ models and render whatever you like with the front-end tools you already know
 install, and no framework requirement. You write HTML, CSS, and JavaScript, and
 Publisher serves it and answers its queries.
 
-This is the lowest-level of the three embedding paths. For the React component
-path (`<QueryResult>`, `<ServerProvider>`) see
-[Embedded Data Apps (React SDK)](./embedded-data-apps.md); the two are
-complementary. Reach for an HTML data app when you want a self-contained
-dashboard with no toolchain; reach for the React SDK when you are building a
-larger app and want managed components and notebook reuse.
+> **What this is:** a self-contained dashboard written in plain HTML/CSS/JS, shipped *inside* a
+> package and **served by Publisher** — no build step, no framework, no npm. It's the supported way to
+> ship a custom UI. (For zero-code exploration, use the [Publisher App](./publisher-app.md); to build
+> against the data programmatically, see the [REST/MCP APIs](./api-overview.md).)
+
+Reach for an HTML data app when you want a self-contained, custom dashboard that ships with the model
+and needs no toolchain. A page can also be *embedded* into another site as an auto-resizing iframe
+with `Publisher.embed` (see [Embedding](#embedding)).
+
+The bundled `storefront` package ships one — a Chart.js dashboard in
+[`examples/storefront/public/index.html`](../examples/storefront/public/index.html), backed entirely
+by `Publisher.query` calls against the model's views:
+
+![The storefront HTML data app — KPI tiles, category and trend charts, filters, and a top-products table](screenshots/storefront-data-app.png)
+
+Filters run new Malloy queries and repaint the KPIs, charts, and table in place — here in the bundled [`html-data-app`](../examples/html-data-app/) SaaS-subscriptions example:
+
+![Selecting filters in an HTML data app re-queries and updates the KPIs, charts, and table live](screenshots/html-data-app-filtering.gif)
 
 ## How it fits together
 
 ```
 my-package/
   publisher.json        # package manifest (name, version, description)
-  carriers.malloy       # one or more models
-  carriers.parquet      # data the models read
+  subscriptions.malloy  # one or more models
+  subscriptions.parquet # data the models read
   public/               # everything in here is web-served
-    index.html
-    styles.css
-    app.js
+    index.html          # can be one self-contained file, or split out css/js
+    embed-test.html
 ```
 
 Publisher serves the contents of `public/` at:
@@ -34,8 +45,8 @@ Publisher serves the contents of `public/` at:
 /environments/<env>/packages/<pkg>/<file>
 ```
 
-so `public/index.html` is the package's landing page and `public/app.js` loads at
-`.../app.js`. Only `public/` is reachable over the web. The models, the data
+so `public/index.html` is the package's landing page and any other file under
+`public/` loads at its relative path. Only `public/` is reachable over the web. The models, the data
 files, and `publisher.json` live outside it and are never served; the page
 reaches model data only through the query API, which goes through the same
 governance (filters, access modifiers, authorize annotations) as any other
@@ -77,11 +88,11 @@ The smallest page that talks to a model is:
 
 ```html
 <!doctype html>
-<title>Carriers</title>
+<title>Subscriptions</title>
 <pre id="out"></pre>
 <script src="/sdk/publisher.js"></script>
 <script>
-  Publisher.query("carriers.malloy", "run: carriers -> by_letter").then((rows) => {
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix").then((rows) => {
     document.getElementById("out").textContent = JSON.stringify(rows, null, 2);
   });
 </script>
@@ -116,38 +127,45 @@ feed a chart or a table.
 
 ```js
 // Run a named view defined in the model.
-const rows = await Publisher.query("carriers.malloy", "run: carriers -> by_letter");
-// rows -> [{ letter: "A", n: 23 }, { letter: "B", n: 17 }, ...]
+const rows = await Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix");
+// rows -> [{ plan: "Pro", account_count: 272 }, { plan: "Starter", account_count: 255 }, ...]
 ```
 
 `modelPath` is the model file's path within the package, with `/` separators
-(here `"carriers.malloy"`; a nested model would be `"models/events.malloy"`). The
+(here `"subscriptions.malloy"`; a nested model would be `"models/events.malloy"`). The
 second argument is any Malloy query string. Build the model's queries the way you
 would anywhere else: run a pre-built view, refine it, or write an ad-hoc query.
 
 ```js
 // Refine a view with a filter at call time.
-await Publisher.query("carriers.malloy", "run: carriers -> by_letter + { where: letter = 'A' }");
+await Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix + { where: plan = 'Pro' }");
 
 // A single-row KPI view: read element [0].
-const [kpis] = await Publisher.query("carriers.malloy", "run: carriers -> kpis");
-document.getElementById("total").textContent = kpis.total;
+const [kpis] = await Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis");
+document.getElementById("mrr").textContent = kpis.active_mrr;
 ```
 
 Defining frontend-friendly views in the model (pre-aggregated, pre-sorted, one
 per tile) keeps the page's query strings short and the work on the server. The
-example's `carriers.malloy` does exactly this with `by_letter`, `by_size_bucket`,
-`kpis`, and `rows_view`.
+example's `subscriptions.malloy` does exactly this with `kpis`, `mrr_by_month`,
+`plan_mix`, and `accounts`.
 
 A dashboard usually issues several queries at once and renders them together:
 
 ```js
-const [byLetter, byBucket, kpisRows] = await Promise.all([
-  Publisher.query("carriers.malloy", "run: carriers -> by_letter"),
-  Publisher.query("carriers.malloy", "run: carriers -> by_size_bucket"),
-  Publisher.query("carriers.malloy", "run: carriers -> kpis"),
+const [kpisRows, byMonth, planMix, accounts] = await Promise.all([
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis"),
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> mrr_by_month"),
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix"),
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> accounts"),
 ]);
 ```
+
+> **See it working.** The example's
+> [`public/index.html`](../examples/html-data-app/public/index.html) does exactly this in its
+> `refresh()` — four `Publisher.query` calls fanned out with `Promise.all`, driving two Chart.js
+> charts, a KPI row, and a filterable table, all from the views in
+> [`subscriptions.malloy`](../examples/html-data-app/subscriptions.malloy).
 
 The third argument, `opts`, is optional:
 
@@ -155,17 +173,16 @@ The third argument, `opts`, is optional:
 |---|---|---|
 | `sourceName` | string | Run against a named source instead of passing a full `run:` string |
 | `queryName` | string | Run a saved query by name |
-| `givens` | object | Values for the model's Malloy `given:` runtime parameters; a `{ name: value }` map bound for this query (see [givens](./givens.md)) |
-| `filterParams` | object | Values for the model's legacy `#(filter)` source filters (distinct from givens) |
-| `bypassFilters` | boolean | Skip required-filter enforcement (use sparingly) |
 | `environment`, `package` | string | Override the environment or package the query targets, for pages not served under `/environments/<env>/packages/<pkg>/` |
 
 `sourceName` and `queryName` are alternatives to passing a `run:` string as the
-second argument; use one path or the other. When a filter value comes from
-untrusted input, prefer a model `given:` plus `opts.givens` over building the
-`where:` string by hand, so the runtime binds the value safely by type. (This is
-safe parameterization, not authorization: a client-supplied given is trusted
-unless a server upstream strips or finalizes it.)
+second argument; use one path or the other. For parameterized results, run a
+model-defined view or source that already encodes the logic (via `sourceName` /
+`queryName`) rather than assembling a `run:` string on the page. The no-build page
+runtime does not pass per-query [givens](./givens.md) values (model-declared given
+*defaults* still apply), so never interpolate untrusted input into a `run:`
+string — constrain it to a known set, or keep the filtering in model-defined
+views.
 
 `Publisher.queryFull(...)` takes the same arguments but resolves to the full
 Malloy result envelope rather than just the rows. Use it when you want to hand
@@ -176,22 +193,6 @@ On a failed query the returned promise rejects with an `Error` whose message is
 prefixed `Publisher.query:`. The error carries `error.status` (the HTTP status)
 and `error.response` (the parsed JSON body), so you can branch on a missing
 filter, a compile error, or a permission failure.
-
-Given-related failures map to status like this:
-
-| Case | Status |
-|---|---|
-| Unknown given name, or a bad value, on an ungated source | 400 |
-| Unknown given name, or a bad value, on a source guarded by `#(authorize)` | 403 |
-| `#(authorize)` denies the caller | 403 |
-
-Malloy is the validator: an unknown given name or a wrong-typed value is
-rejected when the query is prepared, and the publisher maps that to a 400. On a
-source guarded by `#(authorize)`, though, the authorize check binds the supplied
-givens and fails closed, so a bad given there surfaces as a 403 that looks like
-access denied rather than validation. If a gated query returns 403 unexpectedly,
-check the given names and values against the model. (`opts.givens` is
-parameterization, not an authorization boundary.)
 
 ### Context
 
@@ -259,10 +260,9 @@ viewport, so the frame does not grow without bound.
 
 For a same-origin or same-tenant embed, the browser's cookies authenticate the
 iframe and you pass no token. For a cross-origin embed (your customer's app on a
-different domain), mint a signed token on your server and pass it as `token`; the
-embedded page reads `embed_token` and calls `Publisher.setToken(...)`. The signed
-token shape and the server side of that exchange are covered in
-[Embedded Data Apps (React SDK)](./embedded-data-apps.md).
+different domain), mint a short-lived signed token on your server and pass it as `token`; the
+embedded page reads `embed_token` and calls `Publisher.setToken(...)`. Mint the token server-side with
+the same signing key the server verifies; never put a long-lived or admin token in client HTML.
 
 ## Live reload
 
@@ -281,7 +281,7 @@ production posture.
 
 ## Full-screen apps in the page viewer
 
-When you open a page from inside the Publisher app (the package's Pages list), it
+When you open a page from inside the Publisher App (the package's Pages list), it
 is shown in an iframe wrapped in light chrome (a title and an "open standalone"
 link). By default that iframe is sized to the page's content height: the page's
 runtime measures how tall its content actually is and the viewer matches it, so
@@ -307,14 +307,14 @@ affect any other page, and opening a page directly at
 ## Listing a package's pages
 
 `GET /api/v0/environments/<env>/packages/<pkg>/pages` returns the package's HTML
-pages, which the Publisher app uses to show what a package offers. Each entry is:
+pages, which the Publisher App uses to show what a package offers. Each entry is:
 
 ```json
 {
-  "resource": "/environments/demo/packages/html-data-app/index.html",
+  "resource": "/environments/examples/packages/html-data-app/index.html",
   "packageName": "html-data-app",
   "path": "index.html",
-  "title": "Carrier Dashboard"
+  "title": "SaaS Subscriptions"
 }
 ```
 
@@ -343,7 +343,7 @@ matter for a data app are:
 {
   "name": "html-data-app",
   "version": "0.0.1",
-  "description": "Carrier dashboard built as an in-package HTML data app."
+  "description": "SaaS subscriptions dashboard built as an in-package HTML data app."
 }
 ```
 
@@ -378,7 +378,5 @@ See also:
 
 - `examples/html-data-app/` for a complete worked package (filters, charts, KPIs,
   and an embed demo).
-- [Embedded Data Apps (React SDK)](./embedded-data-apps.md) for the React
-  component embedding path and the signed-token exchange.
-- [Givens (runtime parameters)](./givens.md) for declaring model parameters and
-  passing them through `opts.givens`.
+- [Givens (runtime parameters)](./givens.md) for declaring model parameters.
+- [The React SDK](./embedded-data-apps.md) — advanced/internal, if you specifically need React components.

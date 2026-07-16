@@ -1,65 +1,39 @@
-# Embedded Data Apps (React SDK)
+# React SDK (internal / advanced)
 
-The Publisher makes it easy to embed governed analytics into your web applications—directly from your semantic models and notebooks. The SDK lets you drop live visualizations, metrics, or full analyses into your product with just a few lines of code.
+> **Heads up:** `@malloy-publisher/sdk` is the React component library the **Publisher App is built
+> from** — it's an internal building block, not a supported path for external integration, and its
+> component API can change between releases without notice. For putting analytics in front of users,
+> prefer the two supported paths below. This page is kept for the curious and for advanced users
+> who accept that tradeoff.
 
-## Try the Sample App
+## Ways to surface analytics (start here)
 
-1. Make sure the Publisher server is running locally on port `4000` (follow instructions in the [Main README](../../README.md)).
-2. Open the `examples/data-app` directory in the Publisher repo.
-3. Copy `.env.example` to `.env`. You should not need to change the `VITE_PUBLISHER_API` variable there unless your Publisher server is running elsewhere. NOTE: even though the Publisher is running on port `4000`, the API request is proxied through port `5173` (this web app) to avoid CORS issues.
-4. Run the following commands to start the app:
+| Path | Use it when | Doc |
+| --- | --- | --- |
+| **Publisher App** | You want zero-code exploration and sharing — the no-code Explorer, notebooks, and dashboards, out of the box. | [publisher-app.md](publisher-app.md) |
+| **HTML data apps** | You want a custom dashboard with no build step, shipped inside a package and served by Publisher. | [html-data-apps.md](html-data-apps.md) |
+| **REST / MCP APIs** | You're building your own application or agent against the data programmatically. | [api-overview.md](api-overview.md) · [ai-agents.md](ai-agents.md) |
+| _React SDK (this page)_ | _You specifically need React components and accept the internal/unstable-API tradeoff._ | — |
 
-   ```bash
-   npm install
-   npm run dev
-   ```
+## What the SDK is
 
-5. Open [http://localhost:5173](http://localhost:5173) in your browser.
+A React component library (`ServerProvider`, `QueryResult`, `Notebook`, `Model`, page components, filter
+widgets) that talks to Publisher's REST API and renders results with Malloy Render. The
+[`Publisher App`](../packages/app) is composed entirely from it. Because it's the App's internal
+toolkit, breaking changes ride along with App redesigns.
 
-You should see the "Malloy Samples" dashboard show with some charts and tables from the "names" package in the "malloy-samples" project.
+## Advanced reference: `examples/data-app`
 
-Click on "Dynamic Dashboard" to build your own dashboard by adding embed tags for notebook analyses or click on "Single Embed" to see an example where you can embed a single analysis directly in the code.
+[`examples/data-app`](../examples/data-app) is a Vite + React app that reads from the bundled
+`storefront` package. It's kept as an advanced reference — each sidebar view maps to a component
+showing one SDK pattern:
 
-When adding a panel to the "Dynamic Dashboard", your embed snippet should look like this:
+| Component | Pattern |
+| --- | --- |
+| [`SingleEmbedDashboard.tsx`](../examples/data-app/src/components/SingleEmbedDashboard.tsx) | Embed one saved analysis with `<EmbeddedQueryResult>`. |
+| [`StorefrontDashboard.tsx`](../examples/data-app/src/components/StorefrontDashboard.tsx) | A fixed grid of `<EmbeddedQueryResult>` tiles. |
+| [`DynamicDashboard.tsx`](../examples/data-app/src/components/DynamicDashboard.tsx) | Add/remove tiles at runtime. |
+| [`InteractiveDashboard.tsx`](../examples/data-app/src/components/InteractiveDashboard.tsx) | Drive queries from React state via the `useRawQueryData` hook. |
 
-```tsx
-<QueryResult
-  resourceUri="publisher://projects/malloy-samples/packages/names/models/names1.malloynb"
-  query="run: names -> { aggregate: total_population }"
-/>
-```
-
-## Embed a Published Analysis
-
-You can embed any analysis cell from your published Malloy notebook directly into the app.
-
-1. In any ".malloynb" notebook file on the Publisher platform, find an analysis block you want to embed.
-2. Take note of the `projectName`, `packageName`, and `modelPath` (path to the notebook file).
-3. Click "<>" to view the analysis code (`query`) and copy it.
-4. Open `SingleEmbedDashboard.tsx` inside the `examples/data-app/src/components` folder.
-5. Replace the `<Box />` placeholder with the values indicated below.
-
-   The code will look something like this:
-   ```tsx
-   import { ServerProvider, QueryResult } from "@malloy-publisher/sdk";
-
-   export default function SingleEmbedDashboard() {
-     return (
-       <div className="dashboard">
-         <ServerProvider server="https://localhost:4000/api/v0">
-            <QueryResult
-               resourceUri="publisher://projects/malloy-samples/packages/names/models/names1.malloynb"
-               query="run: names -> { aggregate: total_population }"
-            />
-         </ServerProvider>
-       </div>
-     );
-   }
-   ```
-
-6. Save the file and refresh your browser.  
-   You should now see live, governed analytics served directly from your semantic model.
-
-> ✅ Great for building internal tools, customer-facing dashboards, or any UI that needs trustworthy data experiences.
-
-> 🔁 You can reuse this pattern to embed multiple notebook blocks, semantic model views, or even full interactive dashboards—all powered by a single semantic definition.
+Entry point: [`src/main.tsx`](../examples/data-app/src/main.tsx) wraps everything in one
+`<ServerProvider>` and renders [`AppShell.tsx`](../examples/data-app/src/AppShell.tsx).

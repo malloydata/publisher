@@ -9,7 +9,7 @@ import {
 import { useState, useMemo } from "react";
 import AppNavbar from "./components/AppNavbar";
 import SideMenu from "./components/SideMenu";
-import MalloySamplesDashboard from "./components/MalloySamplesDashboard";
+import StorefrontDashboard from "./components/StorefrontDashboard";
 import SingleEmbedDashboard from "./components/SingleEmbedDashboard";
 import DynamicDashboard from "./components/DynamicDashboard";
 import InteractiveDashboard from "./components/InteractiveDashboard";
@@ -21,8 +21,8 @@ export default function AppShell() {
     [mode]
   );
   const [selectedView, setSelectedView] = useState<
-    "malloySamples" | "singleEmbed" | "dynamicDashboard" | "interactive"
-  >("malloySamples");
+    "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive"
+  >("storefront");
 
   return (
     <ThemeProvider theme={defaultTheme}>
@@ -49,8 +49,8 @@ export default function AppShell() {
         >
           {
             <>
-              {selectedView === "malloySamples" && (
-                <MalloySamplesDashboard selectedView={selectedView} />
+              {selectedView === "storefront" && (
+                <StorefrontDashboard selectedView={selectedView} />
               )}
               {selectedView === "singleEmbed" && (
                 <SingleEmbedDashboard selectedView={selectedView} />
@@ -58,7 +58,7 @@ export default function AppShell() {
               {selectedView === "dynamicDashboard" && (
                 <DynamicDashboard
                   selectedView={selectedView}
-                  resourceUri={`publisher://projects/malloy-samples`}
+                  resourceUri={`publisher://environments/examples`}
                 />
               )}
               {selectedView === "interactive" && (

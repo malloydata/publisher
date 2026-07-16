@@ -11,12 +11,12 @@ the Publisher repo.
 An in-package HTML data app. The package ships a `public/` directory of plain web
 files; Publisher serves them and exposes a runtime, `Publisher.query(...)`, that
 runs Malloy against the package's models and returns plain JSON rows. No build
-step, no framework. This example (`carriers`) is a dashboard over
-`carriers.parquet`.
+step, no framework. This example (`subscriptions`) is a SaaS subscriptions
+dashboard over `subscriptions.parquet`.
 
 ```
-carriers.malloy        # the model, stays private
-carriers.parquet       # data, stays private
+subscriptions.malloy   # the model, stays private
+subscriptions.parquet  # data, stays private
 publisher.json         # name, version, description
 public/                # ONLY this directory is web-served
   index.html
@@ -32,9 +32,10 @@ is a data app simply by having a `public/` directory.
 ## How to build or change a page
 
 1. Read the model first. Use the model's real source and view names from
-   `carriers.malloy`; never guess field or view names. This model defines source
-   `carriers` with views `by_letter`, `by_size_bucket`, `by_name_length`, `kpis`,
-   and `rows_view`.
+   `subscriptions.malloy`; never guess field or view names. This model defines
+   source `subscriptions` with views `kpis`, `mrr_by_month`, `plan_mix`,
+   `mrr_by_plan`, `mrr_by_industry`, `mrr_by_country`, `accounts`, and
+   `overview`.
 2. Write the page under `public/`. A page written anywhere else is never served.
 3. Load the runtime root-relative, then query.
 4. Validate each query before wiring it into render code (see below).
@@ -61,19 +62,19 @@ It adds one global, `window.Publisher`:
 - `Publisher.setToken(token | null)` sets a bearer token used by all later
   queries on the page; `null` reverts to cookies.
 
-`modelPath` is the model FILE path within the package (`"carriers.malloy"`), with
-`/` separators. It is not the source name. `opts` may carry `sourceName`,
-`queryName`, `givens` (a `{ name: value }` map bound to the model's Malloy
-`given:` runtime parameters), `filterParams` (the legacy `#(filter)` source-filter
-API, distinct from givens), `bypassFilters`, and `environment` / `package` (only
-for pages served outside `/environments/<env>/packages/<pkg>/`).
+`modelPath` is the model FILE path within the package (`"subscriptions.malloy"`),
+with `/` separators. It is not the source name. `opts` may carry `sourceName`,
+`queryName`, and `environment` / `package` (only for pages served outside
+`/environments/<env>/packages/<pkg>/`). The runtime does not pass per-query
+[givens](../../docs/givens.md) values — model-declared given *defaults* still
+apply.
 
 ## Query patterns
 
 Run a named view:
 
 ```js
-const rows = await Publisher.query("carriers.malloy", "run: carriers -> by_letter");
+const rows = await Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix");
 ```
 
 Refine a view with a filter built from UI state:
@@ -81,38 +82,37 @@ Refine a view with a filter built from UI state:
 ```js
 function whereClause(state) {
   const parts = [];
-  if (state.letter) parts.push(`letter = '${state.letter}'`);
-  if (state.bucket) parts.push(`size_bucket = '${state.bucket}'`);
-  return parts.length ? `where: ${parts.join(", ")}` : "";
+  if (state.plan) parts.push(`plan = '${state.plan}'`);
+  if (state.industry) parts.push(`industry = '${state.industry}'`);
+  if (state.country) parts.push(`country = '${state.country}'`);
+  return parts.length ? `where: ${parts.join(" and ")}` : "";
 }
 const rows = await Publisher.query(
-  "carriers.malloy",
-  `run: carriers -> by_letter + { ${whereClause(state)} }`,
+  "subscriptions.malloy",
+  `run: subscriptions -> plan_mix + { ${whereClause(state)} }`,
 );
 ```
 
 These values are interpolated into the query string, so they must come from
 trusted, constrained sources (a dropdown populated from the model's own distinct
-values, for example). For free-text or untrusted input, declare a `given:` on the
-model and pass the value through `opts.givens`, which the runtime binds safely by
-type (parameterization, not string interpolation); do not hand-build the `where:`
-from raw input. Note this is not an authorization boundary: a client-supplied
-given is trusted unless a server upstream strips or finalizes it.
+values, for example — this page fills its dropdowns that way). Never interpolate
+free-text or untrusted input into a `run:` string; keep that filtering in
+model-defined views instead.
 
 A single-row KPI view returns a one-element array; read element zero:
 
 ```js
-const [kpis] = await Publisher.query("carriers.malloy", "run: carriers -> kpis");
-el.textContent = kpis.total;   // the result is an array; kpis.total, not rows.total
+const [kpis] = await Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis");
+el.textContent = kpis.active_mrr;   // the result is an array; kpis.active_mrr, not rows.active_mrr
 ```
 
 A dashboard fires its tiles together:
 
 ```js
-const [byLetter, byBucket, kpisRows] = await Promise.all([
-  Publisher.query("carriers.malloy", "run: carriers -> by_letter"),
-  Publisher.query("carriers.malloy", "run: carriers -> by_size_bucket"),
-  Publisher.query("carriers.malloy", "run: carriers -> kpis"),
+const [kpisRows, byMonth, planMix] = await Promise.all([
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> kpis"),
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> mrr_by_month"),
+  Publisher.query("subscriptions.malloy", "run: subscriptions -> plan_mix"),
 ]);
 ```
 
@@ -123,26 +123,20 @@ Validate a query before wiring its result into render code: POST it to a running
 Publisher at `/api/v0/environments/<env>/packages/<pkg>/models/<modelPath>/query`
 with body `{"compactJson":true,"query":"..."}`, or run the `Publisher.query` once
 and log the rows. Malloy names result columns after the `group_by` / `aggregate`
-field names (`group_by: letter` gives a `letter` column; `aggregate: n is count()`
-gives an `n` column), so confirm those names against real output.
+field names (`group_by: plan` gives a `plan` column; `aggregate: account_count`
+gives an `account_count` column), so confirm those names against real output.
 
 ## When the page does not work
 
-- 404 or "model not found": `modelPath` is the file path (`"carriers.malloy"`),
+- 404 or "model not found": `modelPath` is the file path (`"subscriptions.malloy"`),
   not the source name.
 - "source/view not defined": a view or source name was guessed; use the model's
   real names.
 - Promise rejects with a message starting `Publisher.query:`: read `error.status`
   and `error.response` for the server's reason.
-- 400 on a bad given (ungated source): an unknown name (check spelling; names are
-  case-sensitive) or a wrong-typed value; Malloy rejects it when preparing the query.
-- 403 on a bad given (source with `#(authorize)`): an unknown name or wrong-typed
-  value fails closed in the authorize check, so it looks like access denied rather
-  than validation. Check the given names and values against the model.
-- Empty array when you expect rows: a filter value mismatch (case, spelling, type,
-  or a non-ASCII character such as the `≤` or en-dash this model uses in its size
-  buckets). Copy the literal verbatim from the model; confirm with a
-  distinct-values query.
+- Empty array when you expect rows: a filter value mismatch (case, spelling, or
+  type — e.g. a `plan` or `status` that doesn't exist). Copy the literal verbatim
+  from the model; confirm with a distinct-values query.
 - KPI shows `undefined`: the result is an array; read `rows[0].field`.
 - Page not served: the file is not under `public/`.
 
@@ -153,7 +147,7 @@ gives an `n` column), so confirm those names against real output.
 <div id="dashboard"></div>
 <script>
   const handle = Publisher.embed("#dashboard", {
-    src: "https://your-publisher/environments/demo/packages/html-data-app/index.html",
+    src: "https://your-publisher/environments/examples/packages/html-data-app/index.html",
   });
   // handle.destroy() removes the iframe and its listeners.
 </script>

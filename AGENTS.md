@@ -25,7 +25,7 @@ bun run build && bun run start        # REST on :4000, MCP on :4040
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build.
 
-First boot clones the DuckDB sample packages, so poll until the server reports `serving` rather than assuming a fixed wait. From a clone it is usually seconds; a first `npx` run also has to download the package, which can push it to a minute or two. Both steps are network-bound:
+Poll until the server reports `serving` rather than assuming a fixed wait. From a clone the sample packages are read straight from `examples/`, so this is usually seconds. A first `npx` run has to download the published package and then fetch the samples from GitHub, which is network-bound and can push it to a minute or two:
 
 ```bash
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # -> "serving"
@@ -76,8 +76,8 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 
 Ask "what can I explore here?" A good sequence is:
 
-1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `malloy-samples`).
-2. `malloy_getContext` with that environment, then pick a package (the samples include `ecommerce`, `imdb`, and `faa`).
+1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `examples`).
+2. `malloy_getContext` with that environment, then pick a package (the bundled packages are `storefront`, `governed-analytics`, and `html-data-app`).
 3. `malloy_getContext` with the package and your question, to get the source, view, and field names.
 4. `malloy_executeQuery` with those names, to get the answer. Charts and dashboards defined in the model render in the UI at http://localhost:4000.
 
@@ -95,8 +95,13 @@ Both tools read the copy under `publisher_data/<env>/<pkg>/`. For an env that is
 
 Watch mode is a separate, optional thing for a human: it is how someone launches the server so that they and any open browser tab see model edits live. It is a launch-time choice for whoever starts the server, not something to turn on by restarting a server that is already running. To use it, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`), which names an environment whose packages Publisher mounts in place (as symlinks) and watches, so edits to the source recompile. Requirements:
 
-- The environment's packages must be LOCAL directories, not `github`, `gcs`, or `s3` URLs. The bundled `malloy-samples` env is remote, so it is not watch-eligible; point `--watch-env` at a local env of your own.
+- The environment's packages must be LOCAL directories, not `github`, `gcs`, or `s3` URLs. From a clone, the bundled `examples` env is local and therefore watch-eligible. Under `npx` it is not: the published server has no repo to read, so its bundled default fetches the same packages from GitHub.
 - The in-place mount is set up when the environment is first loaded from config: the first boot on a fresh server root (empty `publisher_data/` storage), or any boot with `--init`. If you previously started the env WITHOUT `--watch-env`, its packages were copied into `publisher_data/` and edits to your source do nothing; run once with both flags together, `--watch-env <env> --init`, to re-mount them in place (`--init` alone re-copies, it does not symlink). You do NOT need `--init` on every boot: once a package is mounted as a symlink it stays one, and later boots keep watching.
 - Only the first environment in the watch list auto-reloads.
 
 A save that fails to compile is skipped without a signal, so if a change does not appear, compile-check it first with `malloy_compile`.
+
+## 7. Going deeper
+
+- [`docs/`](docs/) is the reference hub, see its [index](docs/README.md). Start with [docs/ai-agents.md](docs/ai-agents.md) for per-client MCP config and the MCP tool reference.
+- [`examples/`](examples/) holds the three served packages: [`storefront`](examples/storefront) (ecommerce model + dashboards), [`governed-analytics`](examples/governed-analytics) (givens, authorize, row-level access), and [`html-data-app`](examples/html-data-app) (a no-build HTML dashboard). [`data-app`](examples/data-app) is a standalone React SDK app, not a served package.

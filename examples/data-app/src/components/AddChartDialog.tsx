@@ -55,7 +55,7 @@ export default function AddChartDialog({
     if (event) {
       event.preventDefault();
     }
-    // Parse package name from navigation path (e.g., "names/" -> "names")
+    // Parse package name from navigation path (e.g., "storefront/" -> "storefront")
     const packageName = to.replace(/\/$/, "");
     setSelectedPackage(packageName);
     setSelectedModel(""); // Reset model selection when package changes
@@ -105,7 +105,7 @@ export default function AddChartDialog({
     }
 
     const newResourceUri = encodeResourceUri({
-      projectName: defaultValues.projectName,
+      environmentName: defaultValues.environmentName,
       packageName: selectedPackage,
       modelPath: selectedModel,
     });
@@ -121,7 +121,7 @@ export default function AddChartDialog({
   const getPackageResourceUri = () => {
     if (!selectedPackage) return resourceUri;
     return encodeResourceUri({
-      projectName: defaultValues.projectName,
+      environmentName: defaultValues.environmentName,
       packageName: selectedPackage,
     });
   };
@@ -129,7 +129,7 @@ export default function AddChartDialog({
   const getModelResourceUri = () => {
     if (!selectedPackage || !selectedModel) return resourceUri;
     return encodeResourceUri({
-      projectName: defaultValues.projectName,
+      environmentName: defaultValues.environmentName,
       packageName: selectedPackage,
       modelPath: selectedModel,
     });

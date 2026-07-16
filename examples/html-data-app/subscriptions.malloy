@@ -1,0 +1,107 @@
+// Model for the html-data-app example.
+//
+// A small SaaS subscriptions book: one row per account subscription, with a
+// plan, monthly recurring revenue (MRR), seat count, industry, country, and a
+// lifecycle status (Active / Trial / Churned). Uses subscriptions.parquet in
+// this package directory — regenerate it with `bun run generate:example-data`.
+//
+// The dashboard in public/index.html drives its KPIs and charts off the views
+// defined here, via Publisher.query().
+
+// A shared chart palette so nested/rendered views match the data app.
+## theme.palette.series = ["#4f46e5", "#7c3aed", "#ec4899", "#10b981", "#f59e0b", "#06b6d4"]
+
+source: subscriptions is duckdb.table('subscriptions.parquet') extend {
+  primary_key: subscription_id
+
+  measure:
+    #(doc) Distinct accounts
+    account_count is count()
+    #(doc) Active subscriptions
+    active_count is count() { where: status = 'Active' }
+    #(doc) Churned subscriptions
+    churned_count is count() { where: status = 'Churned' }
+    #(doc) Monthly recurring revenue from active subscriptions
+    # currency
+    active_mrr is mrr.sum() { where: status = 'Active' }
+    #(doc) New MRR booked (sum of MRR for subscriptions that started in scope)
+    # currency
+    new_mrr is mrr.sum()
+    #(doc) Average MRR per active account
+    # currency
+    avg_mrr is (mrr.sum() { where: status = 'Active' }) / nullif(active_count, 0)
+    #(doc) Seats sold on active subscriptions
+    total_seats is seats.sum() { where: status = 'Active' }
+    #(doc) Share of accounts that have churned
+    # percent
+    churn_rate is churned_count / nullif(account_count, 0)
+
+  #(doc) KPI tiles: active MRR, active subscriptions, and churn rate
+  # big_value
+  view: kpis is {
+    aggregate:
+      # label="Active MRR"
+      # currency
+      active_mrr
+      # label="Active subscriptions"
+      active_count
+      # label="Churn rate"
+      churn_rate
+  }
+
+  #(doc) New MRR by signup month
+  # line_chart
+  view: mrr_by_month is {
+    group_by: cohort_month is started_at.month
+    aggregate: new_mrr
+    order_by: cohort_month
+  }
+
+  #(doc) Account mix by plan
+  # bar_chart
+  view: plan_mix is {
+    group_by: plan
+    aggregate: account_count
+    order_by: account_count desc
+  }
+
+  #(doc) Active MRR by plan
+  # bar_chart
+  view: mrr_by_plan is {
+    group_by: plan
+    aggregate: active_mrr
+    order_by: active_mrr desc
+  }
+
+  #(doc) Active MRR by industry
+  # bar_chart
+  view: mrr_by_industry is {
+    group_by: industry
+    aggregate: active_mrr
+    order_by: active_mrr desc
+  }
+
+  #(doc) Active MRR by country
+  # bar_chart
+  view: mrr_by_country is {
+    group_by: country
+    aggregate: active_mrr
+    order_by: active_mrr desc
+  }
+
+  #(doc) Account detail rows
+  view: accounts is {
+    select: account_name, plan, industry, country, seats, mrr, status, started_at
+    order_by: mrr desc
+  }
+
+  #(doc) Overview dashboard: KPIs, MRR trend, and plan mix
+  # dashboard
+  view: overview is {
+    nest:
+      kpis
+      mrr_by_month
+      plan_mix
+      mrr_by_industry
+  }
+}
