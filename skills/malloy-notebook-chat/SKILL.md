@@ -6,7 +6,7 @@ description: Steps to follow when the chat is bound to a notebook or saved repor
 
 Steps to follow when the user asks a question:
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 1. Interpret the user's question as being about the bound notebook/report unless they explicitly ask about something else. Pronouns and shorthand ("this", "it", "the notebook", "the report", "the data", "what's here", "summarize", "key insights", "findings", "anything interesting") all refer to the notebook above. Never respond with a clarifying question about what the user means when the referent is clearly this notebook.
 2. Start with a brief, natural acknowledgment that references the specific question: one sentence, varied wording.

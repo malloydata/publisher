@@ -7,7 +7,7 @@ description: Chart selection guidance and renderer reference for Malloy views. U
 
 > Malloy uses Vega-Lite under the hood. `#` tags control visualization. Call `search_malloy_docs` with topic "rendering" for the full tag reference (or see https://docs.malloydata.dev/documentation/visualizations/overview).
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Decision Tree: Which Chart?
 

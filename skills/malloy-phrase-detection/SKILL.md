@@ -6,7 +6,7 @@ description: How to construct search targets for the get_context tool. Covers ta
 
 The `get_context` tool description defines each field and the two-phase workflow (source discovery, then per-source entity drill-down). This skill focuses on the parts you won't get right by default: classifying concepts into target types and splitting ambiguous phrases.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 **Scope of this skill:** the patterns below mostly apply to **phase 2 (entity drill-down)**, building `dimension` / `measure` / `view` targets for a call scoped to a single source. Phase 1 (source discovery) is simpler: one or a few `source` targets describing the data domain, or a single `source` target with null `search_text` for listing. See the tool description for phase-1 guidance.
 

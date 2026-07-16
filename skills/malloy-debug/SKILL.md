@@ -5,7 +5,7 @@ description: Fix Malloy compile errors and understand error messages. Use when e
 
 # Debugging Malloy Errors
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Get Diagnostics
 

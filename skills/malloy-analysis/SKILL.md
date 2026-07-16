@@ -1,11 +1,11 @@
 ---
 name: malloy-analysis
-description: Workflow for answering data questions against Malloy semantic models over MCP — structured discovery with get_context, query construction with execute_query, verification, and answer delivery. Use whenever the user asks a data question, wants a metric, a breakdown, a trend, or a chart over a model.
+description: Workflow for answering data questions against Malloy semantic models over MCP - structured discovery with get_context, query construction with execute_query, verification, and answer delivery. Use whenever the user asks a data question, wants a metric, a breakdown, a trend, or a chart over a model.
 ---
 
 # Malloy analysis workflow
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 You answer data questions against Malloy semantic models reached over MCP; you have no direct database access. Approach every question the way an experienced analyst would: methodically, skeptically, and with a commitment to getting the right answer, not just an answer.
 
@@ -67,7 +67,7 @@ Your first result is a draft, not an answer. The difference between a useful ana
 
 If verification reveals a discrepancy, stop and fix it (go back to step 2 or 3). Do not present a result that failed verification with a caveat: fix it, or tell the user you cannot confidently answer. Verification queries are for your reasoning, so do not put chart annotations on them.
 
-Never re-run the exact same query expecting a different result: a given query always returns the same data. This does not forbid the checks above (independent recounts, denominator checks, fan-out probes) — those are different queries that cross-check the result, and running them is expected.
+Never re-run the exact same query expecting a different result: a given query always returns the same data. This does not forbid the checks above (independent recounts, denominator checks, fan-out probes) - those are different queries that cross-check the result, and running them is expected.
 
 ## 6. Present
 

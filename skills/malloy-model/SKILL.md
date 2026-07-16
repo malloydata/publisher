@@ -5,7 +5,7 @@ description: Build Malloy semantic models with base source and joined source fil
 
 # Building Malloy Models
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Getting Started (New Projects)
 
@@ -273,7 +273,7 @@ source: orders is duckdb.table('orders.parquet') extend {
 
 > **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(authorize)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
 >
-> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** — reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override — turning `#(authorize)` into a standalone boundary. Model access on `given:` + `#(authorize)` now; it is the surface that carries forward.
+> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** - reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override - turning `#(authorize)` into a standalone boundary. Model access on `given:` + `#(authorize)` now; it is the surface that carries forward.
 
 Full syntax, OR/override semantics, validation, and the error contract are covered in your deployment's `#(authorize)` reference documentation.
 

@@ -7,7 +7,7 @@ description: Combine validated Malloy queries into a notebook report or dashboar
 
 An ad-hoc report is a `.malloynb` notebook that combines markdown narrative with live Malloy query cells. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full `.malloynb` cell format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure).
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Before building a report
 

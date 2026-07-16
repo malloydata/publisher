@@ -7,7 +7,7 @@ description: Present discovery findings and propose an analytical scope before m
 
 **When:** After you have inspected the model and its underlying data. You have read the package's sources and fields and looked at the data distributions.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 **Goal:** Present what you found and recommend an analytical focus. The user selects a direction.
 

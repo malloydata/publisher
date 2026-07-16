@@ -6,7 +6,7 @@ description: Common data analysis pitfalls to watch for during query constructio
 
 Watch for these common mistakes throughout the analysis workflow. When you encounter one, fix it before presenting results.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Query Construction
 

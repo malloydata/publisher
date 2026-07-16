@@ -9,7 +9,7 @@ This skill covers two workflows:
 - **EDA exploration** (Steps 1-6): iteratively query data, build hypotheses, validate findings
 - **View/dashboard building**: create views, dashboards, notebooks from an existing model
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 To formalize analysis into a polished semantic model, hand off to the modeling skill's "Starting from Analysis" workflow (`skill:malloy-model`).
 

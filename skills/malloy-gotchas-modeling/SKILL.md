@@ -7,7 +7,7 @@ description: Common Malloy modeling mistakes and how to avoid them. Read BEFORE 
 
 > **Read this before writing Malloy code.** These patterns cause most modeling errors.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Reserved Words: Backtick Them
 
@@ -118,7 +118,7 @@ dimension: last_touch is greatest(email_at, call_at) ?? email_at ?? call_at
 
 ## No Scalar Median; Raw-SQL Aggregates Don't Compile
 
-**There is no scalar `median`, and `PERCENTILE_CONT` cannot be expressed as a measure in this build.** Every documented form for a custom SQL aggregate — `percentile_cont!(x, 0.5)`, `sql_number(...)`, `sql_number(...) { is_aggregate: true }`, and the `# is_aggregate` annotation — resolves as a **scalar** and fails with *"Cannot use a scalar field in a measure declaration."* The docs' own `avg_dist` example fails the same way. This is a deployed-runtime limitation, not a syntax error you can fix: **do not** burn cycles trying `!`, `sql_number`, or `is_aggregate` variations to get a median.
+**There is no scalar `median`, and `PERCENTILE_CONT` cannot be expressed as a measure in this build.** Every documented form for a custom SQL aggregate - `percentile_cont!(x, 0.5)`, `sql_number(...)`, `sql_number(...) { is_aggregate: true }`, and the `# is_aggregate` annotation - resolves as a **scalar** and fails with *"Cannot use a scalar field in a measure declaration."* The docs' own `avg_dist` example fails the same way. This is a deployed-runtime limitation, not a syntax error you can fix: **do not** burn cycles trying `!`, `sql_number`, or `is_aggregate` variations to get a median.
 
 ```malloy
 // DOES NOT COMPILE in this build (all forms resolve as scalar):

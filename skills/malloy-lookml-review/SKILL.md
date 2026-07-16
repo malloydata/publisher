@@ -7,7 +7,7 @@ description: Analyze LookML files as prior art for Malloy modeling. Used during 
 
 > **Purpose:** Evaluate a LookML project as prior art for building a Malloy semantic model. This skill coordinates the LookML adapter. The implementation lives in reference files under `reference/`.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 > **This is NOT a blind conversion.** Each LookML pattern is evaluated for quality and relevance to Malloy. Bad practices, Looker-specific UI patterns, and performance-only constructs are identified and skipped.
 

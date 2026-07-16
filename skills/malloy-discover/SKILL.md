@@ -7,7 +7,7 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 
 > **CRITICAL**: Read the model before writing ANY Malloy code. The model defines the sources, connection names, and fields. Never guess connection names.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 > **PREREQUISITE:** Make sure the Malloy MCP tools (`get_context`, `execute_query`, `search_malloy_docs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
 

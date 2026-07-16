@@ -7,7 +7,7 @@ description: Malloy query patterns, syntax rules, and chart annotation reference
 
 Only use field names defined in the model. Ground yourself first with `get_context`; never invent entities or guess field names.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Query Patterns
 
@@ -258,7 +258,7 @@ Read the error against the tables above and below. Most failures match a known p
 | Error message | Likely cause / fix |
 |---|---|
 | `Cannot compare a timestamp to a number` | Comparing `date.year` to an integer. Use `date >= @2020-01-01` instead. |
-| `no viable alternative at input '<word>'` | Two common causes: a reserved keyword used as an alias or as a function call (e.g., `month is ...`, `month(date_field)`) — rename, backtick, or use `date_field.month` / a `?`-apply filter instead; or a semicolon used to separate fields within a clause — fields under one `aggregate:`/`group_by:` are comma- or newline-separated, never `;` (the error points at the field right after the `;`). |
+| `no viable alternative at input '<word>'` | Two common causes: a reserved keyword used as an alias or as a function call (e.g., `month is ...`, `month(date_field)`) - rename, backtick, or use `date_field.month` / a `?`-apply filter instead; or a semicolon used to separate fields within a clause - fields under one `aggregate:`/`group_by:` are comma- or newline-separated, never `;` (the error points at the field right after the `;`). |
 | `'<field_name>' is not defined` | Field doesn't exist in the source. Re-check against the model definition; you may have stripped a join prefix. |
 | `missing {DAY, HOUR, MINUTE, MONTH, QUARTER, SECOND, WEEK, YEAR}` | Chained date property too deep (e.g., `.month.something`). Stop at the first truncation. |
 | `field is a bar chart, but is not a repeated record` | Chart annotation placed inside `{ }`. Move `# bar_chart` above `run:` / `view:` / `nest:`. |

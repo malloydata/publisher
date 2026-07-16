@@ -7,7 +7,7 @@ description: Index of Malloy documentation topics. Use to discover what's availa
 
 Call `search_malloy_docs` with these topics.
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Language Reference
 
@@ -66,7 +66,7 @@ Call `search_malloy_docs` with these topics.
 
 ## Database Dialects
 
-These search terms find docs on dialect-specific SQL *functions* available inside expressions. Malloy models themselves are dialect-portable — the connection supplies the dialect, so you don't write "BigQuery-specific" (or any vendor-specific) Malloy.
+These search terms find docs on dialect-specific SQL *functions* available inside expressions. Malloy models themselves are dialect-portable - the connection supplies the dialect, so you don't write "BigQuery-specific" (or any vendor-specific) Malloy.
 
 | Dialect | Search for... |
 |---------|---------------|

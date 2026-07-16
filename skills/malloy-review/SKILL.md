@@ -7,7 +7,7 @@ description: Malloy semantic-model code review. Invoke when the user asks to rev
 
 Single-pass code reviewer for `.malloy` files. The deliverable is one Markdown file in the canonical shape (see `reference/output-template.md`). Findings cite the project's standards file (e.g., `CLAUDE.md`) where it applies; otherwise they cite rubric IDs (`reference/rubric-*.md`).
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Before you start
 

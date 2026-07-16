@@ -7,7 +7,7 @@ description: Propose a source plan and field definitions for a Malloy semantic m
 
 This skill covers two consecutive activities when building or extending a Malloy semantic model:
 
-> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 - **Propose sources**: the architectural blueprint (which sources, what grain).
 - **Propose definitions**: the specific fields per base source (renames, dimensions, measures).
