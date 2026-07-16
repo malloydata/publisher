@@ -217,18 +217,32 @@ const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
 );
+/**
+ * Construct and start the standalone materialization scheduler from environment
+ * config, or return null when the feature is disabled
+ * (`PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` unset/false — the default, so an
+ * orchestrated deployment never runs it). Extracted from the module body so a
+ * test can drive the real env-var → {@link getMaterializationSchedulerConfig} →
+ * construct → `start()`/`unref()` → timer path an operator uses; the
+ * module-level singleton below is armed once at import and can't be re-created
+ * per test.
+ */
+export function startMaterializationSchedulerFromEnv(
+   store: EnvironmentStore,
+   service: MaterializationService,
+): MaterializationScheduler | null {
+   const config = getMaterializationSchedulerConfig();
+   if (!config) return null;
+   const scheduler = new MaterializationScheduler(store, service, config);
+   scheduler.start();
+   return scheduler;
+}
+
 // Standalone materialization scheduler: opt-in via
 // PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER (default off, so an orchestrated
-// deployment — whose control plane drives materialization — never runs it).
-const materializationSchedulerConfig = getMaterializationSchedulerConfig();
-const materializationScheduler = materializationSchedulerConfig
-   ? new MaterializationScheduler(
-        environmentStore,
-        materializationService,
-        materializationSchedulerConfig,
-     )
-   : null;
-materializationScheduler?.start();
+// deployment — whose control plane drives materialization — never runs it). The
+// sweep timer is `unref`'d, so it never keeps the process alive on shutdown.
+startMaterializationSchedulerFromEnv(environmentStore, materializationService);
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore, SERVER_ROOT);
 
@@ -1342,6 +1356,31 @@ app.post(
    },
 );
 
+// Environment-scoped aggregate: every materialization across all packages in
+// the env, newest first. Nested under `/packages` as the collection-level
+// sibling of the per-package `/packages/:packageName/materializations` list.
+// MUST stay registered ahead of `/packages/:packageName` below so the literal
+// `materializations` segment wins the match; consequently `materializations` is
+// a reserved package name at this position (a package can never be named that).
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/materializations`,
+   async (req, res) => {
+      try {
+         const limit = parseNonNegativeIntParam(req.query.limit);
+         const offset = parseNonNegativeIntParam(req.query.offset);
+         const builds =
+            await materializationController.listEnvironmentMaterializations(
+               req.params.environmentName,
+               { limit, offset },
+            );
+         res.status(200).json(builds);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
@@ -1657,28 +1696,10 @@ app.post(
 );
 
 // ==================== MATERIALIZATION ROUTES ====================
-
-// Environment-scoped: every materialization across all packages in the env.
-// Distinct path shape from the per-package routes below
-// (`/packages/:packageName/materializations`), so there is no collision.
-app.get(
-   `${API_PREFIX}/environments/:environmentName/materializations`,
-   async (req, res) => {
-      try {
-         const limit = parseNonNegativeIntParam(req.query.limit);
-         const offset = parseNonNegativeIntParam(req.query.offset);
-         const builds =
-            await materializationController.listEnvironmentMaterializations(
-               req.params.environmentName,
-               { limit, offset },
-            );
-         res.status(200).json(builds);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
+// The environment-scoped aggregate list (every materialization across all
+// packages) is registered up in the package routes as
+// `/packages/materializations`, ahead of `/packages/:packageName`, so the
+// literal wins the match — see that route for the ordering contract.
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,

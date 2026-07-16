@@ -260,6 +260,14 @@ export class MaterializationScheduler {
     * Fire a whole-package scheduled rebuild via the existing auto-run path. An
     * already-active materialization coalesces (the in-flight build covers this
     * occurrence); any other error is logged and metered but never propagated.
+    *
+    * **Standalone fires are tables-only.** This path runs a single-phase build
+    * that materializes the package's persist sources into tables. A hosted
+    * (control-plane-driven) deployment runs a two-phase job — tables, then a
+    * second pass over indexed dimensions — so index behavior is a hosted-only
+    * concern that cannot be exercised by the standalone scheduler. Anything a
+    * schedule fires locally is exactly what the `createMaterialization`
+    * auto-run produces on demand; only the `trigger` label differs.
     */
    private async fire(
       environmentName: string,

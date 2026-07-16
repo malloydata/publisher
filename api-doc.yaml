@@ -2105,7 +2105,7 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/materializations:
+  /environments/{environmentName}/packages/materializations:
     get:
       tags:
         - materializations
@@ -2114,7 +2114,11 @@ paths:
       description:
         Returns every materialization across all packages in the environment,
         ordered by most recent first. Each item carries its `packageName`, so an
-        environment-scoped view can group or label by package.
+        environment-scoped view can group or label by package. This is the
+        collection-level sibling of the per-package
+        `/packages/{packageName}/materializations` list; the literal
+        `materializations` segment is matched ahead of `{packageName}`, so
+        `materializations` cannot be used as a package name.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - name: limit

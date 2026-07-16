@@ -11,11 +11,11 @@ const __dirname = path.dirname(__filename);
 const PROJECT = "env-mat-list-project";
 const PKG_A = "persist-test";
 const PKG_B = "persist-schedule-test";
-const ENV_MATS_PATH = `/api/v0/environments/${PROJECT}/materializations`;
+const ENV_MATS_PATH = `/api/v0/environments/${PROJECT}/packages/materializations`;
 
-// Verifies the environment-scoped list: GET /environments/{env}/materializations
-// returns runs from every package in the env, newest-first, each labeled with
-// its packageName.
+// Verifies the environment-scoped list:
+// GET /environments/{env}/packages/materializations returns runs from every
+// package in the env, newest-first, each labeled with its packageName.
 describe("Environment-scoped materialization list", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
