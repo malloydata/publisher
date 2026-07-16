@@ -21,6 +21,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
+import { redactPgSecrets } from "../pg_helpers";
 import { recordManifestBind } from "../materialization_metrics";
 import {
    assertSafeEnvironmentPath,
@@ -138,6 +139,16 @@ export class Environment {
    // AB/BA deadlock path.
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
+   /**
+    * Configured packages that failed to load, keyed by name, with the reason.
+    *
+    * A load failure is not fatal: the package is omitted and its siblings serve
+    * on. It is also observable exactly once, because the failing load deletes
+    * the `packageStatuses` entry that `listPackages` enumerates, so the next
+    * listing no longer knows the package was ever configured. That makes this
+    * the only lasting record. Read by EnvironmentStore.getStatus.
+    */
+   private failedPackages: Map<string, string> = new Map();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -629,6 +640,18 @@ export class Environment {
                   );
                   // Directory did not contain a valid package.json file -- therefore, it's not a package.
                   // Or it timed out
+                  // Redact before this reaches getStatus: compiling a model
+                  // resolves the package's connections, so a Postgres/DuckLake
+                  // ATTACH failure surfaces here, and that command carries
+                  // `password=` (connection.ts builds it, and redacts it before
+                  // logging for the same reason). A log line was the old
+                  // destination; this one is an HTTP response body.
+                  this.failedPackages.set(
+                     packageName,
+                     redactPgSecrets(
+                        error instanceof Error ? error.message : String(error),
+                     ),
+                  );
                   return undefined;
                }
             }),
@@ -892,6 +915,9 @@ export class Environment {
          }
          this.packages.set(packageName, _package);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
+         // It loaded, so any earlier failure is stale. A package that failed at
+         // boot can be fixed on disk and reloaded without a restart.
+         this.failedPackages.delete(packageName);
          logger.debug(`Successfully loaded package ${packageName}`);
 
          return _package;
@@ -1161,6 +1187,8 @@ export class Environment {
 
          this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
+         // Publishing a fixed package clears the boot failure it replaces.
+         this.failedPackages.delete(packageName);
 
          if (oldPackage) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
@@ -1507,6 +1535,11 @@ export class Environment {
 
    public getPackageStatus(packageName: string): PackageInfo | undefined {
       return this.packageStatuses.get(packageName);
+   }
+
+   /** Packages configured for this environment that did not load, and why. */
+   public getFailedPackages(): ReadonlyMap<string, string> {
+      return this.failedPackages;
    }
 
    public setPackageStatus(packageName: string, status: PackageStatus): void {
