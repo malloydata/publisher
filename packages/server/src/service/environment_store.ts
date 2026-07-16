@@ -4,12 +4,14 @@ import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import extract from "extract-zip";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import simpleGit from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
    getProcessedPublisherConfig,
+   getPublisherConfigDir,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
    ProcessedPublisherConfig,
@@ -113,6 +115,25 @@ async function clearMountTarget(targetPath: string): Promise<void> {
    } catch {
       // Nothing there, fine.
    }
+}
+
+/**
+ * Absolute on-disk path for a local package `location`.
+ *
+ * `~/` expands to the home directory. Anything still relative resolves
+ * against `anchorDir`, the directory holding the active config, so a config
+ * and the packages it points at can be moved or committed together.
+ * Absolute locations are returned untouched.
+ */
+export function resolvePackageLocation(
+   location: string,
+   anchorDir: string,
+   homeDir: string = os.homedir(),
+): string {
+   const expanded = location.startsWith("~/")
+      ? path.join(homeDir, location.slice(2))
+      : location;
+   return path.isAbsolute(expanded) ? expanded : path.join(anchorDir, expanded);
 }
 
 export class EnvironmentStore {
@@ -1110,6 +1131,21 @@ export class EnvironmentStore {
       );
    }
 
+   /**
+    * Absolute on-disk path for a local package `location`, anchored at the
+    * directory holding the active config. That covers locations POSTed at
+    * runtime too, which no config declares. When there is no config worth
+    * anchoring to, `getPublisherConfigDir` returns null (it owns the cases) and
+    * the server root is the only meaningful base, which is also what this did
+    * before the anchor moved.
+    */
+   private resolveLocalPath(location: string): string {
+      return resolvePackageLocation(
+         location,
+         getPublisherConfigDir(this.serverRootPath) ?? this.serverRootPath,
+      );
+   }
+
    private isGitHubURL(location: string) {
       return (
          location.startsWith("https://github.com/") ||
@@ -1236,15 +1272,11 @@ export class EnvironmentStore {
                } else {
                   // For non-GitHub locations, use package name
                   if (this.isLocalPath(_package.location)) {
-                     // Match the resolution rule used by
-                     // `downloadOrMountLocation` (line ~1352): relative
-                     // paths are anchored at `serverRootPath`. Without this
-                     // step the existing-source check below falls through
-                     // for any relative location, and the in-place mount
-                     // branch is unreachable.
-                     sourcePath = path.isAbsolute(_package.location)
-                        ? _package.location
-                        : path.join(this.serverRootPath, _package.location);
+                     // Same resolution rule as `downloadOrMountLocation`.
+                     // Without this step the existing-source check below
+                     // falls through for any relative location, and the
+                     // in-place mount branch is unreachable.
+                     sourcePath = this.resolveLocalPath(_package.location);
                   } else {
                      sourcePath = safeJoinUnderRoot(
                         tempDownloadPath,
@@ -1456,9 +1488,7 @@ export class EnvironmentStore {
 
       // Handle absolute and relative paths
       if (this.isLocalPath(location)) {
-         const packagePath: string = path.isAbsolute(location)
-            ? location
-            : path.join(this.serverRootPath, location);
+         const packagePath: string = this.resolveLocalPath(location);
          try {
             logger.info(
                `Mounting local directory at "${packagePath}" to "${targetPath}"`,

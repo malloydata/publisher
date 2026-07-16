@@ -20,6 +20,35 @@ npx @malloy-publisher/server --port 4000 --config /path/to/your/publisher.config
 cd /path/to/your/project && npx @malloy-publisher/server --port 4000
 ```
 
+Your packages can live anywhere; they do not have to be inside this repo. A package `location` may be
+absolute, start with `~/`, or be relative to the directory holding the config it appears in. Keeping
+a config next to the packages it points at means the two move together, which is what makes the
+config worth committing:
+
+```
+my-data/
+  publisher.config.json
+  sales/                    # your package: publisher.json + sales.malloy
+```
+
+```json
+{
+   "environments": [
+      {
+         "name": "local",
+         "packages": [{ "name": "sales", "location": "./sales" }]
+      }
+   ]
+}
+```
+
+Do not author packages under `publisher_data/`. That is storage Publisher manages for itself: it
+copies each configured package in (or symlinks it, under `--watch-env`), and `--init` deletes the
+whole tree.
+
+A `location` can also be a `https://github.com/...`, `gs://`, or `s3://` URL, which Publisher
+downloads. Only local directories are eligible for `--watch-env`.
+
 To add a BigQuery-backed sample (`bigquery-hackernews`) alongside the bundled examples, copy
 [`packages/server/publisher.config.example.bigquery.json`](../packages/server/publisher.config.example.bigquery.json)
 over your `publisher.config.json` and set `GOOGLE_APPLICATION_CREDENTIALS`. For the database
@@ -33,7 +62,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
 | `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the five MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`) and the agent skills as MCP prompts. |
-| `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Directory containing `publisher.config.json`. |
+| `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `INITIALIZE_STORAGE` | `--init` | _unset_ | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown_drain_duration_seconds <s>` | `0` | After SIGTERM, how long to keep serving in-flight and new requests (readiness reports not-ready immediately) before the server starts refusing new traffic. |
 | `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown_graceful_close_timeout_seconds <s>` | `0` | Time to wait for in-flight requests to drain before forcing close. |
