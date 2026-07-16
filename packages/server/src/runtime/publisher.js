@@ -8,7 +8,7 @@
 //       opts: { environment?, package?, sourceName?, queryName?, filterParams?,
 //               bypassFilters?, givens? }. givens is a name→value map bound as
 //               Malloy given: runtime parameters for this query (safe parameterization,
-//               not string interpolation) — see the html-data-app-runtime skill.
+//               not string interpolation) — see the malloy-html-data-app-runtime skill.
 //   - Publisher.embed(selector, { src, height?, token? })
 //   - Publisher.context  ({ environment, package } inferred from URL)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)

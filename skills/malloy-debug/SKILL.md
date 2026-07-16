@@ -5,6 +5,8 @@ description: Fix Malloy compile errors and understand error messages. Use when e
 
 # Debugging Malloy Errors
 
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 ## Get Diagnostics
 
 **Claude Code (in VS Code terminal):** Call `mcp__ide__getDiagnostics` with the file URI.
@@ -18,7 +20,7 @@ description: Fix Malloy compile errors and understand error messages. Use when e
 **Errors cascade.** Later errors may be caused by or hidden behind earlier ones. Fix the FIRST error only, re-check diagnostics, repeat. Do not attempt to fix multiple errors at once.
 
 1. Look at FIRST error, ignore all others
-2. Call `malloy_searchDocs` with the error message if unsure
+2. Call `search_malloy_docs` with the error message if unsure
 3. Fix that one issue, re-check diagnostics
 4. Repeat until clean. New errors may appear as earlier ones are resolved
 

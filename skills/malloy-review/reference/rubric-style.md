@@ -14,7 +14,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (non-blocking) · **Category:** style · LLM-judgment
 - **Detection:** LLM, flag any dimension declared as `` `reserved_word` is `reserved_word` `` (the backticked-passthrough pattern) and suggest a semantic alias
 - **Fix:** move the raw column to `internal:` and add a re-aliased dimension with a business name
-- **See:** `skill:gotchas-modeling` § Reserved Words, Backtick Them
+- **See:** `skill:malloy-gotchas-modeling` § Reserved Words, Backtick Them
 
 ---
 
@@ -30,7 +30,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   - **Avoid:** abbreviations unless they're universal domain terms
 - **Fix:** rename to business language; surface in "Suggested Follow-ups" since these are non-blocking
 - **Note:** strong personal-preference factor, aggregate into "Suggested Follow-ups" rather than emitting per-site, and only when noise rises above project-wide patterns. Don't drown the review in style nits.
-- **See:** `skill:malloy-document` § Writing Doc Strings for Retrieval (naming-as-discoverability is implicit; weak counterpart, naming conventions are a team-style choice)
+- **See:** your documentation guidance (Writing Doc Strings for Retrieval) (naming-as-discoverability is implicit; weak counterpart, naming conventions are a team-style choice)
 
 ---
 

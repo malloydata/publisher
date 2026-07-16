@@ -42,7 +42,7 @@ const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-mo
 
 Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE}
 
-Task-specific guidance is served as prompts you can fetch by name: getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
+Task-specific guidance is served as prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
