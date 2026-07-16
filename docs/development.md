@@ -16,26 +16,28 @@ The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.d
 [asdf](https://asdf-vm.com/), so `mise install` (or `asdf install`) provisions all four versions at
 once.
 
-Sample packages are fetched at runtime per [`publisher.config.json`](../packages/server/publisher.config.json) —
-no submodule checkout needed. The bundled config ships DuckDB-backed example packages (`storefront`,
-`governed-analytics`, `html-data-app`) that need no cloud credentials. To enable the BigQuery-required samples, see
-[configuration.md](configuration.md#bring-your-own-config).
+Sample packages are read from [`publisher.config.json`](../packages/server/publisher.config.json), so
+no submodule checkout is needed. From a clone, that config points at the local [`examples/`](../examples)
+directories, which are DuckDB-backed (`storefront`, `governed-analytics`, `html-data-app`) and need no
+cloud credentials. Nothing is fetched on first boot. (The published `npx` build has no repo to read, so
+its bundled default fetches the same packages from GitHub instead.) To enable the BigQuery-required
+samples, see [configuration.md](configuration.md#bring-your-own-config).
 
-> **Editing the examples locally.** The dev config clones each example from
-> `github.com/malloydata/publisher/tree/main/examples/...`, so it serves the
-> committed versions on `main`, not your working copy. To iterate on an example
-> in [`examples/`](../examples), point its package `location` at the local path
-> and start in watch mode so edits hot-reload:
+> **Editing the examples locally.** Because the config points at `examples/`, the server already serves
+> your working copy, not the committed versions on `main`. To have edits hot-reload, start in watch mode:
 >
-> ```json
-> { "name": "storefront", "location": "./examples/storefront" }
+> ```bash
+> bun run build && bun run start -- --watch-env examples
 > ```
 >
-> Then run with `SERVER_ROOT` at the repo root and `--watch-env examples` (or set
-> `PUBLISHER_WATCH=examples`). The `governed-analytics` and `html-data-app`
-> READMEs also have a self-contained "Run it standalone" recipe that mounts just
-> that package from a `/tmp` workspace. After changing an example's data
-> generator, re-run `bun run generate:example-data` to refresh the Parquet files.
+> (or set `PUBLISHER_WATCH=examples`). Watch mode mounts the packages in place as symlinks, which happens
+> when the environment is first loaded: on a fresh server root, or on any boot with `--init`. If you
+> already started the env without `--watch-env`, its packages were copied into `publisher_data/` and
+> edits to `examples/` will not show up, so run once with both flags together, `--watch-env examples
+> --init`, to re-mount them. The `governed-analytics` and `html-data-app` READMEs also have a
+> self-contained "Run it standalone" recipe that mounts just that package from a `/tmp` workspace. After
+> changing an example's data generator, re-run `bun run generate:example-data` to refresh the Parquet
+> files.
 
 ## Makefile shortcuts
 

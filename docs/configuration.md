@@ -32,7 +32,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | --- | --- | --- | --- |
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
 | `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
-| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the three MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`) and the agent skills as MCP prompts. |
+| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the five MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`) and the agent skills as MCP prompts. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Directory containing `publisher.config.json`. |
 | `INITIALIZE_STORAGE` | `--init` | _unset_ | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown_drain_duration_seconds <s>` | `0` | After SIGTERM, how long to keep serving in-flight and new requests (readiness reports not-ready immediately) before the server starts refusing new traffic. |
