@@ -5,6 +5,7 @@ import {
    Box,
    Chip,
    IconButton,
+   Link,
    ListItemIcon,
    ListItemText,
    Menu,
@@ -20,6 +21,7 @@ import {
 import { useState } from "react";
 import { Materialization } from "../../client";
 import DeleteMaterializationDialog from "./DeleteMaterializationDialog";
+import TriggerChip from "./TriggerChip";
 import {
    formatDuration,
    formatRelativeTime,
@@ -34,6 +36,10 @@ type MaterializationRunsListProps = {
    materializations: Materialization[];
    mutable: boolean;
    isMutating: boolean;
+   /** Show a Package column — for the environment-scoped view spanning packages. */
+   showPackage?: boolean;
+   /** Navigate to a package (used by the Package column links). */
+   onClickPackage?: (packageName: string) => void;
    onStop: (materialization: Materialization) => void;
    onDelete: (materialization: Materialization, dropTables: boolean) => void;
    onViewDetails: (materialization: Materialization) => void;
@@ -43,6 +49,8 @@ export default function MaterializationRunsList({
    materializations,
    mutable,
    isMutating,
+   showPackage = false,
+   onClickPackage,
    onStop,
    onDelete,
    onViewDetails,
@@ -63,7 +71,9 @@ export default function MaterializationRunsList({
       <Table size="small">
          <TableHead>
             <TableRow>
+               {showPackage && <TableCell>Package</TableCell>}
                <TableCell>Status</TableCell>
+               <TableCell>Trigger</TableCell>
                <TableCell>Started</TableCell>
                <TableCell>Duration</TableCell>
                <TableCell>Sources</TableCell>
@@ -77,6 +87,8 @@ export default function MaterializationRunsList({
                   materialization={materialization}
                   mutable={mutable}
                   isMutating={isMutating}
+                  showPackage={showPackage}
+                  onClickPackage={onClickPackage}
                   onStop={onStop}
                   onDelete={onDelete}
                   onViewDetails={onViewDetails}
@@ -91,6 +103,8 @@ function MaterializationRow({
    materialization,
    mutable,
    isMutating,
+   showPackage,
+   onClickPackage,
    onStop,
    onDelete,
    onViewDetails,
@@ -98,6 +112,8 @@ function MaterializationRow({
    materialization: Materialization;
    mutable: boolean;
    isMutating: boolean;
+   showPackage?: boolean;
+   onClickPackage?: (packageName: string) => void;
    onStop: (materialization: Materialization) => void;
    onDelete: (materialization: Materialization, dropTables: boolean) => void;
    onViewDetails: (materialization: Materialization) => void;
@@ -138,6 +154,24 @@ function MaterializationRow({
          tabIndex={0}
          aria-label={`View materialization ${materialization.id ?? ""} details`.trim()}
       >
+         {showPackage && (
+            <TableCell onClick={(event) => event.stopPropagation()}>
+               {onClickPackage ? (
+                  <Link
+                     component="button"
+                     underline="hover"
+                     onClick={() =>
+                        onClickPackage(materialization.packageName ?? "")
+                     }
+                     sx={{ fontWeight: 500 }}
+                  >
+                     {materialization.packageName}
+                  </Link>
+               ) : (
+                  materialization.packageName
+               )}
+            </TableCell>
+         )}
          <TableCell>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                <Chip
@@ -152,6 +186,9 @@ function MaterializationRow({
                   </Tooltip>
                )}
             </Box>
+         </TableCell>
+         <TableCell>
+            <TriggerChip meta={meta} />
          </TableCell>
          <TableCell>
             {formatRelativeTime(

@@ -209,6 +209,37 @@ source: f is duckdb.sql("SELECT 1 as x")
       { timeout: 30000 },
    );
 
+   // ── Rule 4: the cron must be a valid 5-field UNIX expression ──────────
+
+   it(
+      "rejects an unparseable schedule cron",
+      async () => {
+         const pkg = await loadPackage(PLAIN_MODEL, {
+            scope: "version",
+            materialization: { schedule: "not a cron" },
+         });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain("valid");
+         expect(joined).toContain("UNIX cron");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "rejects a cron-parser extension the UNIX grammar lacks (L)",
+      async () => {
+         // Guards config-parity: cron-parser accepts `0 6 L * *` but the control
+         // plane's UNIX parser does not, so publish must reject it too rather
+         // than let it silently never arm in production.
+         const pkg = await loadPackage(PLAIN_MODEL, {
+            scope: "version",
+            materialization: { schedule: "0 6 L * *" },
+         });
+         expect(pkg.formatInvalidPersistencePolicy()).toContain("UNIX cron");
+      },
+      { timeout: 30000 },
+   );
+
    // ── inert when nothing is declared ────────────────────────────────────
 
    it(

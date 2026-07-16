@@ -59,6 +59,7 @@
       "body-parser": "^1.20.2",
       "chokidar": "^4.0.3",
       "cors": "^2.8.5",
+      "cron-parser": "^5.6.2",
       "express": "^4.21.0",
       "extract-zip": "^2.0.1",
       "globals": "^15.9.0",

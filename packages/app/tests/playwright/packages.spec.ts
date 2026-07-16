@@ -20,7 +20,12 @@ test.describe("packages — read", () => {
          PACKAGES.governed,
          PACKAGES.dataApp,
       ]) {
-         await expect(page.getByText(pkg, { exact: true })).toBeVisible();
+         // Scope to the package tile heading: the environment page also lists
+         // materializations, whose Package column can render the same name as a
+         // link, so a bare getByText(pkg) is ambiguous under strict mode.
+         await expect(
+            page.getByRole("heading", { name: pkg, exact: true, level: 6 }),
+         ).toBeVisible();
       }
    });
 

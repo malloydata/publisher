@@ -158,6 +158,11 @@ export class Environment {
       return this.environmentPath;
    }
 
+   /** This environment's name (the canonical key used by the API/service). */
+   public getEnvironmentName(): string {
+      return this.environmentName;
+   }
+
    constructor(
       environmentName: string,
       environmentPath: string,
@@ -587,6 +592,17 @@ export class Environment {
             this.releaseRetiredConnectionGeneration(generation),
          ),
       );
+   }
+
+   /**
+    * Snapshot of the packages currently loaded in memory (does not trigger a
+    * load or reload). Used by the standalone materialization scheduler to sweep
+    * only already-loaded packages — a not-yet-loaded package is simply not
+    * scheduled until something else loads it, so the scheduler never forces a
+    * load of its own.
+    */
+   public getLoadedPackages(): Package[] {
+      return [...this.packages.values()];
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
@@ -1312,6 +1328,8 @@ export class Environment {
          explores?: string[];
          queryableSources?: "declared" | "all";
          manifestLocation?: string | null;
+         scope?: ApiPackage["scope"];
+         materialization?: ApiPackage["materialization"];
       },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
@@ -1343,6 +1361,10 @@ export class Environment {
                : {}),
             ...(metadata.manifestLocation !== undefined
                ? { manifestLocation: metadata.manifestLocation }
+               : {}),
+            ...(metadata.scope !== undefined ? { scope: metadata.scope } : {}),
+            ...(metadata.materialization !== undefined
+               ? { materialization: metadata.materialization }
                : {}),
          };
 
@@ -1396,6 +1418,29 @@ export class Environment {
             body.manifestLocation !== undefined
                ? body.manifestLocation
                : existing.manifestLocation;
+         // Persist `scope` and `materialization` (the schedule cron) are
+         // editable via the API — both are writable in the schema. When the
+         // body carries a value, apply it; otherwise preserve the
+         // manifest-derived one (a name/description-only PATCH must not wipe
+         // them, and the control plane must not misread the gap as a removal).
+         // Changing the schedule re-arms the standalone scheduler on its next
+         // tick — no reload needed.
+         //
+         // A *null* scope/materialization is treated the same as omitted
+         // (preserve), NOT a wipe: the control plane's post-build rebind PATCH
+         // carries only name/location/manifestLocation, but a client that
+         // serializes unset fields as explicit null must not thereby trip the
+         // policy gate below (a rejection there fails the orchestrated run) or
+         // reset the persisted policy. `manifestLocation` is deliberately
+         // different — null there means "clear" (revert to live), which the
+         // orchestrator relies on.
+         const scopeProvided = body.scope != null;
+         const materializationProvided = body.materialization != null;
+         const editingPolicy = scopeProvided || materializationProvided;
+         const scope = scopeProvided ? body.scope : existing.scope;
+         const materialization = materializationProvided
+            ? body.materialization
+            : existing.materialization;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
@@ -1404,25 +1449,27 @@ export class Environment {
             explores,
             queryableSources,
             manifestLocation,
-            // Carry the manifest-derived materialization policy through the
-            // PATCH. `setPackageMetadata` replaces the whole object, so omitting
-            // this wipes the in-memory `materialization` until the next reload —
-            // which makes a later getPackage report no schedule and lets the
-            // control plane misread the gap as a schedule removal. It is not a
-            // PATCH-editable field, so always preserve the existing value.
-            materialization: existing.materialization,
-            // Same rationale for the manifest-derived persist `scope`: not
-            // PATCH-editable, so preserve it rather than dropping it to the
-            // default until the next reload.
-            scope: existing.scope,
+            materialization,
+            scope,
          });
 
          // Strict-reject, symmetric with the publish path
          // (package.controller.addPackage): validate the resulting explores
          // against the live model set and restore the prior metadata before
          // rejecting, so a bad update neither persists nor mutates the served
-         // surface.
-         const invalidMsg = _package.formatInvalidExplores();
+         // surface. When the body edits the persistence policy (scope /
+         // materialization), also enforce the same scope/schedule/freshness/cron
+         // rules a publish enforces — but only then, so a description-only PATCH
+         // on a package with a pre-existing (load-tolerated) policy warning is
+         // not newly rejected. Cron validity is one of these rules
+         // (persistencePolicyWarnings Rule 4), so publish, PATCH, load, and the
+         // scheduler all enforce it identically.
+         const policyMsg = editingPolicy
+            ? _package.formatInvalidPersistencePolicy()
+            : "";
+         const invalidMsg = [_package.formatInvalidExplores(), policyMsg]
+            .filter(Boolean)
+            .join("\n");
          if (invalidMsg) {
             _package.setPackageMetadata(existing);
             throw new BadRequestError(invalidMsg);
@@ -1434,6 +1481,13 @@ export class Environment {
             explores: normalizedExplores,
             queryableSources: body.queryableSources,
             manifestLocation: body.manifestLocation,
+            // Only write when explicitly provided (non-null): mirrors the
+            // null-as-absent rule above, so a rebind PATCH neither wipes the
+            // persisted policy nor writes a stray `scope: null`.
+            scope: scopeProvided ? body.scope : undefined,
+            materialization: materializationProvided
+               ? body.materialization
+               : undefined,
          });
 
          // When the body changes manifestLocation, apply it now so the new

@@ -2105,6 +2105,48 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/materializations:
+    get:
+      tags:
+        - materializations
+      operationId: list-environment-materializations
+      summary: List all materializations in an environment
+      description:
+        Returns every materialization across all packages in the environment,
+        ordered by most recent first. Each item carries its `packageName`, so an
+        environment-scoped view can group or label by package. This is the
+        collection-level sibling of the per-package
+        `/packages/{packageName}/materializations` list; the literal
+        `materializations` segment is matched ahead of `{packageName}`, so
+        `materializations` cannot be used as a package name.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Maximum number of materializations to return
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Number of materializations to skip
+      responses:
+        "200":
+          description: List of materializations across the environment
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Materialization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /environments/{environmentName}/packages/{packageName}/materializations:
     post:
       tags:
@@ -4047,7 +4089,11 @@ components:
           type: ["object", "null"]
           description:
             Materialization metadata including build options, source counts,
-            and durations
+            and durations. Free-form object — fields such as `trigger`
+            (ON_DEMAND | SCHEDULER) live here deliberately, so a strict-schema
+            client does not need to know them. Promoting any such field to a
+            top-level `Materialization` property is a breaking schema change
+            that orchestrated clients must adopt first; do not do it casually.
         createdAt:
           type: string
           format: date-time

@@ -1,0 +1,7 @@
+{
+  "name": "persist-schedule-test",
+  "version": "1.0.0",
+  "description": "DuckDB persist fixture with a version-scoped materialization schedule",
+  "scope": "version",
+  "materialization": { "schedule": "0 6 * * *" }
+}

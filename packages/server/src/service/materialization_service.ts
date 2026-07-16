@@ -177,6 +177,38 @@ export class MaterializationService {
       );
    }
 
+   /**
+    * Every materialization across all packages in an environment, newest first.
+    * Each record carries its `packageName`, so an env-scoped view can group or
+    * label by package without a per-package fan-out.
+    */
+   async listEnvironmentMaterializations(
+      environmentName: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      return this.repository.listMaterializationsByEnvironment(
+         environmentId,
+         options,
+      );
+   }
+
+   /**
+    * `created_at` of the newest scheduler-fired materialization for a package,
+    * or null if none. The standalone scheduler uses this on its first arm to
+    * recover a fire missed during downtime (see MaterializationScheduler.arm).
+    */
+   async getLatestScheduledFireAt(
+      environmentName: string,
+      packageName: string,
+   ): Promise<Date | null> {
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      return this.repository.getLatestScheduledFireAt(
+         environmentId,
+         packageName,
+      );
+   }
+
    async getMaterialization(
       environmentName: string,
       packageName: string,
@@ -219,6 +251,13 @@ export class MaterializationService {
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         /**
+          * What initiated this run. `ON_DEMAND` (default) = a manual/API create;
+          * `SCHEDULER` = the standalone materialization scheduler firing a
+          * package's `materialization.schedule` cron. Recorded on the run
+          * metadata so a scheduled rebuild is distinguishable from a manual one.
+          */
+         trigger?: "ON_DEMAND" | "SCHEDULER";
       } = {},
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -244,10 +283,12 @@ export class MaterializationService {
       }
 
       const forceRefresh = options.forceRefresh ?? false;
+      const trigger = options.trigger ?? "ON_DEMAND";
       const metadata = {
          forceRefresh,
          sourceNames: options.sourceNames ?? null,
          mode: orchestrated ? "orchestrated" : "auto",
+         trigger,
       };
 
       let created: Materialization;
@@ -280,6 +321,7 @@ export class MaterializationService {
                buildInstructions,
                referenceManifest: options.referenceManifest,
                strictUpstreams: options.strictUpstreams,
+               trigger,
             },
             signal,
          ),
@@ -306,6 +348,7 @@ export class MaterializationService {
          buildInstructions: BuildInstruction[] | undefined;
          referenceManifest: ManifestReference[] | undefined;
          strictUpstreams: boolean | undefined;
+         trigger: "ON_DEMAND" | "SCHEDULER";
       },
       signal: AbortSignal,
    ): Promise<void> {
@@ -379,6 +422,7 @@ export class MaterializationService {
             forceRefresh: opts.forceRefresh,
             sourceNames: opts.sourceNames ?? null,
             mode,
+            trigger: opts.trigger,
             sourcesBuilt,
             sourcesReused,
             durationMs,

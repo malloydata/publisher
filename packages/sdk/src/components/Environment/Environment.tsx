@@ -1,6 +1,7 @@
 import { Box, Container, Stack, Typography } from "@mui/material";
 import { useEffect } from "react";
 import { parseResourceUri } from "../../utils/formatting";
+import { EnvironmentMaterializations } from "../Materializations";
 import { useServer } from "../ServerProvider";
 import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
@@ -70,6 +71,13 @@ export default function Environment({
 
          <Box sx={{ mb: 5 }}>
             <Connections resourceUri={resourceUri} />
+         </Box>
+
+         <Box sx={{ mb: 5 }}>
+            <EnvironmentMaterializations
+               resourceUri={resourceUri}
+               onClickPackageFile={onSelectPackage}
+            />
          </Box>
 
          <About resourceUri={resourceUri} />

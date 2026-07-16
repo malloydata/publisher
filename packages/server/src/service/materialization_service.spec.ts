@@ -166,6 +166,7 @@ describe("MaterializationService", () => {
                forceRefresh: true,
                sourceNames: ["orders"],
                mode: "auto",
+               trigger: "ON_DEMAND",
             },
          ]);
       });
@@ -183,8 +184,25 @@ describe("MaterializationService", () => {
                forceRefresh: false,
                sourceNames: null,
                mode: "auto",
+               trigger: "ON_DEMAND",
             },
          );
+      });
+
+      it("records trigger=SCHEDULER when the scheduler fires the run", async () => {
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({ status: "PENDING" }),
+         );
+
+         await ctx.service.createMaterialization("my-env", "pkg", {
+            forceRefresh: true,
+            trigger: "SCHEDULER",
+         });
+
+         expect(
+            ctx.repository.createMaterialization.firstCall.args[3],
+         ).toMatchObject({ mode: "auto", trigger: "SCHEDULER" });
       });
 
       it("rejects when an active materialization already exists", async () => {
