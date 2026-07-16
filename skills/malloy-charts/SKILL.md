@@ -5,7 +5,9 @@ description: Chart selection guidance and renderer reference for Malloy views. U
 
 # Chart Selection for Malloy
 
-> Malloy uses Vega-Lite under the hood. `#` tags control visualization. Call `malloy_searchDocs` with topic "rendering" for the full tag reference (or see https://docs.malloydata.dev/documentation/visualizations/overview).
+> Malloy uses Vega-Lite under the hood. `#` tags control visualization. Call `search_malloy_docs` with topic "rendering" for the full tag reference (or see https://docs.malloydata.dev/documentation/visualizations/overview).
+
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Decision Tree: Which Chart?
 
@@ -368,7 +370,7 @@ view: explorer is {
 
 ### Distribution (Histogram)
 
-Call `malloy_searchDocs("autobin")` for syntax:
+Call `search_malloy_docs("autobin")` for syntax:
 ```malloy
 # bar_chart
 view: price_dist is { group_by: bucket is autobin(price, 20), aggregate: order_count }
@@ -405,7 +407,7 @@ A top-level chart tag (e.g., `# bar_chart`) renders only the outer query; any `n
 
 NOTE: The term 'constructor' is a reserved term in Vega-Lite. If the word 'constructor' appears in the query, it will cause the rendering to fail. Never use it in a query and avoid using it as a dimension in a model.
 
-For more patterns, call `malloy_searchDocs` with topics like "bar charts", "line charts", "dashboards", "autobin", "percent of total", "comparing timeframes", or "pivots".
+For more patterns, call `search_malloy_docs` with topics like "bar charts", "line charts", "dashboards", "autobin", "percent of total", "comparing timeframes", or "pivots".
 
 ## Further Reading
 

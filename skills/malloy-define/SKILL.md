@@ -7,12 +7,14 @@ description: Propose a source plan and field definitions for a Malloy semantic m
 
 This skill covers two consecutive activities when building or extending a Malloy semantic model:
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 - **Propose sources**: the architectural blueprint (which sources, what grain).
 - **Propose definitions**: the specific fields per base source (renames, dimensions, measures).
 
-Both happen in conversation. Propose, let the user confirm or adjust, then carry the confirmed plan forward into the actual `.malloy` model. There is no separate plan-file store: keep the source plan and field proposals in the conversation, and write the model itself when the user has confirmed. The broader modeling workflow lives in `skill:malloy-modeling`.
+Both happen in conversation. Propose, let the user confirm or adjust, then carry the confirmed plan forward into the actual `.malloy` model. There is no separate plan-file store: keep the source plan and field proposals in the conversation, and write the model itself when the user has confirmed. See your modeling workflow for the broader picture.
 
-Read the existing model first so you propose against what is really there. Use `malloy_getContext` with a plain-English description to inspect the current sources and fields and find the most relevant existing sources. Confirm the scope (which tables are in play) before proposing the source plan.
+Read the existing model first so you propose against what is really there. Use `get_context` with a plain-English description to inspect the current sources and fields and find the most relevant existing sources. Confirm the scope (which tables are in play) before proposing the source plan.
 
 ## Propose a source plan
 
@@ -153,11 +155,11 @@ The user will:
 - **Remove** fields they don't need.
 - **Change** priorities.
 
-Once the definitions are confirmed, write them into the `.malloy` model (see `skill:malloy-modeling`). Use `#(doc)` annotations to document sources and fields, and `#(filter)` annotations to declare server-side filterable dimensions where appropriate. Keep the confirmed definitions in the conversation; there is no separate plan-file store.
+Once the definitions are confirmed, write them into the `.malloy` model (see your modeling workflow). Use `#(doc)` annotations to document sources and fields, and `#(filter)` annotations to declare server-side filterable dimensions where appropriate. Keep the confirmed definitions in the conversation; there is no separate plan-file store.
 
 ## Data-driven proposals
 
-**Every recommendation must be backed by a query result.** Do not propose based on column names or schema structure alone. Always run `malloy_executeQuery` to check the actual data before presenting. To learn what sources and fields exist, ground yourself with `malloy_getContext`: it returns the model's sources, views, and fields, so there is no separate schema-search step.
+**Every recommendation must be backed by a query result.** Do not propose based on column names or schema structure alone. Always run `execute_query` to check the actual data before presenting. To learn what sources and fields exist, ground yourself with `get_context`: it returns the model's sources, views, and fields, so there is no separate schema-search step.
 
 | Proposal Type | What to query first |
 |--------------|---------------------|
@@ -182,11 +184,11 @@ Once the definitions are confirmed, write them into the `.malloy` model (see `sk
 ## Tips
 
 - **Show data, not assumptions:** every proposed dimension or measure should have evidence (distinct values, distributions, ranges).
-- **Use `malloy_executeQuery`** to verify any data questions before presenting to the user.
+- **Use `execute_query`** to verify any data questions before presenting to the user.
 - **Don't over-propose:** 5-8 dimensions and 4-6 measures per base source is usually enough to start.
 - **Rank everything:** users appreciate knowing what's essential vs. optional.
 - **Business logic questions must be specific.** "What date should I use?" is bad. "Your table has `created_at` and `submitted_at` that differ by 1-3 days in 13% of rows, which is canonical?" is good.
 
 ## Output
 
-A confirmed source architecture and a confirmed set of field definitions (renames, dimensions, measures, business decisions), held in the conversation and ready to write into the `.malloy` model via `skill:malloy-modeling`.
+A confirmed source architecture and a confirmed set of field definitions (renames, dimensions, measures, business decisions), held in the conversation and ready to write into the `.malloy` model via your modeling workflow.

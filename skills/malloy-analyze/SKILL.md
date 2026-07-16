@@ -9,12 +9,14 @@ This skill covers two workflows:
 - **EDA exploration** (Steps 1-6): iteratively query data, build hypotheses, validate findings
 - **View/dashboard building**: create views, dashboards, notebooks from an existing model
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 To formalize analysis into a polished semantic model, hand off to the modeling skill's "Starting from Analysis" workflow (`skill:malloy-model`).
 
 ## Prerequisites
 
-- The Publisher MCP tools must be configured (`malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`). If they are not available, **STOP** and ensure the Publisher MCP server is connected.
-- Call `malloy_searchDocs` liberally: it has powerful analysis patterns (window functions, cohorts, percent-of-total, nested drill-downs).
+- The Publisher MCP tools must be configured (`get_context`, `execute_query`, `search_malloy_docs`). If they are not available, **STOP** and ensure the Publisher MCP server is connected.
+- Call `search_malloy_docs` liberally: it has powerful analysis patterns (window functions, cohorts, percent-of-total, nested drill-downs).
 
 # EDA WORKFLOW
 
@@ -35,7 +37,7 @@ The 6-step structure is a framework, not a rigid script.
 
 ## Step 1: ORIENT: Understand the Data
 
-1. Ground yourself with `malloy_getContext`. It returns the package's sources, views, and fields (with their docs), so this is where you learn what data exists.
+1. Ground yourself with `get_context`. It returns the package's sources, views, and fields (with their docs), so this is where you learn what data exists.
 2. Note the source names, the connection they sit on, and the key tables/fields they expose.
 3. Inspect the existing dimensions, measures, and views the model already defines, then query the data to confirm shape and values.
 4. Create a working analysis file (this grows throughout the session):
@@ -86,7 +88,7 @@ run: source -> {
 ## Step 4: INVESTIGATE: Deep-Dive
 
 ### Outlier Detection
-Search `malloy_searchDocs("window functions")` for ranking and percentile patterns.
+Search `search_malloy_docs("window functions")` for ranking and percentile patterns.
 
 ### Trend Analysis
 ```malloy
@@ -210,7 +212,7 @@ For building views on an existing model (base + joined source files already exis
 - No fixed scale on measures: use `# currency` (no scale); fixed scale only in views after confirming ranges
 - Place chart annotation on the nested view definition, not on `nest:` itself
 
-For complete chart reference including scatter_chart, shape_map, sparklines, and all configuration options, see `skill:malloy-charts` or call `malloy_searchDocs("rendering")`.
+For complete chart reference including scatter_chart, shape_map, sparklines, and all configuration options, see `skill:malloy-charts` or call `search_malloy_docs("rendering")`.
 
 ## Field-Level Formatting
 
@@ -255,6 +257,6 @@ Use `+` to modify existing views: `run: source -> my_view + { limit: 15, where: 
 
 ## Done
 
-Step complete. Output: analysis `.malloy` file with views, insights, and reusable building blocks. For chart/renderer details, see `skill:gotchas-rendering` or call `malloy_searchDocs`. To formalize into a model, hand off to the modeling skill (`skill:malloy-model`).
+Step complete. Output: analysis `.malloy` file with views, insights, and reusable building blocks. For chart/renderer details, see `skill:gotchas-rendering` or call `search_malloy_docs`. To formalize into a model, hand off to the modeling skill (`skill:malloy-model`).
 
 Publishing is out of scope for now: open-source Publisher serves the model from disk, and self-hosters publish via git plus their host's publish path.

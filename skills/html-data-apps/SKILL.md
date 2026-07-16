@@ -160,4 +160,4 @@ A local package uses a filesystem `location` (`"./<pkg>"`, relative to `--server
 
 ### Publishing
 
-Publishing an app is publishing its package: get the package into publishable shape and hand it to your Publisher host's deploy path (see `skill:malloy-publish`). A deployed package serves its `public/` app the same way a local one does, at `/environments/<env>/packages/<pkg>/<file>`. A deployed environment has no `--watch-env` live reload, so the loop there is author, publish, then view.
+Publishing an app is publishing its package: get the package into publishable shape and hand it to your host's publishing workflow. A deployed package serves its `public/` app the same way a local one does, at `/environments/<env>/packages/<pkg>/<file>`. A deployed environment has no `--watch-env` live reload, so the loop there is author, publish, then view.

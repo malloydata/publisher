@@ -7,27 +7,29 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 
 > **CRITICAL**: Read the model before writing ANY Malloy code. The model defines the sources, connection names, and fields. Never guess connection names.
 
-> **PREREQUISITE:** Make sure the Publisher MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
+> **PREREQUISITE:** Make sure the Publisher MCP tools (`get_context`, `execute_query`, `search_malloy_docs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
 
 **This step is silent.** The agent does not present findings to the user yet. That happens in the next step (PROPOSE SCOPE).
 
 ## Tools
 
-- **`malloy_getContext`**: Ground yourself in the package's sources, views, and fields (with their docs). Call FIRST. The sources and their join paths are the schema you build on.
-- **`malloy_executeQuery`**: Run ad-hoc queries to preview data, verify values, check NULLs, validate assumptions.
-- **`malloy_searchDocs`**: Get Malloy syntax help when needed.
+- **`get_context`**: Ground yourself in the package's sources, views, and fields (with their docs). Call FIRST. The sources and their join paths are the schema you build on.
+- **`execute_query`**: Run ad-hoc queries to preview data, verify values, check NULLs, validate assumptions.
+- **`search_malloy_docs`**: Get Malloy syntax help when needed.
 
 ## Workflow
 
 ```
 1. Check for prior art signals                 → If found, ask user: "I found [LookML/dbt] files, use as prior art?"
 2. If user confirms: read adapter reference        → Follow skill:lookml-review, keep prior-art notes in-conversation
-3. malloy_getContext                           → Ground yourself: sources, views, fields
+3. get_context                           → Ground yourself: sources, views, fields
 4. Inspect source definitions                  → See ALL fields and join paths for key sources
 5. Derive candidate joins/dimensions/measures  → Read them off the model and the data, not a suggestion tool
-6. Define a minimal source if one is missing   → Just enough to run malloy_executeQuery for previews
-7. malloy_executeQuery(query)                  → Preview data, verify values, check NULLs, check duplicates
-8. malloy_searchDocs(query)                    → Get syntax help when needed
+6. Define a minimal source if one is missing   → Just enough to run execute_query for previews
+7. execute_query(query)                  → Preview data, verify values, check NULLs, check duplicates
+8. search_malloy_docs(query)                    → Get syntax help when needed
 9. Proceed to Step 2 (PROPOSE SCOPE)
 ```
 
@@ -37,11 +39,11 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 
 **Key principle:** Query data to verify assumptions. Don't ask the user to confirm values you can check yourself.
 
-**Search docs proactively.** If you discover patterns that need derived/pre-aggregated sources, window functions, or unfamiliar features, call `malloy_searchDocs` BEFORE writing code, not just when you hit errors.
+**Search docs proactively.** If you discover patterns that need derived/pre-aggregated sources, window functions, or unfamiliar features, call `search_malloy_docs` BEFORE writing code, not just when you hit errors.
 
 ## Query File for Discovery
 
-**In the schema-first workflow:** Run ad-hoc queries with `malloy_executeQuery`. If the source you want to preview is not yet defined in the model, define a minimal one against the connection and table so you can run previews. The real model fields are built in later steps.
+**In the schema-first workflow:** Run ad-hoc queries with `execute_query`. If the source you want to preview is not yet defined in the model, define a minimal one against the connection and table so you can run previews. The real model fields are built in later steps.
 
 ```malloy
 // minimal source for previewing data during discovery
@@ -64,7 +66,7 @@ When reviewing tables and columns, capture:
 - Primary key and foreign key columns
 - Data types (watch for string dates, arrays, JSON)
 - Reserved word columns that need backticking (`Date`, `Type`, `number`, `source`, etc.)
-- Column cardinality and NULL rates (via `malloy_executeQuery`)
+- Column cardinality and NULL rates (via `execute_query`)
 - Data distributions for key numeric and categorical columns
 
 ### Data Quality
@@ -74,7 +76,7 @@ When reviewing tables and columns, capture:
 
 ### Data-Driven Validation
 
-**Every recommendation must be grounded in queried data, not schema inference.** During discovery, run `malloy_executeQuery` to validate assumptions before proposing anything in later steps.
+**Every recommendation must be grounded in queried data, not schema inference.** During discovery, run `execute_query` to validate assumptions before proposing anything in later steps.
 
 | What to validate | Query to run |
 |-----------------|-------------|
@@ -155,12 +157,12 @@ Check for prior art signals at the start of discovery. If a signal is found and 
 The reference handles inventory, classification, and produces prior-art notes. Keep those notes in-conversation, then continue with normal discovery below.
 
 **If DB connection available (LookML + DB mode):**
-- Read the model and run `malloy_executeQuery` as normal
+- Read the model and run `execute_query` as normal
 - Use prior art as additional context, not a replacement for data validation
 - **The LookML connection name is NOT the Malloy connection name.** Always use the connection name from the model.
 
 **If no DB connection (LookML-only mode):**
-- Skip the model-read and `malloy_executeQuery` steps
+- Skip the model-read and `execute_query` steps
 - Use connection name and table paths extracted from prior art source files
 - Flag all proposals in Steps 2-4 as **unvalidated**
 - Proceed directly to Step 2 (PROPOSE SCOPE)
@@ -173,7 +175,7 @@ Do NOT present findings to the user yet.
 
 ## Done
 
-Step complete. Output: discovery findings (internal: tables, columns, relationships, data quality, prior art). Continue to the next modeling step (see `skill:malloy-modeling`).
+Step complete. Output: discovery findings (internal: tables, columns, relationships, data quality, prior art). Continue to the next modeling step (see your modeling workflow).
 
 ## Verify Source Joins
 

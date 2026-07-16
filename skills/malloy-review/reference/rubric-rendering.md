@@ -62,7 +62,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 
 - **Severity:** major (non-blocking) · **Category:** rendering · machine-checkable (data-driven, falls back to LLM-judgment)
 - **Why this matters.** Malloy's default integer formatting adds thousand-separator commas. A year displays as `2,018` instead of `2018`, a zip code as `94,107` instead of `94107`, an account number as `1,234,567` instead of `1234567`. The number is *visibly wrong* on every chart and table until `# number=id` strips the formatting. Especially common with `year(ts)` extraction (`skill:gotchas-queries` § Time Truncation vs Extraction) and with any FK/PK column that surfaces on a chart axis or in a result table.
-- **Detection, preferred (data-driven).** For every integer dimension in scope, run `malloy_executeQuery`:
+- **Detection, preferred (data-driven).** For every integer dimension in scope, run `execute_query`:
 
   ```malloy
   run: <source> -> {
@@ -78,7 +78,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   - **Distinct-count ≈ row count** → per-row identifier (account/order/user/phone numbers). Should have `# number=id`.
   - **Year-shaped** (small distinct set, values in `1900–2100`) or `year(ts)` extraction → identifier-flavored, should have `# number=id`. Same for zip-shaped (small set of length-5 numeric), phone-shaped (length-10/11 numeric), categorical-numeric codes.
   - **Quantity-flavored** (values aggregate naturally, name suggests `_count` / `_total` / `_amount` / `_price` / `_quantity` / `_revenue`) → leave default formatting.
-- **Detection, fallback (no `malloy_executeQuery`).** Name + type heuristics, noted in the finding so the reviewer can confirm:
+- **Detection, fallback (no `execute_query`).** Name + type heuristics, noted in the finding so the reviewer can confirm:
   - Should-have-`# number=id` signals: name ends in `_id`, `_year`, `_zip` / `_zipcode`, `_phone`; column is a `year(...)` extraction; integer type with no arithmetic in any `aggregate:` referencing it.
   - Should-NOT-have-`# number=id` signals: name ends in `_count` / `_total` / `_amount` / `_price` / `_quantity` / `_revenue` / `_cost`.
 - **Fix:** add `# number=id` above the dimension or measure.
@@ -104,12 +104,12 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** major (blocking) · **Category:** rendering · machine-checkable
 - **Why it matters.** The Malloy *core compiler* accepts any `# <tag>` annotation, verified against Malloy 0.0.370, where `# stacked_area_chart`, `# pie_chart`, and `# heatmap` all compile cleanly with no errors or warnings. Whether the renderer recognises the tag or silently drops it (rendering a flat table where the author expected a chart) is decided downstream in `@malloydata/malloy-render`. A real case: a view tagged `# stacked_area_chart` looked right in the code and rendered as a single-bar chart at runtime.
 - **Detection, preferred (consume IDE diagnostics).** Recent versions of the Malloy renderer surface unknown render tags as `"Unknown render tag"` warnings with source-located info. When the host's renderer is on a recent-enough version *and* the IDE bridges renderer warnings into `mcp__ide__getDiagnostics`, the diagnostic pre-pass (SKILL.md step 2) is the right detection path, the rubric should NOT re-emit. Older renderers and hosts that don't bridge renderer warnings into diagnostics still need the explicit check below.
-- **Detection, fallback (no diagnostics).** Flag every `# <tag>` annotation preceding a `view:` declaration where the tag isn't on the renderer's current allowlist. **Do not trust the rubric's hard-coded list as canonical**, call `malloy_searchDocs` for "chart types" before flagging, since the supported set evolves (the renderer-validation contract is one such evolution). As a baseline, the long-stable set is `bar_chart | line_chart | scatter_chart | shape_map | segment_map | big_value | dashboard | list | list_detail`; treat anything outside that set as a candidate finding only after `malloy_searchDocs` confirms it isn't a newly-added supported type.
+- **Detection, fallback (no diagnostics).** Flag every `# <tag>` annotation preceding a `view:` declaration where the tag isn't on the renderer's current allowlist. **Do not trust the rubric's hard-coded list as canonical**, call `search_malloy_docs` for "chart types" before flagging, since the supported set evolves (the renderer-validation contract is one such evolution). As a baseline, the long-stable set is `bar_chart | line_chart | scatter_chart | shape_map | segment_map | big_value | dashboard | list | list_detail`; treat anything outside that set as a candidate finding only after `search_malloy_docs` confirms it isn't a newly-added supported type.
 - **Fix template (still useful regardless of detection path):**
   - For "stacked area / stacked column" intent → `# bar_chart { stack y=['col1', 'col2', 'col3'] }` (see R-10 for the exact syntax).
   - For "pie / donut" intent → not supported; redesign the view as a bar chart or use a custom renderer.
   - For "heatmap" intent → not supported natively; use `shape_map` / `segment_map` if geographic, otherwise present as a 2D-pivot table.
-  - When `malloy_searchDocs` reveals a newly-supported type that fits the intent, prefer that over the workaround.
+  - When `search_malloy_docs` reveals a newly-supported type that fits the intent, prefer that over the workaround.
 - **See:** `skill:malloy-charts` § Chart Types
 
 ---

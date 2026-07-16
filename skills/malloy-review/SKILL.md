@@ -7,6 +7,8 @@ description: Malloy semantic-model code review. Invoke when the user asks to rev
 
 Single-pass code reviewer for `.malloy` files. The deliverable is one Markdown file in the canonical shape (see `reference/output-template.md`). Findings cite the project's standards file (e.g., `CLAUDE.md`) where it applies; otherwise they cite rubric IDs (`reference/rubric-*.md`).
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 ## Before you start
 
 Read these in order:
@@ -16,7 +18,7 @@ Read these in order:
 4. **`reference/output-template.md`**: the shape of the review file you produce.
 5. **`.malloy-review.local.md`** in the scope folder, if present, project-specific severity overrides or extra rules.
 
-Make sure the Publisher MCP tools are configured before running: this skill uses `malloy_executeQuery` for data checks and `malloy_searchDocs` for verifying Malloy capabilities. Both are optional; the review degrades gracefully if either is unavailable.
+Make sure the Publisher MCP tools are configured before running: this skill uses `execute_query` for data checks and `search_malloy_docs` for verifying Malloy capabilities. Both are optional; the review degrades gracefully if either is unavailable.
 
 ## Inputs
 
@@ -48,7 +50,7 @@ For each in-scope `.malloy` file, read the full content. As you read, track each
 
 If `mcp__ide__getDiagnostics` is available, call it on the in-scope files and promote each diagnostic to a finding: errors → blocker (confidence 95), warnings → major (confidence 85), info/hint → minor (confidence 75), all with `source: "diagnostic"`. Skip rubric rules these already cover. If unavailable, skip, the LLM rubric pass still runs.
 
-### 3. PK data verification (if `malloy_executeQuery` is available)
+### 3. PK data verification (if `execute_query` is available)
 For every source with a declared `primary_key:`, run a uniqueness check and store the result on `source_index.<src>.pk_verified`:
 
 ```malloy
@@ -63,7 +65,7 @@ run: <source> -> {
 |---|---|
 | `rows == distinct_pk` | `true` |
 | `rows != distinct_pk` | `false` |
-| `malloy_executeQuery` is unavailable for the scope | `"skipped"` |
+| `execute_query` is unavailable for the scope | `"skipped"` |
 | The query fails (source unreachable, connection error, etc.) | `"error"` |
 
 This step only collects evidence, the emit decision and fix template live in `reference/rubric-correctness.md` § C-12. When any source is `"skipped"` or `"error"`, note the coverage gap in the output's Scope section.
@@ -91,7 +93,7 @@ Findings use the canonical shape from `reference/severity-taxonomy.md`:
   "file": "packages/x/customers.malloy",
   "line_range": [12, 12],
   "rule": "C-12 declared primary_key is not unique in the data",
-  "current": "primary_key: customer_id (customer_id has duplicates per malloy_executeQuery check)",
+  "current": "primary_key: customer_id (customer_id has duplicates per execute_query check)",
   "expected": "customer_id is unique per row, or the source carries a where: that scopes to a uniquely-keyed subset",
   "suggested_fix": "...",
   "confidence": 95,

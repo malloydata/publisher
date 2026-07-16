@@ -5,11 +5,13 @@ description: Build Malloy semantic models with base source and joined source fil
 
 # Building Malloy Models
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 ## Getting Started (New Projects)
 
-If no `.malloy` files exist yet, do discovery and propose a structure first, then return here to build base source and joined source files. Keep proposals and the analysis behind them in the conversation; Publisher has no workspace document store to write them to.
+If no `.malloy` files exist yet, do discovery and propose a structure first, then return here to build base source and joined source files. Keep proposals and the analysis behind them in the conversation.
 
-**File structure convention** (flat layout, Publisher doesn't support cross-directory imports yet):
+**File structure convention** (a flat layout at the package root is the simplest default):
 ```
 <package-name>/
   publisher.json              # Required for publishing (name, version, description)
@@ -290,9 +292,9 @@ Full syntax, OR/override semantics, validation, and the error contract: `docs/au
 
 Check diagnostics after writing. Errors cascade, fix the FIRST error only, then re-check. If errors persist, use the debugging strategy: look at first error, search docs if unsure, fix, repeat.
 
-**Validate with `malloy_executeQuery`:** Run queries, check distributions, verify measures, confirm joins (no fan-out).
+**Validate with `execute_query`:** Run queries, check distributions, verify measures, confirm joins (no fan-out).
 
-To inspect the sources and fields a model already defines, ground yourself with `malloy_getContext`. It returns the package's sources, views, and fields, so there is no separate schema-search step. When you're unsure of Malloy syntax, call `malloy_searchDocs` rather than guessing.
+To inspect the sources and fields a model already defines, ground yourself with `get_context`. It returns the package's sources, views, and fields, so there is no separate schema-search step. When you're unsure of Malloy syntax, call `search_malloy_docs` rather than guessing.
 
 ## Advanced Patterns
 

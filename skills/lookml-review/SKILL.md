@@ -7,6 +7,8 @@ description: Analyze LookML files as prior art for Malloy modeling. Used during 
 
 > **Purpose:** Evaluate a LookML project as prior art for building a Malloy semantic model. This skill coordinates the LookML adapter. The implementation lives in reference files under `reference/`.
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 > **This is NOT a blind conversion.** Each LookML pattern is evaluated for quality and relevance to Malloy. Bad practices, Looker-specific UI patterns, and performance-only constructs are identified and skipped.
 
 ## When to Use
@@ -32,7 +34,7 @@ To prove the Malloy numbers match Looker, there are two channels, and the "obvio
 1. Identify the target explore's `required_access_grants` and the user attributes they key on.
 2. Verify the service account actually has non-empty values for those attributes. If it doesn't, the Looker path is a dead end: don't spend time discovering that through 404s.
 
-**SQL-level parity against the same warehouse is a first-class fallback, not a consolation prize.** When the Looker path is blocked (or just as the primary method), validate by running equivalent SQL directly against the **same warehouse** the LookML explore reads and comparing to the Malloy result (`malloy_executeQuery`). This is what actually validates the numbers in practice: reach for it first if access grants are in doubt.
+**SQL-level parity against the same warehouse is a first-class fallback, not a consolation prize.** When the Looker path is blocked (or just as the primary method), validate by running equivalent SQL directly against the **same warehouse** the LookML explore reads and comparing to the Malloy result (`execute_query`). This is what actually validates the numbers in practice: reach for it first if access grants are in doubt.
 
 ## Reference Files
 

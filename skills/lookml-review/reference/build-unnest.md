@@ -18,7 +18,7 @@ Malloy handles nested structures natively. The conversion depends on whether you
 1. **Keep nested**: access nested fields directly via the parent source
 2. **Flatten**: create a separate source from the unnested data
 
-Call `malloy_searchDocs("nested repeated")` for current Malloy syntax for nested/repeated field handling.
+Call `search_malloy_docs("nested repeated")` for current Malloy syntax for nested/repeated field handling.
 
 ## Struct Field Access
 
@@ -30,7 +30,7 @@ dimension: project_id { sql: ${TABLE}.project.id ;; }
 dimension: adjustment_description { sql: ${TABLE}.adjustment_info.description ;; }
 ```
 
-In Malloy, struct field access uses dot notation directly. Check `malloy_searchDocs("struct")` for the current syntax.
+In Malloy, struct field access uses dot notation directly. Check `search_malloy_docs("struct")` for the current syntax.
 
 ## Multiple Views from One Table
 

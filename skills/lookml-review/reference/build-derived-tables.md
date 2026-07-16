@@ -38,7 +38,7 @@ source: source_name is from(
 
 ### NDT with `derived_column:` (Window Functions)
 
-LookML `derived_column:` adds window functions on top of the NDT result. Map to Malloy window function patterns. Call `malloy_searchDocs("window functions")` for current syntax.
+LookML `derived_column:` adds window functions on top of the NDT result. Map to Malloy window function patterns. Call `search_malloy_docs("window functions")` for current syntax.
 
 ### Chained NDTs
 
@@ -47,7 +47,7 @@ When one NDT references another's explore_source, determine the dependency order
 ### NDTs with `bind_filters`
 
 No direct Malloy equivalent. Flag for user and propose alternatives:
-- Parameterized source (if Malloy supports it; check `malloy_searchDocs`)
+- Parameterized source (if Malloy supports it; check `search_malloy_docs`)
 - Pre-filtered views
 - Document the intent and let the user decide
 
@@ -81,7 +81,7 @@ run: source -> {
 2. Push the transformation to upstream dbt/SQL
 3. Only carry forward verbatim if user insists (last resort)
 
-**CRITICAL: Never use `conn.sql()` when Malloy has a native pattern.** For aggregation, window functions (`calculate`), and filtering, use Malloy query-based sources (`table -> { group_by, aggregate } extend {}`). `conn.sql()` is a last resort for patterns with NO Malloy equivalent (UNNEST, PIVOT, dialect-specific functions). Call `malloy_searchDocs` before writing any SQL block.
+**CRITICAL: Never use `conn.sql()` when Malloy has a native pattern.** For aggregation, window functions (`calculate`), and filtering, use Malloy query-based sources (`table -> { group_by, aggregate } extend {}`). `conn.sql()` is a last resort for patterns with NO Malloy equivalent (UNNEST, PIVOT, dialect-specific functions). Call `search_malloy_docs` before writing any SQL block.
 
 ## Long→wide entity-values pivot (custom fields)
 

@@ -7,9 +7,11 @@ description: Present discovery findings and propose an analytical scope before m
 
 **When:** After you have inspected the model and its underlying data. You have read the package's sources and fields and looked at the data distributions.
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 **Goal:** Present what you found and recommend an analytical focus. The user selects a direction.
 
-Ground yourself first with `malloy_getContext`: it returns the package's sources, views, and fields, so it tells you what data exists, how it relates, and what is already modeled. Query the data with `malloy_executeQuery` to get row counts and spot data-quality issues. Keep your proposal and the user's decision in the conversation; there is no separate scope file to write.
+Ground yourself first with `get_context`: it returns the package's sources, views, and fields, so it tells you what data exists, how it relates, and what is already modeled. Query the data with `execute_query` to get row counts and spot data-quality issues. Keep your proposal and the user's decision in the conversation; there is no separate scope file to write.
 
 ## What to Present
 
@@ -84,7 +86,7 @@ Restate the confirmed scope in the conversation so it's clear what you'll model 
 - **Analytical focus**: one line describing the analytical domain.
 - **Deferred**: tables left out, with the reason.
 
-Then hand off to modeling: load `skill:malloy-modeling` to turn the confirmed scope into Malloy sources, dimensions, measures, and views.
+Then hand off to modeling: use your modeling workflow to turn the confirmed scope into Malloy sources, dimensions, measures, and views.
 
 ## Tips
 
@@ -95,4 +97,4 @@ Then hand off to modeling: load `skill:malloy-modeling` to turn the confirmed sc
 
 ## Done
 
-Scope confirmed in the conversation: tables in scope, analytical focus, and what's deferred. Continue with `skill:malloy-modeling`.
+Scope confirmed in the conversation: tables in scope, analytical focus, and what's deferred. Continue with your modeling workflow.

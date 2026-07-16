@@ -7,17 +7,19 @@ description: Combine validated Malloy queries into a notebook report or dashboar
 
 An ad-hoc report is a `.malloynb` notebook that combines markdown narrative with live Malloy query cells. There is no dedicated report tool: you author the notebook directly. Load `skill:malloy-notebooks` for the full `.malloynb` cell format and authoring rules; this skill covers when to build one and how to design good report content (cells, chart annotations, narrative structure).
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 ## Before building a report
 
-1. **Run each query first** via `malloy_executeQuery` to verify it works and returns expected results.
+1. **Run each query first** via `execute_query` to verify it works and returns expected results.
 2. **Explain the results** to the user as you go: walk through the analysis step by step.
 3. **Then assemble the notebook** once the analysis is validated.
 
-Do NOT build the notebook in the same turn as `malloy_executeQuery`. Explain first, then build.
+Do NOT build the notebook in the same turn as `execute_query`. Explain first, then build.
 
 ## Filters are inherited from the model, don't declare them in the report
 
-Reports do not (and cannot) define their own filters. If the source has `#(filter)` annotations, Publisher renders the filter widgets, parses caller parameters, and injects `where:` clauses server-side automatically: the report inherits and displays those filters with no extra work. If the analysis needs a knob the source doesn't expose, the right move is to add a `#(filter)` to the source itself (see `skill:malloy-modeling` § Parameterizable Filters with `#(filter)`), not to wedge a filter widget into the report. For curated notebooks with their own per-notebook filter UI on top of the model, see `skill:malloy-notebooks` instead.
+Reports do not (and cannot) define their own filters. If the source has `#(filter)` annotations, Publisher renders the filter widgets, parses caller parameters, and injects `where:` clauses server-side automatically: the report inherits and displays those filters with no extra work. If the analysis needs a knob the source doesn't expose, the right move is to add a `#(filter)` to the source itself (see your modeling workflow's parameterizable-filter guidance for `#(filter)`), not to wedge a filter widget into the report. For curated notebooks with their own per-notebook filter UI on top of the model, see `skill:malloy-notebooks` instead.
 
 ## What goes in the report
 
@@ -80,7 +82,7 @@ run: source -> {
 }
 ```
 
-A `# dashboard` cell composes nested views, useful for KPIs alongside a trend in a single cell:
+A `# dashboard` cell composes nested views, useful for KPIs alongside a trend in a single cell. Each `nest:` is a tile; any top-level `aggregate:` measures render as KPI cards. For a fixed grid, use `# dashboard { columns=N }` with `# colspan` on each tile (see `skill:malloy-charts`):
 
 ```malloy
 # dashboard
@@ -120,4 +122,4 @@ For small targeted changes (fix one cell, insert one new cell), edit that cell i
 
 ## IMPORTANT
 
-You CANNOT see the rendered output of notebook cells. Do not claim to see charts, values, or patterns from report cells you haven't explicitly executed via `malloy_executeQuery`. If you need to analyze results, run the query via `malloy_executeQuery` first.
+You CANNOT see the rendered output of notebook cells. Do not claim to see charts, values, or patterns from report cells you haven't explicitly executed via `execute_query`. If you need to analyze results, run the query via `execute_query` first.

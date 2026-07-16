@@ -54,4 +54,4 @@ source: first_touch is conn.table('events') -> {
 - **Cannot redefine** columns from query-based sources, they already exist as fields. Add only NEW derived dimensions in `extend {}`.
 - To add `#(doc)` tags to existing query columns, use `include {}` between the query and extend.
 - **Use the RAW TABLE** in query-based sources, not a modeled source, when the modeled source would create a circular dependency.
-- **Never use `conn.sql()`** when Malloy has a native pattern. `conn.sql()` is a last resort for UNNEST, PIVOT, or dialect-specific functions only. Call `malloy_searchDocs` first.
+- **Never use `conn.sql()`** when Malloy has a native pattern. `conn.sql()` is a last resort for UNNEST, PIVOT, or dialect-specific functions only. Call `search_malloy_docs` first.

@@ -113,3 +113,20 @@ run: source -> {
 ```
 
 Clauses: `group_by:`, `aggregate:`, `nest:`, `order_by:`, `limit:`, `where:`, `having:`, `select:`, `calculate:`
+
+## Fields Within a Clause: Commas or Newlines, Never Semicolons
+
+Semicolons are not a separator anywhere in Malloy. Multiple fields under one `aggregate:` / `group_by:` are separated by commas (inline) or newlines (one per line); a `;` fails with `no viable alternative at input '<next-field>'` pointing at the field right after it.
+
+```malloy
+// WRONG: semicolons between fields
+run: schools -> { aggregate: total is count(); charters is count() { where: is_charter } }
+// RIGHT: commas inline...
+run: schools -> { aggregate: total is count(), charters is count() { where: is_charter } }
+// ...or newlines
+run: schools -> {
+  aggregate:
+    total is count()
+    charters is count() { where: is_charter }
+}
+```

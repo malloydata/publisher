@@ -7,6 +7,8 @@ description: Common Malloy modeling mistakes and how to avoid them. Read BEFORE 
 
 > **Read this before writing Malloy code.** These patterns cause most modeling errors.
 
+> **Tool names** are written bare here — `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 ## Reserved Words: Backtick Them
 
 **When in doubt, backtick it.** Unquoted reserved words cause cascading errors on unrelated lines.
@@ -68,7 +70,7 @@ dimension: weeks_open is days(opened_at to closed_at) / 7      // ≈ weeks
 dimension: months_open is days(opened_at to closed_at) / 30.44 // ≈ months
 ```
 
-(Contrast: `malloy_searchDocs` gets this right when asked narrowly; trust the docs on the supported units, not on the missing ones.)
+(Contrast: `search_malloy_docs` gets this right when asked narrowly; trust the docs on the supported units, not on the missing ones.)
 
 ## Safe Division: Always `nullif`
 
@@ -213,7 +215,7 @@ source: facts is conn.sql("""SELECT user_id, SUM(amount) AS total FROM orders GR
 source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total is sum(amount) }
 ```
 
-**Mandatory: call `malloy_searchDocs` before reaching for `conn.sql()`.** Don't argue from intuition. Most patterns that look SQL-only have a Malloy equivalent, including the ones reviewers historically said couldn't be expressed.
+**Mandatory: call `search_malloy_docs` before reaching for `conn.sql()`.** Don't argue from intuition. Most patterns that look SQL-only have a Malloy equivalent, including the ones reviewers historically said couldn't be expressed.
 
 | Looks like it needs SQL | Malloy equivalent |
 |---|---|
@@ -234,7 +236,7 @@ source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total i
 
 **Never use `conn.sql()` for:** simple column selection or renaming, `WHERE` filters, two-table joins, column type casts, latest-snapshot patterns, conditional aggregation, or window functions of any kind.
 
-If a project's standards file specifies a stricter policy (e.g., a `malloy_searchDocs` rationale comment requirement above every `conn.sql()` block), defer to that.
+If a project's standards file specifies a stricter policy (e.g., a `search_malloy_docs` rationale comment requirement above every `conn.sql()` block), defer to that.
 
 ## Duplicate Rows: Check Before Building Measures
 
@@ -266,7 +268,7 @@ Malloy compiles top-to-bottom. Define lookup/dimension tables before the source 
 
 ## MUST Search Docs Before Using Unfamiliar Patterns
 
-Call `malloy_searchDocs` BEFORE first use of any of these. Don't guess the syntax:
+Call `search_malloy_docs` BEFORE first use of any of these. Don't guess the syntax:
 - `pick` expressions
 - Window functions (`calculate`)
 - `percentile` or statistical functions: but see the hard limit above, raw-SQL aggregates (`sql_number` / `is_aggregate` / `percentile_cont!`) do **not** compile as measures in this build; there is no scalar median
