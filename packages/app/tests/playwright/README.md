@@ -97,8 +97,8 @@ and adds the `html` reporter on top of `list`.
 ## Writing new tests — notes that bite
 
 - **Package tiles** are `<div>`, not `<a>`. Use `page.getByText(pkg, { exact: true })` to click.
-- **Source combobox** is an MUI Autocomplete — assert with `toHaveValue('people')`, not `toContainText`.
-- `imdb.malloy` is a substring of `imdb.malloynb`; always pass `{ exact: true }` on treeitems.
+- **Source combobox** is an MUI Autocomplete, so assert with `toHaveValue('customers')`, not `toContainText`.
+- `storefront.malloy` is a substring of `storefront.malloynb`; always pass `{ exact: true }` on treeitems.
 - Action buttons carry stable aria-labels: `"Environment actions for <name>"`,
   `"Package actions for <name>"`, `"Edit connection <name>"`, `"Delete connection <name>"`.
 - The sticky `Publisher API` header link can intercept pointer events on the env-card overflow

@@ -11,6 +11,10 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  * fixture set doesn't ship a model with `given:` declarations, so the
  * spec writes its own .malloy + .malloynb into the `storefront` package directory
  * before the suite runs, triggers a package reload, and cleans up after.
+ *
+ * Run this against a normal server, not one started with `--watch-env examples`:
+ * watch mode symlinks PKG_DIR to the tracked `examples/storefront` sources, so
+ * the fixture writes below would land in version control.
  */
 
 const FIXTURE_MODEL = "test_givens.malloy";
@@ -51,7 +55,7 @@ import "test_givens.malloy"
 run: products_with_given -> by_code
 `;
 
-async function reloadFaaPackage(baseURL: string): Promise<void> {
+async function reloadPackage(baseURL: string): Promise<void> {
    const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}?reload=true`;
    const res = await fetch(url);
    if (!res.ok) {
@@ -63,7 +67,7 @@ test.describe("notebook-givens", () => {
    test.beforeAll(async ({ baseURL }) => {
       await fs.writeFile(path.join(PKG_DIR, FIXTURE_MODEL), MODEL_SOURCE);
       await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
-      await reloadFaaPackage(baseURL!);
+      await reloadPackage(baseURL!);
    });
 
    test.afterAll(async ({ baseURL }) => {
@@ -71,7 +75,7 @@ test.describe("notebook-givens", () => {
       await fs
          .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
          .catch(() => undefined);
-      await reloadFaaPackage(baseURL!).catch(() => undefined);
+      await reloadPackage(baseURL!).catch(() => undefined);
    });
 
    async function openGivensNotebook(page: import("@playwright/test").Page) {

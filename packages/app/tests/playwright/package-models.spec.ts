@@ -2,10 +2,8 @@ import { expect, test, Page } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
-// Redesigned package page also renders the README.malloynb inline at the
-// bottom, which contains the literal text "storefront.malloy" inside a <strong>
-// tag. The flat-row label is rendered first in DOM order (Semantic Models
-// section is above the README), so .first() reliably hits the row.
+// .first() is defensive: the package page yields exactly one exact match for a
+// model path today, in the Semantic Models section.
 function modelRow(page: Page, name: string) {
    return page.getByText(name, { exact: true }).first();
 }

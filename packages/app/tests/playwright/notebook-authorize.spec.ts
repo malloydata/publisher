@@ -7,7 +7,7 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
  * End-to-end coverage for `#(authorize)` source gates in a notebook. The
- * the storefront example ships no gated model, so the spec writes its own
+ * storefront example ships no gated model, so the spec writes its own
  * .malloy + .malloynb into the `storefront` package, reloads, and cleans up.
  *
  * The gated source requires `$role = 'analyst'`; `role` has no default, so the
@@ -15,6 +15,10 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  * supplies `role = analyst` in the Parameters panel. The query spotlights a
  * single product in the Jeans category ("Cobalt Bootcut Jean"), the visible
  * signal that the gate passed.
+ *
+ * Run this against a normal server, not one started with `--watch-env examples`:
+ * watch mode symlinks PKG_DIR to the tracked `examples/storefront` sources, so
+ * the fixture writes below would land in version control.
  */
 
 const FIXTURE_MODEL = "authz_gate.malloy";
@@ -51,7 +55,7 @@ import "authz_gate.malloy"
 run: gated_products -> spotlight
 `;
 
-async function reloadFaaPackage(baseURL: string): Promise<void> {
+async function reloadPackage(baseURL: string): Promise<void> {
    const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}?reload=true`;
    const res = await fetch(url);
    if (!res.ok) {
@@ -63,7 +67,7 @@ test.describe("notebook-authorize", () => {
    test.beforeAll(async ({ baseURL }) => {
       await fs.writeFile(path.join(PKG_DIR, FIXTURE_MODEL), MODEL_SOURCE);
       await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
-      await reloadFaaPackage(baseURL!);
+      await reloadPackage(baseURL!);
    });
 
    test.afterAll(async ({ baseURL }) => {
@@ -71,7 +75,7 @@ test.describe("notebook-authorize", () => {
       await fs
          .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
          .catch(() => undefined);
-      await reloadFaaPackage(baseURL!).catch(() => undefined);
+      await reloadPackage(baseURL!).catch(() => undefined);
    });
 
    const cellUrl = (baseURL: string, givens?: Record<string, string>) => {
