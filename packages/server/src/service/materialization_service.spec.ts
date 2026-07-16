@@ -1,6 +1,6 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
    BadRequestError,
@@ -27,6 +27,11 @@ import {
    MaterializationService,
    stagingSuffix,
 } from "./materialization_service";
+import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 
 type MockRepo = sinon.SinonStubbedInstance<ResourceRepository>;
 
@@ -500,6 +505,86 @@ describe("MaterializationService", () => {
    });
 });
 
+describe("deleteMaterialization telemetry", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   let harness: MetricsHarness;
+
+   beforeEach(async () => {
+      ctx = createMocks();
+      harness = await startMetricsHarness();
+      // Drop cached instruments so recordDropTables re-binds to this provider.
+      resetMaterializationTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      resetMaterializationTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   const DROP_COUNTER = "publisher_materialization_drop_tables_total";
+
+   // A terminal materialization whose manifest names one physical table, so
+   // dropMaterializedTables issues exactly one DROP — the emission under test.
+   function dropTablesFixture(runSQL: sinon.SinonStub) {
+      const getMalloyConnection = sinon
+         .stub()
+         .resolves({ runSQL, dialectName: "duckdb" });
+      (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+         getPackage: sinon.stub().resolves({ getMalloyConnection }),
+         withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
+            fn(),
+      });
+      ctx.repository.getMaterializationById.resolves(
+         makeMaterialization({
+            status: "MANIFEST_FILE_READY",
+            manifest: {
+               builtAt: new Date().toISOString(),
+               strict: false,
+               entries: {
+                  b1: {
+                     sourceEntityId: "b1",
+                     physicalTableName: "orders_mz",
+                     connectionName: "duckdb",
+                  },
+               },
+            },
+         }),
+      );
+   }
+
+   it("meters a successful physical-table drop as outcome=success", async () => {
+      dropTablesFixture(sinon.stub().resolves());
+
+      await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+         dropTables: true,
+      });
+
+      expect(
+         await harness.collectCounter(DROP_COUNTER, { outcome: "success" }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter(DROP_COUNTER, { outcome: "failure" }),
+      ).toBe(0);
+   });
+
+   it("meters a failed drop as outcome=failure and still deletes the record", async () => {
+      dropTablesFixture(sinon.stub().rejects(new Error("drop boom")));
+
+      // The drop is best-effort: a failure is metered but never surfaces to the
+      // caller, and the record is still removed.
+      await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+         dropTables: true,
+      });
+
+      expect(
+         await harness.collectCounter(DROP_COUNTER, { outcome: "failure" }),
+      ).toBe(1);
+      expect(ctx.repository.deleteMaterialization.calledOnceWith("mat-1")).toBe(
+         true,
+      );
+   });
+});
+
 describe("stagingSuffix", () => {
    it("derives a short, stable suffix from the sourceEntityId", () => {
       expect(stagingSuffix("abcdef1234567890")).toBe("_abcdef123456");
@@ -891,6 +976,39 @@ describe("buildOneSource", () => {
       runSQL.onCall(2).resolves(); // cleanup staging drop
       await expect(callBuildOneSource({ runSQL }, "orders_v1")).rejects.toThrow(
          "create boom",
+      );
+      expect(runSQL.lastCall.args[0]).toBe(
+         'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
+      );
+   });
+
+   it("rethrows the original build error when staging cleanup also fails", async () => {
+      const runSQL = sinon.stub();
+      runSQL.onCall(0).resolves(); // initial staging drop
+      runSQL.onCall(1).rejects(new Error("create boom")); // CREATE TABLE AS
+      runSQL.onCall(2).rejects(new Error("cleanup boom")); // cleanup drop fails
+      // The cleanup failure is swallowed (logged as a physical leak); the
+      // original build error is what propagates, so the run is classified by its
+      // real cause rather than the cleanup noise.
+      await expect(callBuildOneSource({ runSQL }, "orders_v1")).rejects.toThrow(
+         "create boom",
+      );
+      expect(runSQL.callCount).toBe(3);
+      expect(runSQL.lastCall.args[0]).toBe(
+         'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
+      );
+   });
+
+   it("drops staging when the build is cancelled mid-run (no _staging orphan)", async () => {
+      // buildOneSource is cancellation-agnostic: a cancel surfaces as a thrown
+      // build SQL and takes the same staging-cleanup path as a failure, so a
+      // cancelled build leaves no orphaned _staging table behind.
+      const runSQL = sinon.stub();
+      runSQL.onCall(0).resolves(); // initial staging drop
+      runSQL.onCall(1).rejects(new Error("Build cancelled")); // aborted mid-CREATE
+      runSQL.onCall(2).resolves(); // cleanup staging drop
+      await expect(callBuildOneSource({ runSQL }, "orders_v1")).rejects.toThrow(
+         "Build cancelled",
       );
       expect(runSQL.lastCall.args[0]).toBe(
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',

@@ -3,16 +3,21 @@ import { DuckDBConnection } from "./DuckDBConnection";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { initializeSchema } from "./schema";
 
-// Capture the SQL + params of the last query without touching a real DuckDB.
+// Capture the SQL + params of reads (all) and writes (run) without touching a
+// real DuckDB.
 function fakeRepo() {
    const calls: Array<{ sql: string; params: unknown[] }> = [];
+   const runCalls: Array<{ sql: string; params: unknown[] }> = [];
    const db = {
       all: async (sql: string, params: unknown[]) => {
          calls.push({ sql, params });
          return [];
       },
+      run: async (sql: string, params: unknown[]) => {
+         runCalls.push({ sql, params });
+      },
    } as unknown as DuckDBConnection;
-   return { repo: new MaterializationRepository(db), calls };
+   return { repo: new MaterializationRepository(db), calls, runCalls };
 }
 
 describe("MaterializationRepository list bounds", () => {
@@ -150,5 +155,32 @@ describe("MaterializationRepository.getLatestScheduledFireAt (real DuckDB)", () 
          ],
       );
       expect(await repo.getLatestScheduledFireAt(ENV_ID, PKG)).toBeNull();
+   });
+});
+
+// The publisher tracks materialization *records*; dropping the physical tables
+// is opt-in (deleteMaterialization({ dropTables })) and otherwise the caller's
+// responsibility. These cascade deletes therefore remove records only — they
+// must never issue DDL — so a materialized table intentionally outlives the
+// record when an environment or package is deleted. Locking that in guards the
+// contract against a future refactor that "helpfully" adds a DROP here (which
+// would fire against a possibly-already-torn-down connection on env delete).
+describe("MaterializationRepository cascade deletes are records-only", () => {
+   it("deleteByEnvironmentId issues a single DELETE and no DDL", async () => {
+      const { repo, runCalls } = fakeRepo();
+      await repo.deleteByEnvironmentId("env-1");
+      expect(runCalls.length).toBe(1);
+      expect(runCalls[0].sql).toContain("DELETE FROM materializations");
+      expect(runCalls[0].sql).not.toContain("DROP");
+      expect(runCalls[0].params).toEqual(["env-1"]);
+   });
+
+   it("deleteByPackage issues a single DELETE and no DDL", async () => {
+      const { repo, runCalls } = fakeRepo();
+      await repo.deleteByPackage("env-1", "pkg-a");
+      expect(runCalls.length).toBe(1);
+      expect(runCalls[0].sql).toContain("DELETE FROM materializations");
+      expect(runCalls[0].sql).not.toContain("DROP");
+      expect(runCalls[0].params).toEqual(["env-1", "pkg-a"]);
    });
 });
