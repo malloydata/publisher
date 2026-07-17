@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "malloy-publisher",
@@ -208,6 +209,19 @@
         "nock": "^14.0.1",
         "openapi-typescript": "^6.7.6",
         "supertest": "^7.0.0",
+      },
+    },
+    "packages/skills": {
+      "name": "@malloy-publisher/skills",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@eslint/js": "^8.57.0",
+        "@types/bun": "^1.2.21",
+        "@types/node": "^24.10.0",
+        "@typescript-eslint/eslint-plugin": "^8.16.0",
+        "@typescript-eslint/parser": "^8.16.0",
+        "eslint": "^8.50.0",
+        "typescript": "^5.3.3",
       },
     },
   },
@@ -586,6 +600,8 @@
     "@malloy-publisher/sdk": ["@malloy-publisher/sdk@workspace:packages/sdk"],
 
     "@malloy-publisher/server": ["@malloy-publisher/server@workspace:packages/server"],
+
+    "@malloy-publisher/skills": ["@malloy-publisher/skills@workspace:packages/skills"],
 
     "@malloydata/db-bigquery": ["@malloydata/db-bigquery@0.0.422", "", { "dependencies": { "@google-cloud/bigquery": "7.9.4", "@google-cloud/common": "5.0.2", "@google-cloud/paginator": "5.0.2", "@malloydata/malloy": "0.0.422", "gaxios": "^4.2.0" } }, "sha512-pltGa1nEhRiL9wvupeDKgdfXAc1DEzS64Dn+Nxwu7vZ2Mn2GgbF4fTQMvaR8biHusc9CTpxaApO+MMcuQGQoHQ=="],
 
@@ -3604,6 +3620,10 @@
     "@malloy-publisher/server/@types/node": ["@types/node@24.10.1", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-GNWcUTRBgIRJD5zj+Tq0fKOJ5XZajIiBroOF0yvj2bSU1WvNdYS/dn9UxwsujGW4JX06dnHyjV2y9rRaybH0iQ=="],
 
     "@malloy-publisher/server/eslint-plugin-react-hooks": ["eslint-plugin-react-hooks@5.0.0", "", { "peerDependencies": { "eslint": "^3.0.0 || ^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0-0 || ^9.0.0" } }, "sha512-hIOwI+5hYGpJEc4uPRmz2ulCjAGD/N13Lukkh8cLV0i2IRk/bdZDYjgLVHj+U9Z704kLIdIO6iueGvxNur0sgw=="],
+
+    "@malloy-publisher/skills/@eslint/js": ["@eslint/js@8.57.1", "", {}, "sha512-d9zaMRSTIKDLhctzH12MtXvJKSSUhaHcjV+2Z+GK+EEY7XKpP5yR4x+N3TAcHTcu963nIr+TMcCb4DBCYX1z6Q=="],
+
+    "@malloy-publisher/skills/@types/node": ["@types/node@24.10.1", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-GNWcUTRBgIRJD5zj+Tq0fKOJ5XZajIiBroOF0yvj2bSU1WvNdYS/dn9UxwsujGW4JX06dnHyjV2y9rRaybH0iQ=="],
 
     "@malloydata/db-bigquery/gaxios": ["gaxios@4.3.3", "", { "dependencies": { "abort-controller": "^3.0.0", "extend": "^3.0.2", "https-proxy-agent": "^5.0.0", "is-stream": "^2.0.0", "node-fetch": "^2.6.7" } }, "sha512-gSaYYIO1Y3wUtdfHmjDUZ8LWaxJQpiavzbF5Kq53akSzvmVg0RfyOcFDbO1KJ/KCGRFz2qG+lS81F0nkr7cRJA=="],
 
