@@ -85,26 +85,6 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
       currentEnv = name;
    }
 
-   async function addPackage(
-      env: string,
-      name: string,
-      location: string,
-   ): Promise<void> {
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${env}/packages`,
-         {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, location }),
-         },
-      );
-      if (!res.ok) {
-         throw new Error(
-            `add package ${name} failed (${res.status}): ${await res.text()}`,
-         );
-      }
-   }
-
    async function waitForPackage(env: string, pkg: string): Promise<void> {
       const deadline = Date.now() + 30_000;
       while (Date.now() < deadline) {
@@ -115,14 +95,6 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
          await new Promise((r) => setTimeout(r, 500));
       }
       throw new Error(`package ${env}/${pkg} did not load in time`);
-   }
-
-   async function deletePackage(env: string, pkg: string): Promise<void> {
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${env}/packages/${pkg}`,
-         { method: "DELETE" },
-      );
-      expect(res.ok).toBe(true);
    }
 
    // Set scope: version + a cron schedule on a package (makes persist-test
@@ -217,34 +189,11 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
       { timeout: 120_000 },
    );
 
-   it(
-      "a package unload then reload prunes and re-anchors without a spurious fire",
-      async () => {
-         const ENV = "sched-tx-unload";
-         await createEnv(ENV, [
-            { name: "persist-schedule-test", location: SCHEDULED_FIXTURE },
-         ]);
-         await waitForPackage(ENV, "persist-schedule-test");
-         const sched = newScheduler();
-
-         // Arm: nextFire = Jan-01 06:00.
-         await sched.tick(T0);
-
-         // Unload the package: it leaves getLoadedPackages, so the sweep prunes
-         // its arming state (tick's not-seen cleanup).
-         await deletePackage(ENV, "persist-schedule-test");
-         await sched.tick(T0 + D); // well past the old 06:00 — package is gone
-         expect(await scheduledFireCount(ENV)).toBe(0);
-
-         // Reload it: a fresh arm anchors from now (no prior SCHEDULER fire), so
-         // the pre-unload nextFire can't resurface as a spurious catch-up.
-         await addPackage(ENV, "persist-schedule-test", SCHEDULED_FIXTURE);
-         await waitForPackage(ENV, "persist-schedule-test");
-         await sched.tick(T0 + D + 5 * MIN); // now < fresh nextFire (Jan-02 06:00)
-         expect(await scheduledFireCount(ENV)).toBe(0);
-      },
-      { timeout: 120_000 },
-   );
+   // The unload/reload prune + re-anchor transition is covered as a deterministic
+   // unit test (materialization_scheduler.spec.ts): it is pure in-memory arming
+   // state, and driving it here via a package delete + same-name re-add races the
+   // package-install staging rename on Windows (POSIX is fine), which is unrelated
+   // to the scheduler behavior under test.
 
    it(
       "a fired occurrence advances to the next occurrence (fires once per occurrence, not every tick)",
