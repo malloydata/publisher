@@ -1,0 +1,16 @@
+// {{sourceName}}: a starter Malloy model over {{dataPath}}, served by Publisher.
+//
+// This model was scaffolded from a data file whose columns are not known ahead of
+// time, so it starts with just a row count. Build it out for your columns: group_by
+// a column to break the count down, and define measures like
+// `total_amount is amount.sum()`. Validate edits with malloy_compile and run new
+// views by name with malloy_reloadPackage. The malloy-modeling skill walks through
+// turning a raw table into a semantic model.
+
+source: {{sourceName}} is duckdb.table('{{dataPath}}') extend {
+  measure: record_count is count()
+
+  view: overview is {
+    aggregate: record_count
+  }
+}

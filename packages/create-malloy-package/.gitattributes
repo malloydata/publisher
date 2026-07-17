@@ -1,0 +1,6 @@
+# The templates are data this package ships and renders verbatim, so their line
+# endings have to be the same wherever the tarball is packed. Without this, a
+# Windows checkout converts them to CRLF (git's default core.autocrlf), and the
+# workspace a user gets then depends on which maintainer ran npm publish.
+* text=auto eol=lf
+*.csv text eol=lf

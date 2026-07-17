@@ -1,0 +1,44 @@
+// {{sourceName}}: a starter Malloy model over local CSV data, served by Publisher.
+//
+// The source reads data/sales.csv through the package's built-in DuckDB sandbox:
+// no credentials and no build step. DuckDB auto-detects the header row and column
+// types. Edit this file and the dev server recompiles it, because it boots in
+// watch mode; AGENTS.md carries the command that starts it for this workspace.
+// An agent can validate a change with malloy_compile and run new views by name
+// with malloy_reloadPackage.
+
+source: {{sourceName}} is duckdb.table('data/sales.csv') extend {
+  primary_key: id
+
+  measure: record_count is count()
+  measure: total_amount is amount.sum()
+  measure: total_quantity is quantity.sum()
+
+  # bar_chart
+  view: by_category is {
+    group_by: category
+    aggregate: total_amount
+    order_by: total_amount desc
+  }
+
+  # bar_chart
+  view: by_region is {
+    group_by: region
+    aggregate: total_amount
+    order_by: total_amount desc
+  }
+
+  # line_chart
+  view: sales_by_month is {
+    group_by: order_month is order_date.month
+    aggregate: total_amount
+    order_by: order_month
+  }
+
+  view: overview is {
+    aggregate:
+      record_count
+      total_amount
+      total_quantity
+  }
+}

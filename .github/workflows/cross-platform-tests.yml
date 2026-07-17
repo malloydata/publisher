@@ -80,6 +80,23 @@ jobs:
         run: bun run --cwd packages/skills test
         shell: bash
 
+      # The scaffolder copies the skills tree into a generated project and
+      # resolves it by path too, so it has the same cross-platform exposure. Its
+      # pretest builds the skills package first, so the skillsDir it copies from
+      # exists.
+      - name: Run create-malloy-package tests
+        run: bun run --cwd packages/create-malloy-package test
+        shell: bash
+
+      # These specs are the only ones that prove a generated config is one a
+      # real server actually serves: they boot the server bin built above
+      # against the scaffolded workspace. Ubuntu only, because booting a server
+      # per spec run is too slow and too flaky to repeat on three OSes.
+      - name: Run create-malloy-package e2e tests (Linux only)
+        if: runner.os == 'Linux'
+        run: bun run --cwd packages/create-malloy-package test:e2e
+        shell: bash
+
       # Split into two bun-test invocations (two processes). The unit specs
       # under src/ use `mock.module(...)` to stub out `StorageManager` and
       # other modules; Bun does not scope those mocks to a single file —

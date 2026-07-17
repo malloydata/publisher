@@ -1,0 +1,11 @@
+id,order_date,region,category,product,quantity,amount
+1,2024-01-05,West,Electronics,Wireless Mouse,2,49.98
+2,2024-01-12,East,Furniture,Standing Desk,1,299.00
+3,2024-01-20,West,Electronics,USB-C Hub,3,89.97
+4,2024-02-03,South,Apparel,Running Shoes,1,120.00
+5,2024-02-15,East,Furniture,Office Chair,2,340.00
+6,2024-02-27,North,Electronics,Mechanical Keyboard,1,110.00
+7,2024-03-08,West,Apparel,Rain Jacket,2,180.00
+8,2024-03-19,South,Furniture,Bookshelf,1,150.00
+9,2024-03-25,North,Electronics,Webcam,4,240.00
+10,2024-04-02,East,Apparel,Wool Socks,5,75.00

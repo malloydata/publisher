@@ -1,0 +1,59 @@
+{
+   "name": "create-malloy-package",
+   "description": "Scaffold a Malloy Publisher package and a local agent workspace, so one command takes you from nothing to an agent that can query your data.",
+   "version": "0.0.1",
+   "license": "MIT",
+   "type": "module",
+   "bin": {
+      "create-malloy-package": "./dist/index.js"
+   },
+   "files": [
+      "dist",
+      "templates"
+   ],
+   "keywords": [
+      "malloy",
+      "publisher",
+      "scaffold",
+      "create",
+      "agent",
+      "skills"
+   ],
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/malloydata/publisher.git",
+      "directory": "packages/create-malloy-package"
+   },
+   "publishConfig": {
+      "access": "public"
+   },
+   "scripts": {
+      "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",
+      "prepack": "bun run build",
+      "prepublishOnly": "bun run scripts/check-pack.ts",
+      "check-pack": "bun run build && bun run scripts/check-pack.ts",
+      "pretypecheck": "cd ../skills && bun run build",
+      "typecheck": "bunx tsc --noEmit",
+      "lint": "bunx eslint ./src ./scripts --fix",
+      "format": "bunx prettier --write --parser typescript '{src,scripts,tests}/**/*.ts'",
+      "pretest": "cd ../skills && bun run build",
+      "test": "bun test src",
+      "pretest:e2e": "cd ../skills && bun run build",
+      "test:e2e": "bun test --timeout 180000 tests/e2e"
+   },
+   "dependencies": {
+      "@malloy-publisher/skills": "workspace:*",
+      "commander": "^12.1.0"
+   },
+   "devDependencies": {
+      "@eslint/js": "^8.57.0",
+      "@malloydata/malloy": "^0.0.422",
+      "@modelcontextprotocol/sdk": "^1.13.2",
+      "@types/bun": "^1.2.21",
+      "@types/node": "^24.10.0",
+      "@typescript-eslint/eslint-plugin": "^8.16.0",
+      "@typescript-eslint/parser": "^8.16.0",
+      "eslint": "^8.50.0",
+      "typescript": "^5.3.3"
+   }
+}
