@@ -2,7 +2,8 @@
 # Storefront — a guided tour
 
 A small but complete ecommerce model: an `order_items` fact joined to
-`customers` and `products`, over ~25,000 order lines across three years. Every
+`customers` and `products`, plus a `regions` lookup DuckDB reads straight from
+CSV, over ~25,000 order lines across three years. Every
 number below is composed from the model's reusable measures, so the metrics stay
 correct across joins (Malloy's symmetric aggregates). Open
 [`storefront.malloy`](storefront.malloy) to see how they're defined.
@@ -35,6 +36,12 @@ Sales by customer state. Malloy's `# shape_map` renders a US choropleth from a
 state name and a measure.
 >>>malloy
 run: order_items -> sales_by_state
+>>>markdown
+Rolled up to sales regions. The state-to-region mapping is a CSV sitting next to
+the Parquet in `data/`, and `duckdb.table()` reads both formats in place, so the
+lookup joins to the order data with no conversion step and no connection to set up.
+>>>malloy
+run: order_items -> sales_by_region
 >>>markdown
 ## Category mix — revenue and margin
 

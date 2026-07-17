@@ -112,7 +112,12 @@
 </main>
 
 <script src="/sdk/publisher.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+<!-- Vendored rather than loaded from a CDN: agent sandboxes and many corporate networks block CDNs,
+     and a blocked CDN leaves the page half-drawn: the script never runs, so the
+     charts and everything drawn after them come up empty.
+     This is chart.js@4.5.0's dist/chart.umd.js (MIT), minus its trailing
+     sourceMappingURL line since the .map file is not vendored. -->
+<script src="./vendor/chart.umd.js"></script>
 <script type="module">
   const MODEL = "storefront.malloy";
   const usd = (n) => (n ?? 0).toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
