@@ -1488,9 +1488,13 @@ export class EnvironmentStore {
                `Failed to download or mount location "${groupedLocation}"`,
                errorData,
             );
-            throw new PackageNotFoundError(
-               `Failed to download or mount location: ${groupedLocation}`,
-            );
+            // Isolate the failure to the packages at this location instead of
+            // aborting the whole environment. The packages that mounted still
+            // serve; each package here is left un-mounted, so its configured
+            // status entry (set in addEnvironment) resolves to a per-package
+            // load failure that getFailedPackages() -> /status loadErrors
+            // reports. A bad location now behaves like a bad manifest: one
+            // package dropped, siblings unaffected.
          }
          try {
             // Clean up temporary download directory
