@@ -642,10 +642,16 @@ export class Environment {
                   // Or it timed out
                   // Redact before this reaches getStatus: compiling a model
                   // resolves the package's connections, so a Postgres/DuckLake
-                  // ATTACH failure surfaces here, and that command carries
-                  // `password=` (connection.ts builds it, and redacts it before
-                  // logging for the same reason). A log line was the old
-                  // destination; this one is an HTTP response body.
+                  // ATTACH failure surfaces here carrying the connection string
+                  // (connection.ts builds it, and redacts it before logging for
+                  // the same reason). A log line was the old destination; this
+                  // one is an HTTP response body.
+                  //
+                  // Reduces the exposure, does not remove it: redactPgSecrets
+                  // only covers keyword-form `password=`, which is what
+                  // buildPgConnectionString emits. A URL-form connectionString
+                  // supplied verbatim in config still carries its credentials
+                  // through. Widen the helper rather than trusting this call.
                   this.failedPackages.set(
                      packageName,
                      redactPgSecrets(
