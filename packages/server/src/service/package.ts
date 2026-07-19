@@ -956,10 +956,18 @@ export class Package {
     *
     * A name already carrying a quote character is passed through verbatim (it
     * is already canonical SQL; control-plane-assigned names are sanitized to
-    * `[A-Za-z0-9_\-.]` and can never contain one). An entry with no
-    * `connectionName`, or one whose connection cannot be resolved, also binds
-    * verbatim — exactly the pre-change behavior, so nothing regresses when the
-    * producer didn't record the connection.
+    * `[A-Za-z0-9_\-.]` and can never contain one).
+    *
+    * Two cases bind verbatim, and they are NOT the same signal:
+    * - No `connectionName`: a bare/engine-folding producer that never recorded
+    *   a connection (simple_builder / malloy-cli). Expected and benign — the
+    *   pre-change behavior, bound silently, nothing regresses.
+    * - `connectionName` present but unresolvable: a genuine misconfiguration
+    *   (the connection was renamed/removed, or the manifest is out of sync with
+    *   this package's config). This one entry is degraded — but the source
+    *   would not serve regardless of quoting, since Malloy needs the connection
+    *   to run any query against it, so we degrade just this entry rather than
+    *   fail the whole package bind, and log at ERROR with a fix.
     */
    private async quoteBoundTableNames(
       entries: FreshnessManifest,
@@ -976,9 +984,15 @@ export class Package {
                );
                tableName = quoteTablePath(tableName, connection.dialectName);
             } catch (err) {
-               logger.warn(
-                  "Could not resolve manifest entry's connection; binding its " +
-                     "table name unquoted",
+               logger.error(
+                  `Manifest entry '${sourceEntityId}' names connection ` +
+                     `'${entry.connectionName}', which this package cannot ` +
+                     `resolve: binding its table path unquoted, so this source ` +
+                     `will not serve on a case-folding engine (and queries ` +
+                     `against it fail regardless, since Malloy needs the ` +
+                     `connection to run them). Fix: ensure a connection named ` +
+                     `'${entry.connectionName}' exists in this package's ` +
+                     `config, or rebuild the manifest against the current config.`,
                   {
                      packageName: this.packageName,
                      sourceEntityId,
