@@ -95,6 +95,7 @@ export async function fetchManifestEntries(
       }
       entries[sourceEntityId] = {
          tableName: physicalTableName,
+         connectionName: entry.connectionName,
          dataAsOf: entry.dataAsOf,
          freshnessWindowSeconds: entry.freshnessWindowSeconds,
          freshnessFallback: entry.freshnessFallback,

@@ -20,7 +20,6 @@ import {
 } from "../materialization_metrics";
 import {
    BuildInstruction,
-   BuildManifest,
    BuildManifestResult,
    BuildPlan,
    FreshnessManifest,
@@ -568,11 +567,17 @@ export class MaterializationService {
       // stamps freshness (dataAsOf/window/fallback) on the wire manifest it
       // distributes, not on this in-memory post-build load, so these sources are
       // bound un-gated (always serve the freshly-built table).
-      const manifestEntries: BuildManifest["entries"] = {};
+      const manifestEntries: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (entry.physicalTableName) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
+               // Carried so the bind step can quote the physical path for the
+               // connection's dialect (Package.quoteBoundTableNames) — the
+               // build CREATEd it quoted, so an unquoted read would miss on a
+               // case-folding engine in the window before the control plane's
+               // wire-manifest rebind.
+               connectionName: entry.connectionName,
             };
          }
       }

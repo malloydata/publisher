@@ -182,6 +182,13 @@ export interface BuildManifest {
  */
 export interface FreshnessAwareManifestEntry {
    tableName: string;
+   /**
+    * The connection the physical table lives on, carried from the wire
+    * manifest so the bind step can quote `tableName` for that connection's
+    * dialect (see Package.quoteBoundTableNames). Absent on entries whose
+    * producer didn't record it; those bind verbatim.
+    */
+   connectionName?: string;
    dataAsOf?: string;
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";

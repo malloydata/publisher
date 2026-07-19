@@ -44,6 +44,7 @@ import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
+import { quoteTablePath } from "./quoting";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
@@ -943,6 +944,55 @@ export class Package {
       return this.malloyConfig.connections.lookupConnection(connectionName);
    }
 
+   /**
+    * Quote each manifest entry's physical table path for its connection's
+    * dialect, mirroring the build side: the builder CREATEs the table with
+    * {@link quoteTablePath} (per-segment, case-preserved), so on a case-folding
+    * engine (Snowflake uppercases unquoted identifiers) the stored name is only
+    * reachable through the same quoting. Malloy pastes a manifest `tableName`
+    * into `FROM` verbatim by contract (a bare name means "let the engine
+    * fold"), so the case-preserving producer — us — must hand it the quoted
+    * form. Same module quotes CREATE and read: the two sides cannot drift.
+    *
+    * A name already carrying a quote character is passed through verbatim (it
+    * is already canonical SQL; control-plane-assigned names are sanitized to
+    * `[A-Za-z0-9_\-.]` and can never contain one). An entry with no
+    * `connectionName`, or one whose connection cannot be resolved, also binds
+    * verbatim — exactly the pre-change behavior, so nothing regresses when the
+    * producer didn't record the connection.
+    */
+   private async quoteBoundTableNames(
+      entries: FreshnessManifest,
+   ): Promise<FreshnessManifest> {
+      const out: FreshnessManifest = {};
+      for (const [sourceEntityId, entry] of Object.entries(entries)) {
+         let tableName = entry.tableName;
+         const alreadyQuoted =
+            tableName.includes('"') || tableName.includes("`");
+         if (entry.connectionName && !alreadyQuoted) {
+            try {
+               const connection = await this.getMalloyConnection(
+                  entry.connectionName,
+               );
+               tableName = quoteTablePath(tableName, connection.dialectName);
+            } catch (err) {
+               logger.warn(
+                  "Could not resolve manifest entry's connection; binding its " +
+                     "table name unquoted",
+                  {
+                     packageName: this.packageName,
+                     sourceEntityId,
+                     connectionName: entry.connectionName,
+                     error: err instanceof Error ? err.message : String(err),
+                  },
+               );
+            }
+         }
+         out[sourceEntityId] = { ...entry, tableName };
+      }
+      return out;
+   }
+
    public getMalloyConfig(): MalloyConfig {
       return this.malloyConfig;
    }
@@ -971,6 +1021,11 @@ export class Package {
     * — the caller (manifest service) decides how to retry.
     */
    public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+      // Quote each bound physical name for its connection's dialect BEFORE any
+      // projection: everything downstream (model hydration, the per-query
+      // freshness gate, /compile, /status) reads the entries recorded here, so
+      // this is the one place the write side's quoting is mirrored onto reads.
+      entries = await this.quoteBoundTableNames(entries);
       // Models are hydrated against the tableName-only projection; the freshness
       // fields gate the serve path per query (via getFreshBuildManifest), not
       // model hydration.
