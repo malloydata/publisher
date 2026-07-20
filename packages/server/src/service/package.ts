@@ -28,7 +28,10 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { formatDuration, logger } from "../logger";
-import { recordBuildPlanComputeDuration } from "../materialization_metrics";
+import {
+   recordBuildPlanComputeDuration,
+   recordManifestBindDegraded,
+} from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
    recordPackageLoadPhases,
@@ -44,7 +47,7 @@ import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
-import { quoteTablePath } from "./quoting";
+import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
@@ -975,15 +978,17 @@ export class Package {
       const out: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          let tableName = entry.tableName;
-         const alreadyQuoted =
-            tableName.includes('"') || tableName.includes("`");
-         if (entry.connectionName && !alreadyQuoted) {
+         if (entry.connectionName && !isQuotedIdentifierPath(tableName)) {
             try {
                const connection = await this.getMalloyConnection(
                   entry.connectionName,
                );
-               tableName = quoteTablePath(tableName, connection.dialectName);
+               tableName = quoteManifestTablePath(
+                  tableName,
+                  connection.dialectName,
+               );
             } catch (err) {
+               recordManifestBindDegraded();
                logger.error(
                   `Manifest entry '${sourceEntityId}' names connection ` +
                      `'${entry.connectionName}', which this package cannot ` +

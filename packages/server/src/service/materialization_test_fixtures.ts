@@ -120,6 +120,12 @@ export function fakeSource(opts: {
    freshnessSchedule?: FakeFreshnessSchedule;
    /** Model-file-level (`##`) freshness default. */
    modelFreshnessSchedule?: FakeFreshnessSchedule;
+   /**
+    * Spy on the args Malloy's SQL generation is handed — chiefly the
+    * `buildManifest` that resolves upstream persist references — so a test can
+    * assert what physical name a downstream build sees for its upstream.
+    */
+   onGetSQL?: (sqlOpts: unknown) => void;
 }): PersistSource {
    const fields = opts.annotationFields;
    return {
@@ -128,7 +134,10 @@ export function fakeSource(opts: {
       connectionName: opts.connectionName ?? "duckdb",
       dialectName: opts.dialectName ?? "duckdb",
       makeBuildId: () => opts.sourceEntityId,
-      getSQL: () => opts.sql ?? "SELECT 1",
+      getSQL: (sqlOpts?: unknown) => {
+         opts.onGetSQL?.(sqlOpts);
+         return opts.sql ?? "SELECT 1";
+      },
       annotations: {
          parseAsTag: () => ({
             tag: fakeTag(fields, opts.freshnessSchedule),

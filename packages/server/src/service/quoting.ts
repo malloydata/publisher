@@ -43,3 +43,36 @@ export function quoteTablePath(tableName: string, dialect: string): string {
       .map((segment) => quoteIdentifier(segment, dialect))
       .join(".");
 }
+
+/**
+ * Whether a table path already carries a dialect quote character, in which case
+ * it is treated as canonical SQL that must not be re-quoted. The single
+ * definition of "already quoted" shared by every bind site.
+ */
+export function isQuotedIdentifierPath(tableName: string): boolean {
+   return tableName.includes('"') || tableName.includes("`");
+}
+
+/**
+ * Quote a physical table path for a manifest entry so a Malloy `FROM` resolves
+ * it correctly, unless it is already canonical SQL (passed through unchanged).
+ * This is the single quoting authority for the two places a physical name is
+ * bound into a `FROM`: the serve-side bind ({@link Package.quoteBoundTableNames})
+ * and the build-side manifest that stitches chained persist sources together
+ * (materialization_service). Both must mirror the CREATE side's
+ * {@link quoteTablePath} so a case-folding engine (Snowflake uppercases
+ * unquoted identifiers) can resolve the case-preserved table the builder wrote.
+ *
+ * Passing an already-quoted name through is safe for the names this handles:
+ * control-plane physical names are logical/unquoted (never contain a quote),
+ * and a self-assigned `#@ persist name=` value is the author's own canonical
+ * SQL (they own quoting it for the dialect).
+ */
+export function quoteManifestTablePath(
+   tableName: string,
+   dialect: string,
+): string {
+   return isQuotedIdentifierPath(tableName)
+      ? tableName
+      : quoteTablePath(tableName, dialect);
+}

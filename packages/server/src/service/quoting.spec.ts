@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { bareTableName, quoteIdentifier, quoteTablePath } from "./quoting";
+import {
+   bareTableName,
+   isQuotedIdentifierPath,
+   quoteIdentifier,
+   quoteManifestTablePath,
+   quoteTablePath,
+} from "./quoting";
 
 describe("bareTableName", () => {
    it("returns the segment after the last dot for a qualified name", () => {
@@ -75,5 +81,55 @@ describe("quoteTablePath", () => {
    it("quotes a bare (unqualified) name", () => {
       expect(quoteTablePath("t_ab12_v0", "standardsql")).toBe("`t_ab12_v0`");
       expect(quoteTablePath("t_ab12_v0", "postgres")).toBe('"t_ab12_v0"');
+   });
+});
+
+describe("isQuotedIdentifierPath", () => {
+   it("is false for a logical, unquoted path (the control-plane form)", () => {
+      expect(isQuotedIdentifierPath("schema.order_summary__g0")).toBe(false);
+      expect(isQuotedIdentifierPath("order_summary")).toBe(false);
+   });
+
+   it("is true once any segment carries a dialect quote char", () => {
+      expect(isQuotedIdentifierPath('"schema"."order_summary"')).toBe(true);
+      expect(isQuotedIdentifierPath("`ds`.`events`")).toBe(true);
+   });
+});
+
+// quoteManifestTablePath is the single quoting authority both the serve-side
+// bind and the build-side manifest route through. It runs the real
+// quoteTablePath (not a re-implementation), so this pins the exact per-dialect
+// contract that keeps read (a Malloy FROM) byte-identical to write (the CREATE
+// DDL, which also quotes via quoteTablePath) on every dialect — case-folding or
+// not.
+describe("quoteManifestTablePath", () => {
+   it("double-quotes each segment on a case-folding double-quote dialect (Snowflake)", () => {
+      expect(
+         quoteManifestTablePath("schema.order_summary__g0", "snowflake"),
+      ).toBe('"schema"."order_summary__g0"');
+   });
+
+   it("double-quotes on Postgres and DuckDB (unchanged for lowercase names, correct for mixed case)", () => {
+      expect(quoteManifestTablePath("public.daily", "postgres")).toBe(
+         '"public"."daily"',
+      );
+      expect(quoteManifestTablePath("main.orders_mz", "duckdb")).toBe(
+         '"main"."orders_mz"',
+      );
+   });
+
+   it("backticks each segment on BigQuery (standardsql) — required for hyphenated ids", () => {
+      expect(quoteManifestTablePath("my-proj.ds.events", "standardsql")).toBe(
+         "`my-proj`.`ds`.`events`",
+      );
+   });
+
+   it("passes an already-quoted name through unchanged (any dialect)", () => {
+      expect(quoteManifestTablePath('"schema"."already"', "snowflake")).toBe(
+         '"schema"."already"',
+      );
+      expect(quoteManifestTablePath("`ds`.`events`", "standardsql")).toBe(
+         "`ds`.`events`",
+      );
    });
 });

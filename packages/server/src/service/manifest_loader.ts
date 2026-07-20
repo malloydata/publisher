@@ -58,11 +58,14 @@ async function readManifestBytes(uri: string): Promise<string> {
 
 /**
  * Fetch and parse the control-plane-computed build manifest at `uri`, returning
- * the full wire binding map (`sourceEntityId -> { tableName, dataAsOf,
- * freshnessWindowSeconds, freshnessFallback }`). The wire manifest keys physical
- * tables under `physicalTableName`; the Malloy runtime consumes `tableName`, so
- * we translate that field here but otherwise carry the control-plane freshness
- * fields verbatim so the serve path can gate `age vs window` per query. Entries
+ * the full wire binding map (`sourceEntityId -> { tableName, connectionName,
+ * dataAsOf, freshnessWindowSeconds, freshnessFallback }`). The wire manifest
+ * keys physical tables under `physicalTableName`; the Malloy runtime consumes
+ * `tableName`, so we translate that field here but otherwise carry the
+ * control-plane fields verbatim — the freshness fields so the serve path can
+ * gate `age vs window` per query, and `connectionName` so the bind step can
+ * quote the path for that connection's dialect (see
+ * Package.quoteBoundTableNames). Entries
  * missing a physical table are skipped. This is a pure fetch + parse: it does
  * **not** filter on freshness (that happens per query on the serve path). Throws
  * if the URI can't be read or parsed.

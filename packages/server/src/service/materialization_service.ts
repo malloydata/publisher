@@ -14,6 +14,7 @@ import {
    MaterializationMode,
    recordAutoLoadOutcome,
    recordDropTables,
+   recordManifestBindDegraded,
    recordMaterializationRun,
    recordSourceBuildDuration,
    recordSourcesOutcome,
@@ -40,7 +41,12 @@ import {
    iterGraphSources,
 } from "./build_plan";
 import { EnvironmentStore } from "./environment_store";
-import { bareTableName, quoteIdentifier, quoteTablePath } from "./quoting";
+import {
+   bareTableName,
+   quoteIdentifier,
+   quoteManifestTablePath,
+   quoteTablePath,
+} from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
 
 /**
@@ -509,9 +515,13 @@ export class MaterializationService {
    /**
     * Project the caller-supplied upstream reference manifest into the seed
     * entry map `executeInstructedBuild` consumes. Each reference is keyed by the
-    * compiler's manifest-lookup sourceEntityId and carries only the physical
-    * table name — enough for the build Manifest to resolve a downstream persist
-    * reference to the existing table without rebuilding the upstream.
+    * compiler's manifest-lookup sourceEntityId and carries the physical table
+    * name plus the connection it lives on — enough for the build Manifest to
+    * resolve a downstream persist reference to the existing table, and to quote
+    * that reference for the connection's dialect so it resolves on a
+    * case-folding engine (see {@link quoteSeedTablePath}). `connectionName` is
+    * optional on the wire: an older control plane that omits it seeds unquoted,
+    * exactly as before.
     */
    private referenceManifestToEntries(
       referenceManifest: ManifestReference[] | undefined,
@@ -521,6 +531,7 @@ export class MaterializationService {
          entries[ref.sourceEntityId] = {
             sourceEntityId: ref.sourceEntityId,
             physicalTableName: ref.physicalTableName,
+            connectionName: ref.connectionName,
          };
       }
       return entries;
@@ -636,6 +647,43 @@ export class MaterializationService {
    }
 
    /**
+    * Quote a seeded upstream's physical path for the in-memory build Manifest,
+    * mirroring the CREATE side ({@link quoteManifestTablePath}) so a downstream
+    * persist source resolves the reference on a case-folding engine. The seed's
+    * own connection (carried on the entry) supplies the dialect. If it can't be
+    * resolved — an older control plane omitted `connectionName`, or the named
+    * connection isn't part of this build — the path binds unquoted: the build
+    * then fails loudly at the downstream CREATE on a case-folding engine (a
+    * self-signaling miss, unlike the serve path), and is unaffected elsewhere.
+    */
+   private quoteSeedTablePath(
+      sourceEntityId: string,
+      physicalTableName: string,
+      connectionName: string | undefined,
+      connections: Map<string, MalloyConnection>,
+   ): string {
+      const connection = connectionName
+         ? connections.get(connectionName)
+         : undefined;
+      if (!connection) {
+         // A named-but-absent connection is a real gap (the seed can't be
+         // quoted); a missing name is the benign older-CP default. Only the
+         // former is worth a signal.
+         if (connectionName) {
+            recordManifestBindDegraded();
+            logger.warn(
+               "Seeded upstream names a connection not present in this build; " +
+                  "leaving its manifest path unquoted (a downstream build will " +
+                  "fail on a case-folding engine)",
+               { sourceEntityId, connectionName },
+            );
+         }
+         return physicalTableName;
+      }
+      return quoteManifestTablePath(physicalTableName, connection.dialectName);
+   }
+
+   /**
     * Shared build loop for both auto-run and orchestrated builds. Seeds the
     * manifest with carried-forward (reused) upstream entries so downstream
     * references resolve, then builds each instructed source in dependency
@@ -679,8 +727,19 @@ export class MaterializationService {
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
          if (entry.physicalTableName) {
+            // The build Manifest feeds a downstream persist's `FROM` verbatim,
+            // so a seeded upstream must carry the SAME quoting the builder
+            // CREATEd it with — else the downstream CREATE misses the
+            // case-preserved table on a case-folding engine. The seed keeps its
+            // logical (unquoted) name in `entries` (the committed manifest, in
+            // logical-name space); only the in-memory build Manifest is quoted.
             manifest.update(sourceEntityId, {
-               tableName: entry.physicalTableName,
+               tableName: this.quoteSeedTablePath(
+                  sourceEntityId,
+                  entry.physicalTableName,
+                  entry.connectionName,
+                  connections,
+               ),
             });
          }
          entries[sourceEntityId] = entry;
@@ -782,7 +841,12 @@ export class MaterializationService {
       }
 
       // Make this table visible to downstream sources built later in this run.
-      manifest.update(sourceEntityId, { tableName: physicalTableName });
+      // Record the SAME quoted path the CREATE used (not the logical name): the
+      // build Manifest is pasted into a downstream `FROM` verbatim, so on a
+      // case-folding engine an unquoted name would miss the case-preserved table
+      // just written. The returned entry (below) keeps the logical name for the
+      // committed manifest; only this in-memory build Manifest is quoted.
+      manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
       recordSourceBuildDuration(durationMs);
