@@ -609,6 +609,110 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors?.[0]?.message).toBeTruthy();
    });
 
+   it("should stop reporting a failed package once it is deleted", async () => {
+      const goodPackageName = "good-package";
+      const badPackageName = "bad-package";
+      const goodPackagePath = path.join(serverRootPath, goodPackageName);
+      const badPackagePath = path.join(serverRootPath, badPackageName);
+
+      mkdirSync(goodPackagePath, { recursive: true });
+      writeFileSync(
+         path.join(goodPackagePath, "publisher.json"),
+         JSON.stringify({ name: goodPackageName }),
+      );
+      mkdirSync(badPackagePath, { recursive: true });
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     { name: goodPackageName, location: goodPackagePath },
+                     { name: badPackageName, location: badPackagePath },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      expect((await newEnvironmentStore.getStatus()).loadErrors).toHaveLength(
+         1,
+      );
+
+      // A package that failed to load was evicted from `packages`, so the
+      // delete takes deletePackage's early return. The failure entry has to be
+      // cleared anyway: the caller goes on to drop the package's config row,
+      // and a loadError naming a package that is no longer configured sends
+      // whoever reads /status hunting for something that isn't there.
+      await environment.deletePackage(badPackageName);
+
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.operationalState).toBe("serving");
+      expect(status.loadErrors).toBeUndefined();
+      expect((await environment.listPackages()).map((p) => p.name)).toEqual([
+         goodPackageName,
+      ]);
+   });
+
+   it("should stop reporting a failed package once it loads", async () => {
+      const badPackageName = "bad-package";
+      const badPackagePath = path.join(serverRootPath, badPackageName);
+
+      // No manifest, so it fails to load and lands in loadErrors.
+      mkdirSync(badPackagePath, { recursive: true });
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     { name: badPackageName, location: badPackagePath },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      expect((await newEnvironmentStore.getStatus()).loadErrors).toHaveLength(
+         1,
+      );
+
+      // Fix the package where the environment actually reads it, then re-add
+      // it. A package that is serving must not still be reported as failed.
+      writeFileSync(
+         path.join(
+            environment.metadata.location as string,
+            badPackageName,
+            "publisher.json",
+         ),
+         JSON.stringify({ name: badPackageName }),
+      );
+      await environment.addPackage(badPackageName);
+
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.operationalState).toBe("serving");
+      expect(status.loadErrors).toBeUndefined();
+      expect((await environment.listPackages()).map((p) => p.name)).toEqual([
+         badPackageName,
+      ]);
+   });
+
    it("should handle project updates", async () => {
       // Create a project directory
       const projectPath = path.join(serverRootPath, projectName);

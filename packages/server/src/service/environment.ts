@@ -1005,6 +1005,10 @@ export class Environment {
          throw error;
       }
       this.setPackageStatus(packageName, PackageStatus.SERVING);
+      // Same reasoning as the load and install paths: it is serving now, so an
+      // earlier boot failure is stale. Without this, a package fixed on disk
+      // and re-added keeps its loadError for the life of the process.
+      this.failedPackages.delete(packageName);
       return this.packages.get(packageName);
    }
 
@@ -1564,6 +1568,14 @@ export class Environment {
    public async deletePackage(packageName: string): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
+         // Clear the load failure before the early return, not after it. A
+         // package that failed to load is not in `packages` (the load catch
+         // evicts it), so deleting it takes the early return every time, while
+         // the controller still drops its config row. Leaving the entry would
+         // make getStatus report a loadError for a package that is no longer
+         // configured, which is the one thing that channel must not do.
+         this.failedPackages.delete(packageName);
+
          const _package = this.packages.get(packageName);
          if (!_package) {
             return;
