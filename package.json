@@ -48,7 +48,10 @@
     "prettier:write": "bunx prettier './packages/**/*.{ts,tsx}' --write",
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
     "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js",
-    "validate-pg-sync": "bun scripts/sync-pg-version.js"
+    "validate-pg-sync": "bun scripts/sync-pg-version.js",
+    "generate:example-data": "node scripts/generate-example-data.mjs",
+    "docs:screenshots": "node scripts/capture-screenshots.mjs",
+    "docs:recordings": "node scripts/capture-recordings.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",
@@ -76,13 +79,10 @@
   "resolutions": {
     "pg": "8.7.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.421",
+    "@malloydata/malloy-interfaces": "^0.0.422",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.421",
-    "@malloydata/malloy-filter": "^0.0.421",
-    "@malloydata/malloy-tag": "^0.0.421"
-  },
-  "patchedDependencies": {
-    "@malloydata/malloy@0.0.421": "patches/@malloydata%2Fmalloy@0.0.421.patch"
+    "@malloydata/malloy-query-builder": "^0.0.422",
+    "@malloydata/malloy-filter": "^0.0.422",
+    "@malloydata/malloy-tag": "^0.0.422"
   }
 }

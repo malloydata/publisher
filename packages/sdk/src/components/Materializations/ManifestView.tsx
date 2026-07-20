@@ -10,6 +10,7 @@ import {
 } from "@mui/material";
 import { ManifestEntry } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
+import SectionLabel from "./SectionLabel";
 import { formatTimestamp } from "./utils";
 
 type ManifestViewProps = {
@@ -31,9 +32,7 @@ export default function ManifestView({ entries, builtAt }: ManifestViewProps) {
             alignItems="baseline"
             justifyContent="space-between"
          >
-            <Typography variant="subtitle2" gutterBottom>
-               Build manifest
-            </Typography>
+            <SectionLabel>Build manifest</SectionLabel>
             {builtAt && (
                <Typography variant="caption" color="text.secondary">
                   Built {formatTimestamp(builtAt)}

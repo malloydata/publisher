@@ -8,7 +8,7 @@ import {
 } from "./helpers/navigation";
 import { getPublisherStatus } from "./helpers/publisherStatus";
 
-const PKG = PACKAGES.ecommerce;
+const PKG = PACKAGES.storefront;
 
 // The runs list shows friendly status labels: in-progress phases read as
 // "Pending", the terminal success state as "Done", and failures/cancellations

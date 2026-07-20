@@ -1,5 +1,8 @@
 import { BadRequestError } from "../errors";
-import { BuildInstruction } from "../storage/DatabaseInterface";
+import {
+   BuildInstruction,
+   ManifestReference,
+} from "../storage/DatabaseInterface";
 import { MaterializationService } from "../service/materialization_service";
 
 export class MaterializationController {
@@ -17,23 +20,37 @@ export class MaterializationController {
       );
    }
 
+   // Whitelist: only these fields are read off the client body. `trigger` is
+   // deliberately NOT accepted here — it is service-level-only, defaulted to
+   // `ON_DEMAND` and set to `SCHEDULER` solely by the in-process scheduler
+   // (which calls the service directly, not this HTTP path). Do not add
+   // `trigger` to this parser, or an API caller could forge a scheduled run.
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
       sourceNames?: string[];
       buildInstructions?: BuildInstruction[];
+      referenceManifest?: ManifestReference[];
+      strictUpstreams?: boolean;
    } {
       const result: {
          forceRefresh?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
+         referenceManifest?: ManifestReference[];
+         strictUpstreams?: boolean;
       } = {};
       if (
          body.buildInstructions !== undefined &&
          body.buildInstructions !== null
       ) {
-         result.buildInstructions = this.validateBuildInstructions(
-            body.buildInstructions,
-         );
+         const parsed = this.validateBuildInstructions(body.buildInstructions);
+         result.buildInstructions = parsed.sources;
+         if (parsed.referenceManifest !== undefined) {
+            result.referenceManifest = parsed.referenceManifest;
+         }
+         if (parsed.strictUpstreams !== undefined) {
+            result.strictUpstreams = parsed.strictUpstreams;
+         }
       }
       if (body.forceRefresh !== undefined) {
          if (typeof body.forceRefresh !== "boolean") {
@@ -57,22 +74,74 @@ export class MaterializationController {
 
    /**
     * Validate the orchestrated `buildInstructions` payload (BuildInstructions:
-    * `{ sources: BuildInstruction[] }`) and flatten it to the instruction list
-    * the service consumes.
+    * `{ sources: BuildInstruction[], referenceManifest?, strictUpstreams? }`)
+    * into the parts the service consumes: the flattened instruction list, the
+    * optional upstream reference manifest, and the strict flag.
     */
-   private validateBuildInstructions(raw: unknown): BuildInstruction[] {
+   private validateBuildInstructions(raw: unknown): {
+      sources: BuildInstruction[];
+      referenceManifest?: ManifestReference[];
+      strictUpstreams?: boolean;
+   } {
       if (typeof raw !== "object" || raw === null) {
          throw new BadRequestError("buildInstructions must be an object");
       }
-      const sources = (raw as Record<string, unknown>).sources;
+      const obj = raw as Record<string, unknown>;
+      const sources = obj.sources;
       if (!Array.isArray(sources) || sources.length === 0) {
          throw new BadRequestError(
             "buildInstructions requires a non-empty 'sources' array of BuildInstruction",
          );
       }
-      return sources.map((instruction) =>
-         this.validateInstruction(instruction),
-      );
+      const result: {
+         sources: BuildInstruction[];
+         referenceManifest?: ManifestReference[];
+         strictUpstreams?: boolean;
+      } = {
+         sources: sources.map((instruction) =>
+            this.validateInstruction(instruction),
+         ),
+      };
+      if (
+         obj.referenceManifest !== undefined &&
+         obj.referenceManifest !== null
+      ) {
+         if (!Array.isArray(obj.referenceManifest)) {
+            throw new BadRequestError(
+               "buildInstructions.referenceManifest must be an array of ManifestReference",
+            );
+         }
+         result.referenceManifest = obj.referenceManifest.map((ref) =>
+            this.validateManifestReference(ref),
+         );
+      }
+      if (obj.strictUpstreams !== undefined) {
+         if (typeof obj.strictUpstreams !== "boolean") {
+            throw new BadRequestError(
+               "buildInstructions.strictUpstreams must be a boolean",
+            );
+         }
+         result.strictUpstreams = obj.strictUpstreams;
+      }
+      return result;
+   }
+
+   private validateManifestReference(raw: unknown): ManifestReference {
+      if (typeof raw !== "object" || raw === null) {
+         throw new BadRequestError("Each manifest reference must be an object");
+      }
+      const ref = raw as Record<string, unknown>;
+      for (const field of ["sourceEntityId", "physicalTableName"] as const) {
+         if (typeof ref[field] !== "string") {
+            throw new BadRequestError(
+               `Manifest reference is missing required string field '${field}'`,
+            );
+         }
+      }
+      return {
+         sourceEntityId: ref.sourceEntityId as string,
+         physicalTableName: ref.physicalTableName as string,
+      };
    }
 
    private validateInstruction(raw: unknown): BuildInstruction {
@@ -133,6 +202,16 @@ export class MaterializationController {
       return this.materializationService.listMaterializations(
          environmentName,
          packageName,
+         options,
+      );
+   }
+
+   async listEnvironmentMaterializations(
+      environmentName: string,
+      options?: { limit?: number; offset?: number },
+   ) {
+      return this.materializationService.listEnvironmentMaterializations(
+         environmentName,
          options,
       );
    }

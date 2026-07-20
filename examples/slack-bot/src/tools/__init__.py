@@ -1,1 +1,0 @@
-# LangChain tools for Malloy operations

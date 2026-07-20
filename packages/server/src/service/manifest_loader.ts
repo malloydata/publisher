@@ -4,7 +4,7 @@ import * as fs from "fs/promises";
 import { fileURLToPath } from "url";
 import { components } from "../api";
 import { logger } from "../logger";
-import { BuildManifest } from "../storage/DatabaseInterface";
+import { FreshnessManifest } from "../storage/DatabaseInterface";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 
@@ -58,14 +58,18 @@ async function readManifestBytes(uri: string): Promise<string> {
 
 /**
  * Fetch and parse the control-plane-computed build manifest at `uri`, returning
- * the Malloy-runtime binding map (`sourceEntityId -> { tableName }`). The wire manifest
- * keys physical tables under `physicalTableName`; the Malloy runtime consumes
- * `tableName`, so we translate here. Entries missing a physical table are
- * skipped. Throws if the URI can't be read or parsed.
+ * the full wire binding map (`sourceEntityId -> { tableName, dataAsOf,
+ * freshnessWindowSeconds, freshnessFallback }`). The wire manifest keys physical
+ * tables under `physicalTableName`; the Malloy runtime consumes `tableName`, so
+ * we translate that field here but otherwise carry the control-plane freshness
+ * fields verbatim so the serve path can gate `age vs window` per query. Entries
+ * missing a physical table are skipped. This is a pure fetch + parse: it does
+ * **not** filter on freshness (that happens per query on the serve path). Throws
+ * if the URI can't be read or parsed.
  */
 export async function fetchManifestEntries(
    uri: string,
-): Promise<BuildManifest["entries"]> {
+): Promise<FreshnessManifest> {
    const raw = await readManifestBytes(uri);
 
    let parsed: WireBuildManifest;
@@ -79,7 +83,7 @@ export async function fetchManifestEntries(
       );
    }
 
-   const entries: BuildManifest["entries"] = {};
+   const entries: FreshnessManifest = {};
    for (const [sourceEntityId, entry] of Object.entries(parsed.entries ?? {})) {
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
@@ -89,7 +93,12 @@ export async function fetchManifestEntries(
          });
          continue;
       }
-      entries[sourceEntityId] = { tableName: physicalTableName };
+      entries[sourceEntityId] = {
+         tableName: physicalTableName,
+         dataAsOf: entry.dataAsOf,
+         freshnessWindowSeconds: entry.freshnessWindowSeconds,
+         freshnessFallback: entry.freshnessFallback,
+      };
    }
    return entries;
 }

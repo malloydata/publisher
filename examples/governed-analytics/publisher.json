@@ -1,0 +1,7 @@
+{
+  "name": "governed-analytics",
+  "version": "1.0.0",
+  "description": "Givens, authorization, row-level access, and discovery curation in one small package.",
+  "explores": ["orders.malloy", "secured.malloy"],
+  "queryableSources": "declared"
+}

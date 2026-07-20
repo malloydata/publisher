@@ -10,9 +10,25 @@ import {
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
 import { EnvironmentStore } from "../../service/environment_store";
-import { getMalloyErrorDetails, type ErrorDetails } from "../error_messages";
-import { buildMalloyUri, getModelForQuery } from "../handler_utils";
+import { type ErrorDetails } from "../error_messages";
+import {
+   buildMalloyUri,
+   classifyToolError,
+   getModelForQuery,
+} from "../handler_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
+
+/**
+ * Malloy's two ways of saying a name is not in the model's namespace: a bare
+ * reference ("Reference to undefined object 'x'") and a name used where the
+ * compiler expected a definition ("'x' is not defined").
+ */
+function isUndefinedNameError(message: string): boolean {
+   return (
+      message.includes("is not defined") ||
+      message.includes("Reference to undefined object")
+   );
+}
 
 // Zod shape defining required/optional params for executeQuery
 const executeQueryShape = {
@@ -20,12 +36,12 @@ const executeQueryShape = {
    environmentName: z
       .string()
       .describe(
-         "Environment name. Names are listed in the malloy resource list.",
+         "Environment name. Call malloy_getContext with no arguments to list the available environments.",
       ),
    packageName: z
       .string()
       .describe(
-         "Package containing the model. Package names are listed in the malloy resource list.",
+         "Package containing the model. Call malloy_getContext with just environmentName to list its packages.",
       ),
    modelPath: z.string().describe("Path to the .malloy model file"),
    query: z.string().optional().describe("Ad-hoc Malloy query code"),
@@ -267,17 +283,34 @@ export function registerExecuteQueryTool(
                `[MCP Server Error] Error executing query in ${environmentName}/${packageName}/${modelPath}:`,
                { error: queryError },
             );
-            const errorDetails: ErrorDetails = getMalloyErrorDetails(
+            // Home the error by class first. tryAcquireQuerySlot runs inside
+            // this try, so at the concurrency cap a ServiceUnavailableError
+            // lands here; funnelling that through the Malloy helper told the
+            // agent to check its syntax when the answer was to retry.
+            const errorDetails: ErrorDetails = classifyToolError(
                "executeQuery",
                `${environmentName}/${packageName}/${modelPath}`, // Include environment
                queryError,
             );
 
+            // A name the model does not define reads as a typo, and the
+            // suggestions say so. But the same error is what an author gets
+            // after saving a new source or view: the served model is the one
+            // compiled at boot, so the name exists on disk and not in memory.
+            // Point at the reload rather than let them hunt for a typo that
+            // isn't there.
+            const suggestions = [...errorDetails.suggestions];
+            if (isUndefinedNameError(errorDetails.message)) {
+               suggestions.push(
+                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call malloy_reloadPackage for this package, then retry.",
+               );
+            }
+
             // Format error details as structured JSON
             const errorJson = JSON.stringify(
                {
                   error: errorDetails.message,
-                  suggestions: errorDetails.suggestions,
+                  suggestions,
                },
                null,
                2,

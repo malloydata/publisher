@@ -1,0 +1,56 @@
+>>>markdown
+# Storefront — a guided tour
+
+A small but complete ecommerce model: an `order_items` fact joined to
+`customers` and `products`, over ~25,000 order lines across three years. Every
+number below is composed from the model's reusable measures, so the metrics stay
+correct across joins (Malloy's symmetric aggregates). Open
+[`storefront.malloy`](storefront.malloy) to see how they're defined.
+>>>malloy
+import "storefront.malloy"
+>>>markdown
+## Business overview
+
+One `# dashboard` view, one query: KPI tiles plus a monthly trend, a
+sales-by-state map, a category breakdown, and the top products.
+>>>malloy
+run: order_items -> business_overview
+>>>markdown
+## Growth, year over year
+
+Revenue by calendar year — the business is growing.
+>>>malloy
+run: order_items -> sales_by_year
+>>>markdown
+## Seasonality
+
+The same months, one line per year. The holiday quarter lifts every year, and
+each year sits above the last.
+>>>malloy
+run: order_items -> seasonality
+>>>markdown
+## Where the revenue is
+
+Sales by customer state. Malloy's `# shape_map` renders a US choropleth from a
+state name and a measure.
+>>>malloy
+run: order_items -> sales_by_state
+>>>markdown
+## Category mix — revenue and margin
+
+Revenue and gross margin tell different stories: the biggest sellers aren't
+always the most profitable.
+>>>malloy
+run: order_items -> by_category
+>>>malloy
+run: order_items -> margin_by_category
+>>>markdown
+## Top brands
+>>>malloy
+run: order_items -> top_brands
+>>>markdown
+## Top products and customers
+>>>malloy
+run: order_items -> top_products
+>>>malloy
+run: order_items -> top_customers

@@ -1,5 +1,5 @@
 {
   "name": "html-data-app",
   "version": "0.0.1",
-  "description": "In-package HTML data app demo. Put your web files in a public/ directory next to your .malloy files and Publisher serves them at /environments/<env>/packages/<pkg>/<file>. Live reload, embeddable iframe, no build step."
+  "description": "In-package HTML data app demo — a SaaS subscriptions dashboard. Put your web files in a public/ directory next to your .malloy files and Publisher serves them at /environments/<env>/packages/<pkg>/<file>. Live reload, embeddable iframe, no build step."
 }

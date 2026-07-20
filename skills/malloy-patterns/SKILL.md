@@ -1,11 +1,13 @@
 ---
 name: malloy-patterns
-description: Index of Malloy documentation topics. Use to discover what's available in malloy_searchDocs. Covers language reference (sources, queries, views, fields, aggregates, joins, filters, expressions, functions), common patterns (YoY, cohorts, percent of total), rendering, and experimental features.
+description: Index of Malloy documentation topics. Use to discover what's available in search_malloy_docs. Covers language reference (sources, queries, views, fields, aggregates, joins, filters, expressions, functions), common patterns (YoY, cohorts, percent of total), rendering, and experimental features.
 ---
 
 # Malloy Documentation Topics
 
-Call `malloy_searchDocs` with these topics.
+Call `search_malloy_docs` with these topics.
+
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Language Reference
 
@@ -64,6 +66,8 @@ Call `malloy_searchDocs` with these topics.
 
 ## Database Dialects
 
+These search terms find docs on dialect-specific SQL *functions* available inside expressions. Malloy models themselves are dialect-portable - the connection supplies the dialect, so you don't write "BigQuery-specific" (or any vendor-specific) Malloy.
+
 | Dialect | Search for... |
 |---------|---------------|
 | BigQuery | `"bigquery"` |
@@ -108,6 +112,6 @@ Call `malloy_searchDocs` with these topics.
 ## Example
 
 ```
-Call: malloy_searchDocs
+Call: search_malloy_docs
 Parameters: { question: "How do I use window functions in Malloy?" }
 ```

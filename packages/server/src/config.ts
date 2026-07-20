@@ -71,7 +71,13 @@ function resolvePublisherConfigPath(serverRoot: string): {
    return null;
 }
 
-type FilesystemPath = `./${string}` | `../${string}` | `/${string}`;
+// Home paths are POSIX form only: `~/` expands, while bare `~`, `~user/…`,
+// and Windows-style `~\` are not local paths and are rejected downstream.
+type FilesystemPath =
+   | `./${string}`
+   | `../${string}`
+   | `/${string}`
+   | `~/${string}`;
 type GcsPath = `gs://${string}`;
 type ApiConnection = components["schemas"]["Connection"];
 export type Theme = components["schemas"]["Theme"];
@@ -257,6 +263,72 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
 };
 
 /**
+ * Tunables for the standalone {@link MaterializationScheduler}. Sourced from
+ * environment variables at startup; see {@link getMaterializationSchedulerConfig}.
+ *
+ * The scheduler fires a package's `materialization.schedule` cron in **standalone**
+ * deployments (no control plane). It is **disabled by default** — an orchestrated
+ * deployment, whose control plane already drives materialization, never sets the
+ * enable flag, so the scheduler is never constructed there.
+ */
+export interface MaterializationSchedulerConfig {
+   /** Cadence of the due-schedule sweep, in milliseconds. */
+   tickIntervalMs: number;
+   /** Max packages fired per tick — a stampede guard for large deployments. */
+   maxFiresPerTick: number;
+}
+
+const DEFAULT_SCHEDULER_INTERVAL_MS = 60_000;
+const MIN_SCHEDULER_INTERVAL_MS = 1_000;
+const DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK = 10;
+
+/**
+ * Parse standalone-scheduler settings and return a validated config, or `null`
+ * when the feature is disabled. Disabled iff
+ * `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is unset/false — the default — so
+ * the scheduler never runs in an orchestrated deployment (where the control
+ * plane drives materialization itself).
+ *
+ * **Never set `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` on an orchestrated
+ * worker.** It is the primary safety guard: a control-plane-loaded package that
+ * is serving live has `manifestLocation === null`, so the scheduler's
+ * per-package `manifestLocation` skip does not cover it — only this flag being
+ * off keeps the standalone scheduler from double-driving the control plane.
+ *
+ * Throws at startup on malformed input so a typo surfaces loudly rather than
+ * silently disabling scheduling.
+ */
+export const getMaterializationSchedulerConfig =
+   (): MaterializationSchedulerConfig | null => {
+      const enabled =
+         parseBoolEnv("PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER") ?? false;
+      if (!enabled) {
+         return null;
+      }
+
+      const tickIntervalMs =
+         parseIntEnv("PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS") ??
+         DEFAULT_SCHEDULER_INTERVAL_MS;
+      const maxFiresPerTick =
+         parseIntEnv(
+            "PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK",
+         ) ?? DEFAULT_SCHEDULER_MAX_FIRES_PER_TICK;
+
+      if (tickIntervalMs < MIN_SCHEDULER_INTERVAL_MS) {
+         throw new Error(
+            `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS must be >= ${MIN_SCHEDULER_INTERVAL_MS} (got ${tickIntervalMs})`,
+         );
+      }
+      if (maxFiresPerTick <= 0) {
+         throw new Error(
+            `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK must be a positive integer (got ${maxFiresPerTick})`,
+         );
+      }
+
+      return { tickIntervalMs, maxFiresPerTick };
+   };
+
+/**
  * Resolve the row cap applied to ad-hoc connection SQL queries.
  * Reads `PUBLISHER_MAX_QUERY_ROWS`; falls back to
  * {@link DEFAULT_MAX_QUERY_ROWS} when unset or empty.
@@ -403,6 +475,35 @@ function processConfigValue(value: unknown): unknown {
 
    return value;
 }
+
+/**
+ * Absolute directory that a relative package `location` is resolved against:
+ * the one holding the active config file.
+ *
+ * Null when there is nothing sensible to anchor to, leaving the caller to pick
+ * a base. That covers three cases: no config at all; the bundled default, which
+ * lives inside the installed package, where anchoring a user's relative path
+ * somewhere under node_modules would be meaningless (and which declares only
+ * remote locations of its own); and a `--config` that names a directory rather
+ * than a file, which cannot be read as a config, so its parent is not an anchor
+ * anyone asked for.
+ */
+export const getPublisherConfigDir = (serverRoot: string): string | null => {
+   const resolved = resolvePublisherConfigPath(serverRoot);
+   if (!resolved || resolved.isBundledDefault) {
+      return null;
+   }
+   try {
+      if (!fs.statSync(resolved.path).isFile()) {
+         return null;
+      }
+   } catch {
+      return null;
+   }
+   // Resolve: `--config` may be relative, and an anchor that is itself relative
+   // would re-resolve against the cwd of whoever reads it.
+   return path.resolve(path.dirname(resolved.path));
+};
 
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    const resolved = resolvePublisherConfigPath(serverRoot);

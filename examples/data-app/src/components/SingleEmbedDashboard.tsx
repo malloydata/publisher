@@ -6,7 +6,7 @@ import { useState, useEffect } from "react";
 export default function SingleEmbedDashboard({
   selectedView,
 }: {
-  selectedView: "malloySamples" | "singleEmbed" | "dynamicDashboard";
+  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
 }) {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -15,7 +15,7 @@ export default function SingleEmbedDashboard({
   // Copy the embedded query string from your dashboard or notebook
   // and paste it here. Make sure to keep the backticks and quotes intact.
   // Example format: {"modelPath":"your-model.malloynb","query":"your query here","optionalPackageName":"your-package","optionalProjectName":"your-project","resourceUri":"..."}
-  const rawEmbeddedQuery = `{"modelPath":"names1.malloynb","query":"# line_chart\\nrun: names -> {\\n group_by: decade\\n  aggregate: total_population\\n  order_by: decade\\n}","optionalPackageName":"names","optionalProjectName":"malloy-samples","resourceUri":"publisher://projects/malloy-samples/packages/names/models/names1.malloynb"}`;
+  const rawEmbeddedQuery = `{"modelPath":"storefront.malloy","query":"# line_chart\\nrun: order_items -> sales_by_month","optionalPackageName":"storefront","optionalProjectName":"examples","resourceUri":"publisher://environments/examples/packages/storefront/models/storefront.malloy"}`;
   
   // Process the query string the same way the UI does
   const embeddedQuery = rawEmbeddedQuery.replace(/\\n/g, '\n').replace(/\n/g, '\\n');

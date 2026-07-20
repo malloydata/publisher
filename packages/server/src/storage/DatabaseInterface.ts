@@ -59,6 +59,14 @@ export interface ResourceRepository {
       packageName: string,
       options?: { limit?: number; offset?: number },
    ): Promise<Materialization[]>;
+   listMaterializationsByEnvironment(
+      environmentId: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]>;
+   getLatestScheduledFireAt(
+      environmentId: string,
+      packageName: string,
+   ): Promise<Date | null>;
    getMaterializationById(id: string): Promise<Materialization | null>;
    getActiveMaterialization(
       environmentId: string,
@@ -116,6 +124,7 @@ export type BuildPlan = components["schemas"]["BuildPlan"];
 export type BuildManifestResult = components["schemas"]["BuildManifest"];
 export type ManifestEntry = components["schemas"]["ManifestEntry"];
 export type BuildInstruction = components["schemas"]["BuildInstruction"];
+export type ManifestReference = components["schemas"]["ManifestReference"];
 export type Realization = components["schemas"]["Realization"];
 
 export interface Materialization {
@@ -157,3 +166,26 @@ export interface BuildManifest {
    entries: Record<string, BuildManifestEntry>;
    strict?: boolean;
 }
+
+/**
+ * A wire manifest entry carrying the control-plane freshness fields alongside
+ * the physical `tableName`. This is what the publisher retains at bind so the
+ * serve path can re-evaluate `age vs window` per query (see
+ * {@link ../service/freshness}). A `{ tableName }`-only value is structurally
+ * assignable here (the freshness fields are optional), so callers that only
+ * know a table name — e.g. the post-build auto-load — bind un-gated entries.
+ *
+ *  - `dataAsOf`   the artifact's data-as-of instant (snapshot start); the age
+ *                 anchor. `age = now - dataAsOf`. Absent ⇒ never stale.
+ *  - `freshnessWindowSeconds`  the version's effective window. Absent ⇒ un-gated.
+ *  - `freshnessFallback`       per-version read-time policy when stale.
+ */
+export interface FreshnessAwareManifestEntry {
+   tableName: string;
+   dataAsOf?: string;
+   freshnessWindowSeconds?: number;
+   freshnessFallback?: "live" | "stale_ok" | "fail";
+}
+
+/** Full (unfiltered) manifest map keyed by sourceEntityId. */
+export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;

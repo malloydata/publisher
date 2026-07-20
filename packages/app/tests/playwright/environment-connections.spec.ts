@@ -13,7 +13,8 @@ test.describe("environment-connections — read", () => {
       await expect(
          page.getByRole("heading", { name: "Connections", level: 6 }),
       ).toBeVisible();
-      // `bigquery` is the fixture connection present on every malloy-samples environment.
+      // `bigquery` is a stub connection the CI workflow injects into the
+      // examples environment before this suite runs; see app-playwright.yml.
       const bigqueryCard = page.locator("h6", { hasText: "bigquery" });
       await expect(bigqueryCard).toBeVisible();
       await expect(page.getByText("BigQuery", { exact: true })).toBeVisible();

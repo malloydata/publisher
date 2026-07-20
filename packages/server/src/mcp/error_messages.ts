@@ -3,31 +3,6 @@ export interface ErrorDetails {
    suggestions: string[];
 }
 
-export interface InvalidParamDetail {
-   name: string;
-   reason: string;
-   value?: unknown;
-}
-
-export function getInvalidParamsError(
-   params: InvalidParamDetail[],
-): ErrorDetails {
-   const reasons = params
-      .map(
-         (p) =>
-            `${p.name}: ${p.reason}${p.value !== undefined ? ` (value: ${JSON.stringify(p.value)})` : ""}`,
-      )
-      .join("; ");
-   return {
-      message: `Invalid parameter(s) provided. ${reasons}`,
-      suggestions: [
-         "Check the parameter names and values against the prompt's argument definition.",
-         "Ensure all required parameters are provided and have the correct data types.",
-         "For URI parameters, ensure they are correctly formatted.",
-      ],
-   };
-}
-
 /**
  * Generates error details for a resource not found scenario.
  * @param resourceUriOrContext The URI that was not found, or a context string (e.g., "Package 'X'", "Model 'Y' in package 'X'").
@@ -36,13 +11,9 @@ export function getInvalidParamsError(
 export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
    const baseMessage = `Resource not found: ${resourceUriOrContext}`;
    const suggestions: string[] = [
-      `Verify the identifier or URI (${resourceUriOrContext}) is spelled correctly and exists. Check capitalization and path separators.`,
-      `If using a URI, ensure it follows the correct format (e.g., malloy://environment/...) and includes the right path segments (e.g., /models/, /sources/, /queries/, /views/).`,
-   ];
-
-   suggestions.push(
+      `Verify the identifier (${resourceUriOrContext}) is spelled correctly and exists. Check capitalization and path separators.`,
       "Check if the resource exists and is correctly named in your Malloy environment structure or the specific model file.",
-   );
+   ];
 
    return {
       message: baseMessage,
@@ -52,7 +23,7 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
 
 /**
  * Generates generic error details for internal server errors.
- * @param operation The operation that failed (e.g., 'GetResource', 'ListResources').
+ * @param operation The operation that failed (e.g., 'executeQuery').
  * @param error Optional: The underlying error object or message.
  * @returns ErrorDetails object.
  */
@@ -73,7 +44,7 @@ export function getInternalError(
 
 /**
  * Generates detailed error information for Malloy compilation or query execution errors.
- * @param operation The operation that failed (e.g., 'GetResource (model)', 'executeQuery').
+ * @param operation The operation that failed (e.g., 'executeQuery (load model)', 'executeQuery').
  * @param modelIdentifier A path or URI identifying the model/notebook involved.
  * @param error The underlying Malloy error object or other error.
  * @returns ErrorDetails object.
@@ -144,21 +115,21 @@ export function getMalloyErrorDetails(
          refined = true;
          const [, viewName, sourceName] = viewNotFoundMatch;
          suggestions.unshift(
-            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling or try requesting the resource details for the source URI (e.g., 'malloy://.../sources/${sourceName}') to see the list of available views. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
+            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling or call malloy_getContext with sourceName '${sourceName}' to see the list of available views. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
          );
       } else if (sourceNotFoundMatch) {
          refined = true;
          const [, sourceName] = sourceNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Source '${sourceName}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${sourceName} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
-            `Suggestion: Check the spelling of '${sourceName}'. You can list sources in the model using ListResources('malloy://.../${modelIdentifier}').`,
+            `Suggestion: Check the spelling of '${sourceName}'. You can list the sources in the package using malloy_getContext.`,
          );
       } else if (queryNotFoundMatch) {
          refined = true;
          const [, queryName] = queryNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Named query '${queryName}' was not found. Verify its definition (e.g., \`query: ${queryName} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
-            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. You can list named queries using ListResources('malloy://.../${modelIdentifier}').`,
+            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. You can list named queries using malloy_getContext.`,
          );
       } else if (fieldNotFoundMatch) {
          refined = true;
@@ -166,7 +137,7 @@ export function getMalloyErrorDetails(
             fieldNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Field '${fieldName}' was not found in ${fieldContextType} '${fieldContextName}'. Check the spelling of the field name within the definition of '${fieldContextName}'.`,
-            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. You can inspect the ${fieldContextType} definition using GetResource.`,
+            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. You can inspect the ${fieldContextType}'s fields using malloy_getContext.`,
          );
       } else if (referenceErrorMatch) {
          refined = true;

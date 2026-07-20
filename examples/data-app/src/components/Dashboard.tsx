@@ -31,7 +31,7 @@ export default function Dashboard({
   resourceUri,
 }: {
   selectedView:
-    | "malloySamples"
+    | "storefront"
     | "singleEmbed"
     | "dynamicDashboard"
     | "interactive";
@@ -119,7 +119,7 @@ export default function Dashboard({
     setLoaded(true);
   }, [defaultWidgets, storageKey]);
 
-  // optional "customize" hook for MalloySamplesDashboard
+  // optional "customize" hook for StorefrontDashboard
   useEffect(() => {
     if (customizeWidgetsEffect) {
       customizeWidgetsEffect(widgets);

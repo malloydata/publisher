@@ -1,0 +1,6 @@
+{
+   "name": "persist-schedule-warn-test",
+   "version": "1.0.0",
+   "description": "DuckDB persist fixture with a schedule but no version scope — a load-tolerated persistence-policy warning (schedule requires scope: version)",
+   "materialization": { "schedule": "0 6 * * *" }
+}

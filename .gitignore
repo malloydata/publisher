@@ -20,6 +20,10 @@ packages/server/k6-tests/results/
 packages/app/test-results/
 packages/app/playwright-report/
 
+# SPA bundle copied next to the from-source server so it can serve the web UI
+# (the server looks for app/ beside the running server file).
+packages/server/src/app/
+
 # Publisher runtime artifacts (DuckDB metadata + per-env package clones).
 # Created wherever the server is launched from; already covered by
 # packages/server/.gitignore for the canonical launch location, but
@@ -28,3 +32,13 @@ packages/app/playwright-report/
 publisher.db
 publisher.db.wal
 publisher_data/
+
+# Credible-platform-specific artifacts must never be committed to this open-source
+# repo. `credible-*` skills live only in the Credible source-of-truth repo; the copy
+# into Publisher is by design limited to the neutral shared set (see skills/README.md).
+# These are local Credible workflow files (an installed skill tree + IDE rules) and are
+# ignored by the `credible-` prefix so a stray `git add` can't pull them in.
+.credible/
+.claude/skills/credible-*/
+.claude/rules/credible-*.md
+.cursor/rules/credible-*.mdc

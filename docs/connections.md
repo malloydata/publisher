@@ -1,12 +1,16 @@
 # Connections
 
+> What this is: how Publisher reaches databases and query engines — per-package DuckDB sandboxes,
+> environment-level connections, naming rules, and the SSH-bastion proxy. For the config file itself,
+> see [configuration.md](configuration.md).
+
 Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
 
 For full setup details per connection type, see [docs.malloydata.dev/documentation/user_guides/publishing/connections](https://docs.malloydata.dev/documentation/user_guides/publishing/connections).
 
 ## Per-package DuckDB sandboxes
 
-Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled samples (`ecommerce`, `imdb`, `faa`) query the Parquet/CSV files in the sample repositories without needing any user-defined connection.
+Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the Parquet files in each package without needing any user-defined connection.
 
 You do not have to declare these sandboxes — they're created on package load.
 
@@ -81,7 +85,7 @@ fails at startup with an actionable error rather than a generic
 
 **Known limitation:** the `accessToken` is user-scoped and short-lived. The
 server uses the token as configured and does not refresh it, so a long-running
-`--watch` session can outlive the token. Token refresh/expiry is owned by the
+`--watch-env` session can outlive the token. Token refresh/expiry is owned by the
 CLI/extension today; re-issue the token and restart if queries start failing
 auth.
 

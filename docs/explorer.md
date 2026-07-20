@@ -1,5 +1,10 @@
 # Malloy Explorer: Visual Query Builder for Malloy
 
+> What this is: a tour of the Explorer, Publisher's no-code visual query builder. Every action
+> generates valid Malloy against a governed model, so metrics stay correct even across joins. Open it
+> from the [Publisher App](publisher-app.md) on any source — the screenshots below use the bundled
+> [`storefront`](../examples/storefront) package.
+
 ## 1. Introduction
 
 **Malloy Explorer** is a no-code, visual query builder built on top of the [Malloy](https://malloydata.dev) semantic modeling language. It provides a seamless interface for exploring data, analyzing key business metrics, and building reusable queries — all without writing code. Under the hood, every action in the Explorer generates valid Malloy, ensuring semantic consistency & trust while enabling flexible data exploration.
@@ -45,7 +50,7 @@ Hovering over a field or view in the Source Panel will show actions you can take
 
 The **Dimensions** section lists descriptive fields — such as IDs, dates, categories, and derived attributes — from both the primary model and any joined sources.
 
-Dimensions are grouped by their source. For example, in a query centered around `order_items`, you might also see dimensions from joined models like `users`, `inventory_items`, or `products`.
+Dimensions are grouped by their source. For example, in a query centered around `order_items` (the storefront fact table), you also see dimensions from its joined sources — `customers` and `products`.
 
 Hovering over a dimension reveals contextual actions:
 
@@ -126,7 +131,6 @@ Choose how to visualize your results. Available formats include:
 - Line Chart
 - JSON
 - List / List Detail
-- Dashboard
 - Point Map
 - Scatter Chart
 - Segment Map
@@ -174,7 +178,7 @@ Use nesting to:
 
 > Malloy compiles nested blocks into safe, aggregating subqueries in SQL. Filters can be scoped to any level.
 
-Reference: [Malloy Nested Views Documentation](https://malloydata.dev/docs/nested-views)
+Reference: [Malloy Nested Views Documentation](https://docs.malloydata.dev/documentation/language/nesting)
 
 ---
 
@@ -217,3 +221,12 @@ Malloy Explorer combines semantic modeling with a powerful, no-code visual inter
 - Rely on symmetric aggregates for accurate, consistent results as you drill in and out
 
 With Malloy Explorer, everyone can ask better questions — and trust the answers.
+
+## Where to go next
+
+- Open the Explorer from the [Publisher App](publisher-app.md) — pick a source in the
+  [`storefront`](../examples/storefront) package and start building.
+- Prefer plain English? Point an [AI agent](ai-agents.md) at the same model over MCP.
+- Save what you build into a package: add the view to the model with the
+  [malloy-publish skill](../skills/malloy-publish/), or ship a
+  [no-build HTML data app](html-data-apps.md).

@@ -36,6 +36,15 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).toEqual({ forceRefresh: true, sourceNames: ["a", "b"] });
    });
 
+   it("never forwards a client-supplied trigger (SCHEDULER cannot be forged)", async () => {
+      // trigger is service-level-only: the controller must strip it so an API
+      // caller cannot mint a run that reads as scheduler-driven. The service
+      // then defaults it to ON_DEMAND.
+      const parsed = await parse({ forceRefresh: true, trigger: "SCHEDULER" });
+      expect(parsed).toEqual({ forceRefresh: true });
+      expect("trigger" in (parsed as object)).toBe(false);
+   });
+
    it("rejects a non-boolean forceRefresh", async () => {
       const { controller } = build();
       await expect(
@@ -83,6 +92,78 @@ describe("MaterializationController.createMaterialization validation", () => {
 
    it("treats null buildInstructions as absent (auto-run)", async () => {
       expect(await parse({ buildInstructions: null })).toEqual({});
+   });
+
+   it("parses referenceManifest and strictUpstreams alongside sources", async () => {
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+                  realization: "COPY",
+               },
+            ],
+            referenceManifest: [
+               { sourceEntityId: "b1", physicalTableName: "upstream_table" },
+            ],
+            strictUpstreams: true,
+         },
+      });
+      expect(parsed).toEqual({
+         buildInstructions: [
+            {
+               sourceEntityId: "b2",
+               sourceID: undefined,
+               materializedTableId: "mt-2",
+               physicalTableName: "downstream_v1",
+               realization: "COPY",
+            },
+         ],
+         referenceManifest: [
+            { sourceEntityId: "b1", physicalTableName: "upstream_table" },
+         ],
+         strictUpstreams: true,
+      });
+   });
+
+   it("rejects a referenceManifest entry missing a required field", async () => {
+      const { controller } = build();
+      await expect(
+         controller.createMaterialization("env", "pkg", {
+            buildInstructions: {
+               sources: [
+                  {
+                     sourceEntityId: "b2",
+                     materializedTableId: "mt-2",
+                     physicalTableName: "downstream_v1",
+                     realization: "COPY",
+                  },
+               ],
+               referenceManifest: [{ sourceEntityId: "b1" }],
+            },
+         }),
+      ).rejects.toThrow(BadRequestError);
+   });
+
+   it("rejects a non-boolean strictUpstreams", async () => {
+      const { controller } = build();
+      await expect(
+         controller.createMaterialization("env", "pkg", {
+            buildInstructions: {
+               sources: [
+                  {
+                     sourceEntityId: "b2",
+                     materializedTableId: "mt-2",
+                     physicalTableName: "downstream_v1",
+                     realization: "COPY",
+                  },
+               ],
+               strictUpstreams: "yes",
+            },
+         }),
+      ).rejects.toThrow(BadRequestError);
    });
 
    it("rejects buildInstructions without a non-empty sources array", async () => {

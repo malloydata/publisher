@@ -5,6 +5,10 @@
 // Exposes window.Publisher with:
 //   - Publisher.query(model, malloy, opts?)     → Promise<rows[]>
 //   - Publisher.queryFull(model, malloy, opts?) → Promise<MalloyResult>  (envelope for <malloy-render>)
+//       opts: { environment?, package?, sourceName?, queryName?, filterParams?,
+//               bypassFilters?, givens? }. givens is a name→value map bound as
+//               Malloy given: runtime parameters for this query (safe parameterization,
+//               not string interpolation) — see the malloy-html-data-app-runtime skill.
 //   - Publisher.embed(selector, { src, height?, token? })
 //   - Publisher.context  ({ environment, package } inferred from URL)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
@@ -92,6 +96,7 @@
       if (opts.queryName) body.queryName = opts.queryName;
       if (opts.filterParams) body.filterParams = opts.filterParams;
       if (opts.bypassFilters) body.bypassFilters = true;
+      if (opts.givens) body.givens = opts.givens;
 
       var headers = Object.assign(
          { "content-type": "application/json" },

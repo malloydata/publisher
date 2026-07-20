@@ -1,0 +1,18 @@
+##! experimental.persistence
+
+source: raw_orders is duckdb.table('data/orders.csv')
+
+// Upstream persist source: an aggregate over the base CSV.
+#@ persist name="orders_base"
+source: orders_base is raw_orders -> {
+  group_by: category
+  aggregate: total_amount is amount.sum()
+}
+
+// Downstream persist source: references the persist upstream `orders_base`.
+// A per-unit build of `orders_rollup` alone must REFERENCE orders_base's
+// materialized table (via referenceManifest) rather than recompute it live.
+#@ persist name="orders_rollup"
+source: orders_rollup is orders_base -> {
+  aggregate: category_count is count()
+}

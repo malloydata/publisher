@@ -166,6 +166,7 @@ describe("MaterializationService", () => {
                forceRefresh: true,
                sourceNames: ["orders"],
                mode: "auto",
+               trigger: "ON_DEMAND",
             },
          ]);
       });
@@ -183,8 +184,25 @@ describe("MaterializationService", () => {
                forceRefresh: false,
                sourceNames: null,
                mode: "auto",
+               trigger: "ON_DEMAND",
             },
          );
+      });
+
+      it("records trigger=SCHEDULER when the scheduler fires the run", async () => {
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({ status: "PENDING" }),
+         );
+
+         await ctx.service.createMaterialization("my-env", "pkg", {
+            forceRefresh: true,
+            trigger: "SCHEDULER",
+         });
+
+         expect(
+            ctx.repository.createMaterialization.firstCall.args[3],
+         ).toMatchObject({ mode: "auto", trigger: "SCHEDULER" });
       });
 
       it("rejects when an active materialization already exists", async () => {
@@ -921,6 +939,10 @@ describe("runBuild (branch behavior)", () => {
             sourceNames: string[] | undefined;
             forceRefresh: boolean;
             buildInstructions: BuildInstruction[] | undefined;
+            referenceManifest?:
+               | { sourceEntityId: string; physicalTableName: string }[]
+               | undefined;
+            strictUpstreams?: boolean | undefined;
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -970,6 +992,44 @@ describe("runBuild (branch behavior)", () => {
       });
       // Orchestrated leaves distribution to the caller.
       expect(svc.autoLoadManifest.called).toBe(false);
+   });
+
+   it("orchestrated: seeds the build from referenceManifest and honors strictUpstreams", async () => {
+      const svc = stubEngine();
+      const instructions = [makeInstruction()];
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: instructions,
+            referenceManifest: [
+               { sourceEntityId: "up-1", physicalTableName: "upstream_tbl" },
+            ],
+            strictUpstreams: true,
+         },
+         new AbortController().signal,
+      );
+
+      // The reference manifest becomes the seed (carried) entries so a
+      // downstream build resolves its upstream to the existing physical table.
+      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual({
+         "up-1": {
+            sourceEntityId: "up-1",
+            physicalTableName: "upstream_tbl",
+         },
+      });
+      // strictUpstreams flows through as the strict flag (5th arg).
+      expect(svc.executeInstructedBuild.firstCall.args[4]).toBe(true);
+      // Reused upstreams are counted as carried, not built.
+      expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
+         mode: "orchestrated",
+         sourcesBuilt: 1,
+         sourcesReused: 1,
+      });
    });
 
    it("auto-run: derives instructions and auto-loads the manifest", async () => {

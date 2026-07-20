@@ -65,7 +65,10 @@
  */
 
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
-import type { PackageMaterializationConfig } from "../service/package_manifest";
+import type {
+   PackageMaterializationConfig,
+   PackageScope,
+} from "../service/package_manifest";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -181,10 +184,27 @@ export interface LoadPackageResult {
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;
+      scope?: PackageScope;
    };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
+   /**
+    * Per-load timing breakdown (subset of {@link loadDurationMs}; the
+    * remainder is worker setup + post-compile extraction). See
+    * `rpc_wait_accountant.ts` for how compile time is separated from I/O.
+    */
+   timings: {
+      /**
+       * Compile-region wall-clock minus time awaiting proxied schema fetches —
+       * a conservative ceiling on Malloy compile CPU.
+       */
+      compileDurationMs: number;
+      /** Wall-clock awaiting proxied connection schema fetches (union). */
+      schemaFetchDurationMs: number;
+      /** Number of proxied connection schema fetches the load drove. */
+      schemaFetchCount: number;
+   };
 }
 
 export interface LoadPackageError {

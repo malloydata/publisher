@@ -4,12 +4,14 @@ import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import extract from "extract-zip";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import simpleGit from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
    getProcessedPublisherConfig,
+   getPublisherConfigDir,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
    ProcessedPublisherConfig,
@@ -115,6 +117,36 @@ async function clearMountTarget(targetPath: string): Promise<void> {
    }
 }
 
+/**
+ * Absolute on-disk path for a local package `location`.
+ *
+ * `~/` (POSIX form only) expands to the home directory. Anything still
+ * relative resolves against `anchorDir`, the directory holding the active
+ * config, so a config and the packages it points at can be moved or
+ * committed together. Absolute locations are returned untouched.
+ */
+export function resolvePackageLocation(
+   location: string,
+   anchorDir: string,
+   homeDir?: string,
+): string {
+   let expanded = location;
+   if (location.startsWith("~/")) {
+      // Resolved lazily, inside the tilde branch only: os.homedir() can throw
+      // where HOME is unset and there is no passwd entry for the uid (e.g. a
+      // distroless container with runAsUser), and a `./sales` or absolute
+      // location must never fail on that.
+      const home = homeDir ?? os.homedir();
+      if (!home) {
+         throw new Error(
+            `Cannot expand "~" in location "${location}": home directory is not set`,
+         );
+      }
+      expanded = path.join(home, location.slice(2));
+   }
+   return path.isAbsolute(expanded) ? expanded : path.join(anchorDir, expanded);
+}
+
 export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
@@ -195,6 +227,15 @@ export class EnvironmentStore {
       for (const env of this.environments.values()) {
          env.setMemoryGovernor(governor);
       }
+   }
+
+   /**
+    * Snapshot of the environments currently held in memory. Used by the
+    * standalone materialization scheduler to sweep loaded packages without
+    * touching the database or triggering loads.
+    */
+   public getLoadedEnvironments(): Environment[] {
+      return [...this.environments.values()];
    }
 
    private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
@@ -1110,6 +1151,21 @@ export class EnvironmentStore {
       );
    }
 
+   /**
+    * Absolute on-disk path for a local package `location`, anchored at the
+    * directory holding the active config. That covers locations POSTed at
+    * runtime too, which no config declares. When there is no config worth
+    * anchoring to, `getPublisherConfigDir` returns null (it owns the cases) and
+    * the server root is the only meaningful base, which is also what this did
+    * before the anchor moved.
+    */
+   private resolveLocalPath(location: string): string {
+      return resolvePackageLocation(
+         location,
+         getPublisherConfigDir(this.serverRootPath) ?? this.serverRootPath,
+      );
+   }
+
    private isGitHubURL(location: string) {
       return (
          location.startsWith("https://github.com/") ||
@@ -1236,15 +1292,11 @@ export class EnvironmentStore {
                } else {
                   // For non-GitHub locations, use package name
                   if (this.isLocalPath(_package.location)) {
-                     // Match the resolution rule used by
-                     // `downloadOrMountLocation` (line ~1352): relative
-                     // paths are anchored at `serverRootPath`. Without this
-                     // step the existing-source check below falls through
-                     // for any relative location, and the in-place mount
-                     // branch is unreachable.
-                     sourcePath = path.isAbsolute(_package.location)
-                        ? _package.location
-                        : path.join(this.serverRootPath, _package.location);
+                     // Same resolution rule as `downloadOrMountLocation`.
+                     // Without this step the existing-source check below
+                     // falls through for any relative location, and the
+                     // in-place mount branch is unreachable.
+                     sourcePath = this.resolveLocalPath(_package.location);
                   } else {
                      sourcePath = safeJoinUnderRoot(
                         tempDownloadPath,
@@ -1456,9 +1508,7 @@ export class EnvironmentStore {
 
       // Handle absolute and relative paths
       if (this.isLocalPath(location)) {
-         const packagePath: string = path.isAbsolute(location)
-            ? location
-            : path.join(this.serverRootPath, location);
+         const packagePath: string = this.resolveLocalPath(location);
          try {
             logger.info(
                `Mounting local directory at "${packagePath}" to "${targetPath}"`,

@@ -28,7 +28,7 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { BuildManifest } from "../storage/DatabaseInterface";
+import { FreshnessManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -156,6 +156,11 @@ export class Environment {
    /** Absolute path on disk where this environment's package files live. */
    public getEnvironmentPath(): string {
       return this.environmentPath;
+   }
+
+   /** This environment's name (the canonical key used by the API/service). */
+   public getEnvironmentName(): string {
+      return this.environmentName;
    }
 
    constructor(
@@ -471,9 +476,30 @@ export class Environment {
             if (includeSql && queryMaterializer) {
                try {
                   sql = await queryMaterializer.getSQL({ givens });
-               } catch {
-                  // Source may not contain a runnable query (e.g. only source definitions),
-                  // in which case we simply omit the sql field.
+               } catch (error) {
+                  // A bad caller given (unknown name, wrong-typed value, finalized
+                  // override, ...) surfaces as a Malloy `runtime-given-*` error.
+                  // Map it to a 400 rather than silently omitting `sql` (which is
+                  // indistinguishable from "no runnable query"). Duck-type on
+                  // `.code`; let a MalloyError fall to the outer catch → problems.
+                  // The `runtime-given-` prefix is pinned to Malloy's error codes
+                  // (given_binding.ts / runtime.ts, same as model.ts) — if they're
+                  // renamed upstream a bad given would silently revert to the omit
+                  // branch below, so keep the two in sync.
+                  const givenCode = (error as { code?: string })?.code;
+                  if (
+                     typeof givenCode === "string" &&
+                     givenCode.startsWith("runtime-given-")
+                  ) {
+                     throw new BadRequestError(
+                        error instanceof Error ? error.message : String(error),
+                     );
+                  }
+                  if (error instanceof MalloyError) {
+                     throw error;
+                  }
+                  // Otherwise the source may just not contain a runnable query
+                  // (e.g. only source definitions) — omit the sql field.
                }
             }
 
@@ -566,6 +592,17 @@ export class Environment {
             this.releaseRetiredConnectionGeneration(generation),
          ),
       );
+   }
+
+   /**
+    * Snapshot of the packages currently loaded in memory (does not trigger a
+    * load or reload). Used by the standalone materialization scheduler to sweep
+    * only already-loaded packages — a not-yet-loaded package is simply not
+    * scheduled until something else loads it, so the scheduler never forces a
+    * load of its own.
+    */
+   public getLoadedPackages(): Package[] {
+      return [...this.packages.values()];
    }
 
    public async listPackages(): Promise<ApiPackage[]> {
@@ -792,7 +829,7 @@ export class Environment {
       // reloadAllModelsForPackage, ...) acquire the lock themselves.
       //
       // INVARIANT: callers that consume the returned Package on the fast
-      // path (notably MCP resource handlers and Model.getModel()) must
+      // path (notably the MCP query tools and Model.getModel()) must
       // remain in-memory only. If any code reachable from a `Package`
       // method ever grows new disk I/O against the canonical tree, that
       // path needs to be bracketed by `withPackageLock`; otherwise a
@@ -860,8 +897,17 @@ export class Environment {
          return _package;
       } catch (error) {
          logger.error(`Failed to load package ${packageName}`, { error });
-         this.packages.delete(packageName);
-         this.packageStatuses.delete(packageName);
+         if (existingPackage !== undefined && reload) {
+            // A failed RELOAD must not take down a package that is already
+            // serving. The compiled model in `packages` is still the last good
+            // one (it is only replaced on success), so keep serving it and let
+            // the caller surface the error instead of evicting the package and
+            // leaving the environment with nothing to answer from.
+            this.setPackageStatus(packageName, PackageStatus.SERVING);
+         } else {
+            this.packages.delete(packageName);
+            this.packageStatuses.delete(packageName);
+         }
          throw error;
       }
    }
@@ -1019,6 +1065,10 @@ export class Environment {
                packageName,
                canonicalPath,
                () => this.malloyConfig.malloyConfig,
+               // This tree was just staged into place by the rename above, so a
+               // failed load leaves a half-built directory that is ours to
+               // remove; the rollback below restores the previous one.
+               true,
             );
             // Strict-reject hook (publish/update only — reload passes no
             // validator and stays fail-safe). Throw INSIDE the try so the
@@ -1064,7 +1114,37 @@ export class Environment {
             await fs.promises
                .rm(stagingPath, { recursive: true, force: true })
                .catch(() => {});
-            this.deletePackageStatus(packageName);
+            if (oldPackage && restored) {
+               // The rollback put the old tree back and the previous package is
+               // still in `this.packages` (it is only replaced on success
+               // below), so it is genuinely still serving. Deleting its status
+               // would strand it: listPackages enumerates packageStatuses, so
+               // the package would answer getPackage while being invisible to
+               // listings and discovery until a restart.
+               this.setPackageStatus(packageName, PackageStatus.SERVING);
+            } else {
+               // Either there was nothing to fall back to (a first install), or
+               // the restore did not happen: the rename-back threw, or the old
+               // tree was never on disk to retire. The canonical path is then
+               // missing or still holds the rejected content, so the cached
+               // package no longer matches disk and must not be advertised as
+               // serving. Drop both, and keep the two maps agreeing.
+               this.deletePackageStatus(packageName);
+               if (oldPackage) {
+                  // Retire before dropping it, the same way every other eviction
+                  // here does: once it leaves this.packages, closeAllConnections
+                  // can no longer reach its MalloyConfig, so its native handles
+                  // would never be released. Retire rather than shut down
+                  // inline, because withPackageLock does not cover queries that
+                  // already took this Package from an earlier getPackage; the
+                  // drain lets those finish first.
+                  this.retireConnectionGeneration(
+                     `package ${packageName}`,
+                     () => oldPackage.getMalloyConfig().shutdown("close"),
+                  );
+               }
+               this.packages.delete(packageName);
+            }
             logger.debug("install.phase2.rollback", {
                environmentName: this.environmentName,
                packageName,
@@ -1119,7 +1199,7 @@ export class Environment {
     */
    public async reloadAllModelsForPackage(
       packageName: string,
-      manifest: BuildManifest["entries"],
+      manifest: FreshnessManifest,
    ): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
@@ -1193,7 +1273,7 @@ export class Environment {
     */
    private async fetchManifestEntriesWithTimeout(
       manifestLocation: string,
-   ): Promise<BuildManifest["entries"]> {
+   ): Promise<FreshnessManifest> {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
          timer = setTimeout(
@@ -1248,6 +1328,8 @@ export class Environment {
          explores?: string[];
          queryableSources?: "declared" | "all";
          manifestLocation?: string | null;
+         scope?: ApiPackage["scope"];
+         materialization?: ApiPackage["materialization"];
       },
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
@@ -1279,6 +1361,10 @@ export class Environment {
                : {}),
             ...(metadata.manifestLocation !== undefined
                ? { manifestLocation: metadata.manifestLocation }
+               : {}),
+            ...(metadata.scope !== undefined ? { scope: metadata.scope } : {}),
+            ...(metadata.materialization !== undefined
+               ? { materialization: metadata.materialization }
                : {}),
          };
 
@@ -1332,6 +1418,29 @@ export class Environment {
             body.manifestLocation !== undefined
                ? body.manifestLocation
                : existing.manifestLocation;
+         // Persist `scope` and `materialization` (the schedule cron) are
+         // editable via the API — both are writable in the schema. When the
+         // body carries a value, apply it; otherwise preserve the
+         // manifest-derived one (a name/description-only PATCH must not wipe
+         // them, and the control plane must not misread the gap as a removal).
+         // Changing the schedule re-arms the standalone scheduler on its next
+         // tick — no reload needed.
+         //
+         // A *null* scope/materialization is treated the same as omitted
+         // (preserve), NOT a wipe: the control plane's post-build rebind PATCH
+         // carries only name/location/manifestLocation, but a client that
+         // serializes unset fields as explicit null must not thereby trip the
+         // policy gate below (a rejection there fails the orchestrated run) or
+         // reset the persisted policy. `manifestLocation` is deliberately
+         // different — null there means "clear" (revert to live), which the
+         // orchestrator relies on.
+         const scopeProvided = body.scope != null;
+         const materializationProvided = body.materialization != null;
+         const editingPolicy = scopeProvided || materializationProvided;
+         const scope = scopeProvided ? body.scope : existing.scope;
+         const materialization = materializationProvided
+            ? body.materialization
+            : existing.materialization;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
@@ -1340,21 +1449,27 @@ export class Environment {
             explores,
             queryableSources,
             manifestLocation,
-            // Carry the manifest-derived materialization policy through the
-            // PATCH. `setPackageMetadata` replaces the whole object, so omitting
-            // this wipes the in-memory `materialization` until the next reload —
-            // which makes a later getPackage report no schedule and lets the
-            // control plane misread the gap as a schedule removal. It is not a
-            // PATCH-editable field, so always preserve the existing value.
-            materialization: existing.materialization,
+            materialization,
+            scope,
          });
 
          // Strict-reject, symmetric with the publish path
          // (package.controller.addPackage): validate the resulting explores
          // against the live model set and restore the prior metadata before
          // rejecting, so a bad update neither persists nor mutates the served
-         // surface.
-         const invalidMsg = _package.formatInvalidExplores();
+         // surface. When the body edits the persistence policy (scope /
+         // materialization), also enforce the same scope/schedule/freshness/cron
+         // rules a publish enforces — but only then, so a description-only PATCH
+         // on a package with a pre-existing (load-tolerated) policy warning is
+         // not newly rejected. Cron validity is one of these rules
+         // (persistencePolicyWarnings Rule 4), so publish, PATCH, load, and the
+         // scheduler all enforce it identically.
+         const policyMsg = editingPolicy
+            ? _package.formatInvalidPersistencePolicy()
+            : "";
+         const invalidMsg = [_package.formatInvalidExplores(), policyMsg]
+            .filter(Boolean)
+            .join("\n");
          if (invalidMsg) {
             _package.setPackageMetadata(existing);
             throw new BadRequestError(invalidMsg);
@@ -1366,6 +1481,13 @@ export class Environment {
             explores: normalizedExplores,
             queryableSources: body.queryableSources,
             manifestLocation: body.manifestLocation,
+            // Only write when explicitly provided (non-null): mirrors the
+            // null-as-absent rule above, so a rebind PATCH neither wipes the
+            // persisted policy nor writes a stray `scope: null`.
+            scope: scopeProvided ? body.scope : undefined,
+            materialization: materializationProvided
+               ? body.materialization
+               : undefined,
          });
 
          // When the body changes manifestLocation, apply it now so the new

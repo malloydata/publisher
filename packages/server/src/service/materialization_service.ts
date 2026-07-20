@@ -23,10 +23,12 @@ import {
    BuildManifest,
    BuildManifestResult,
    BuildPlan,
+   FreshnessManifest,
    Materialization,
    MaterializationStatus,
    MaterializationUpdate,
    ManifestEntry,
+   ManifestReference,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
@@ -175,6 +177,38 @@ export class MaterializationService {
       );
    }
 
+   /**
+    * Every materialization across all packages in an environment, newest first.
+    * Each record carries its `packageName`, so an env-scoped view can group or
+    * label by package without a per-package fan-out.
+    */
+   async listEnvironmentMaterializations(
+      environmentName: string,
+      options?: { limit?: number; offset?: number },
+   ): Promise<Materialization[]> {
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      return this.repository.listMaterializationsByEnvironment(
+         environmentId,
+         options,
+      );
+   }
+
+   /**
+    * `created_at` of the newest scheduler-fired materialization for a package,
+    * or null if none. The standalone scheduler uses this on its first arm to
+    * recover a fire missed during downtime (see MaterializationScheduler.arm).
+    */
+   async getLatestScheduledFireAt(
+      environmentName: string,
+      packageName: string,
+   ): Promise<Date | null> {
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      return this.repository.getLatestScheduledFireAt(
+         environmentId,
+         packageName,
+      );
+   }
+
    async getMaterialization(
       environmentName: string,
       packageName: string,
@@ -215,6 +249,15 @@ export class MaterializationService {
          forceRefresh?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
+         referenceManifest?: ManifestReference[];
+         strictUpstreams?: boolean;
+         /**
+          * What initiated this run. `ON_DEMAND` (default) = a manual/API create;
+          * `SCHEDULER` = the standalone materialization scheduler firing a
+          * package's `materialization.schedule` cron. Recorded on the run
+          * metadata so a scheduled rebuild is distinguishable from a manual one.
+          */
+         trigger?: "ON_DEMAND" | "SCHEDULER";
       } = {},
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -240,10 +283,12 @@ export class MaterializationService {
       }
 
       const forceRefresh = options.forceRefresh ?? false;
+      const trigger = options.trigger ?? "ON_DEMAND";
       const metadata = {
          forceRefresh,
          sourceNames: options.sourceNames ?? null,
          mode: orchestrated ? "orchestrated" : "auto",
+         trigger,
       };
 
       let created: Materialization;
@@ -274,6 +319,9 @@ export class MaterializationService {
                sourceNames: options.sourceNames,
                forceRefresh,
                buildInstructions,
+               referenceManifest: options.referenceManifest,
+               strictUpstreams: options.strictUpstreams,
+               trigger,
             },
             signal,
          ),
@@ -298,6 +346,9 @@ export class MaterializationService {
          sourceNames: string[] | undefined;
          forceRefresh: boolean;
          buildInstructions: BuildInstruction[] | undefined;
+         referenceManifest: ManifestReference[] | undefined;
+         strictUpstreams: boolean | undefined;
+         trigger: "ON_DEMAND" | "SCHEDULER";
       },
       signal: AbortSignal,
    ): Promise<void> {
@@ -332,7 +383,12 @@ export class MaterializationService {
          let carried: Record<string, ManifestEntry>;
          if (orchestrated) {
             instructions = opts.buildInstructions!;
-            carried = {};
+            // Seed the build Manifest with the caller-supplied upstream
+            // references so a downstream source's persist upstream (built in a
+            // prior run, not rebuilt here) resolves to its existing physical
+            // table instead of recomputing live. The reference key is the
+            // compiler's manifest-lookup sourceEntityId (see ManifestReference).
+            carried = this.referenceManifestToEntries(opts.referenceManifest);
          } else {
             // Skip-if-unchanged: reuse tables from the most recent successful
             // manifest for sources whose sourceEntityId is unchanged, unless
@@ -356,6 +412,7 @@ export class MaterializationService {
             instructions,
             carried,
             signal,
+            opts.strictUpstreams ?? false,
          );
 
          const sourcesBuilt = instructions.length;
@@ -365,6 +422,7 @@ export class MaterializationService {
             forceRefresh: opts.forceRefresh,
             sourceNames: opts.sourceNames ?? null,
             mode,
+            trigger: opts.trigger,
             sourcesBuilt,
             sourcesReused,
             durationMs,
@@ -450,6 +508,26 @@ export class MaterializationService {
    }
 
    /**
+    * Project the caller-supplied upstream reference manifest into the seed
+    * entry map `executeInstructedBuild` consumes. Each reference is keyed by the
+    * compiler's manifest-lookup sourceEntityId and carries only the physical
+    * table name — enough for the build Manifest to resolve a downstream persist
+    * reference to the existing table without rebuilding the upstream.
+    */
+   private referenceManifestToEntries(
+      referenceManifest: ManifestReference[] | undefined,
+   ): Record<string, ManifestEntry> {
+      const entries: Record<string, ManifestEntry> = {};
+      for (const ref of referenceManifest ?? []) {
+         entries[ref.sourceEntityId] = {
+            sourceEntityId: ref.sourceEntityId,
+            physicalTableName: ref.physicalTableName,
+         };
+      }
+      return entries;
+   }
+
+   /**
     * Entries of the most recent successful (MANIFEST_FILE_READY) materialization
     * for this package, used for skip-if-unchanged. Excludes the in-flight run.
     */
@@ -480,12 +558,16 @@ export class MaterializationService {
       environment: {
          reloadAllModelsForPackage(
             packageName: string,
-            manifest: BuildManifest["entries"],
+            manifest: FreshnessManifest,
          ): Promise<void>;
       },
       packageName: string,
       entries: Record<string, ManifestEntry>,
    ): Promise<void> {
+      // The post-build auto-load binds tableName-only entries: the control plane
+      // stamps freshness (dataAsOf/window/fallback) on the wire manifest it
+      // distributes, not on this in-memory post-build load, so these sources are
+      // bound un-gated (always serve the freshly-built table).
       const manifestEntries: BuildManifest["entries"] = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (entry.physicalTableName) {
@@ -560,6 +642,7 @@ export class MaterializationService {
       instructions: BuildInstruction[],
       seedEntries: Record<string, ManifestEntry>,
       signal: AbortSignal,
+      strict = false,
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -582,8 +665,12 @@ export class MaterializationService {
 
       // Accumulates physical names as sources are built so downstream sources
       // resolve their upstream references to the freshly-assigned tables. Seed
-      // it with carried-forward entries so reused upstreams resolve too.
+      // it with carried-forward entries so reused upstreams resolve too. In
+      // strict mode, an upstream persist reference that is neither built here
+      // nor seeded fails the compile (runtime-manifest-strict-miss) instead of
+      // silently recomputing live.
       const manifest = new Manifest();
+      manifest.strict = strict;
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
          if (entry.physicalTableName) {

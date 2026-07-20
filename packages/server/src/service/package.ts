@@ -29,10 +29,21 @@ import {
 } from "../errors";
 import { formatDuration, logger } from "../logger";
 import { recordBuildPlanComputeDuration } from "../materialization_metrics";
+import {
+   LOAD_DURATION_BUCKETS_MS,
+   recordPackageLoadPhases,
+   type PackageLoadStatus,
+} from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest, BuildPlan } from "../storage/DatabaseInterface";
+import {
+   BuildManifest,
+   BuildPlan,
+   FreshnessManifest,
+} from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
+import { CronEvaluator } from "./cron_evaluator";
+import { filterFreshManifest } from "./freshness";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
@@ -52,6 +63,39 @@ type PackageConnectionInput =
    | Map<string, Connection>
    | (() => MalloyConfig);
 
+/**
+ * Project the full wire entries down to the Malloy-runtime binding map
+ * (`sourceEntityId -> { tableName }`) used to hydrate models. The freshness
+ * fields are dropped here — they gate the serve path per query, not model
+ * hydration.
+ */
+function toTableNameManifest(
+   entries: FreshnessManifest,
+): BuildManifest["entries"] {
+   const out: BuildManifest["entries"] = {};
+   for (const [sourceEntityId, entry] of Object.entries(entries)) {
+      out[sourceEntityId] = { tableName: entry.tableName };
+   }
+   return out;
+}
+
+/**
+ * Classify a failed package load into the `status` label shared by the
+ * `malloy_package_load_duration` histogram and the per-phase load metrics, so
+ * both slice failures identically. A real Malloy/model compile error is a 4xx
+ * `compilation_error`; a rewrapped pool-infrastructure failure is a transient
+ * `pool_unavailable`; anything else is a generic `error`.
+ */
+function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
+   if (error instanceof ModelCompilationError || error instanceof MalloyError) {
+      return "compilation_error";
+   }
+   if (error instanceof ServiceUnavailableError) {
+      return "pool_unavailable";
+   }
+   return "error";
+}
+
 export class Package {
    private environmentName: string;
    private packageName: string;
@@ -67,6 +111,22 @@ export class Package {
    // /status (via getPackageMetadata) so the control plane can confirm a worker
    // actually bound the distributed manifest instead of inferring it from logs.
    private buildManifestEntries: BuildManifest["entries"] | undefined;
+   // The full wire entries retained at bind (sourceEntityId -> { tableName,
+   // dataAsOf, freshnessWindowSeconds, freshnessFallback }). Unlike
+   // {@link buildManifestEntries} (the tableName-only projection baked into the
+   // hydration runtime and reused by /compile), this keeps the control-plane
+   // freshness fields so the serve path can re-evaluate `age vs window` per
+   // query. Undefined when the package is serving live (unbound).
+   private freshnessEntries: FreshnessManifest | undefined;
+   // Memoized freshness-filtered manifest for the serve path. Almost all queries
+   // in a window share the same included set, so this is recomputed only when a
+   // retained entry actually crosses its window (`validUntil`, the next
+   // staleSince) or when a rebind replaces the entries (cleared in
+   // recordManifestBinding). validUntil === Infinity means no included entry has
+   // an evaluable window, so the result is stable until the next rebind.
+   private freshManifestCache:
+      | { manifest: BuildManifest["entries"]; validUntil: number }
+      | undefined;
    private manifestBindingStatus: "unbound" | "bound" | "live_fallback" =
       "unbound";
    private manifestEntryCount = 0;
@@ -90,6 +150,10 @@ export class Package {
       {
          description: "Time taken to load a Malloy package",
          unit: "ms",
+         // OTel's default buckets top out at 10s, censoring the slow-load tail.
+         // Use the shared load-duration buckets (→5min) so p95/p99 of large
+         // package loads are resolvable. See LOAD_DURATION_BUCKETS_MS.
+         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
       },
    );
 
@@ -174,6 +238,17 @@ export class Package {
       packageName: string,
       packagePath: string,
       environmentMalloyConfig: PackageConnectionInput,
+      /**
+       * Delete `packagePath` if the load fails. Opt-in, and only correct for a
+       * caller that created the directory itself (an install staged into place),
+       * where the half-built tree is Publisher's to clean up and `installPackage`
+       * rolls the previous one back. Every other caller loads a directory that
+       * already existed: a reload of a package that is currently serving, or a
+       * user directory registered via addPackage. Deleting those on a transient
+       * compile error destroys the source and takes the package offline, so the
+       * default is to leave the directory alone.
+       */
+      cleanupDirectoryOnFailure: boolean = false,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -211,34 +286,34 @@ export class Package {
          console.error(error);
          const endTime = performance.now();
          const executionTime = endTime - startTime;
-         const status =
-            error instanceof ModelCompilationError ||
-            error instanceof MalloyError
-               ? "compilation_error"
-               : error instanceof ServiceUnavailableError
-                 ? "pool_unavailable"
-                 : "error";
          this.packageLoadHistogram.record(executionTime, {
             malloy_package_name: packageName,
-            status,
+            status: packageLoadFailureStatus(error),
          });
-         // Clean up the package directory on failure, but NOT when packagePath
-         // is an in-place mount symlink (watch mode). Removing it would unmount
-         // the package, so a transient compile error from a half-typed model
-         // saved mid-edit would brick the package until a restart. The symlink
-         // points at the user's live source, which is left untouched; the next
-         // save recompiles against it.
+         // Clean up the package directory only when the caller opted in (an
+         // install that staged this tree), and never when packagePath is an
+         // in-place mount symlink (watch mode). Removing it would unmount the
+         // package, so a transient compile error from a half-typed model saved
+         // mid-edit would brick the package until a restart. The symlink points
+         // at the user's live source, which is left untouched; the next save
+         // recompiles against it.
          try {
-            const stat = await fs.lstat(packagePath).catch(() => null);
-            if (stat?.isSymbolicLink()) {
+            if (!cleanupDirectoryOnFailure) {
                logger.info(
-                  `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
+                  `Preserving existing package directory after failed load: ${packagePath}`,
                );
             } else {
-               await fs.rm(packagePath, { recursive: true, force: true });
-               logger.info(
-                  `Cleaned up failed package directory: ${packagePath}`,
-               );
+               const stat = await fs.lstat(packagePath).catch(() => null);
+               if (stat?.isSymbolicLink()) {
+                  logger.info(
+                     `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
+                  );
+               } else {
+                  await fs.rm(packagePath, { recursive: true, force: true });
+                  logger.info(
+                     `Cleaned up failed package directory: ${packagePath}`,
+                  );
+               }
             }
          } catch (cleanupError) {
             logger.warn(`Failed to clean up package directory ${packagePath}`, {
@@ -324,6 +399,10 @@ export class Package {
          workerDurationMs: outcome.loadDurationMs,
          dispatchOverheadMs:
             workerDoneTime - dispatchTime - outcome.loadDurationMs,
+         // Phase split of the worker duration (remainder = setup + extraction).
+         compileDurationMs: outcome.timings.compileDurationMs,
+         schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
+         schemaFetchCount: outcome.timings.schemaFetchCount,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
@@ -349,6 +428,10 @@ export class Package {
             schedule: null,
             freshness: null,
          },
+         // Package-level persist scope mode, applied uniformly to every persist
+         // source/index. Defaults to "package" (cross-version reuse) when the
+         // manifest omits it.
+         scope: outcome.packageMetadata.scope ?? "package",
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -359,43 +442,59 @@ export class Package {
       // hydration path.)
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
-      for (const sm of outcome.models) {
-         if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
-            logger.error("Model compilation failed", {
+      try {
+         for (const sm of outcome.models) {
+            if (sm.compilationError) {
+               const err = Model.deserializeCompilationError(
+                  sm.compilationError,
+               );
+               logger.error("Model compilation failed", {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+               // The outer catch in Package.create records the total metric +
+               // cleans the package directory.
+               throw err;
+            }
+            const model = Model.fromSerialized(
                packageName,
-               modelPath: sm.modelPath,
-               error: err.message,
-            });
-            // The outer catch in Package.create records the metric +
-            // cleans the package directory.
-            throw err;
-         }
-         const model = Model.fromSerialized(
-            packageName,
-            packagePath,
-            malloyConfig,
-            sm,
-         );
-         // Validate renderer tags on the main thread (the renderer is too heavy
-         // to load inside the pure-CPU package-load worker). A misconfigured tag
-         // is logged as a warning naming the target; it does not fail the load.
-         // The findings also ride the package response as non-fatal `warnings`.
-         for (const w of await model.validateRenderTags()) {
-            renderTagWarnings.push({ model: sm.modelPath, ...w });
-         }
-         // Reject unquoted `#@ persist name=` annotations the same way: an
-         // unquoted name is dropped from the build plan, so the source would
-         // publish but never materialize. Scan the raw `.malloy` source (the
-         // ground truth for quoting); throws a ModelCompilationError (424).
-         if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-            const modelSource = await fs.readFile(
-               path.join(packagePath, sm.modelPath),
-               "utf-8",
+               packagePath,
+               malloyConfig,
+               sm,
             );
-            assertPersistNamesQuoted(modelSource, sm.modelPath);
+            // Validate renderer tags on the main thread (the renderer is too
+            // heavy to load inside the pure-CPU package-load worker). A
+            // misconfigured tag is logged as a warning naming the target; it
+            // does not fail the load. The findings also ride the package
+            // response as non-fatal `warnings`.
+            for (const w of await model.validateRenderTags()) {
+               renderTagWarnings.push({ model: sm.modelPath, ...w });
+            }
+            // Reject unquoted `#@ persist name=` annotations the same way: an
+            // unquoted name is dropped from the build plan, so the source would
+            // publish but never materialize. Scan the raw `.malloy` source (the
+            // ground truth for quoting); throws a ModelCompilationError (424).
+            if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+               const modelSource = await fs.readFile(
+                  path.join(packagePath, sm.modelPath),
+                  "utf-8",
+               );
+               assertPersistNamesQuoted(modelSource, sm.modelPath);
+            }
+            models.set(sm.modelPath, model);
          }
-         models.set(sm.modelPath, model);
+      } catch (err) {
+         // Record the load's phase cost tagged with the terminal status before
+         // the error propagates to the outer catch (which records the total).
+         // Only in-band compile failures reach here — the worker already
+         // produced `outcome.timings`; a pool failure throws before `outcome`
+         // exists and carries no timings, so it's simply not recorded.
+         recordPackageLoadPhases(
+            outcome.timings,
+            packageLoadFailureStatus(err),
+         );
+         throw err;
       }
 
       const endTime = performance.now();
@@ -404,6 +503,7 @@ export class Package {
          malloy_package_name: packageName,
          status: "success",
       });
+      recordPackageLoadPhases(outcome.timings, "success");
       logger.info(`Successfully loaded package ${packageName}`, {
          packageName,
          duration: formatDuration(executionTime),
@@ -419,6 +519,10 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
+      // Install the per-query freshness resolver on the freshly-built models.
+      // At create time no manifest is bound yet, so the resolver returns
+      // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
+      pkg.wireFreshnessResolvers();
 
       // Compute the persist build plan off the live (unbound) models, before the
       // caller binds any configured manifest, so the surfaced plan reflects the
@@ -451,15 +555,19 @@ export class Package {
             detail: invalidMsg,
          });
       }
-      // Same fail-safe split for the materialization cron gate: an existing
-      // package whose manifest violates the private-only cron rule still loads
-      // (warn), but a publish of it is rejected (see package.controller).
-      const invalidSchedule = pkg.formatInvalidSchedule();
-      if (invalidSchedule) {
-         logger.warn(`Package ${packageName} has an invalid cron schedule`, {
-            packageName,
-            detail: invalidSchedule,
-         });
+      // Same fail-safe split for the persistence-policy gate: an existing
+      // package whose manifest violates the scope/schedule/freshness rules
+      // still loads (warn), but a publish of it is rejected (see
+      // package.controller).
+      const invalidPolicy = pkg.formatInvalidPersistencePolicy();
+      if (invalidPolicy) {
+         logger.warn(
+            `Package ${packageName} has an invalid persistence policy`,
+            {
+               packageName,
+               detail: invalidPolicy,
+            },
+         );
       }
       pkg.logEmptyDiscoveryWarnings();
 
@@ -478,6 +586,17 @@ export class Package {
     */
    public getBuildPlan(): BuildPlan | null {
       return this.buildPlan;
+   }
+
+   /**
+    * The package-level `materialization` config (from malloy-publisher.json),
+    * the least-specific layer for resolving per-source freshness/schedule in the
+    * build plan. Null when the package declares no policy.
+    */
+   public getMaterializationConfig(): NonNullable<
+      ApiPackage["materialization"]
+   > | null {
+      return this.packageMetadata.materialization ?? null;
    }
 
    public getPackageMetadata(): ApiPackage {
@@ -524,6 +643,51 @@ export class Package {
    }
 
    /**
+    * The freshness-filtered build manifest for the serve path, evaluated at
+    * `now`. Persistence.md §9.3 Phase B: a query on a `#@ persist` source may
+    * use its materialized table only while the table is within its declared
+    * freshness window; otherwise it falls back per the entry's `fallback`
+    * (`live`/`fail` drop the entry → serve live; `stale_ok` keeps it → serve the
+    * stale table). Un-gated entries (no window) always route to the table.
+    *
+    * Undefined when the package is serving live (unbound) — callers then apply
+    * no per-query override and the runtime serves live.
+    *
+    * Memoized: recomputed only when a retained entry crosses its window
+    * (monotonic fresh→stale, so a single `validUntil` deadline suffices) or when
+    * a rebind replaces the entries. Cheap O(1) hit on the common path.
+    */
+   public getFreshBuildManifest(
+      now: number = Date.now(),
+   ): BuildManifest["entries"] | undefined {
+      if (!this.freshnessEntries) return undefined;
+      if (this.freshManifestCache && now < this.freshManifestCache.validUntil) {
+         return this.freshManifestCache.manifest;
+      }
+      const { manifest, nextStaleSince } = filterFreshManifest(
+         this.freshnessEntries,
+         new Date(now),
+      );
+      this.freshManifestCache = {
+         manifest,
+         validUntil: nextStaleSince ?? Infinity,
+      };
+      return manifest;
+   }
+
+   /**
+    * Install the per-query freshness resolver on every owned model so the serve
+    * path (Model.getQueryResults / executeNotebookCell) applies the
+    * freshness-filtered manifest as a per-query Malloy `buildManifest` override.
+    * Idempotent; called after (re)building the model set.
+    */
+   private wireFreshnessResolvers(): void {
+      for (const model of this.models.values()) {
+         model.setFreshnessResolver(() => this.getFreshBuildManifest());
+      }
+   }
+
+   /**
     * Record the URI whose manifest is currently bound to the served models. May
     * differ from `manifestLocation` after an in-memory auto-load following a
     * materialization build (no URI), in which case it stays null.
@@ -545,13 +709,18 @@ export class Package {
     * observability (/status). An empty map means the manifest was cleared, so
     * the package reverts to live (unbound).
     */
-   private recordManifestBinding(
-      buildManifest: BuildManifest["entries"],
-   ): void {
-      const count = Object.keys(buildManifest).length;
-      this.buildManifestEntries = count > 0 ? buildManifest : undefined;
+   private recordManifestBinding(entries: FreshnessManifest): void {
+      const count = Object.keys(entries).length;
+      // Full wire entries (with freshness) drive the per-query serve-path gate;
+      // the tableName-only projection is what /compile and /status consume.
+      this.freshnessEntries = count > 0 ? entries : undefined;
+      this.buildManifestEntries =
+         count > 0 ? toTableNameManifest(entries) : undefined;
       this.manifestEntryCount = count;
       this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
+      // A rebind replaces the entries, so any memoized freshness-filtered
+      // manifest is stale — drop it so the next query recomputes.
+      this.freshManifestCache = undefined;
       if (count === 0) {
          this.boundManifestUri = null;
       }
@@ -615,38 +784,111 @@ export class Package {
    }
 
    /**
-    * Publish-gate for the package-level materialization cron (the power tier
-    * of artifact-anchored scheduling): a declared `materialization.schedule`
-    * governs every persist source in the package, so it is valid only when
-    * each source in the compiled build plan resolves to an explicit
-    * `sharing=private`. A cron over any shared/unset source would let one
-    * package dictate the refresh cadence of an artifact other packages share —
-    * those packages declare `materialization.freshness.window` instead and the
-    * control plane schedules the shared artifact from the tightest window.
-    * One actionable message per offending source (empty when the cron is
-    * valid or no cron is declared). Strict at publish (package.controller),
-    * warn-only at load/reload (loadViaWorker) — same split as explores.
+    * Publish-gate for the package's Malloy Persistence policy (persistence.md
+    * §3.1, §9.2–§9.5). Scope is a single package-level mode (`Package.scope`)
+    * and a materialization cron is package-root-only and version-scope-only.
+    * The rules, read off the resolved build plan + manifest:
+    *
+    *  1. Per-source `#@ persist ... sharing=`/`schedule=` are retired — declaring
+    *     either on a source is an error (scope is package-level; a schedule is
+    *     package-root-only). Detected via the raw `annotationFields`.
+    *  2. `materialization.schedule` is legal only when `scope: version` (a
+    *     package-scoped lineage is reused across versions, so a single
+    *     per-version cadence is meaningless).
+    *  3. `materialization.schedule` and freshness (package `materialization.freshness`
+    *     or any source `freshness`) are mutually exclusive — declare either the
+    *     power tier or the objective tier, never both.
+    *
+    * The cross-package dependency rule (a `scope: version` scheduled package may
+    * not depend on a package-scoped upstream) is not enforced here: scope is
+    * uniform within a package, so an intra-package dependency can never violate
+    * it, and the publisher's build plan is intra-package only — a cross-package
+    * upstream's scope is not resolvable from the single `Package` served. It is
+    * deferred to the scheduler slice (R1–R3), which resolves cross-package scope.
+    *
+    * Strict at publish (package.controller), warn-only at load/reload
+    * (loadViaWorker) — same split as explores.
     */
-   public scheduleWarnings(): string[] {
-      const schedule = this.packageMetadata.materialization?.schedule;
-      if (!schedule) return [];
-      const sources = Object.values(this.buildPlan?.sources ?? {});
-      return sources
-         .filter((source) => source.sharing !== "private")
-         .map(
-            (source) =>
-               `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires every ` +
-               `persist source to declare '#@ persist ... sharing=private'; source ` +
-               `'${source.name}' resolves to ${
-                  source.sharing ? `'${source.sharing}'` : "unset"
-               }. Declare 'materialization.freshness.window' instead (the control plane ` +
-               `schedules refreshes from it), or mark every persist source sharing=private.`,
+   public persistencePolicyWarnings(): string[] {
+      const warnings: string[] = [];
+      const sources = this.buildPlan?.sources
+         ? Object.values(this.buildPlan.sources)
+         : [];
+      const materialization = this.packageMetadata.materialization;
+      const packageSchedule = materialization?.schedule ?? null;
+      const packageFreshness = materialization?.freshness ?? null;
+      const scope = this.packageMetadata.scope ?? "package";
+
+      // Rule 1: per-source sharing/schedule are no longer part of the model.
+      for (const source of sources) {
+         const fields = source.annotationFields ?? {};
+         if (fields.sharing !== undefined) {
+            warnings.push(
+               `#@ persist source "${source.name}" declares sharing=... which is ` +
+                  `no longer supported: scope is a single package-level mode. Set ` +
+                  `the root-level "scope": "version" | "package" in ` +
+                  `${PACKAGE_MANIFEST_NAME} instead.`,
+            );
+         }
+         if (fields.schedule !== undefined) {
+            warnings.push(
+               `#@ persist source "${source.name}" declares schedule=... which is ` +
+                  `no longer supported: a schedule is package-root-only. Declare ` +
+                  `"materialization.schedule" at the ${PACKAGE_MANIFEST_NAME} root ` +
+                  `(requires "scope": "version") instead.`,
+            );
+         }
+      }
+
+      // Rule 2: a package-level cron is legal only with scope: version.
+      if (packageSchedule && scope !== "version") {
+         warnings.push(
+            `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
+               `"scope": "version": a package-scoped lineage is reused across ` +
+               `versions, so a single per-version cadence is meaningless. Set ` +
+               `"scope": "version", or remove the schedule.`,
          );
+      }
+
+      // Rule 3: schedule and freshness are mutually exclusive.
+      if (packageSchedule) {
+         const freshnessDeclared =
+            !!(
+               packageFreshness &&
+               (packageFreshness.window || packageFreshness.fallback)
+            ) || sources.some((s) => s.freshness != null);
+         if (freshnessDeclared) {
+            warnings.push(
+               `materialization.schedule and freshness are mutually exclusive in ` +
+                  `${PACKAGE_MANIFEST_NAME}: declare either a schedule (power tier) ` +
+                  `or freshness (objective tier), never both.`,
+            );
+         }
+      }
+
+      // Rule 4: the cron must be a valid 5-field UNIX expression (no L/W/#/?
+      // extensions — see CronEvaluator). Enforced here so publish (strict),
+      // PATCH (strict), package load (warn), and the standalone scheduler all
+      // apply the identical rule — a garbage cron can no longer pass publish
+      // and then silently never arm.
+      if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
+         warnings.push(
+            `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
+               `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +
+               `"minute hour day-of-month month day-of-week" (no L/W/#/? ` +
+               `extensions).`,
+         );
+      }
+
+      return warnings;
    }
 
-   /** The {@link scheduleWarnings} joined into one string, or "" if none. */
-   public formatInvalidSchedule(): string {
-      return this.scheduleWarnings().join("\n");
+   /**
+    * The {@link persistencePolicyWarnings} joined into one string, or "" if the
+    * package's persistence policy is valid.
+    */
+   public formatInvalidPersistencePolicy(): string {
+      return this.persistencePolicyWarnings().join("\n");
    }
 
    /**
@@ -728,9 +970,11 @@ export class Package {
     * timeout, pool shutting down) propagate as `ServiceUnavailableError`
     * — the caller (manifest service) decides how to retry.
     */
-   public async reloadAllModels(
-      buildManifest: BuildManifest["entries"],
-   ): Promise<void> {
+   public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+      // Models are hydrated against the tableName-only projection; the freshness
+      // fields gate the serve path per query (via getFreshBuildManifest), not
+      // model hydration.
+      const buildManifest = toTableNameManifest(entries);
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
          packageName: this.packageName,
@@ -837,7 +1081,13 @@ export class Package {
       this.applyQueryBoundaryToModels();
       // Remember what we just bound so /compile can route identically and
       // /status can report the binding. An empty map reverts to live (unbound).
-      this.recordManifestBinding(buildManifest);
+      // Retains the full freshness entries so the serve-path gate can evaluate
+      // them per query.
+      this.recordManifestBinding(entries);
+      // Install the per-query freshness resolver on the rebuilt model set so the
+      // serve path applies the freshness-filtered manifest as a per-query
+      // override.
+      this.wireFreshnessResolvers();
       // Re-run the fail-safe warning against the refreshed model set: an edit
       // to publisher.json that introduces a bad entry should surface in the
       // logs on reload too, not only at initial load (loadViaWorker).
