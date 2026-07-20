@@ -71,6 +71,8 @@ function resolvePublisherConfigPath(serverRoot: string): {
    return null;
 }
 
+// Home paths are POSIX form only: `~/` expands, while bare `~`, `~user/…`,
+// and Windows-style `~\` are not local paths and are rejected downstream.
 type FilesystemPath =
    | `./${string}`
    | `../${string}`

@@ -120,19 +120,30 @@ async function clearMountTarget(targetPath: string): Promise<void> {
 /**
  * Absolute on-disk path for a local package `location`.
  *
- * `~/` expands to the home directory. Anything still relative resolves
- * against `anchorDir`, the directory holding the active config, so a config
- * and the packages it points at can be moved or committed together.
- * Absolute locations are returned untouched.
+ * `~/` (POSIX form only) expands to the home directory. Anything still
+ * relative resolves against `anchorDir`, the directory holding the active
+ * config, so a config and the packages it points at can be moved or
+ * committed together. Absolute locations are returned untouched.
  */
 export function resolvePackageLocation(
    location: string,
    anchorDir: string,
-   homeDir: string = os.homedir(),
+   homeDir?: string,
 ): string {
-   const expanded = location.startsWith("~/")
-      ? path.join(homeDir, location.slice(2))
-      : location;
+   let expanded = location;
+   if (location.startsWith("~/")) {
+      // Resolved lazily, inside the tilde branch only: os.homedir() can throw
+      // where HOME is unset and there is no passwd entry for the uid (e.g. a
+      // distroless container with runAsUser), and a `./sales` or absolute
+      // location must never fail on that.
+      const home = homeDir ?? os.homedir();
+      if (!home) {
+         throw new Error(
+            `Cannot expand "~" in location "${location}": home directory is not set`,
+         );
+      }
+      expanded = path.join(home, location.slice(2));
+   }
    return path.isAbsolute(expanded) ? expanded : path.join(anchorDir, expanded);
 }
 

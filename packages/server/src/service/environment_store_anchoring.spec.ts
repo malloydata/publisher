@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { PUBLISHER_CONFIG_NAME, TEMP_DIR_PATH } from "../constants";
 
@@ -68,13 +68,21 @@ describe("relative package locations anchor at the config directory", () => {
    });
 
    it("mounts a package that sits next to the config, not next to the server root", async () => {
-      // The package exists ONLY under the config dir, so anchoring at the
-      // server root (the pre-fix rule) looks in the wrong place and fails.
+      // A `sales` directory exists in BOTH candidate anchors, with different
+      // contents. If resolution silently reverted to server-root anchoring it
+      // would still mount successfully — off the decoy — so the existence
+      // check alone could not catch the regression; the content check does.
       const packageSource = path.join(configDirPath, "sales");
       mkdirSync(packageSource, { recursive: true });
       writeFileSync(
          path.join(packageSource, "publisher.json"),
          JSON.stringify({ name: "sales" }),
+      );
+      const decoySource = path.join(serverRootPath, "sales");
+      mkdirSync(decoySource, { recursive: true });
+      writeFileSync(
+         path.join(decoySource, "publisher.json"),
+         JSON.stringify({ name: "decoy-from-server-root" }),
       );
 
       const store = new EnvironmentStore(serverRootPath);
@@ -84,16 +92,16 @@ describe("relative package locations anchor at the config directory", () => {
          connections: [],
       } as never);
 
-      expect(
-         existsSync(
-            path.join(
-               serverRootPath,
-               "publisher_data",
-               "probe",
-               "sales",
-               "publisher.json",
-            ),
-         ),
-      ).toBe(true);
+      const mountedManifest = path.join(
+         serverRootPath,
+         "publisher_data",
+         "probe",
+         "sales",
+         "publisher.json",
+      );
+      expect(existsSync(mountedManifest)).toBe(true);
+      expect(JSON.parse(readFileSync(mountedManifest, "utf-8")).name).toBe(
+         "sales",
+      );
    });
 });

@@ -1080,4 +1080,34 @@ describe("resolvePackageLocation", () => {
          resolvePackageLocation("../examples/storefront", CONFIG_DIR, HOME),
       ).toBe(path.join(CONFIG_DIR, "..", "examples", "storefront"));
    });
+
+   it("throws when ~/ cannot be expanded because no home directory is set", () => {
+      // An empty home must fail loudly: `path.join("", "x")` would otherwise
+      // yield a relative "x" that silently anchors under the config dir.
+      expect(() => resolvePackageLocation("~/x", CONFIG_DIR, "")).toThrow(
+         /home directory is not set/,
+      );
+   });
+
+   it("never consults the home directory for non-tilde locations", () => {
+      // The same empty home that makes a ~/ location throw must be irrelevant
+      // to ./ and absolute locations; home is resolved lazily, tilde-only.
+      expect(resolvePackageLocation("./sales", CONFIG_DIR, "")).toBe(
+         path.join(CONFIG_DIR, "sales"),
+      );
+      const absolute = path.join(path.sep, "srv", "packages", "sales");
+      expect(resolvePackageLocation(absolute, CONFIG_DIR, "")).toBe(absolute);
+   });
+
+   it("expands only the POSIX ~/ prefix; bare ~ and ~user are not home paths", () => {
+      // Neither form satisfies isLocalPath, so in practice they are rejected
+      // upstream as non-local locations; pin here that the resolver itself
+      // never treats them as home-relative either.
+      expect(resolvePackageLocation("~", CONFIG_DIR, HOME)).toBe(
+         path.join(CONFIG_DIR, "~"),
+      );
+      expect(resolvePackageLocation("~user/foo", CONFIG_DIR, HOME)).toBe(
+         path.join(CONFIG_DIR, "~user", "foo"),
+      );
+   });
 });
