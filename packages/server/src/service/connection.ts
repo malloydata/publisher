@@ -30,6 +30,12 @@ import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import { components } from "../api";
+import { getExtensionFetchPolicy } from "../config";
+import {
+   catalogFormatRangeForEngine,
+   isCatalogFormatInRange,
+} from "../ducklake_version";
+import { ConnectionAuthError } from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import {
@@ -71,26 +77,102 @@ export type InternalConnection = ApiConnection & {
 };
 
 // Shared utilities
+
+/**
+ * Pin the extension-management PRAGMAs on a Publisher-managed DuckDB attach
+ * session. Publisher installs the extensions it needs explicitly (see
+ * {@link installAndLoadExtension}), so DuckDB's own IMPLICIT auto-install
+ * (fetching a known extension a query happens to reference) is never
+ * load-bearing.
+ *
+ * Auto-LOAD is left ON (DuckDB's default) so any locally-present extension
+ * still lazy-loads — the local-first UX every deployment relies on. Implicit
+ * auto-INSTALL is turned OFF when EITHER:
+ *   - `alwaysDisableAutoinstall` is set — the DuckLake tier's build/serve
+ *     sessions only ever need the curated extension set, so they never
+ *     implicitly fetch, regardless of the deployment policy; OR
+ *   - `EXTENSION_FETCH_POLICY=local-only` — the air-gapped / pinned-image
+ *     posture, where no session may reach the network.
+ *
+ * Under the default `on-demand` policy a generic attach session is left
+ * untouched (DuckDB's default), so existing standalone/OSS users see no
+ * behaviour change. A failure to set the PRAGMAs is logged and swallowed: it
+ * should not happen on a supported DuckDB, and must not fail a valid attach.
+ */
+async function applyExtensionSessionSettings(
+   connection: DuckDBConnection,
+   {
+      alwaysDisableAutoinstall = false,
+   }: { alwaysDisableAutoinstall?: boolean } = {},
+): Promise<void> {
+   const disableAutoinstall =
+      alwaysDisableAutoinstall || getExtensionFetchPolicy() === "local-only";
+   if (!disableAutoinstall) {
+      return;
+   }
+   try {
+      await connection.runSQL("SET autoinstall_known_extensions=false;");
+      // Keep autoload on: it is DuckDB's default, but set it explicitly next to
+      // an install lockdown so a locally-present/baked extension still loads.
+      await connection.runSQL("SET autoload_known_extensions=true;");
+   } catch (error) {
+      logger.warn("Failed to pin DuckDB extension session settings", { error });
+   }
+}
+
 async function installAndLoadExtension(
    connection: DuckDBConnection,
    extensionName: string,
    fromCommunity = false,
 ): Promise<void> {
-   try {
-      const installCommand = fromCommunity
-         ? `FORCE INSTALL '${extensionName}' FROM community;`
-         : `INSTALL ${extensionName};`;
-      await connection.runSQL(installCommand);
-      logger.info(`${extensionName} extension installed`);
-   } catch (error) {
-      logger.info(
-         `${extensionName} extension already installed or install skipped`,
-         { error },
-      );
+   const policy = getExtensionFetchPolicy();
+
+   // `local-only` never fetches: skip INSTALL entirely and rely on the
+   // extension already being present on disk (baked into the image). Auto-LOAD
+   // stays on (see applyExtensionSessionSettings), so a present extension still
+   // lazy-loads; a missing one fails the LOAD below and is reported loudly.
+   if (policy === "on-demand") {
+      try {
+         // Plain INSTALL is local-first: it no-ops when the extension is already
+         // present and only fetches when it is missing. We dropped FORCE, which
+         // re-fetched from the community CDN whenever the network was up — even
+         // for a baked extension — silently drifting the running binary past the
+         // offline-verified build.
+         const installCommand = fromCommunity
+            ? `INSTALL ${extensionName} FROM community;`
+            : `INSTALL ${extensionName};`;
+         await connection.runSQL(installCommand);
+         logger.info(`${extensionName} extension installed`);
+      } catch (error) {
+         logger.info(
+            `${extensionName} extension already installed or install skipped`,
+            { error },
+         );
+      }
    }
 
-   await connection.runSQL(`LOAD ${extensionName};`);
-   logger.info(`${extensionName} extension loaded`);
+   try {
+      await connection.runSQL(`LOAD ${extensionName};`);
+      logger.info(`${extensionName} extension loaded`);
+   } catch (error) {
+      if (policy === "local-only") {
+         const detail = error instanceof Error ? error.message : String(error);
+         logger.warn("DuckDB extension unavailable under local-only policy", {
+            extension: extensionName,
+            policy,
+            error: detail,
+         });
+         throw new Error(
+            `DuckDB extension '${extensionName}' is not available locally and ` +
+               `EXTENSION_FETCH_POLICY=local-only forbids fetching it. Bake the ` +
+               `'${extensionName}' extension into the image (or a pre-populated ` +
+               `~/.duckdb/extensions directory), or set ` +
+               `EXTENSION_FETCH_POLICY=on-demand to allow fetching missing ` +
+               `extensions on first use. Underlying LOAD error: ${detail}`,
+         );
+      }
+      throw error;
+   }
 }
 
 async function isDatabaseAttached(
@@ -339,11 +421,135 @@ async function attachPostgres(
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
 
+/** Rows out of a DuckDBConnection.runSQL result, in either shape it returns. */
+function runSQLRows(result: unknown): Record<string, unknown>[] {
+   if (Array.isArray(result)) return result as Record<string, unknown>[];
+   const rows = (result as { rows?: unknown }).rows;
+   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
+
+/**
+ * Runtime range-preflight for a DuckLake ATTACH. Reads the catalog's recorded
+ * format version from its `ducklake_metadata` table via a plain postgres ATTACH
+ * (this does NOT invoke the DuckLake extension on the catalog), and checks it
+ * against the format range the running DuckDB engine supports (see
+ * `ducklake_version.ts`). On a mismatch it throws a {@link ConnectionAuthError}
+ * (→ HTTP 422) naming the format found, the supported range, and where to
+ * migrate — instead of letting the real DuckLake ATTACH fail deep inside DuckDB
+ * as an opaque 500.
+ *
+ * Non-load-bearing on its own read: any failure of the preflight itself
+ * (missing `ducklake_metadata` table, non-postgres catalog, query timeout,
+ * connect failure, an engine with no matrix row) logs and returns so the real
+ * ATTACH below stays the source of truth for unrelated errors. Only a
+ * successfully-read, definitively-out-of-range format raises the clean 422.
+ */
+async function preflightDuckLakeCatalogFormat(
+   connection: DuckDBConnection,
+   dbName: string,
+   pgConnString: string,
+): Promise<void> {
+   const tempDb = `${dbName}_fmt_preflight`;
+   let catalogFormat: string | undefined;
+   try {
+      await connection.runSQL(
+         `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDb} (TYPE postgres, READ_ONLY);`,
+      );
+      const result = await connection.runSQL(
+         `SELECT value FROM ${tempDb}.ducklake_metadata WHERE key = 'version' LIMIT 1;`,
+      );
+      const value = runSQLRows(result)[0]?.value;
+      catalogFormat = typeof value === "string" ? value : undefined;
+   } catch (error) {
+      logger.warn(
+         "DuckLake catalog-format preflight read failed; falling back to ATTACH",
+         {
+            dbName,
+            error: redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         },
+      );
+      return;
+   } finally {
+      try {
+         await connection.runSQL(`DETACH ${tempDb};`);
+      } catch {
+         // The ATTACH may have failed, so there may be nothing to detach.
+      }
+   }
+
+   if (!catalogFormat) {
+      // Table present but no version row, or unreadable value: let ATTACH decide.
+      return;
+   }
+
+   // Derive the supported range from the engine DuckDB actually reports. An
+   // unknown engine (no matrix row) yields null → skip (the CI version-contract
+   // check is what guarantees the pinned engine is always covered).
+   let engineVersion = "";
+   try {
+      const versionResult = await connection.runSQL("SELECT version() AS v;");
+      engineVersion = String(runSQLRows(versionResult)[0]?.v ?? "");
+   } catch (error) {
+      logger.warn(
+         "DuckLake catalog-format preflight: could not read engine version; skipping",
+         {
+            dbName,
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      return;
+   }
+
+   const range = catalogFormatRangeForEngine(engineVersion);
+   if (!range) {
+      logger.warn(
+         "DuckLake catalog-format preflight: engine not covered by the format matrix; skipping",
+         { dbName, engineVersion },
+      );
+      return;
+   }
+
+   if (!isCatalogFormatInRange(catalogFormat, range)) {
+      logger.warn(
+         "DuckLake catalog format outside supported range; rejecting",
+         {
+            dbName,
+            catalogFormat,
+            supportedMin: range.min,
+            supportedMax: range.max,
+            engineVersion: range.engineVersion,
+         },
+      );
+      throw new ConnectionAuthError(
+         `DuckLake catalog '${dbName}' has format version ${catalogFormat}, ` +
+            `which is outside the range this Publisher supports ` +
+            `(${range.min} ≤ format ≤ ${range.max}). The DuckLake ` +
+            `extension bundled with DuckDB v${range.engineVersion} attaches only ` +
+            `catalogs in that range without migration. Migrate the catalog to a ` +
+            `supported format (see the DuckLake catalog-migration docs at ` +
+            `https://ducklake.select/docs), or run a Publisher built against a ` +
+            `DuckDB engine whose supported range includes ${catalogFormat}.`,
+      );
+   }
+
+   logger.info(
+      `DuckLake catalog '${dbName}' format ${catalogFormat} is within supported range ` +
+         `${range.min}..${range.max} (engine v${range.engineVersion})`,
+   );
+}
+
 async function attachDuckLake(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
 ): Promise<void> {
+   // Tier build/serve DuckLake sessions never implicitly auto-install (Publisher
+   // installs the DuckLake stack explicitly below) — regardless of the policy.
+   await applyExtensionSessionSettings(connection, {
+      alwaysDisableAutoinstall: true,
+   });
    await installAndLoadExtension(connection, "ducklake");
    await installAndLoadExtension(connection, "postgres");
    await installAndLoadExtension(connection, "aws");
@@ -387,6 +593,9 @@ async function attachDuckLake(
    );
    const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
    logger.info(`escapedBucketUrl: ${escapedBucketUrl}`);
+   // Range-preflight the catalog's recorded format version so an unsupported
+   // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500.
+   await preflightDuckLakeCatalogFormat(connection, dbName, pgConnString);
    const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true, READ_ONLY true);`;
    logger.info(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
@@ -631,6 +840,12 @@ async function attachDatabasesToDuckDB(
       s3: attachCloudStorage,
       azure: attachAzureStorage,
    };
+
+   // Generic (non-tier) attach session: defer to the deployment policy — off
+   // under local-only, left at DuckDB's default under on-demand so existing
+   // users see no behaviour change. Publisher still installs each attached
+   // type's extension explicitly below.
+   await applyExtensionSessionSettings(duckdbConnection);
 
    // Pre-load extensions needed by any attached database type, once per connection
    const hasAzure = attachedDatabases.some((db) => db.type === "azure");

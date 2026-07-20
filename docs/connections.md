@@ -20,6 +20,10 @@ You can also declare a top-level DuckDB connection at the environment level. Pub
 
 An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
 
+## DuckLake connections (`type: "ducklake"`)
+
+A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path — and queries it read-only. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.
+
 ## Connection naming rules
 
 A few names are reserved or have special meaning. Picking the wrong name causes a clear error at server startup:
