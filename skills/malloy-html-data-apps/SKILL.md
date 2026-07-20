@@ -156,7 +156,7 @@ npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
 }
 ```
 
-A local package uses a filesystem `location` (`"./<pkg>"`, relative to `--server_root`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a `.malloynb` whose cells each `import "x.malloy"`, the notebook compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once in the first cell.)
+A local package uses a filesystem `location` (`"./<pkg>"`, relative to the directory holding `publisher.config.json`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a `.malloynb` whose cells each `import "x.malloy"`, the notebook compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once in the first cell.)
 
 ### Publishing
 

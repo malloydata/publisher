@@ -7,7 +7,7 @@ import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
-import { EnvironmentStore } from "./environment_store";
+import { EnvironmentStore, resolvePackageLocation } from "./environment_store";
 
 type MockData = Record<string, unknown>;
 
@@ -1039,6 +1039,75 @@ describe("EnvironmentStore path-injection guards", () => {
                environmentStore.getEnvironment(name),
             ).rejects.toBeInstanceOf(BadRequestError);
          },
+      );
+   });
+});
+
+describe("resolvePackageLocation", () => {
+   // Built with `path`, not literals: the helper joins with the platform
+   // separator and these specs run on windows-latest too (cross-platform-tests).
+   const HOME = path.join(path.sep, "home", "tester");
+   const CONFIG_DIR = path.join(path.sep, "etc", "publisher");
+
+   it("expands ~/ against the home directory", () => {
+      expect(
+         resolvePackageLocation("~/my-packages/sales", CONFIG_DIR, HOME),
+      ).toBe(path.join(HOME, "my-packages", "sales"));
+   });
+
+   it("does not anchor an expanded ~/ path at the config dir", () => {
+      // Regression: `~/` satisfies isLocalPath but not path.isAbsolute, so an
+      // unexpanded tilde used to be joined onto the anchor, yielding
+      // `<anchor>/~/my-packages/sales`.
+      const resolved = resolvePackageLocation("~/x", CONFIG_DIR, HOME);
+      expect(resolved).not.toContain("~");
+      expect(resolved.startsWith(CONFIG_DIR)).toBe(false);
+   });
+
+   it("returns an absolute location untouched", () => {
+      const absolute = path.join(path.sep, "srv", "packages", "sales");
+      expect(resolvePackageLocation(absolute, CONFIG_DIR, HOME)).toBe(absolute);
+   });
+
+   it("anchors a relative location at the config dir, not the cwd", () => {
+      expect(resolvePackageLocation("./sales", CONFIG_DIR, HOME)).toBe(
+         path.join(CONFIG_DIR, "sales"),
+      );
+   });
+
+   it("anchors a ../ location at the config dir", () => {
+      expect(
+         resolvePackageLocation("../examples/storefront", CONFIG_DIR, HOME),
+      ).toBe(path.join(CONFIG_DIR, "..", "examples", "storefront"));
+   });
+
+   it("throws when ~/ cannot be expanded because no home directory is set", () => {
+      // An empty home must fail loudly: `path.join("", "x")` would otherwise
+      // yield a relative "x" that silently anchors under the config dir.
+      expect(() => resolvePackageLocation("~/x", CONFIG_DIR, "")).toThrow(
+         /home directory is not set/,
+      );
+   });
+
+   it("never consults the home directory for non-tilde locations", () => {
+      // The same empty home that makes a ~/ location throw must be irrelevant
+      // to ./ and absolute locations; home is resolved lazily, tilde-only.
+      expect(resolvePackageLocation("./sales", CONFIG_DIR, "")).toBe(
+         path.join(CONFIG_DIR, "sales"),
+      );
+      const absolute = path.join(path.sep, "srv", "packages", "sales");
+      expect(resolvePackageLocation(absolute, CONFIG_DIR, "")).toBe(absolute);
+   });
+
+   it("expands only the POSIX ~/ prefix; bare ~ and ~user are not home paths", () => {
+      // Neither form satisfies isLocalPath, so in practice they are rejected
+      // upstream as non-local locations; pin here that the resolver itself
+      // never treats them as home-relative either.
+      expect(resolvePackageLocation("~", CONFIG_DIR, HOME)).toBe(
+         path.join(CONFIG_DIR, "~"),
+      );
+      expect(resolvePackageLocation("~user/foo", CONFIG_DIR, HOME)).toBe(
+         path.join(CONFIG_DIR, "~user", "foo"),
       );
    });
 });

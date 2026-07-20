@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
-import { getPublisherConfig, type PublisherConfig } from "./config";
+import {
+   getPublisherConfig,
+   getPublisherConfigDir,
+   type PublisherConfig,
+} from "./config";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
 
 describe("Config Environment Variable Substitution", () => {
@@ -1406,5 +1410,87 @@ describe("getMaxConcurrentQueries", () => {
       process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "many";
       const { getMaxConcurrentQueries } = await import("./config");
       expect(() => getMaxConcurrentQueries()).toThrow();
+   });
+});
+
+describe("getPublisherConfigDir", () => {
+   const testRoot = path.join(process.cwd(), "test-temp-config-dir");
+   const elsewhere = path.join(testRoot, "elsewhere");
+   const savedConfigPath = process.env.PUBLISHER_CONFIG_PATH;
+
+   beforeEach(() => {
+      fs.mkdirSync(elsewhere, { recursive: true });
+      // Both knobs feed resolvePublisherConfigPath, and every spec file shares
+      // one process, so clear both rather than inherit whatever ran before.
+      delete process.env.PUBLISHER_CONFIG_PATH;
+      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
+   });
+
+   afterEach(() => {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+      // Clear both, not just the one this describe saves: every spec file shares
+      // one process, so a knob left set here follows whatever runs next.
+      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
+      if (savedConfigPath === undefined) {
+         delete process.env.PUBLISHER_CONFIG_PATH;
+      } else {
+         process.env.PUBLISHER_CONFIG_PATH = savedConfigPath;
+      }
+   });
+
+   it("returns the server root when the config sits there", () => {
+      fs.writeFileSync(
+         path.join(testRoot, PUBLISHER_CONFIG_NAME),
+         JSON.stringify({ environments: [] }),
+      );
+      expect(getPublisherConfigDir(testRoot)).toBe(testRoot);
+   });
+
+   it("follows PUBLISHER_CONFIG_PATH to a config outside the server root", () => {
+      // The --config case: a relative package location must anchor next to
+      // the config that declares it, not at whatever cwd the server booted in.
+      const configPath = path.join(elsewhere, PUBLISHER_CONFIG_NAME);
+      fs.writeFileSync(configPath, JSON.stringify({ environments: [] }));
+      process.env.PUBLISHER_CONFIG_PATH = configPath;
+      expect(getPublisherConfigDir(testRoot)).toBe(elsewhere);
+   });
+
+   it("returns null when no config resolves, so callers fall back to the server root", () => {
+      expect(getPublisherConfigDir(testRoot)).toBeNull();
+   });
+
+   it("returns an absolute anchor even when --config is relative", () => {
+      // An anchor that is itself relative would re-resolve against the cwd of
+      // whoever reads it, which is the bug this whole change is fixing.
+      const rel = path.relative(
+         process.cwd(),
+         path.join(elsewhere, PUBLISHER_CONFIG_NAME),
+      );
+      fs.writeFileSync(
+         path.join(elsewhere, PUBLISHER_CONFIG_NAME),
+         JSON.stringify({ environments: [] }),
+      );
+      process.env.PUBLISHER_CONFIG_PATH = rel;
+      const anchor = getPublisherConfigDir(testRoot);
+      expect(anchor).not.toBeNull();
+      expect(path.isAbsolute(anchor as string)).toBe(true);
+      expect(anchor).toBe(elsewhere);
+   });
+
+   it("returns null when --config names a directory instead of a file", () => {
+      // existsSync is true for a directory, so without a file check the anchor
+      // would silently become that directory's PARENT, for a config that never
+      // loads (getPublisherConfig catches the read error and returns empty).
+      process.env.PUBLISHER_CONFIG_PATH = elsewhere;
+      expect(getPublisherConfigDir(testRoot)).toBeNull();
+   });
+
+   it("returns null for the bundled default rather than anchoring inside the install", () => {
+      // Zero-arg `npx @malloy-publisher/server` resolves the config that ships
+      // inside the package. Anchoring a user's relative location under
+      // node_modules would be meaningless, so the caller falls back to the
+      // server root, which is what this did before the anchor moved.
+      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
+      expect(getPublisherConfigDir(testRoot)).toBeNull();
    });
 });
