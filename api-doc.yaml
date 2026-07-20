@@ -4354,6 +4354,20 @@ components:
             echoes this logical name back in the manifest.
         realization:
           $ref: "#/components/schemas/Realization"
+        destination:
+          type: string
+          description: >-
+            Optional name of a registered DuckDB/DuckLake connection to
+            materialize INTO (the `storage=` authoring axis). Absent (or the
+            reserved value `source`) means build into the persist source's own
+            warehouse — the default, unchanged path. When present, the build runs
+            a native per-engine query-passthrough CTAS on a build-scoped session
+            for this connection (the source computes; only results cross), and
+            the manifest records the destination connection + captured schema so
+            the source can later be served cross-dialect from the destination.
+            The name resolves generically against registered connections; any
+            managed-tier aliasing (e.g. `credible`) is resolved upstream and
+            never reaches the publisher.
 
     BuildManifest:
       type: object
@@ -4393,6 +4407,31 @@ components:
             and matches on the same logical name it assigned.
         connectionName:
           type: string
+          description: >-
+            The persist source's own connection (the source warehouse). For a
+            `storage=`-materialized entry this is where the data is READ FROM;
+            the physical table lives in `storageConnectionName`.
+        storageConnectionName:
+          type: string
+          description: >-
+            When the source was materialized into a `storage=` destination, the
+            name of the registered DuckDB/DuckLake connection the physical table
+            physically lives in (distinct from `connectionName`, the source
+            warehouse). Absent for the default in-warehouse path, where the table
+            lives in `connectionName`. The serve path resolves and reads the
+            table on this connection.
+        schema:
+          type: array
+          description: >-
+            The authoritative column schema of the materialized table, captured
+            from the destination engine AFTER the build (a `DESCRIBE` of the
+            landed table), for `storage=` entries only. The serve-time
+            virtual-source transform declares exactly this schema — the compiler
+            does not type-check a virtual source's declared columns, so a wrong
+            or pre-build-approximated schema would surface as a serve-time
+            execution error, which is why the post-build capture is authoritative.
+          items:
+            $ref: "#/components/schemas/Column"
         realization:
           $ref: "#/components/schemas/Realization"
         rowCount:

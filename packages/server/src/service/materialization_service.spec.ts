@@ -766,10 +766,19 @@ describe("executeInstructedBuild", () => {
       instructions: BuildInstruction[],
       seed: Record<string, unknown>,
    ): Promise<Record<string, { physicalTableName?: string }>> {
+      // A stub BuildEnvironment: only the `storage=` branch touches it, and
+      // these tests exercise the default in-warehouse path, so it is never read.
+      const environment = {
+         getApiConnection: () => {
+            throw new Error("no connection config in this test");
+         },
+         getEnvironmentPath: () => "/tmp/env",
+      };
       return (
          ctx.service as unknown as {
             executeInstructedBuild: (
                c: unknown,
+               env: unknown,
                i: BuildInstruction[],
                s: Record<string, unknown>,
                sig: AbortSignal,
@@ -777,6 +786,7 @@ describe("executeInstructedBuild", () => {
          }
       ).executeInstructedBuild(
          compiled,
+         environment,
          instructions,
          seed,
          new AbortController().signal,
@@ -1235,10 +1245,11 @@ describe("runBuild (branch behavior)", () => {
 
       expect(svc.executeInstructedBuild.calledOnce).toBe(true);
       // Caller instructions pass straight through; nothing is carried/reused.
-      expect(svc.executeInstructedBuild.firstCall.args[1]).toEqual(
+      // (arg[1] is the environment; instructions are arg[2], seed entries arg[3].)
+      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual(
          instructions,
       );
-      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual({});
+      expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({});
       expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
          mode: "orchestrated",
          sourcesBuilt: 1,
@@ -1274,17 +1285,18 @@ describe("runBuild (branch behavior)", () => {
 
       // The reference manifest becomes the seed (carried) entries so a
       // downstream build resolves its upstream to the existing physical table.
-      // connectionName is carried through so the seed can be quoted for the
-      // upstream's dialect (see quoteSeedTablePath).
-      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual({
+      // arg[1] is environment (the storage build session), so the seed
+      // (carried) entries are arg[3]. connectionName is carried through so the
+      // seed can be quoted for the upstream's dialect (see quoteSeedTablePath).
+      expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({
          "up-1": {
             sourceEntityId: "up-1",
             physicalTableName: "upstream_tbl",
             connectionName: "sf",
          },
       });
-      // strictUpstreams flows through as the strict flag (5th arg).
-      expect(svc.executeInstructedBuild.firstCall.args[4]).toBe(true);
+      // strictUpstreams flows through as the strict flag (6th arg).
+      expect(svc.executeInstructedBuild.firstCall.args[5]).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
          mode: "orchestrated",
