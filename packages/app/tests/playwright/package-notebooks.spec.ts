@@ -51,17 +51,16 @@ test.describe("package-notebooks", () => {
    }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      await openPackage(page, DEFAULT_ENV, PACKAGES.imdb);
+      await openPackage(page, DEFAULT_ENV, PACKAGES.governed);
 
-      // README.malloynb shares no name overlap with the package, so a dropped
-      // package segment lands on /malloy-samples/README.malloynb and 404s. The
-      // imdb.malloynb case above cannot catch that (the URL still matches).
-      await page
-         .getByRole("button", { name: "README.malloynb", exact: true })
-         .click();
+      // orders.malloynb shares no name overlap with the governed-analytics
+      // package, so a dropped package segment lands on /examples/orders.malloynb
+      // and 404s. The storefront.malloynb case above cannot catch that (the
+      // URL still matches either way).
+      await page.getByText("orders.malloynb", { exact: true }).click();
 
       await expect(page).toHaveURL(
-         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.imdb}/README\\.malloynb$`),
+         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.governed}/orders\\.malloynb$`),
       );
       await expect(page.getByText(/does not exist/i)).toHaveCount(0);
    });
