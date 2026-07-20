@@ -1,7 +1,14 @@
 import "@malloydata/malloy-explorer/styles.css";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { Box, Paper, Stack, Typography } from "@mui/material";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+   MouseEvent,
+   useCallback,
+   useEffect,
+   useMemo,
+   useRef,
+   useState,
+} from "react";
 import { RawNotebook, Source } from "../../client";
 import {
    getDimensionKey,
@@ -37,6 +44,10 @@ interface NotebookProps {
    maxResultSize?: number;
    /** Optional retrieval function for semantic search filters */
    retrievalFn?: RetrievalFunction;
+   /** Optional SPA navigation handler for links inside the notebook. When
+    * omitted, in-notebook links fall back to plain absolute anchors, so no
+    * react-router context is required to render a notebook. */
+   onNavigate?: (to: string, event?: MouseEvent) => void;
 }
 
 // Requires PackageProvider
@@ -44,6 +55,7 @@ export default function Notebook({
    resourceUri,
    maxResultSize = 0,
    retrievalFn,
+   onNavigate,
 }: NotebookProps) {
    const { apiClients } = useServer();
    const {
@@ -593,6 +605,7 @@ export default function Notebook({
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}
+                        onNavigate={onNavigate}
                      />
                   ))}
 

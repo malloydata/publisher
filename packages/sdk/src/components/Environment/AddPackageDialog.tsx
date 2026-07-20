@@ -16,6 +16,7 @@ import React, { useState } from "react";
 import { Package } from "../../client";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
+import { DOC_LINKS } from "../../constants/docLinks";
 import { useServer } from "../ServerProvider";
 
 interface AddPackageDialogProps {
@@ -117,7 +118,7 @@ export default function AddPackageDialog({
                      Make sure to conform to the{" "}
                      <Box
                         component="a"
-                        href="https://github.com/malloydata/publisher/blob/main/docs/architecture.md"
+                        href={DOC_LINKS.publishing}
                         target="_blank"
                         rel="noopener noreferrer"
                         sx={{
