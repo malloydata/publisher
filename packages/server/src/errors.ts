@@ -22,6 +22,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(404, error.message);
    } else if (error instanceof ConnectionAuthError) {
       return httpError(422, error.message);
+   } else if (error instanceof UnsupportedCatalogFormatError) {
+      return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
@@ -96,6 +98,16 @@ export class ConnectionError extends Error {
 }
 
 export class ConnectionAuthError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+// A catalog was reached and authenticated fine, but its on-disk format is
+// outside the range the pinned engine's extension can attach (see
+// ducklake_version.ts). Distinct from ConnectionAuthError so the 422 doesn't
+// read as a credentials problem. Maps to HTTP 422.
+export class UnsupportedCatalogFormatError extends Error {
    constructor(message: string) {
       super(message);
    }

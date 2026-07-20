@@ -4,7 +4,10 @@ import fs from "fs/promises";
 import path from "path";
 import sinon from "sinon";
 import { getExtensionFetchPolicy } from "../config";
-import { buildEnvironmentMalloyConfig } from "./connection";
+import {
+   applyExtensionSessionSettings,
+   buildEnvironmentMalloyConfig,
+} from "./connection";
 
 describe("getExtensionFetchPolicy", () => {
    const original = process.env.EXTENSION_FETCH_POLICY;
@@ -108,6 +111,83 @@ describe("EXTENSION_FETCH_POLICY=local-only extension loading", () => {
       expect(setAutoinstallOff).toBe(true);
 
       await config.releaseConnections().catch(() => {});
+   });
+});
+
+describe("applyExtensionSessionSettings", () => {
+   const original = process.env.EXTENSION_FETCH_POLICY;
+   afterEach(() => {
+      sinon.restore();
+      if (original === undefined) delete process.env.EXTENSION_FETCH_POLICY;
+      else process.env.EXTENSION_FETCH_POLICY = original;
+   });
+
+   // Minimal stand-in — the helper only ever calls runSQL.
+   const mockConn = (runSQL: sinon.SinonStub) =>
+      ({ runSQL }) as unknown as DuckDBConnection;
+
+   it("pins autoinstall off (autoload on) under local-only", async () => {
+      process.env.EXTENSION_FETCH_POLICY = "local-only";
+      const runSQL = sinon.stub().resolves({ rows: [] });
+      await applyExtensionSessionSettings(mockConn(runSQL));
+      const sql = runSQL.getCalls().map((c) => String(c.args[0]));
+      expect(
+         sql.some((s) => /autoinstall_known_extensions\s*=\s*false/i.test(s)),
+      ).toBe(true);
+      expect(
+         sql.some((s) => /autoload_known_extensions\s*=\s*true/i.test(s)),
+      ).toBe(true);
+   });
+
+   it("is a no-op for a generic session under on-demand", async () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      const runSQL = sinon.stub().resolves({ rows: [] });
+      await applyExtensionSessionSettings(mockConn(runSQL));
+      expect(runSQL.callCount).toBe(0);
+   });
+
+   it("pins a tier session even under on-demand (alwaysDisableAutoinstall)", async () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      const runSQL = sinon.stub().resolves({ rows: [] });
+      await applyExtensionSessionSettings(mockConn(runSQL), {
+         alwaysDisableAutoinstall: true,
+      });
+      expect(
+         runSQL
+            .getCalls()
+            .some((c) =>
+               /autoinstall_known_extensions\s*=\s*false/i.test(
+                  String(c.args[0]),
+               ),
+            ),
+      ).toBe(true);
+   });
+
+   it("pins each connection only once (dedup)", async () => {
+      process.env.EXTENSION_FETCH_POLICY = "local-only";
+      const runSQL = sinon.stub().resolves({ rows: [] });
+      const conn = mockConn(runSQL);
+      await applyExtensionSessionSettings(conn);
+      await applyExtensionSessionSettings(conn);
+      expect(runSQL.callCount).toBe(2); // two SETs from the first call only
+   });
+
+   it("fails closed under local-only when the pin cannot be applied", async () => {
+      process.env.EXTENSION_FETCH_POLICY = "local-only";
+      const runSQL = sinon.stub().rejects(new Error("pragma unsupported"));
+      await expect(
+         applyExtensionSessionSettings(mockConn(runSQL)),
+      ).rejects.toThrow(/EXTENSION_FETCH_POLICY=local-only/);
+   });
+
+   it("does NOT fail a tier attach under on-demand when the pin fails", async () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      const runSQL = sinon.stub().rejects(new Error("pragma unsupported"));
+      // Resolves (warn-and-continue), does not throw.
+      await applyExtensionSessionSettings(mockConn(runSQL), {
+         alwaysDisableAutoinstall: true,
+      });
+      expect(runSQL.callCount).toBeGreaterThan(0);
    });
 });
 

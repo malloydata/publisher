@@ -35,7 +35,7 @@ import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
 } from "../ducklake_version";
-import { ConnectionAuthError } from "../errors";
+import { UnsupportedCatalogFormatError } from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import {
@@ -78,9 +78,17 @@ export type InternalConnection = ApiConnection & {
 
 // Shared utilities
 
+// Publisher-owned DuckDB sessions whose extension PRAGMAs have already been
+// pinned. The lookup funnel runs on every resolve, and the attach paths pin
+// too, so this WeakSet keeps the SETs to once per connection object. The
+// DuckLake tier pins with `alwaysDisableAutoinstall` inside its attach, which
+// runs before the funnel ever sees the connection, so the stronger always-off
+// setting is recorded first and never re-evaluated down to policy here.
+const extensionSessionPinned = new WeakSet<Connection>();
+
 /**
- * Pin the extension-management PRAGMAs on a Publisher-managed DuckDB attach
- * session. Publisher installs the extensions it needs explicitly (see
+ * Pin the extension-management PRAGMAs on a Publisher-owned DuckDB session.
+ * Publisher installs the extensions it needs explicitly (see
  * {@link installAndLoadExtension}), so DuckDB's own IMPLICIT auto-install
  * (fetching a known extension a query happens to reference) is never
  * load-bearing.
@@ -94,20 +102,28 @@ export type InternalConnection = ApiConnection & {
  *   - `EXTENSION_FETCH_POLICY=local-only` — the air-gapped / pinned-image
  *     posture, where no session may reach the network.
  *
- * Under the default `on-demand` policy a generic attach session is left
- * untouched (DuckDB's default), so existing standalone/OSS users see no
- * behaviour change. A failure to set the PRAGMAs is logged and swallowed: it
- * should not happen on a supported DuckDB, and must not fail a valid attach.
+ * Under the default `on-demand` policy a generic session is left untouched
+ * (DuckDB's default), so existing standalone/OSS users see no behaviour change.
+ *
+ * Called for EVERY Publisher-owned DuckDB session — the environment lookup
+ * funnel, the per-package sandbox, and the attach entry points — so the pin has
+ * no gap regardless of whether a session has attached databases. On a failed
+ * SET: under `local-only` we FAIL CLOSED (throw), because the whole promise of
+ * that mode is that no session can reach the network; under the tier's
+ * on-demand always-off case the pin is defense-in-depth (the install path
+ * already avoids implicit fetches), so we log and continue rather than fail an
+ * otherwise-valid attach.
  */
-async function applyExtensionSessionSettings(
+export async function applyExtensionSessionSettings(
    connection: DuckDBConnection,
    {
       alwaysDisableAutoinstall = false,
    }: { alwaysDisableAutoinstall?: boolean } = {},
 ): Promise<void> {
+   const policy = getExtensionFetchPolicy();
    const disableAutoinstall =
-      alwaysDisableAutoinstall || getExtensionFetchPolicy() === "local-only";
-   if (!disableAutoinstall) {
+      alwaysDisableAutoinstall || policy === "local-only";
+   if (!disableAutoinstall || extensionSessionPinned.has(connection)) {
       return;
    }
    try {
@@ -115,8 +131,19 @@ async function applyExtensionSessionSettings(
       // Keep autoload on: it is DuckDB's default, but set it explicitly next to
       // an install lockdown so a locally-present/baked extension still loads.
       await connection.runSQL("SET autoload_known_extensions=true;");
+      extensionSessionPinned.add(connection);
    } catch (error) {
-      logger.warn("Failed to pin DuckDB extension session settings", { error });
+      const detail = error instanceof Error ? error.message : String(error);
+      if (policy === "local-only") {
+         throw new Error(
+            `Failed to disable DuckDB implicit extension auto-install under ` +
+               `EXTENSION_FETCH_POLICY=local-only; refusing to open a session that ` +
+               `could still fetch from the network. Underlying error: ${detail}`,
+         );
+      }
+      logger.warn("Failed to pin DuckDB extension session settings", {
+         error: detail,
+      });
    }
 }
 
@@ -433,23 +460,29 @@ function runSQLRows(result: unknown): Record<string, unknown>[] {
  * format version from its `ducklake_metadata` table via a plain postgres ATTACH
  * (this does NOT invoke the DuckLake extension on the catalog), and checks it
  * against the format range the running DuckDB engine supports (see
- * `ducklake_version.ts`). On a mismatch it throws a {@link ConnectionAuthError}
- * (→ HTTP 422) naming the format found, the supported range, and where to
- * migrate — instead of letting the real DuckLake ATTACH fail deep inside DuckDB
- * as an opaque 500.
+ * `ducklake_version.ts`). On a mismatch it throws an
+ * {@link UnsupportedCatalogFormatError} (→ HTTP 422) naming the format found,
+ * the supported range, and where to migrate — instead of letting the real
+ * DuckLake ATTACH fail deep inside DuckDB as an opaque 500.
  *
  * Non-load-bearing on its own read: any failure of the preflight itself
  * (missing `ducklake_metadata` table, non-postgres catalog, query timeout,
  * connect failure, an engine with no matrix row) logs and returns so the real
  * ATTACH below stays the source of truth for unrelated errors. Only a
  * successfully-read, definitively-out-of-range format raises the clean 422.
+ *
+ * The temp attach uses a per-call unique name so a failed DETACH can't wedge
+ * the fixed name (which would make every later preflight for this connection
+ * fail its ATTACH with "already exists" and silently skip), and so two
+ * concurrent first-touch lookups can't cross-DETACH each other.
  */
+let ducklakePreflightSeq = 0;
 async function preflightDuckLakeCatalogFormat(
    connection: DuckDBConnection,
    dbName: string,
    pgConnString: string,
 ): Promise<void> {
-   const tempDb = `${dbName}_fmt_preflight`;
+   const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
    let catalogFormat: string | undefined;
    try {
       await connection.runSQL(
@@ -522,7 +555,7 @@ async function preflightDuckLakeCatalogFormat(
             engineVersion: range.engineVersion,
          },
       );
-      throw new ConnectionAuthError(
+      throw new UnsupportedCatalogFormatError(
          `DuckLake catalog '${dbName}' has format version ${catalogFormat}, ` +
             `which is outside the range this Publisher supports ` +
             `(${range.min} ≤ format ≤ ${range.max}). The DuckLake ` +
@@ -1463,13 +1496,21 @@ export function buildEnvironmentMalloyConfig(
          return {
             lookupConnection: async (name?: string): Promise<Connection> => {
                const metadata = getMetadataForLookup(assembled.metadata, name);
+               const connection = await resolveConnection(name, metadata);
+               // Pin every environment-level DuckDB session against implicit
+               // auto-install (policy-driven) at this one exit — independent of
+               // the attach paths, so the guarantee holds even if a resolution
+               // branch is ever added that doesn't attach. The DuckLake tier
+               // already pinned always-off inside its attach; the WeakSet makes
+               // this a no-op there. (The per-package `:memory:` sandbox is a
+               // separate MalloyConfig and is pinned in package.ts.)
+               if (isDuckDBConnection(connection)) {
+                  await applyExtensionSessionSettings(connection);
+               }
                // Every resolution branch funnels through this one exit so a
                // configured fingerprint is applied no matter which wrapper
                // produced the connection (see applyConnectionFingerprint).
-               return applyConnectionFingerprint(
-                  await resolveConnection(name, metadata),
-                  metadata,
-               );
+               return applyConnectionFingerprint(connection, metadata);
             },
          };
       },

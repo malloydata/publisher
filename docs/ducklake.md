@@ -135,8 +135,11 @@ This baked set is defined in one place — the `EXTENSIONS` array in
 [`packages/server/scripts/bake-duckdb-extensions.js`](../packages/server/scripts/bake-duckdb-extensions.js),
 which mirrors the runtime install sites in `packages/server/src/service/connection.ts`. The CI smoke
 test loads every baked extension with the network disabled (`docker run --network none`), so the set
-can't silently drift from what the server actually loads. **Under `local-only`, these are the only
-extensions available** — any other DuckDB extension a model or query references must be
-pre-provisioned into the DuckDB extensions directory (or the deployment must use `on-demand`).
+can't silently drift from what the server actually loads. On the **stock published image**, this is
+what's pre-provisioned. Under `local-only` the boundary is not this list but **whatever signed
+extensions are present in the DuckDB extensions directory on that host** — autoload stays on, so an
+extension you place there out-of-band (e.g. running Publisher outside Docker, or in your own image)
+also loads with no network. The network is the only thing `local-only` turns off; if you need an
+extension that isn't present and can't pre-provision it, use `on-demand`.
 
 See [configuration.md](configuration.md#environment-variables--cli-flags) for the `EXTENSION_FETCH_POLICY` reference.

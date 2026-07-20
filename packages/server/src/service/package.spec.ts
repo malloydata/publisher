@@ -95,6 +95,44 @@ describe("service/package", () => {
       expect(pkg).toBeInstanceOf(Package);
    });
 
+   describe("per-package sandbox extension pinning", () => {
+      const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
+      afterEach(() => {
+         if (originalPolicy === undefined) {
+            delete process.env.EXTENSION_FETCH_POLICY;
+         } else {
+            process.env.EXTENSION_FETCH_POLICY = originalPolicy;
+         }
+      });
+
+      it(
+         "pins autoinstall off on the :memory: sandbox under local-only",
+         async () => {
+            // Regression guard for the sandbox bypass: the per-package sandbox
+            // has no attached databases, so the environment attach paths never
+            // touch it. Under local-only its session must still be pinned
+            // against DuckDB's implicit auto-install, or a sandbox query
+            // referencing an unbaked extension could silently fetch from the
+            // CDN. Uses a spy (not a stub) so real DuckDB runs the pragma.
+            process.env.EXTENSION_FETCH_POLICY = "local-only";
+            const spy = sinon.spy(DuckDBConnection.prototype, "runSQL");
+            await Package.create(
+               "testProject",
+               "testPackage",
+               testPackageDirectory,
+               new Map(),
+            );
+            const issued = spy.getCalls().map((c) => String(c.args[0]));
+            expect(
+               issued.some((s) =>
+                  /autoinstall_known_extensions\s*=\s*false/i.test(s),
+               ),
+            ).toBe(true);
+         },
+         { timeout: 30000 },
+      );
+   });
+
    describe("instance methods", () => {
       describe("create", () => {
          it("should throw PackageNotFoundError if the package manifest does not exist", async () => {
