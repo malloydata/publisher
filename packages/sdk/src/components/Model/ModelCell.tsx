@@ -181,6 +181,7 @@ export function ModelCell({
                      result={queryData.data.result}
                      maxHeight={600}
                      maxResultSize={maxResultSize}
+                     renderLogs={queryData.data.renderLogs}
                   />
                )}
          </CleanMetricCard>
@@ -190,6 +191,7 @@ export function ModelCell({
             open={resultsDialogOpen}
             onClose={() => setResultsDialogOpen(false)}
             result={queryData?.data?.result || ""}
+            renderLogs={queryData?.data?.renderLogs}
             title={`Query: ${queryName}`}
          />
       </CleanNotebookCell>

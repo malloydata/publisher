@@ -101,7 +101,11 @@ export default function QueryResult({
          )}
          {isSuccess && (
             <Suspense fallback={<div>Loading...</div>}>
-               <ResultContainer result={data.data.result} maxHeight={height} />
+               <ResultContainer
+                  result={data.data.result}
+                  maxHeight={height}
+                  renderLogs={data.data.renderLogs}
+               />
             </Suspense>
          )}
          {isError && (
