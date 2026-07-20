@@ -299,6 +299,17 @@ describe("assembleEnvironmentConnections — publisher", () => {
       );
    });
 
+   it("rejects the reserved 'source' name (the storage= path-C sentinel)", () => {
+      const conn: ApiConnection = {
+         name: "source",
+         type: "duckdb",
+         duckdbConnection: {},
+      };
+      expect(() => assembleEnvironmentConnections([conn])).toThrow(
+         "Connection name 'source' is reserved",
+      );
+   });
+
    it("still rejects a publisher connection with no name", () => {
       const conn = {
          type: "publisher",

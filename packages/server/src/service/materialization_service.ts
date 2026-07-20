@@ -41,6 +41,9 @@ import {
    iterGraphSources,
 } from "./build_plan";
 import { EnvironmentStore } from "./environment_store";
+import { assertMaterializationEligible } from "./materialization_eligibility";
+import { buildSourceIntoStorage } from "./materialization_build_session";
+import type { ApiConnection } from "./model";
 import {
    bareTableName,
    quoteIdentifier,
@@ -48,6 +51,19 @@ import {
    quoteTablePath,
 } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
+import { redactPgSecrets } from "../pg_helpers";
+
+/**
+ * The narrow environment surface the build path needs to materialize into a
+ * `storage=` destination: resolve a connection's config by name (source creds to
+ * federate, destination catalog to attach) and the environment root (to derive a
+ * plain-DuckDB destination's file path). Kept minimal to avoid coupling the
+ * materialization service to the full Environment type.
+ */
+interface BuildEnvironment {
+   getApiConnection(connectionName: string): ApiConnection;
+   getEnvironmentPath(): string;
+}
 
 /**
  * Length of the sourceEntityId prefix used when synthesizing staging table
@@ -70,6 +86,32 @@ export function stagingSuffix(sourceEntityId: string): string {
  */
 function selfAssignTableName(persistSource: PersistSource): string {
    return deriveAnnotationFields(persistSource).name || persistSource.name;
+}
+
+/**
+ * The reserved `storage=` value meaning "materialize into the persist source's
+ * own warehouse" (path C, the default). A connection may not be named this
+ * (enforced at registration in connection_config), so it never collides with a
+ * real destination.
+ */
+const STORAGE_SOURCE_SENTINEL = "source";
+
+/**
+ * Resolve a persist source's `#@ persist storage=<ref>` to a destination
+ * connection name, or undefined for the default in-warehouse path. Read
+ * publisher-side from the compiled annotation (the same `annotationFields` map
+ * the plan echoes); the reference resolves generically against registered
+ * connections. Absent or the reserved `source` value ⇒ undefined (path C).
+ * Any managed-tier alias (e.g. `credible`) is resolved upstream by the control
+ * plane and set on the wire instruction's `destination` — it never reaches this
+ * publisher-side generic resolution.
+ */
+function resolveStorageDestination(
+   persistSource: PersistSource,
+): string | undefined {
+   const storage = deriveAnnotationFields(persistSource).storage?.trim();
+   if (!storage || storage === STORAGE_SOURCE_SENTINEL) return undefined;
+   return storage;
 }
 
 /** Classify a thrown build error as cancelled (cooperative abort) or failed. */
@@ -414,6 +456,7 @@ export class MaterializationService {
 
          const entries = await this.executeInstructedBuild(
             compiled,
+            environment,
             instructions,
             carried,
             signal,
@@ -484,6 +527,15 @@ export class MaterializationService {
          )) {
             if (include && !include.has(persistSource.name)) continue;
 
+            const destination = resolveStorageDestination(persistSource);
+            if (destination) {
+               // Gate BEFORE computeSourceEntityId: an unbound parameter or a
+               // given makes getSQL() (called inside computeSourceEntityId)
+               // throw opaquely, so the eligibility refusal must fire first to
+               // give a clean, actionable 422.
+               assertMaterializationEligible(persistSource);
+            }
+
             const sourceEntityId = computeSourceEntityId(
                persistSource,
                compiled.connectionDigests,
@@ -492,7 +544,17 @@ export class MaterializationService {
             seen.add(sourceEntityId);
 
             const prior = priorEntries[sourceEntityId];
-            if (prior && prior.physicalTableName) {
+            // Destination-scoped reuse: carry a prior table forward only when it
+            // landed in the SAME destination. sourceEntityId is a pure content
+            // address and does NOT encode the destination, so a source that adds,
+            // drops, or switches `storage=` must rebuild — otherwise a
+            // warehouse-landed (path-C) table would be silently reused for a
+            // DuckLake serve that cannot resolve it (design §4).
+            if (
+               prior &&
+               prior.physicalTableName &&
+               (prior.storageConnectionName ?? undefined) === destination
+            ) {
                carried[sourceEntityId] = prior;
                continue;
             }
@@ -505,6 +567,7 @@ export class MaterializationService {
                )}`,
                physicalTableName: selfAssignTableName(persistSource),
                realization: "COPY",
+               ...(destination ? { destination } : {}),
             });
          }
       }
@@ -692,6 +755,7 @@ export class MaterializationService {
     */
    private async executeInstructedBuild(
       compiled: CompiledBuildPlan,
+      environment: BuildEnvironment,
       instructions: BuildInstruction[],
       seedEntries: Record<string, ManifestEntry>,
       signal: AbortSignal,
@@ -770,12 +834,22 @@ export class MaterializationService {
                bySourceEntityId.get(sourceEntityId);
             if (!instruction) continue;
 
+            // Enforce the eligibility gate for any storage-targeted build,
+            // including orchestrated (CP-supplied) instructions — the publisher
+            // refuses an ineligible source into the tier itself, not on trust.
+            // (Auto-run already gated pre-getSQL in deriveSelfInstructions; a
+            // second call here is idempotent and covers the orchestrated path.)
+            if (instruction.destination) {
+               assertMaterializationEligible(persistSource);
+            }
+
             const entry = await this.buildOneSource(
                persistSource,
                instruction,
                connection,
                connectionDigests,
                manifest,
+               environment,
             );
             entries[sourceEntityId] = entry;
          }
@@ -795,6 +869,7 @@ export class MaterializationService {
       connection: MalloyConnection,
       connectionDigests: Record<string, string>,
       manifest: Manifest,
+      environment: BuildEnvironment,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -802,6 +877,20 @@ export class MaterializationService {
          buildManifest: manifest.buildManifest,
          connectionDigests,
       });
+
+      // `storage=` build: materialize into a DuckDB/DuckLake destination via a
+      // build-scoped session (never on the source or serve connection). Diverges
+      // fully from the in-warehouse CTAS below — different engine, credential
+      // federation, and a captured authoritative schema for the serve transform.
+      if (instruction.destination) {
+         return this.buildOneSourceIntoStorage(
+            persistSource,
+            instruction,
+            manifest,
+            environment,
+            buildSQL,
+         );
+      }
 
       const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
@@ -861,6 +950,92 @@ export class MaterializationService {
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
+         realization: instruction.realization,
+         rowCount: null,
+      };
+   }
+
+   /**
+    * Materialize a source into a `storage=` destination (a DuckDB/DuckLake
+    * connection) via a native query-passthrough CTAS on a build-scoped session.
+    * Records the destination connection and the captured authoritative DuckDB
+    * schema on the manifest entry so the source can later be served
+    * cross-dialect from the destination (the serve transform declares that
+    * schema). `connectionName` still names the SOURCE warehouse (where data is
+    * read from); `storageConnectionName` names where the table now lives.
+    */
+   private async buildOneSourceIntoStorage(
+      persistSource: PersistSource,
+      instruction: BuildInstruction,
+      manifest: Manifest,
+      environment: BuildEnvironment,
+      buildSQL: string,
+   ): Promise<ManifestEntry> {
+      const sourceEntityId = instruction.sourceEntityId;
+      const physicalTableName = instruction.physicalTableName;
+      const destinationName = instruction.destination!;
+      const sourceConnection = environment.getApiConnection(
+         persistSource.connectionName,
+      );
+      const destinationConnection =
+         environment.getApiConnection(destinationName);
+      const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
+
+      const startTime = performance.now();
+      let result;
+      try {
+         result = await buildSourceIntoStorage({
+            destinationName,
+            destinationConnection,
+            sourceConnection,
+            buildSQL,
+            physicalTableName,
+            stagingTableName,
+            environmentPath: environment.getEnvironmentPath(),
+         });
+      } catch (err) {
+         // Redaction (design §5): a failed passthrough CTAS / federation error
+         // can echo source-connection detail (connstrings, account names, hosts,
+         // secret names) from the DuckDB engine. Log the redacted detail
+         // server-side for operators, but surface only a generic message — the
+         // thrown error is persisted verbatim into the user-visible run `error`
+         // column, so it must carry no credentials.
+         logger.warn("Storage materialization build failed", {
+            sourceName: persistSource.name,
+            destinationName,
+            error: redactPgSecrets(errMessage(err)),
+         });
+         throw new Error(
+            `Failed to materialize source '${persistSource.name}' into storage ` +
+               `destination '${destinationName}'. See server logs for detail.`,
+         );
+      }
+
+      // Make this table visible to downstream sources built later in this run
+      // (single-source spike; chained materialized sources across stores are a
+      // tracked follow-on).
+      manifest.update(sourceEntityId, { tableName: physicalTableName });
+
+      const durationMs = Math.round(performance.now() - startTime);
+      recordSourceBuildDuration(durationMs);
+      logger.info(
+         `Built materialized source ${persistSource.name} into storage`,
+         {
+            physicalTableName,
+            storageConnectionName: result.storageConnectionName,
+            columns: result.schema.length,
+            durationMs,
+         },
+      );
+
+      return {
+         sourceEntityId,
+         sourceName: persistSource.name,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName,
+         connectionName: persistSource.connectionName,
+         storageConnectionName: result.storageConnectionName,
+         schema: result.schema,
          realization: instruction.realization,
          rowCount: null,
       };
@@ -966,6 +1141,25 @@ export class MaterializationService {
                materializationId: m.id,
                sourceEntityId: entry.sourceEntityId,
             });
+            continue;
+         }
+
+         // A storage= table lives in `storageConnectionName` (a DuckDB/DuckLake
+         // destination), not in `connectionName` (the source warehouse). Dropping
+         // it needs a build-scoped read-write attach — the serve attach is
+         // read-only — so it is NOT dropped here; issuing the drop on the source
+         // connection would target the wrong engine. Destination-aware GC is a
+         // tracked follow-on; skip (and log) rather than mis-drop.
+         if (entry.storageConnectionName) {
+            logger.info(
+               "Skipping delete-time drop of a storage-materialized table " +
+                  "(destination-aware GC is handled separately)",
+               {
+                  materializationId: m.id,
+                  physicalTableName,
+                  storageConnectionName: entry.storageConnectionName,
+               },
+            );
             continue;
          }
 

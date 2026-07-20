@@ -24,6 +24,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(422, error.message);
    } else if (error instanceof UnsupportedCatalogFormatError) {
       return httpError(422, error.message);
+   } else if (error instanceof MaterializationEligibilityError) {
+      return httpError(422, error.message);
    } else if (error instanceof ModelCompilationError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
@@ -119,6 +121,23 @@ export class ModelCompilationError extends Error {
    // annotation failed) can reuse this 424 mapping without a separate class.
    constructor(error: { message: string }) {
       super(error.message);
+   }
+}
+
+/**
+ * A persist source was asked to materialize into a `storage=` destination (the
+ * DuckDB/DuckLake tier) but is ineligible: it has an unbound free parameter, it
+ * references a given (an RLAC/tenant-isolation refusal), or its served shape
+ * does not compile in DuckDB. Mapped to HTTP **422** (the request is
+ * well-formed, but the source cannot be processed into a materialized artifact)
+ * — a hard refuse, never a silent fallback. Kept a distinct class so the
+ * givens/RLAC refusal is greppable for security review. Accepts a
+ * message-bearing object to match {@link ModelCompilationError}'s ergonomics.
+ */
+export class MaterializationEligibilityError extends Error {
+   constructor(error: { message: string }) {
+      super(error.message);
+      this.name = "MaterializationEligibilityError";
    }
 }
 

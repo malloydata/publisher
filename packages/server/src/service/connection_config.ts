@@ -557,6 +557,12 @@ export function assembleEnvironmentConnections(
          );
       }
 
+      if (connection.name === "source") {
+         throw new Error(
+            "Connection name 'source' is reserved: it is the default `#@ persist storage=source` target (materialize into the persist source's own warehouse). Choose a different name for this connection (e.g. 'source_db').",
+         );
+      }
+
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
       validateConnectionShape(connection);
