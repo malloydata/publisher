@@ -1,0 +1,54 @@
+{
+   "name": "@malloy-publisher/skills",
+   "description": "Agent skills for Malloy and the Malloy Publisher",
+   "version": "0.1.0",
+   "license": "MIT",
+   "type": "module",
+   "main": "dist/index.js",
+   "types": "dist/index.d.ts",
+   "exports": {
+      ".": {
+         "types": "./dist/index.d.ts",
+         "default": "./dist/index.js"
+      },
+      "./package.json": "./package.json",
+      "./skills/*": "./skills/*"
+   },
+   "files": [
+      "skills",
+      "dist"
+   ],
+   "keywords": [
+      "malloy",
+      "publisher",
+      "agent",
+      "skills"
+   ],
+   "repository": {
+      "type": "git",
+      "url": "https://github.com/malloydata/publisher.git"
+   },
+   "publishConfig": {
+      "access": "public"
+   },
+   "scripts": {
+      "copy-skills": "bun run scripts/copy-skills.ts",
+      "build": "bun run copy-skills && bunx tsc -p tsconfig.build.json",
+      "prepack": "bun run build",
+      "prepublishOnly": "bun run scripts/check-pack.ts",
+      "check-pack": "bun run build && bun run scripts/check-pack.ts",
+      "typecheck": "bunx tsc --noEmit",
+      "lint": "bunx eslint ./src ./scripts --fix",
+      "format": "bunx prettier --write --parser typescript '{src,scripts}/**/*.ts'",
+      "test": "bun run copy-skills && bun test src"
+   },
+   "devDependencies": {
+      "@eslint/js": "^8.57.0",
+      "@types/bun": "^1.2.21",
+      "@types/node": "^24.10.0",
+      "@typescript-eslint/eslint-plugin": "^8.16.0",
+      "@typescript-eslint/parser": "^8.16.0",
+      "eslint": "^8.50.0",
+      "typescript": "^5.3.3"
+   }
+}
