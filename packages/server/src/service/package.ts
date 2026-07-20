@@ -29,6 +29,11 @@ import {
 } from "../errors";
 import { formatDuration, logger } from "../logger";
 import { recordBuildPlanComputeDuration } from "../materialization_metrics";
+import {
+   LOAD_DURATION_BUCKETS_MS,
+   recordPackageLoadPhases,
+   type PackageLoadStatus,
+} from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
    BuildManifest,
@@ -37,6 +42,7 @@ import {
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
+import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
@@ -71,6 +77,23 @@ function toTableNameManifest(
       out[sourceEntityId] = { tableName: entry.tableName };
    }
    return out;
+}
+
+/**
+ * Classify a failed package load into the `status` label shared by the
+ * `malloy_package_load_duration` histogram and the per-phase load metrics, so
+ * both slice failures identically. A real Malloy/model compile error is a 4xx
+ * `compilation_error`; a rewrapped pool-infrastructure failure is a transient
+ * `pool_unavailable`; anything else is a generic `error`.
+ */
+function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
+   if (error instanceof ModelCompilationError || error instanceof MalloyError) {
+      return "compilation_error";
+   }
+   if (error instanceof ServiceUnavailableError) {
+      return "pool_unavailable";
+   }
+   return "error";
 }
 
 export class Package {
@@ -127,6 +150,10 @@ export class Package {
       {
          description: "Time taken to load a Malloy package",
          unit: "ms",
+         // OTel's default buckets top out at 10s, censoring the slow-load tail.
+         // Use the shared load-duration buckets (→5min) so p95/p99 of large
+         // package loads are resolvable. See LOAD_DURATION_BUCKETS_MS.
+         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
       },
    );
 
@@ -211,6 +238,17 @@ export class Package {
       packageName: string,
       packagePath: string,
       environmentMalloyConfig: PackageConnectionInput,
+      /**
+       * Delete `packagePath` if the load fails. Opt-in, and only correct for a
+       * caller that created the directory itself (an install staged into place),
+       * where the half-built tree is Publisher's to clean up and `installPackage`
+       * rolls the previous one back. Every other caller loads a directory that
+       * already existed: a reload of a package that is currently serving, or a
+       * user directory registered via addPackage. Deleting those on a transient
+       * compile error destroys the source and takes the package offline, so the
+       * default is to leave the directory alone.
+       */
+      cleanupDirectoryOnFailure: boolean = false,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -248,34 +286,34 @@ export class Package {
          console.error(error);
          const endTime = performance.now();
          const executionTime = endTime - startTime;
-         const status =
-            error instanceof ModelCompilationError ||
-            error instanceof MalloyError
-               ? "compilation_error"
-               : error instanceof ServiceUnavailableError
-                 ? "pool_unavailable"
-                 : "error";
          this.packageLoadHistogram.record(executionTime, {
             malloy_package_name: packageName,
-            status,
+            status: packageLoadFailureStatus(error),
          });
-         // Clean up the package directory on failure, but NOT when packagePath
-         // is an in-place mount symlink (watch mode). Removing it would unmount
-         // the package, so a transient compile error from a half-typed model
-         // saved mid-edit would brick the package until a restart. The symlink
-         // points at the user's live source, which is left untouched; the next
-         // save recompiles against it.
+         // Clean up the package directory only when the caller opted in (an
+         // install that staged this tree), and never when packagePath is an
+         // in-place mount symlink (watch mode). Removing it would unmount the
+         // package, so a transient compile error from a half-typed model saved
+         // mid-edit would brick the package until a restart. The symlink points
+         // at the user's live source, which is left untouched; the next save
+         // recompiles against it.
          try {
-            const stat = await fs.lstat(packagePath).catch(() => null);
-            if (stat?.isSymbolicLink()) {
+            if (!cleanupDirectoryOnFailure) {
                logger.info(
-                  `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
+                  `Preserving existing package directory after failed load: ${packagePath}`,
                );
             } else {
-               await fs.rm(packagePath, { recursive: true, force: true });
-               logger.info(
-                  `Cleaned up failed package directory: ${packagePath}`,
-               );
+               const stat = await fs.lstat(packagePath).catch(() => null);
+               if (stat?.isSymbolicLink()) {
+                  logger.info(
+                     `Skipping cleanup of symlinked package path on failure: ${packagePath}`,
+                  );
+               } else {
+                  await fs.rm(packagePath, { recursive: true, force: true });
+                  logger.info(
+                     `Cleaned up failed package directory: ${packagePath}`,
+                  );
+               }
             }
          } catch (cleanupError) {
             logger.warn(`Failed to clean up package directory ${packagePath}`, {
@@ -361,6 +399,10 @@ export class Package {
          workerDurationMs: outcome.loadDurationMs,
          dispatchOverheadMs:
             workerDoneTime - dispatchTime - outcome.loadDurationMs,
+         // Phase split of the worker duration (remainder = setup + extraction).
+         compileDurationMs: outcome.timings.compileDurationMs,
+         schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
+         schemaFetchCount: outcome.timings.schemaFetchCount,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
@@ -386,6 +428,10 @@ export class Package {
             schedule: null,
             freshness: null,
          },
+         // Package-level persist scope mode, applied uniformly to every persist
+         // source/index. Defaults to "package" (cross-version reuse) when the
+         // manifest omits it.
+         scope: outcome.packageMetadata.scope ?? "package",
       };
 
       // Build live `Model`s from worker output. Any per-model compile
@@ -396,43 +442,59 @@ export class Package {
       // hydration path.)
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
-      for (const sm of outcome.models) {
-         if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
-            logger.error("Model compilation failed", {
+      try {
+         for (const sm of outcome.models) {
+            if (sm.compilationError) {
+               const err = Model.deserializeCompilationError(
+                  sm.compilationError,
+               );
+               logger.error("Model compilation failed", {
+                  packageName,
+                  modelPath: sm.modelPath,
+                  error: err.message,
+               });
+               // The outer catch in Package.create records the total metric +
+               // cleans the package directory.
+               throw err;
+            }
+            const model = Model.fromSerialized(
                packageName,
-               modelPath: sm.modelPath,
-               error: err.message,
-            });
-            // The outer catch in Package.create records the metric +
-            // cleans the package directory.
-            throw err;
-         }
-         const model = Model.fromSerialized(
-            packageName,
-            packagePath,
-            malloyConfig,
-            sm,
-         );
-         // Validate renderer tags on the main thread (the renderer is too heavy
-         // to load inside the pure-CPU package-load worker). A misconfigured tag
-         // is logged as a warning naming the target; it does not fail the load.
-         // The findings also ride the package response as non-fatal `warnings`.
-         for (const w of await model.validateRenderTags()) {
-            renderTagWarnings.push({ model: sm.modelPath, ...w });
-         }
-         // Reject unquoted `#@ persist name=` annotations the same way: an
-         // unquoted name is dropped from the build plan, so the source would
-         // publish but never materialize. Scan the raw `.malloy` source (the
-         // ground truth for quoting); throws a ModelCompilationError (424).
-         if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-            const modelSource = await fs.readFile(
-               path.join(packagePath, sm.modelPath),
-               "utf-8",
+               packagePath,
+               malloyConfig,
+               sm,
             );
-            assertPersistNamesQuoted(modelSource, sm.modelPath);
+            // Validate renderer tags on the main thread (the renderer is too
+            // heavy to load inside the pure-CPU package-load worker). A
+            // misconfigured tag is logged as a warning naming the target; it
+            // does not fail the load. The findings also ride the package
+            // response as non-fatal `warnings`.
+            for (const w of await model.validateRenderTags()) {
+               renderTagWarnings.push({ model: sm.modelPath, ...w });
+            }
+            // Reject unquoted `#@ persist name=` annotations the same way: an
+            // unquoted name is dropped from the build plan, so the source would
+            // publish but never materialize. Scan the raw `.malloy` source (the
+            // ground truth for quoting); throws a ModelCompilationError (424).
+            if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
+               const modelSource = await fs.readFile(
+                  path.join(packagePath, sm.modelPath),
+                  "utf-8",
+               );
+               assertPersistNamesQuoted(modelSource, sm.modelPath);
+            }
+            models.set(sm.modelPath, model);
          }
-         models.set(sm.modelPath, model);
+      } catch (err) {
+         // Record the load's phase cost tagged with the terminal status before
+         // the error propagates to the outer catch (which records the total).
+         // Only in-band compile failures reach here — the worker already
+         // produced `outcome.timings`; a pool failure throws before `outcome`
+         // exists and carries no timings, so it's simply not recorded.
+         recordPackageLoadPhases(
+            outcome.timings,
+            packageLoadFailureStatus(err),
+         );
+         throw err;
       }
 
       const endTime = performance.now();
@@ -441,6 +503,7 @@ export class Package {
          malloy_package_name: packageName,
          status: "success",
       });
+      recordPackageLoadPhases(outcome.timings, "success");
       logger.info(`Successfully loaded package ${packageName}`, {
          packageName,
          duration: formatDuration(executionTime),
@@ -492,15 +555,19 @@ export class Package {
             detail: invalidMsg,
          });
       }
-      // Same fail-safe split for the materialization cron gate: an existing
-      // package whose manifest violates the private-only cron rule still loads
-      // (warn), but a publish of it is rejected (see package.controller).
-      const invalidSchedule = pkg.formatInvalidSchedule();
-      if (invalidSchedule) {
-         logger.warn(`Package ${packageName} has an invalid cron schedule`, {
-            packageName,
-            detail: invalidSchedule,
-         });
+      // Same fail-safe split for the persistence-policy gate: an existing
+      // package whose manifest violates the scope/schedule/freshness rules
+      // still loads (warn), but a publish of it is rejected (see
+      // package.controller).
+      const invalidPolicy = pkg.formatInvalidPersistencePolicy();
+      if (invalidPolicy) {
+         logger.warn(
+            `Package ${packageName} has an invalid persistence policy`,
+            {
+               packageName,
+               detail: invalidPolicy,
+            },
+         );
       }
       pkg.logEmptyDiscoveryWarnings();
 
@@ -717,66 +784,111 @@ export class Package {
    }
 
    /**
-    * Publish-gate for materialization crons (Phase A carve-out, persistence.md
-    * §9.4). A cron is the power tier of artifact-anchored scheduling and is
-    * valid only over `sharing="private"` artifacts; a cron on a shared (or unset
-    * ⇒ shared) artifact is rejected, pointing at `freshness.window` as the
-    * shared-tier replacement. Two grains, both enforced off the resolved build
-    * plan (per-source `sharing`/`schedule` are effective, most-specific-wins):
+    * Publish-gate for the package's Malloy Persistence policy (persistence.md
+    * §3.1, §9.2–§9.5). Scope is a single package-level mode (`Package.scope`)
+    * and a materialization cron is package-root-only and version-scope-only.
+    * The rules, read off the resolved build plan + manifest:
     *
-    *  - Per-source: a source's own `schedule` is valid only when that source
-    *    resolves to explicit `sharing="private"`.
-    *  - Package: `materialization.schedule` governs every persist source, so it
-    *    is valid only when every governed source resolves to explicit
-    *    `sharing="private"` (a mixed/shared/unset package cannot carry it).
+    *  1. Per-source `#@ persist ... sharing=`/`schedule=` are retired — declaring
+    *     either on a source is an error (scope is package-level; a schedule is
+    *     package-root-only). Detected via the raw `annotationFields`.
+    *  2. `materialization.schedule` is legal only when `scope: version` (a
+    *     package-scoped lineage is reused across versions, so a single
+    *     per-version cadence is meaningless).
+    *  3. `materialization.schedule` and freshness (package `materialization.freshness`
+    *     or any source `freshness`) are mutually exclusive — declare either the
+    *     power tier or the objective tier, never both.
+    *
+    * The cross-package dependency rule (a `scope: version` scheduled package may
+    * not depend on a package-scoped upstream) is not enforced here: scope is
+    * uniform within a package, so an intra-package dependency can never violate
+    * it, and the publisher's build plan is intra-package only — a cross-package
+    * upstream's scope is not resolvable from the single `Package` served. It is
+    * deferred to the scheduler slice (R1–R3), which resolves cross-package scope.
     *
     * Strict at publish (package.controller), warn-only at load/reload
     * (loadViaWorker) — same split as explores.
     */
-   public scheduleWarnings(): string[] {
+   public persistencePolicyWarnings(): string[] {
       const warnings: string[] = [];
       const sources = this.buildPlan?.sources
          ? Object.values(this.buildPlan.sources)
          : [];
+      const materialization = this.packageMetadata.materialization;
+      const packageSchedule = materialization?.schedule ?? null;
+      const packageFreshness = materialization?.freshness ?? null;
+      const scope = this.packageMetadata.scope ?? "package";
 
+      // Rule 1: per-source sharing/schedule are no longer part of the model.
       for (const source of sources) {
-         if (source.schedule && source.sharing !== "private") {
+         const fields = source.annotationFields ?? {};
+         if (fields.sharing !== undefined) {
             warnings.push(
-               `#@ persist source "${source.name}" declares a schedule (cron) but ` +
-                  `resolves to sharing="${
-                     source.sharing ?? "shared (unset default)"
-                  }": a per-source cron is valid only for sharing="private". ` +
-                  `Declare 'freshness.window' instead (the control plane schedules ` +
-                  `refreshes from it).`,
+               `#@ persist source "${source.name}" declares sharing=... which is ` +
+                  `no longer supported: scope is a single package-level mode. Set ` +
+                  `the root-level "scope": "version" | "package" in ` +
+                  `${PACKAGE_MANIFEST_NAME} instead.`,
+            );
+         }
+         if (fields.schedule !== undefined) {
+            warnings.push(
+               `#@ persist source "${source.name}" declares schedule=... which is ` +
+                  `no longer supported: a schedule is package-root-only. Declare ` +
+                  `"materialization.schedule" at the ${PACKAGE_MANIFEST_NAME} root ` +
+                  `(requires "scope": "version") instead.`,
             );
          }
       }
 
-      const packageSchedule = this.packageMetadata.materialization?.schedule;
+      // Rule 2: a package-level cron is legal only with scope: version.
+      if (packageSchedule && scope !== "version") {
+         warnings.push(
+            `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
+               `"scope": "version": a package-scoped lineage is reused across ` +
+               `versions, so a single per-version cadence is meaningless. Set ` +
+               `"scope": "version", or remove the schedule.`,
+         );
+      }
+
+      // Rule 3: schedule and freshness are mutually exclusive.
       if (packageSchedule) {
-         const nonPrivate = sources.filter((s) => s.sharing !== "private");
-         if (sources.length === 0 || nonPrivate.length > 0) {
-            const detail =
-               sources.length === 0
-                  ? "the package declares no persist source for it to govern"
-                  : `sources [${nonPrivate
-                       .map((s) => s.name)
-                       .join(", ")}] resolve to shared/unset`;
+         const freshnessDeclared =
+            !!(
+               packageFreshness &&
+               (packageFreshness.window || packageFreshness.fallback)
+            ) || sources.some((s) => s.freshness != null);
+         if (freshnessDeclared) {
             warnings.push(
-               `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} is valid ` +
-                  `only when every persist source resolves to sharing="private": ` +
-                  `${detail}. Declare 'materialization.freshness.window' instead ` +
-                  `(the control plane schedules refreshes from it).`,
+               `materialization.schedule and freshness are mutually exclusive in ` +
+                  `${PACKAGE_MANIFEST_NAME}: declare either a schedule (power tier) ` +
+                  `or freshness (objective tier), never both.`,
             );
          }
+      }
+
+      // Rule 4: the cron must be a valid 5-field UNIX expression (no L/W/#/?
+      // extensions — see CronEvaluator). Enforced here so publish (strict),
+      // PATCH (strict), package load (warn), and the standalone scheduler all
+      // apply the identical rule — a garbage cron can no longer pass publish
+      // and then silently never arm.
+      if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
+         warnings.push(
+            `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
+               `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +
+               `"minute hour day-of-month month day-of-week" (no L/W/#/? ` +
+               `extensions).`,
+         );
       }
 
       return warnings;
    }
 
-   /** The {@link scheduleWarnings} joined into one string, or "" if none. */
-   public formatInvalidSchedule(): string {
-      return this.scheduleWarnings().join("\n");
+   /**
+    * The {@link persistencePolicyWarnings} joined into one string, or "" if the
+    * package's persistence policy is valid.
+    */
+   public formatInvalidPersistencePolicy(): string {
+      return this.persistencePolicyWarnings().join("\n");
    }
 
    /**

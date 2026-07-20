@@ -197,6 +197,15 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Snapshot of the environments currently held in memory. Used by the
+    * standalone materialization scheduler to sweep loaded packages without
+    * touching the database or triggering loads.
+    */
+   public getLoadedEnvironments(): Environment[] {
+      return [...this.environments.values()];
+   }
+
    private async addConfiguredEnvironment(environment: ProcessedEnvironment) {
       try {
          await this.addEnvironment(

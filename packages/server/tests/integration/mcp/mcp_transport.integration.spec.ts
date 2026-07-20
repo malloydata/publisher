@@ -34,31 +34,19 @@ describe.serial("MCP Transport Tests (E2E Integration)", () => {
 
    describe("Basic Protocol", () => {
       it(
-         "should handle a simple listResources request",
+         "should handle a simple listTools request",
          async () => {
             if (!env) throw new Error("Test environment not initialized");
-            const result = await mcpClient.listResources();
+            const result = await mcpClient.listTools();
             // Assert based on actual successful response structure
-            expect(result).toHaveProperty("resources");
-            expect(Array.isArray(result.resources)).toBe(true);
+            expect(result).toHaveProperty("tools");
+            expect(Array.isArray(result.tools)).toBe(true);
+            expect(
+               result.tools.some((t) => t.name === "malloy_executeQuery"),
+            ).toBe(true);
          },
          { timeout: 30000 },
       );
-
-      it("should receive InvalidParams error when calling a known method with invalid params", async () => {
-         if (!env) throw new Error("Test environment not initialized");
-         expect.assertions(2);
-         try {
-            // Use the client from the test environment
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await mcpClient.readResource({} as any); // Force invalid params
-         } catch (error) {
-            expect(error).toBeInstanceOf(Error);
-            // Check error code and message
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            expect((error as any).code).toBe(ErrorCode.InternalError);
-         }
-      });
 
       it("should receive MethodNotFound error for unknown methods", async () => {
          if (!env) throw new Error("Test environment not initialized");
@@ -84,18 +72,6 @@ describe.serial("MCP Transport Tests (E2E Integration)", () => {
    });
 
    describe("Connection Management & Bridge Logic", () => {
-      // DELETED - Test irrelevant in stateless mode
-      // it("should maintain session across multiple sequential requests", async () => {
-      //    ...
-      // });
-
-      // DELETED - Test irrelevant in stateless mode
-      // it("should handle reconnection after close", async () => {
-      //    ...
-      // });
-
-      // --- Bridge Error Handling ---
-
       it("should return 405 Method Not Allowed for GET requests", async () => {
          if (!env) throw new Error("Test environment not initialized");
          const getUrl = new URL(`${env.serverUrl}/mcp`); // No session ID needed

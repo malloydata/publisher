@@ -10,7 +10,7 @@ import {
    deriveBuildPlan,
    flattenDependsOn,
    iterGraphSources,
-   resolveFreshnessSchedule,
+   resolveFreshness,
    resolvePackageConnections,
 } from "./build_plan";
 import { fakeSource } from "./materialization_test_fixtures";
@@ -213,10 +213,10 @@ describe("deriveBuildPlan", () => {
       });
    });
 
-   it("reports declared sharing/refresh verbatim and null when unset", () => {
-      // The control plane distinguishes unset from an explicit `shared` (it
-      // applies the platform default itself), so the publisher must report
-      // the declared value verbatim — never substitute the default.
+   it("reports declared refresh verbatim (null when unset) and does not emit sharing/schedule", () => {
+      // `refresh` is a metadata pass-through; `sharing`/`schedule` were retired
+      // from the contract and must not be emitted as typed fields (they stay in
+      // the raw annotationFields for the publish-time validator to detect).
       const declared = fakeSource({
          name: "declared",
          sourceEntityId: "bid-d",
@@ -243,17 +243,22 @@ describe("deriveBuildPlan", () => {
          { duckdb: "dig" },
       );
 
-      expect(plan.sources["declared@m"].sharing).toBe("private");
       expect(plan.sources["declared@m"].refresh).toBe("incremental");
-      // The raw annotation map still carries every field alongside the typed
-      // projections.
+      // Retired typed fields are absent from the wire projection.
+      expect(
+         (plan.sources["declared@m"] as Record<string, unknown>).sharing,
+      ).toBeUndefined();
+      expect(
+         (plan.sources["declared@m"] as Record<string, unknown>).schedule,
+      ).toBeUndefined();
+      // The raw annotation map still carries every field (so the validator can
+      // reject a source-level sharing/schedule at publish).
       expect(plan.sources["declared@m"].annotationFields).toEqual({
          name: "d_table",
          sharing: "private",
          refresh: "incremental",
       });
-      // Unset is null — not "shared" — on the wire.
-      expect(plan.sources["unset@m"].sharing).toBeNull();
+      // Unset refresh is null on the wire.
       expect(plan.sources["unset@m"].refresh).toBeNull();
    });
 
@@ -297,71 +302,48 @@ describe("deriveBuildPlan", () => {
    });
 });
 
-describe("resolveFreshnessSchedule", () => {
-   it("reports source-level freshness + schedule verbatim", () => {
+describe("resolveFreshness", () => {
+   it("reports source-level freshness verbatim", () => {
       const source = fakeSource({
          name: "s",
          sourceEntityId: "bid",
          freshnessSchedule: {
             freshness: { window: "1h", fallback: "stale_ok" },
-            schedule: "0 */6 * * *",
          },
       });
-      expect(resolveFreshnessSchedule(source, null)).toEqual({
-         freshness: { window: "1h", fallback: "stale_ok" },
-         schedule: "0 */6 * * *",
+      expect(resolveFreshness(source, null)).toEqual({
+         window: "1h",
+         fallback: "stale_ok",
       });
    });
 
-   it("returns null for both when unset at every level", () => {
+   it("returns null when unset at every level", () => {
       const source = fakeSource({ name: "s", sourceEntityId: "bid" });
-      expect(resolveFreshnessSchedule(source, null)).toEqual({
-         freshness: null,
-         schedule: null,
-      });
+      expect(resolveFreshness(source, null)).toBeNull();
    });
 
    it("falls back to model-file then package per field (most-specific-wins)", () => {
-      // freshness.window from source, freshness.fallback from model-file. The
-      // package-level cron is NOT inherited as the source's effective schedule;
-      // schedule here comes only from the source's own model-file default.
+      // freshness.window from source, freshness.fallback from model-file.
       const source = fakeSource({
          name: "s",
          sourceEntityId: "bid",
          freshnessSchedule: { freshness: { window: "1h" } },
-         modelFreshnessSchedule: {
-            freshness: { fallback: "fail" },
-            schedule: "0 3 * * *",
-         },
+         modelFreshnessSchedule: { freshness: { fallback: "fail" } },
       });
       const pkg = {
-         schedule: "0 0 * * *",
+         schedule: null,
          freshness: { window: "24h", fallback: "live" as const },
       };
-      expect(resolveFreshnessSchedule(source, pkg)).toEqual({
-         freshness: { window: "1h", fallback: "fail" },
-         schedule: "0 3 * * *",
-      });
-   });
-
-   it("does not inherit the package-level cron as the source's schedule", () => {
-      const source = fakeSource({ name: "s", sourceEntityId: "bid" });
-      const pkg = { schedule: "0 0 * * *", freshness: { window: "24h" } };
-      // Freshness inherits from the package; schedule stays null (the package
-      // cron is gated separately, not folded into the per-source cron).
-      expect(resolveFreshnessSchedule(source, pkg)).toEqual({
-         freshness: { window: "24h" },
-         schedule: null,
+      expect(resolveFreshness(source, pkg)).toEqual({
+         window: "1h",
+         fallback: "fail",
       });
    });
 
    it("inherits the package freshness when the source and model are unset", () => {
       const source = fakeSource({ name: "s", sourceEntityId: "bid" });
       const pkg = { schedule: null, freshness: { window: "24h" } };
-      expect(resolveFreshnessSchedule(source, pkg)).toEqual({
-         freshness: { window: "24h" },
-         schedule: null,
-      });
+      expect(resolveFreshness(source, pkg)).toEqual({ window: "24h" });
    });
 
    it("drops an invalid fallback rather than defaulting it", () => {
@@ -370,23 +352,17 @@ describe("resolveFreshnessSchedule", () => {
          sourceEntityId: "bid",
          freshnessSchedule: { freshness: { window: "1h", fallback: "bogus" } },
       });
-      expect(resolveFreshnessSchedule(source, null)).toEqual({
-         freshness: { window: "1h" },
-         schedule: null,
-      });
+      expect(resolveFreshness(source, null)).toEqual({ window: "1h" });
    });
 });
 
-describe("deriveBuildPlan freshness/schedule", () => {
-   it("projects the resolved per-source freshness + schedule onto the plan", () => {
+describe("deriveBuildPlan freshness", () => {
+   it("projects the resolved per-source freshness onto the plan (no schedule/sharing)", () => {
       const source = fakeSource({
          name: "s",
          sourceEntityId: "bid",
-         annotationFields: { name: "s_table", sharing: "private" },
-         freshnessSchedule: {
-            freshness: { window: "1h" },
-            schedule: "0 */6 * * *",
-         },
+         annotationFields: { name: "s_table" },
+         freshnessSchedule: { freshness: { window: "1h" } },
       });
       const plan = deriveBuildPlan(
          [
@@ -406,12 +382,18 @@ describe("deriveBuildPlan freshness/schedule", () => {
       );
 
       // Source window wins over the package default; package fallback fills the
-      // unset source fallback; source schedule reported verbatim.
+      // unset source fallback.
       expect(plan.sources["s@m"].freshness).toEqual({
          window: "1h",
          fallback: "live",
       });
-      expect(plan.sources["s@m"].schedule).toBe("0 */6 * * *");
+      // Retired fields are not emitted.
+      expect(
+         (plan.sources["s@m"] as Record<string, unknown>).schedule,
+      ).toBeUndefined();
+      expect(
+         (plan.sources["s@m"] as Record<string, unknown>).sharing,
+      ).toBeUndefined();
    });
 });
 

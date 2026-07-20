@@ -24,7 +24,7 @@ For every rule, the linked instruction-skill section is the canonical source for
   1. **Multi-series via `y=[...]`**, when 2 aggregates share a Y-axis scale (both counts, or both currencies). Example: `# line_chart { y=['new_customers', 'returning_customers'] }` over `group_by: order_year_month`. Note the QUOTED STRINGS in the array; bare identifiers silently render only the first measure.
   2. **Strip the chart tag**, when 3+ aggregates, or when 2 aggregates have different units (currency + count + rate). Leave the view as a data table; consumers chart whichever metric they care about. This is the established pattern in mart-derived files where one view exposes ~10 KPIs.
   3. **Keep single aggregate + 2 group_bys**, when there's a natural category dimension to drive the series. Drop the extra aggregates from the chart-tagged view; if needed, create separate views per metric.
-- **See:** `skill:gotchas-queries` § Charts, ONE Aggregate Per View · `skill:malloy-charts` § Multi-Series Charts · `rubric-rendering.md` § R-10 (multi-series syntax gotchas)
+- **See:** `skill:malloy-gotchas-queries` § Charts, ONE Aggregate Per View · `skill:malloy-charts` § Multi-Series Charts · `rubric-rendering.md` § R-10 (multi-series syntax gotchas)
 
 ---
 
@@ -33,7 +33,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (non-blocking) · **Category:** queries · LLM-judgment, but **promote to `major (blocking)` when the inline measure is `avg(<per_row_rate_dimension>)`** (see "high-priority sub-pattern" below).
 - **Detection:** AST: flag `aggregate: <name> is <expression>` inside a view where the expression is non-trivial (more than a column reference). LLM judgment on whether the expression is reusable.
 - **Fix:** move the measure definition into the source; reference by name in the view.
-- **See:** `skill:gotchas-queries` § DRY, Define in Source, Reference in View
+- **See:** `skill:malloy-gotchas-queries` § DRY, Define in Source, Reference in View
 
 **High-priority sub-pattern, inline `avg(per_row_rate)` IS the avg-of-rate anti-pattern.**
 
@@ -59,7 +59,7 @@ When a source defines a row-level ratio as a dimension (often with a docstring l
 - **Severity:** major (non-blocking) · **Category:** correctness-type · LLM-judgment
 - **Detection:** when `month()` / `year()` / `day_of_week()` is used in a `group_by:` whose view is a time-series chart, suggest the truncation form (`.month`, etc.). The reverse (using `.year` where integer extraction was wanted) is rare but possible.
 - **Fix:** swap the form; for year integers add `# number=id` to suppress comma formatting (R-06)
-- **See:** `skill:gotchas-queries` § Time Truncation vs Extraction
+- **See:** `skill:malloy-gotchas-queries` § Time Truncation vs Extraction
 
 ---
 

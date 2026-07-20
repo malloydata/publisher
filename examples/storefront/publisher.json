@@ -1,0 +1,5 @@
+{
+  "name": "storefront",
+  "version": "1.0.0",
+  "description": "A small but complete ecommerce semantic model — joins, measures, and dashboards over local DuckDB data."
+}

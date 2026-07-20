@@ -1,0 +1,46 @@
+// ─────────────────────────────────────────────────────────────────────────
+// Access control, built on the same givens mechanism.
+//
+//   #(authorize)  decides WHETHER a caller may query the source (403 if not).
+//   where:        decides WHICH rows they see once allowed (row-level access).
+//
+// Both read caller-supplied givens (ROLE, TENANT). They are a real boundary
+// only behind a trusted tier that sets those givens from verified identity —
+// givens are caller-asserted. See docs/authorize.md and docs/row-level-access.md.
+// ─────────────────────────────────────────────────────────────────────────
+##! experimental.givens
+
+import { orders_base } from "internal.malloy"
+
+// Empty defaults keep both givens bound (fail-closed: an unset caller is denied)
+// and safe to reference in the row-level `where:` below.
+given:
+  ROLE :: string is ''
+  TENANT :: string is ''
+
+// Authorization is OR across stacked annotations, each probed independently:
+// an admin override, plus a tenant allow-list. Supplying just one given still
+// grants — the other annotation simply doesn't match. See docs/authorize.md.
+#(authorize) "$ROLE = 'admin'"
+#(authorize) "$TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'"
+source: orders_secured is orders_base extend {
+  // Row-level access: admins see everything; a tenant caller sees only its rows.
+  where: $ROLE = 'admin' or tenant = $TENANT
+
+  measure:
+    #(doc) Number of orders visible to this caller
+    order_count is count()
+    #(doc) Total order amount visible to this caller
+    # currency=usd
+    total_amount is amount.sum()
+
+  view: by_status is {
+    group_by: status
+    aggregate: order_count, total_amount
+  }
+
+  view: by_tenant is {
+    group_by: tenant
+    aggregate: order_count, total_amount
+  }
+}

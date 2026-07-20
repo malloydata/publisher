@@ -34,23 +34,27 @@ import {
 } from "./instrumentation";
 import { logger, loggerMiddleware } from "./logger";
 
-import { getMemoryGovernorConfig } from "./config";
+import {
+   getMaterializationSchedulerConfig,
+   getMemoryGovernorConfig,
+} from "./config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
-import { startAgentMcpServer } from "./mcp/agent_server";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
+import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
-import { normalizeQueryArray } from "./query_param_utils";
+import {
+   normalizeQueryArray,
+   parseNonNegativeIntParam,
+} from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
-
-export { normalizeQueryArray } from "./query_param_utils";
 
 // Parse command line arguments
 function parseArgs() {
@@ -105,7 +109,7 @@ function parseArgs() {
             "  --port <number>        Port to run the server on (default: 4000)",
          );
          console.log(
-            "  --host <string>        Host to bind the server to (default: localhost)",
+            "  --host <string>        Host to bind the REST and MCP servers to (default: 0.0.0.0)",
          );
          console.log(
             "  --server_root <path>   Root directory to serve files from (default: .)",
@@ -123,7 +127,7 @@ function parseArgs() {
             "  --shutdown_graceful_close_timeout_seconds <number>  Time in seconds to wait after closing servers before exit (default: 0)",
          );
          console.log(
-            "  --init                 Initialize the storage (default: false)",
+            "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -150,7 +154,7 @@ function parseArgs() {
    // this — the user told us where to look. Skip in NODE_ENV=test as a
    // belt-and-suspenders so any spec that ends up evaluating this
    // module doesn't accidentally pin the EnvironmentStore to the
-   // bundled malloy-samples config.
+   // bundled examples config.
    if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
@@ -162,7 +166,6 @@ parseArgs();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
-const AGENT_MCP_PORT = Number(process.env.AGENT_MCP_PORT || 4041);
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
@@ -187,7 +190,7 @@ app.use(httpMetricsMiddleware);
 // looks low for the default caps" advisory so operators don't
 // chase OOMKills before checking the obvious config.
 checkHeapConfiguration();
-const environmentStore = new EnvironmentStore(SERVER_ROOT);
+export const environmentStore = new EnvironmentStore(SERVER_ROOT);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
@@ -210,6 +213,32 @@ const materializationService = new MaterializationService(environmentStore);
 const materializationController = new MaterializationController(
    materializationService,
 );
+/**
+ * Construct and start the standalone materialization scheduler from environment
+ * config, or return null when the feature is disabled
+ * (`PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` unset/false — the default, so an
+ * orchestrated deployment never runs it). Extracted from the module body so a
+ * test can drive the real env-var → {@link getMaterializationSchedulerConfig} →
+ * construct → `start()`/`unref()` → timer path an operator uses; the
+ * module-level singleton below is armed once at import and can't be re-created
+ * per test.
+ */
+export function startMaterializationSchedulerFromEnv(
+   store: EnvironmentStore,
+   service: MaterializationService,
+): MaterializationScheduler | null {
+   const config = getMaterializationSchedulerConfig();
+   if (!config) return null;
+   const scheduler = new MaterializationScheduler(store, service, config);
+   scheduler.start();
+   return scheduler;
+}
+
+// Standalone materialization scheduler: opt-in via
+// PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER (default off, so an orchestrated
+// deployment — whose control plane drives materialization — never runs it). The
+// sweep timer is `unref`'d, so it never keeps the process alive on shutdown.
+startMaterializationSchedulerFromEnv(environmentStore, materializationService);
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore, SERVER_ROOT);
 
@@ -1323,6 +1352,31 @@ app.post(
    },
 );
 
+// Environment-scoped aggregate: every materialization across all packages in
+// the env, newest first. Nested under `/packages` as the collection-level
+// sibling of the per-package `/packages/:packageName/materializations` list.
+// MUST stay registered ahead of `/packages/:packageName` below so the literal
+// `materializations` segment wins the match; consequently `materializations` is
+// a reserved package name at this position (a package can never be named that).
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/materializations`,
+   async (req, res) => {
+      try {
+         const limit = parseNonNegativeIntParam(req.query.limit);
+         const offset = parseNonNegativeIntParam(req.query.offset);
+         const builds =
+            await materializationController.listEnvironmentMaterializations(
+               req.params.environmentName,
+               { limit, offset },
+            );
+         res.status(200).json(builds);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
@@ -1617,13 +1671,15 @@ app.get(
 );
 
 app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/:modelName/compile`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
    async (req, res) => {
       try {
+         // Express stores wildcard matches in params['0'], so nested model
+         // paths (models in subdirectories) compile just like they query.
          const result = await compileController.compile(
             req.params.environmentName,
             req.params.packageName,
-            req.params.modelName,
+            (req.params as Record<string, string>)["0"],
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,
@@ -1638,6 +1694,10 @@ app.post(
 );
 
 // ==================== MATERIALIZATION ROUTES ====================
+// The environment-scoped aggregate list (every materialization across all
+// packages) is registered up in the package routes as
+// `/packages/materializations`, ahead of `/packages/:packageName`, so the
+// literal wins the match — see that route for the ordering contract.
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
@@ -1660,12 +1720,8 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
    async (req, res) => {
       try {
-         const limit = req.query.limit
-            ? parseInt(req.query.limit as string, 10)
-            : undefined;
-         const offset = req.query.offset
-            ? parseInt(req.query.offset as string, 10)
-            : undefined;
+         const limit = parseNonNegativeIntParam(req.query.limit);
+         const offset = parseNonNegativeIntParam(req.query.offset);
          const builds = await materializationController.listMaterializations(
             req.params.environmentName,
             req.params.packageName,
@@ -1868,21 +1924,9 @@ mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;
 mcpServer.headersTimeout = 600000;
 
-// Separate, isolated MCP server for the agent retrieval tools (get_context,
-// search_docs) on its own listener. Kept apart from the core MCP server above.
-const agentMcpServer = startAgentMcpServer(
-   environmentStore,
-   PUBLISHER_HOST,
-   AGENT_MCP_PORT,
-);
-agentMcpServer.timeout = 600000;
-agentMcpServer.keepAliveTimeout = 600000;
-agentMcpServer.headersTimeout = 600000;
-
 registerSignalHandlers(
    mainServer,
    mcpServer,
    SHUTDOWN_DRAIN_DURATION_SECONDS,
    SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS,
-   agentMcpServer,
 );

@@ -124,14 +124,7 @@ For more information on how to configure OpenTelemetry collectors, please refer 
 
 ## MCP Prompt Capability
 
-Publisher's MCP interface exposes **LLM-ready prompts** for explaining, generating, translating and summarising Malloy code.
-
-| Prompt ID                                      | Purpose                                                           |
-| ---------------------------------------------- | ----------------------------------------------------------------- |
-| `explain-malloy-query@1.0.0`                   | Explain a Malloy query (sources, transformations, output).        |
-| `generate-malloy-query-from-description@1.0.0` | Create Malloy based on a natural-language goal and model context. |
-| `translate-sql-to-malloy@1.0.0`                | Convert SQL into Malloy using a model for schema reference.       |
-| `summarize-malloy-model@1.0.0`                 | Summarise a Malloy model (purpose, entities, joins).              |
+Publisher's MCP interface exposes the bundled agent **skills** (under [`skills/`](../../skills/)) as **LLM-ready prompts**, so hosts that ingest MCP but do not load skill files can pull the same guidance. For authoring or contributing skills, see [`docs/agent-skills/`](../../docs/agent-skills/).
 
 List prompts:
 
@@ -142,9 +135,7 @@ mcp-client prompts/list
 Get a prompt:
 
 ```bash
-mcp-client prompts/get \
-  --name explain-malloy-query@1.0.0 \
-  --arguments '{"query_code":"from flights"}'
+mcp-client prompts/get --name malloy-analysis
 ```
 
 These calls return `messages` ready for your LLM chat completion.

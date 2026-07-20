@@ -2,19 +2,19 @@
   "frozenConfig": false,
   "environments": [
     {
-      "name": "malloy-samples",
+      "name": "examples",
       "packages": [
         {
-          "name": "ecommerce",
-          "location": "https://github.com/credibledata/malloy-samples/tree/main/ecommerce"
+          "name": "storefront",
+          "location": "https://github.com/malloydata/publisher/tree/main/examples/storefront"
         },
         {
-          "name": "imdb",
-          "location": "https://github.com/credibledata/malloy-samples/tree/main/imdb"
+          "name": "governed-analytics",
+          "location": "https://github.com/malloydata/publisher/tree/main/examples/governed-analytics"
         },
         {
-          "name": "faa",
-          "location": "https://github.com/credibledata/malloy-samples/tree/main/faa"
+          "name": "html-data-app",
+          "location": "https://github.com/malloydata/publisher/tree/main/examples/html-data-app"
         },
         {
           "name": "bigquery-hackernews",

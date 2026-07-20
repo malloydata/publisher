@@ -57,8 +57,8 @@ jobs:
         working-directory: packages/app
         run: bunx playwright install --with-deps chromium
 
-      # Tests in packages/app/tests/playwright/package-databases.spec.ts assume
-      # the malloy-samples environment exposes a top-level `bigquery`
+      # Tests in packages/app/tests/playwright/environment-connections.spec.ts
+      # assume the examples environment exposes a top-level `bigquery`
       # connection (rows for list/edit/delete affordances). The committed
       # default config ships only DuckDB sandboxes for first-run UX, so
       # inject a stub BigQuery connection into the existing default before

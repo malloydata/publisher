@@ -36,6 +36,15 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).toEqual({ forceRefresh: true, sourceNames: ["a", "b"] });
    });
 
+   it("never forwards a client-supplied trigger (SCHEDULER cannot be forged)", async () => {
+      // trigger is service-level-only: the controller must strip it so an API
+      // caller cannot mint a run that reads as scheduler-driven. The service
+      // then defaults it to ON_DEMAND.
+      const parsed = await parse({ forceRefresh: true, trigger: "SCHEDULER" });
+      expect(parsed).toEqual({ forceRefresh: true });
+      expect("trigger" in (parsed as object)).toBe(false);
+   });
+
    it("rejects a non-boolean forceRefresh", async () => {
       const { controller } = build();
       await expect(

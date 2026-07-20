@@ -14,7 +14,7 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Severity:** minor (non-blocking) · **Category:** governance · machine-checkable
 - **Detection:** regex for `public:\s*\*` inside an `include {}` block
 - **Fix:** enumerate public columns explicitly, each with a `#(doc)` tag and any necessary rendering tags. If you really do want every column public, list each one, the per-column `#(doc)` is the point.
-- **See:** `skill:malloy-document` § Annotating Columns in Include (Experimental) · `malloy-model/reference/access-modifiers.md`
+- **See:** your documentation guidance (Annotating Columns in Include (Experimental)) · `malloy-model/reference/access-modifiers.md`
 
 The reason `public: *` is discouraged is **documentation discipline**, not access semantics. With `public: *`, none of the wildcard-included columns get individual `#(doc)` tags, which short-circuits AI discoverability. The team standard is "every public column has a `#(doc)` tag." If a modeler genuinely wants everything public on a small curated source, that's their call, the rule raises awareness (`minor`/`non-blocking`), it doesn't block.
 
@@ -23,9 +23,9 @@ The reason `public: *` is discouraged is **documentation discipline**, not acces
 ## G-02: Access modifiers are explicit when `##! experimental.access_modifiers` is on
 
 - **Severity:** major (blocking) · **Category:** governance · LLM-judgment (cross-file)
-- **Detection:** if a file has `##! experimental.access_modifiers`, cross-reference columns in `include {}` against the source's full column set. Read the model with `malloy_modelGetText` or `malloy_packageGet` to learn which columns the underlying table exposes (or sample the data with `malloy_executeQuery`: `run: <source> -> { select: * limit: 1 }`). Any column missing from the block is a finding.
+- **Detection:** if a file has `##! experimental.access_modifiers`, cross-reference columns in `include {}` against the source's full column set. Ground yourself with `get_context` to learn which columns the underlying table exposes (or sample the data with `execute_query`: `run: <source> -> { select: * limit: 1 }`). Any column missing from the block is a finding.
 - **Fix:** add every column to `include {}` as `public:` (with `#(doc)`) or `internal:`; confirm `private:` with the user before marking
-- **See:** `skill:malloy-document` § Annotating Columns in Include (Experimental) · `malloy-model/reference/access-modifiers.md`
+- **See:** your documentation guidance (Annotating Columns in Include (Experimental)) · `malloy-model/reference/access-modifiers.md`
 
 ---
 

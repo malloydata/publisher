@@ -1,0 +1,78 @@
+// ─────────────────────────────────────────────────────────────────────────
+// Interactive filter controls, built on givens.
+//
+// Givens are typed runtime parameters. Declared here, REGION and MIN_AMOUNT
+// become controls in the notebook Parameters panel (see orders.malloynb), and
+// scope the `sales` source's rows. See docs/givens.md.
+// ─────────────────────────────────────────────────────────────────────────
+##! experimental.givens
+
+import { orders_base } from "internal.malloy"
+
+#(description="Region to focus on — leave empty for all regions")
+given: REGION :: filter<string> is f''
+
+#(description="Only include orders at or above this amount (USD)")
+given: MIN_AMOUNT :: number is 0
+
+source: sales is orders_base extend {
+  // The givens scope every query against `sales`. An empty REGION filter (f'')
+  // is the natural "all regions" state.
+  where: region ~ $REGION and amount >= $MIN_AMOUNT
+
+  measure:
+    #(doc) Number of orders in scope
+    order_count is count()
+    #(doc) Total order amount
+    # currency
+    total_amount is amount.sum()
+    #(doc) Average order amount
+    # currency
+    avg_amount is amount.avg()
+
+  #(doc) Order value by region
+  # bar_chart
+  view: by_region is {
+    group_by: region
+    aggregate: total_amount
+    order_by: total_amount desc
+  }
+
+  #(doc) Orders by fulfillment status
+  # bar_chart
+  view: by_status is {
+    group_by: status
+    aggregate: order_count
+    order_by: order_count desc
+  }
+
+  #(doc) Monthly order-value trend
+  # line_chart
+  view: amount_by_month is {
+    group_by: order_month is order_date.month
+    aggregate: total_amount
+    order_by: order_month
+  }
+
+  #(doc) KPIs + trend and breakdowns, all scoped by the current givens
+  # dashboard
+  view: overview is {
+    nest:
+      # big_value
+      kpis is {
+        aggregate:
+          # label="Orders"
+          order_count
+          # label="Total value"
+          # currency
+          total_amount
+          # label="Avg order"
+          # currency
+          avg_amount
+      }
+    nest:
+      amount_by_month
+      by_region
+      by_status
+  }
+}

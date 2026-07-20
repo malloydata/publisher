@@ -29,7 +29,7 @@ join_one: items on order_id = items.order_id and product_id = items.product_id
 
 ## Cardinality Verification
 
-Before writing any join, check FK uniqueness with `malloy_executeQuery`:
+Before writing any join, check FK uniqueness with `execute_query`:
 
 ```malloy
 run: target_table -> { group_by: fk_col, aggregate: n is count(), having: n > 1, limit: 5 }

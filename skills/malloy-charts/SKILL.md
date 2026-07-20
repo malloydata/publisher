@@ -5,7 +5,9 @@ description: Chart selection guidance and renderer reference for Malloy views. U
 
 # Chart Selection for Malloy
 
-> Malloy uses Vega-Lite under the hood. `#` tags control visualization. Call `malloy_searchDocs` with topic "rendering" for the full tag reference (or see https://docs.malloydata.dev/documentation/visualizations/overview).
+> Malloy uses Vega-Lite under the hood. `#` tags control visualization. Call `search_malloy_docs` with topic "rendering" for the full tag reference (or see https://docs.malloydata.dev/documentation/visualizations/overview).
+
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
 ## Decision Tree: Which Chart?
 
@@ -122,20 +124,75 @@ view: summary is {
 
 ### `# dashboard`
 
-Multi-tile layout. Use `# break` to force new row.
+Card-based multi-tile layout. Apply to a view whose body is a nested query; the view's own fields lay out automatically:
+
+- `group_by` dimensions -> a row header (repeats once per row; omit for a single block)
+- `aggregate` measures -> KPI cards, one per measure
+- each `nest:` -> a tile, rendered by the tag above it (`# table` default, or `# bar_chart` / `# line_chart` / `# big_value`)
+
+**Two modes.** Flex (default): tiles flow and wrap; `# break` forces a new row. Columns: `# dashboard { columns=N }` lays tiles into N equal columns, `# colspan=n` widens a tile, `# break` starts a new row, overflow wraps.
+
+```malloy
+// Flex: measures become KPI cards, the nest becomes a tile
+# dashboard
+view: overview is {
+  group_by: category
+  # currency
+  aggregate:
+    avg_retail is retail_price.avg()
+    sum_retail is retail_price.sum()
+  nest:
+    # bar_chart
+    by_brand is { group_by: brand, aggregate: avg_retail is retail_price.avg(), limit: 10 }
+}
+
+// Columns: # colspan widens tiles, # break ends a row
+# dashboard { columns=12 }
+view: layout is {
+  group_by: category
+  # currency
+  aggregate:
+    # colspan=4
+    avg_retail is retail_price.avg()
+    # colspan=4
+    sum_retail is retail_price.sum()
+    # colspan=4
+    max_retail is retail_price.max()
+  nest:
+    # break
+    # colspan=6
+    # bar_chart
+    # subtitle="Top brands"
+    by_brand_chart is { group_by: brand, aggregate: avg_retail is retail_price.avg(), limit: 8 }
+    # colspan=6
+    by_brand_table is { group_by: brand, aggregate: product_count is count(), limit: 8 }
+}
+```
+
+**Tags:** `# dashboard { columns=N }` (columns mode), `{ gap=PX }` (tile spacing, default 16; never a mode), `{ table.max_height=PX|none }` (cap table tiles). On a measure or nest: `# colspan=N` (columns mode only), `# break` (both modes), `# subtitle="..."` (tile), `# borderless` (drop card chrome), `# label="..."` (card title).
+
+For rich KPI cards (sparklines, comparison deltas, several metrics on one card) nest a `# big_value` view instead of relying on the dashboard's own measures:
 
 ```malloy
 # dashboard
-view: overview is {
-  nest: # big_value
-    kpis is { ... }
-  nest: # line_chart
-    trend is { ... }
-  # break
-  nest: # bar_chart
-    breakdown is { ... }
+view: kpis is {
+  group_by: category
+  nest:
+    # big_value
+    revenue_card is {
+      aggregate:
+        # label="Revenue"
+        # currency
+        # big_value { sparkline=trend }
+        total_revenue is retail_price.sum()
+      # line_chart { size=spark y.independent=true }
+      # hidden
+      nest: trend is { group_by: bucket is floor(id / 100)::number, aggregate: total_revenue is retail_price.sum(), order_by: bucket, limit: 20 }
+    }
 }
 ```
+
+**Rules:** `# dashboard` needs a nested-query view (no effect on a scalar). `# colspan` works only in columns mode and is ignored (warns) in flex. `columns` is any positive integer; a `# colspan` over the column count clamps to a full row. Style tiles via the instance theme, or theme the views inside with `# theme.*` (see Theming below).
 
 ### `# pivot`
 
@@ -256,7 +313,7 @@ view: revenue_by_month is {
 
 **Precedence**, highest to lowest, per key: `# theme.*` on the view, then `## theme.*` model default, then the instance theme, then Publisher's built-in defaults. A per-chart annotation overrides the instance for the keys it sets; unset keys fall through to the instance. (This is the reverse of a bare `@malloydata/render` embed, where the embedder wins: Publisher reads the annotation itself and layers it on top.)
 
-Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. The gotchas-rendering skill lists the annotation forms that look valid but do nothing.
+Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. The malloy-gotchas-rendering skill lists the annotation forms that look valid but do nothing.
 
 
 ## Advanced Patterns
@@ -313,7 +370,7 @@ view: explorer is {
 
 ### Distribution (Histogram)
 
-Call `malloy_searchDocs("autobin")` for syntax:
+Call `search_malloy_docs("autobin")` for syntax:
 ```malloy
 # bar_chart
 view: price_dist is { group_by: bucket is autobin(price, 20), aggregate: order_count }
@@ -350,7 +407,7 @@ A top-level chart tag (e.g., `# bar_chart`) renders only the outer query; any `n
 
 NOTE: The term 'constructor' is a reserved term in Vega-Lite. If the word 'constructor' appears in the query, it will cause the rendering to fail. Never use it in a query and avoid using it as a dimension in a model.
 
-For more patterns, call `malloy_searchDocs` with topics like "bar charts", "line charts", "dashboards", "autobin", "percent of total", "comparing timeframes", or "pivots".
+For more patterns, call `search_malloy_docs` with topics like "bar charts", "line charts", "dashboards", "autobin", "percent of total", "comparing timeframes", or "pivots".
 
 ## Further Reading
 

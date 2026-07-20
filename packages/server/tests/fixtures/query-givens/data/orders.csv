@@ -1,0 +1,7 @@
+id,region,status,amount
+1,US,active,100
+2,US,active,200
+3,US,cancelled,50
+4,EU,active,300
+5,EU,cancelled,400
+6,EU,active,500

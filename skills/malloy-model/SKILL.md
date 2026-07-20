@@ -5,11 +5,13 @@ description: Build Malloy semantic models with base source and joined source fil
 
 # Building Malloy Models
 
+> **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
+
 ## Getting Started (New Projects)
 
-If no `.malloy` files exist yet, do discovery and propose a structure first, then return here to build base source and joined source files. Keep proposals and the analysis behind them in the conversation; Publisher has no workspace document store to write them to.
+If no `.malloy` files exist yet, do discovery and propose a structure first, then return here to build base source and joined source files. Keep proposals and the analysis behind them in the conversation.
 
-**File structure convention** (flat layout, Publisher doesn't support cross-directory imports yet):
+**File structure convention** (a flat layout at the package root is the simplest default):
 ```
 <package-name>/
   publisher.json              # Required for publishing (name, version, description)
@@ -33,10 +35,10 @@ If your discovery turned up existing modeling patterns to mirror (a derived tabl
 
 | Pattern found in prior art | Reference to read |
 |---------------------|-------------------|
-| Derived table (PDT/NDT) | `skill:lookml-review` build-derived-tables guidance |
-| UNNEST joins or struct access | `skill:lookml-review` build-unnest guidance |
-| Review pass for coverage | `skill:lookml-review` review-coverage guidance |
-| Curate pass with visibility seeds | `skill:lookml-review` curate-visibility guidance |
+| Derived table (PDT/NDT) | `skill:malloy-lookml-review` build-derived-tables guidance |
+| UNNEST joins or struct access | `skill:malloy-lookml-review` build-unnest guidance |
+| Review pass for coverage | `skill:malloy-lookml-review` review-coverage guidance |
+| Curate pass with visibility seeds | `skill:malloy-lookml-review` curate-visibility guidance |
 
 ## Base Source Templates
 
@@ -249,6 +251,32 @@ Publisher formats values based on the dimension's data type, `string` → `'valu
 
 Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip filter injection entirely. Use sparingly, required-filter governance only works if bypass is restricted to trusted callers.
 
+## Access Control: Source Gating with `#(authorize)`
+
+Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). Publisher evaluates a source's in-scope `#(authorize)` expressions against the request's supplied givens before running the query; if **any** expression returns `true` the request proceeds, otherwise it is denied with **403**. A source with no in-scope `#(authorize)` annotations is unrestricted.
+
+```malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: orders is duckdb.table('orders.parquet') extend {
+  measure: order_count is count()
+}
+```
+
+- **Source-level** `#(authorize) "<expr>"` gates that one source. **File-level** `##(authorize) "<expr>"` applies to every source in the file. Multiple gates combine as an OR, access is granted if any one is true, so a permissive file-level gate is a **model-wide override**, not an added restriction.
+- **Not inherited, not joined.** The gate applies only to the source a query directly runs against. A source that `extend`s a locked base does **not** inherit the base's gate, and a gate on a source reached only via `join_*` never fires. Pair a locked base (`#(authorize) "false"`) with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface instead of leaking the base's data through the join or extend.
+- The expression may reference only givens and literals, never a column of the gated source; the check runs against a synthetic probe row, not your data.
+
+> **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(authorize)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
+>
+> **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** - reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override - turning `#(authorize)` into a standalone boundary. Model access on `given:` + `#(authorize)` now; it is the surface that carries forward.
+
+Full syntax, OR/override semantics, validation, and the error contract are covered in your deployment's `#(authorize)` reference documentation.
+
 ## Join Syntax
 
 - Simple join: `join_one: users with user_id`
@@ -264,9 +292,9 @@ Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip f
 
 Check diagnostics after writing. Errors cascade, fix the FIRST error only, then re-check. If errors persist, use the debugging strategy: look at first error, search docs if unsure, fix, repeat.
 
-**Validate with `malloy_executeQuery`:** Run queries, check distributions, verify measures, confirm joins (no fan-out).
+**Validate with `execute_query`:** Run queries, check distributions, verify measures, confirm joins (no fan-out).
 
-To inspect the sources and fields a model already defines, read the model with `malloy_modelGetText` (or `malloy_packageGet` for the package layout). The model itself is the schema; there is no separate schema-search tool. When you're unsure of Malloy syntax, call `malloy_searchDocs` rather than guessing.
+To inspect the sources and fields a model already defines, ground yourself with `get_context`. It returns the package's sources, views, and fields, so there is no separate schema-search step. When you're unsure of Malloy syntax, call `search_malloy_docs` rather than guessing.
 
 ## Advanced Patterns
 
@@ -286,6 +314,7 @@ Step complete. Output: base source files (`.malloy`, one per table) and joined s
 
 **Suggest next steps to the user:**
 
+- Open the model in the browser to see it live: `http://localhost:4000/<environmentName>/<packageName>` for the package, or `http://localhost:4000/<environmentName>/<packageName>/<modelPath>` for a single model file. First confirm the running server actually serves this package (it is in the loaded `publisher.config.json`, or mounted live with `--server_root . --watch-env <env>`); a package the server has not loaded returns a 404, so do not hand over a link to a package that was just authored but never loaded.
 - Build a notebook with interactive filters over the model (see `skill:malloy-notebooks`).
 - Run analysis questions against the model (see `skill:malloy-analysis`).
 - When you're ready to serve the model, publishing is out of scope for open-source Publisher v1: self-hosters commit the package to git and use their host's publish path.

@@ -133,7 +133,7 @@ This review covers 10,173 lines across 47 files. Only ~1,500 lines were deep-rev
       "expected": "customers.id is unique per row, or the customers source carries a where: that scopes to a uniquely-keyed subset",
       "suggested_fix": "Aggregations across this join will silently return hash-collision-sized garbage. Pick a different / composite PK that IS unique, OR add a source-level where: that makes id unique within the filtered set, OR declare a #(filter) ... required annotation.",
       "confidence": 95,
-      "evidence": "rubric-correctness C-12; pk_verified=false from SKILL.md step 3 malloy_executeQuery check",
+      "evidence": "rubric-correctness C-12; pk_verified=false from SKILL.md step 3 execute_query check",
       "source": "rule"
     }
   ],

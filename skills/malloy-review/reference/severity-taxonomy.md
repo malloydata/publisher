@@ -15,11 +15,11 @@ Every finding emitted during a review has this shape (JSON):
   "file": "packages/x/customers.malloy",
   "line_range": [12, 12],
   "rule": "C-12 declared primary_key is not unique in the data",
-  "current": "primary_key: customer_id (customer_id has duplicates per malloy_executeQuery check)",
+  "current": "primary_key: customer_id (customer_id has duplicates per execute_query check)",
   "expected": "customer_id is unique per row, or the source carries a where: that scopes to a uniquely-keyed subset",
   "suggested_fix": "Pick a different (or composite) PK that IS unique, OR add a source-level where: that makes customer_id unique within the filtered set, OR declare a #(filter) ... required annotation so consumers must supply the discriminating filter.",
   "confidence": 95,
-  "evidence": "rubric-correctness C-12; pk_verified=false from SKILL.md step 3 malloy_executeQuery check",
+  "evidence": "rubric-correctness C-12; pk_verified=false from SKILL.md step 3 execute_query check",
   "source": "rule"
 }
 ```
@@ -84,7 +84,7 @@ Use these as a starting point and adjust per finding:
 | IDE diagnostic, error | 95 |
 | IDE diagnostic, warning | 85 |
 | IDE diagnostic, information / hint | 75 |
-| Live data check (e.g. `malloy_executeQuery` returns a definitive yes/no, like C-12 PK uniqueness) | 95 |
+| Live data check (e.g. `execute_query` returns a definitive yes/no, like C-12 PK uniqueness) | 95 |
 | Machine-checkable rubric rule matched against unambiguous code | 90–95 |
 | Machine-checkable rubric rule matched but the context could be misread | 80–90 |
 | LLM-judgment rubric rule with a clearly matching signal (e.g. integer-typed comparison against `ts.month`) | 80–90 |
@@ -104,7 +104,7 @@ The rubric files set the default severity per rule. Defaults (can be overridden 
 | Rule family | Default severity | Blocking |
 |---|---|---|
 | Compile-breaking syntax (parse errors, missing colons / arrows, `as` vs `is`, bare `join:`, reserved-word collisions, redefined query-source columns, trailing commas, etc.) | `blocker` | `blocking`, **handled exclusively by IDE diagnostic pre-pass; not in the rubrics** |
-| Declared `primary_key:` is not actually unique in the data (C-12, verified by `malloy_executeQuery` in SKILL.md step 3) | `critical` | `blocking` |
+| Declared `primary_key:` is not actually unique in the data (C-12, verified by `execute_query` in SKILL.md step 3) | `critical` | `blocking` |
 | Chart view with >1 aggregate (Q-01, silent render bug) | `major` | `non-blocking` |
 | `!= null` vs `is not null` (C-01), contradicts the Malloy compiler's own warning, see rule for context | `major` | `non-blocking` |
 | Safe division / boolean-quote (C-03, C-05) | `major` | `blocking` |

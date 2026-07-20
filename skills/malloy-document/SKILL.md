@@ -158,7 +158,7 @@ After writing `#(doc)` tags, present any that required judgment to the user for 
 | `total` | "Total order amount in USD" | Medium | Could be gross or net, verified with sample query |
 | `status` | "Order status: pending, shipped, delivered" | High | Values confirmed via a query of distinct values |
 
-Only flag fields where the description required assumptions about business meaning, units, or valid values. When in doubt about valid values, run a quick query against the data to confirm them before writing the description. Use `malloy_modelGetText` (or `malloy_packageGet` to see what is in the package) to read the model and `malloy_executeQuery` to check distinct values, for example `run: source -> { group_by: status }`.
+Only flag fields where the description required assumptions about business meaning, units, or valid values. When in doubt about valid values, run a quick query against the data to confirm them before writing the description. Use `malloy_getContext` to ground yourself in the package's sources and fields and `malloy_executeQuery` to check distinct values, for example `run: source -> { group_by: status }`.
 
 ## Done
 

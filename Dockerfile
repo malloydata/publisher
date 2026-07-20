@@ -79,7 +79,7 @@ WORKDIR /publisher
 # (some tools truncate at 80–120 chars); the `documentation` URL points
 # at the root README's Docker section for build/run/mount-path details.
 LABEL org.opencontainers.image.title="Malloy Publisher" \
-    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040, agent MCP :4041)." \
+    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
     org.opencontainers.image.source="https://github.com/malloydata/publisher" \
     org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
     org.opencontainers.image.licenses="MIT"
@@ -123,9 +123,9 @@ RUN curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
     -o /etc/ssl/certs/rds-global-bundle.pem
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/rds-global-bundle.pem
 # Declare the runtime ports so `docker run -P` and Docker Desktop's
-# port-preview surface them. The server already listens on all three (REST on
-# 4000, core MCP on 4040, agent MCP on 4041); this just makes them discoverable.
-EXPOSE 4000 4040 4041
+# port-preview surface them. The server listens on both (REST on 4000, MCP on
+# 4040); this just makes them discoverable.
+EXPOSE 4000 4040
 
 # Pass --server_root explicitly so the zero-arg bundled-default trigger
 # in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire

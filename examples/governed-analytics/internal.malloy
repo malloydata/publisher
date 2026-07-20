@@ -1,0 +1,8 @@
+// Shared base source for the governed-analytics package.
+//
+// This file is intentionally NOT listed in publisher.json `explores`, so
+// `orders_base` is hidden from discovery and — because the package sets
+// `queryableSources: "declared"` — a direct `run: orders_base -> ...` is
+// denied with 404. It still compiles and can be imported by the public
+// models below. See docs/discovery-and-access.md.
+source: orders_base is duckdb.table('orders.parquet')
