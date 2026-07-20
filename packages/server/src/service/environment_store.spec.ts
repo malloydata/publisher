@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { promises as fsPromises } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
@@ -515,6 +516,122 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors).toHaveLength(1);
       expect(status.loadErrors?.[0]?.environment).toBe(projectName);
       expect(status.loadErrors?.[0]?.package).toBe("bad");
+      // The message has to name the location that is actually wrong. The
+      // un-mounted package also fails its lazy load on the manifest that was
+      // never copied, and reporting that instead points the reader at
+      // publisher_data/ for what is really a typo in the config.
+      expect(status.loadErrors?.[0]?.message).toContain("/non/existent/path");
+      expect(status.loadErrors?.[0]?.message).not.toContain("publisher_data");
+   });
+
+   it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
+      // Packages grouped under ONE location share a single download, then each
+      // is extracted separately. A failure in one extract must not strand the
+      // siblings queued behind it: the group-level catch used to wrap the whole
+      // loop, so with three packages from one repo a throw on the second meant
+      // the third was never copied even though nothing was wrong with it.
+      const shared = path.join(serverRootPath, "shared-src");
+      mkdirSync(shared, { recursive: true });
+      writeFileSync(
+         path.join(shared, "publisher.json"),
+         JSON.stringify({ name: "shared" }),
+      );
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     { name: "first", location: shared },
+                     { name: "middle", location: shared },
+                     { name: "last", location: shared },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      // Fail exactly one package's copy. Everything reachable from config is
+      // shared across the group (same location, hence the same source path), so
+      // the copy is the only per-package step that can realistically fail on
+      // its own — the same shape as a GitHub subdirectory that isn't there.
+      const realCp = fsPromises.cp;
+      const cpStub = sinon.stub(fsPromises, "cp").callsFake((async (
+         src: Parameters<typeof realCp>[0],
+         dest: Parameters<typeof realCp>[1],
+         opts?: Parameters<typeof realCp>[2],
+      ) => {
+         if (String(dest).endsWith(`${path.sep}middle`)) {
+            throw new Error("simulated extract failure for middle");
+         }
+         return realCp(src, dest, opts);
+      }) as typeof realCp);
+
+      try {
+         const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+         await newEnvironmentStore.finishedInitialization;
+
+         const environment =
+            await newEnvironmentStore.getEnvironment(projectName);
+         const packages = await environment.listPackages();
+         // "last" is the one that regressed: it is queued behind the failure.
+         expect(packages.map((p) => p.name).sort()).toEqual(["first", "last"]);
+
+         const status = await newEnvironmentStore.getStatus();
+         expect(status.operationalState).toBe("serving");
+         expect(status.loadErrors).toHaveLength(1);
+         expect(status.loadErrors?.[0]?.package).toBe("middle");
+         expect(status.loadErrors?.[0]?.message).toContain(
+            "simulated extract failure",
+         );
+      } finally {
+         cpStub.restore();
+      }
+   });
+
+   it("does not delete the environment directory when a package name is rejected", async () => {
+      // A package name that fails the allowlist throws as the FIRST statement of
+      // the extract, so the per-package catch runs before any path for it
+      // exists. safeJoinUnderRoot deliberately allows a name that resolves to
+      // the root, so re-deriving the cleanup target from the name would hand it
+      // the whole environment directory and take the healthy siblings with it.
+      const good = path.join(serverRootPath, "good-src");
+      mkdirSync(good, { recursive: true });
+      writeFileSync(
+         path.join(good, "publisher.json"),
+         JSON.stringify({ name: "good" }),
+      );
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     { name: "good", location: good },
+                     { name: ".", location: good },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      // Boot pre-validates the names and skips the environment, so reach the
+      // lazy path, which passes the config's package names through unchecked.
+      await newEnvironmentStore.getEnvironment(projectName).catch(() => {});
+
+      const envDir = path.join(serverRootPath, "publisher_data", projectName);
+      // The environment directory and the healthy sibling must both survive.
+      expect(existsSync(envDir)).toBe(true);
+      expect(existsSync(path.join(envDir, "good"))).toBe(true);
    });
 
    it("should not report an environment that is serving even if its database sync fails", async () => {
