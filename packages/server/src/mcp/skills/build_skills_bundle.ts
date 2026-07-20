@@ -36,11 +36,26 @@ export function parseSkill(md: string, dirName: string): SkillEntry {
    return { name, description, body };
 }
 
+/**
+ * `credible-*` skills are Credible-platform-specific and never ship (see
+ * skills/README.md). They can legitimately sit in skills/ uncommitted: the
+ * directory is a gitignored local install target (`skills/credible-*` in
+ * .gitignore), so the bundle must skip them or a regeneration on a machine
+ * with Credible installed would bake them into the committed bundle, and the
+ * regenerate-and-compare spec would fail on a clean checkout.
+ *
+ * The canonical predicate lives in packages/skills/scripts/exclusions.ts;
+ * duplicated here because the server does not depend on that package.
+ */
+export function isCredible(dirName: string): boolean {
+   return dirName.toLowerCase().startsWith("credible-");
+}
+
 /** Read every skill under a skills directory, in the bundle's own order. */
 export function buildSkills(skillsDir: string): SkillEntry[] {
    const skills: SkillEntry[] = [];
    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
+      if (!entry.isDirectory() || isCredible(entry.name)) continue;
       const skillFile = path.join(skillsDir, entry.name, "SKILL.md");
       if (!fs.existsSync(skillFile)) continue;
       skills.push(parseSkill(fs.readFileSync(skillFile, "utf8"), entry.name));

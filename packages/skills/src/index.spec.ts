@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isCredible, isExcluded } from "../scripts/exclusions";
@@ -6,20 +7,6 @@ import { listSkills, skillsDir } from "./index";
 
 /** The repo's top-level skills/, which copy-skills.ts copies into this package. */
 const sourceDir = path.join(import.meta.dir, "..", "..", "..", "skills");
-
-/** Every file under a dir, as forward-slash paths relative to it. */
-function filesIn(dir: string, prefix = ""): string[] {
-   const files: string[] = [];
-   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-         files.push(...filesIn(path.join(dir, entry.name), relative));
-      } else {
-         files.push(relative);
-      }
-   }
-   return files;
-}
 
 function skillNamesIn(dir: string): string[] {
    return fs
@@ -43,9 +30,19 @@ describe("@malloy-publisher/skills", () => {
     * is the defect itself (skills/README.md), and this package turns skills/
     * into a published artifact that npm cannot unpublish, so say so loudly and
     * point at the stray rather than at the copy.
+    *
+    * Asks git, not the filesystem: an uncommitted credible-* skill under
+    * skills/ is a supported local state (`skills/credible-*` is gitignored as
+    * a local install target), and only a committed one is the defect.
     */
    it("has no credible-* file committed to skills/", () => {
-      expect(filesIn(sourceDir).filter(isCredible)).toEqual([]);
+      const committed = execFileSync("git", ["ls-files"], {
+         cwd: sourceDir,
+         encoding: "utf8",
+      })
+         .split("\n")
+         .filter(Boolean);
+      expect(committed.filter(isCredible)).toEqual([]);
    });
 
    it("finds a skill for each one it ships", () => {
