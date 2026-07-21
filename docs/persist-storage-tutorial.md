@@ -221,7 +221,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "entry": {
     "sourceName": "daily_orders",
     "storageConnectionName": "lake",
-    "physicalTableName": "daily_orders",
+    "physicalTableName": "daily_orders__m0e4de5c62e37c0b3",
     "schema": [
       { "name": "order_date", "type": "DATE" },
       { "name": "order_count", "type": "BIGINT" },
@@ -231,16 +231,33 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 }
 ```
 
+The `physicalTableName` is **content-addressed**: `daily_orders` (your `name=`) plus
+`__m<hash>`, where the hash is derived from the source's materialized SQL and
+its connection. This is deliberate — see [Where your data lands](#where-your-data-lands)
+below — so each distinct version of the source gets its own physical table and
+versions can coexist. Publisher always reads and writes this exact name (it's
+recorded here in the manifest and echoed into the serve binding); you query the
+source by its Malloy name as always.
+
 ### Where your data lands
 
-Because you own this lake, it's worth knowing exactly where the rows go. The
-physical location is **`<connection>.<schema>.<table>`**, where `schema.table`
-comes from `name=` and the schema defaults to `main`. So `name="daily_orders"
-storage=lake` lands at **`lake.main.daily_orders`**. `name=` _is_ the physical
-location: `name="analytics.daily"` would write to schema `analytics`, table
-`daily` (the schema must already exist in your lake — Publisher writes into it
+Because you own this lake, it's worth knowing exactly where the rows go. Each
+generation of the source lands in its own **content-addressed** physical table,
+`<schema>.<table>__m<hash>`, where `schema.table` comes from `name=` (schema
+defaults to `main`) and the hash is derived from the materialized SQL. So
+`name="daily_orders" storage=lake` lands at
+**`lake.main.daily_orders__m0e4de5c62e37c0b3`**. `name=` sets the schema and the
+logical stem; the `__m<hash>` suffix is Publisher's, so a definition change lands
+a _new_ table beside the old one rather than overwriting it in place (see
+[Regenerations and GC](#regenerations-and-gc)). `name="analytics.daily"` would
+write to schema `analytics` (which must already exist — Publisher writes into it
 but does not create it; provision schemas yourself, e.g. a one-off
 `CREATE SCHEMA analytics` over an attached session).
+
+Alongside the hashed table, Publisher (re)creates a **convenience view** at the
+plain logical name, pointing at the current generation — purely so you can poke
+at the lake by the friendly name. Publisher's own reads and writes never use the
+view; they always address the exact hashed table from the manifest.
 
 The rows land as **Parquet** in your data directory (Publisher disables
 DuckLake's small-table inlining on writes, so materialized data always goes to
@@ -248,18 +265,22 @@ object storage rather than into the catalog database):
 
 ```bash
 find /tmp/publisher-tutorial-lake -name '*.parquet'
-# .../publisher-tutorial-lake/main/daily_orders/ducklake-<uuid>.parquet
+# .../publisher-tutorial-lake/main/daily_orders__m0e4de5c62e37c0b3/ducklake-<uuid>.parquet
 ```
 
 Query it directly with the DuckDB CLI (`brew install duckdb`, or see
-duckdb.org/docs/installation) — attach your lake and read the table:
+duckdb.org/docs/installation) — attach your lake and list what's there: the
+hashed base table plus the logical-name view over it.
 
 ```bash
 duckdb -c "
   INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres;
   ATTACH 'ducklake:postgres:host=localhost port=5432 dbname=ducklake_catalog user=tutorial password=tutorial'
     AS lake (DATA_PATH '/tmp/publisher-tutorial-lake', READ_ONLY);
-  SELECT * FROM lake.main.daily_orders ORDER BY order_date;
+  SELECT table_name, table_type FROM information_schema.tables WHERE table_catalog='lake';
+  -- daily_orders                      VIEW
+  -- daily_orders__m0e4de5c62e37c0b3   BASE TABLE
+  SELECT * FROM lake.main.daily_orders ORDER BY order_date;  -- via the view
 "
 # ┌────────────┬─────────────┬──────────────┐
 # │ order_date │ order_count │ total_amount │
@@ -310,12 +331,15 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
     {
       "sourceName": "daily_orders",
       "storageConnectionName": "lake",
-      "tablePath": "lake.daily_orders"
+      "tablePath": "lake.daily_orders__m0e4de5c62e37c0b3"
     }
   ],
   "warnings": null
 }
 ```
+
+The `tablePath` is the exact content-addressed table (not the logical view) —
+the serve path binds to the specific generation the manifest recorded.
 
 Query it — the answer now comes from the DuckLake table, served cross-dialect:
 
@@ -356,6 +380,56 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
 
 That's the point: queries serve from the store you materialized into, and
 refresh on your schedule — not per query.
+
+### Regenerations and GC
+
+A _refresh_ of the same definition (above) rewrites the same content-addressed
+table in place — same hash, atomic swap. A _change to what the source
+materializes_ is different: it's a new content hash, so it lands a **new**
+physical table beside the old one. Change the rollup to land an extra column and
+rebuild:
+
+```bash
+# edit orders.malloy: add `avg_amount is amount.avg()` to the aggregate: block
+curl -s "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial?reload=true" >/dev/null
+curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
+  -H 'content-type: application/json' -d '{}' >/dev/null
+# (wait for MANIFEST_FILE_READY)
+```
+
+Both generations now coexist in the lake, and the logical view has re-pointed to
+the newest:
+
+```
+-- SELECT table_name, table_type FROM information_schema.tables WHERE table_catalog='lake';
+-- daily_orders                      VIEW          (now points at __m693c1a82…)
+-- daily_orders__m0e4de5c62e37c0b3   BASE TABLE    (previous generation)
+-- daily_orders__m693c1a823fa489fb   BASE TABLE    (new generation)
+```
+
+This is what makes a cutover safe: the running server keeps serving the old
+generation's table until it rebinds to the new one, so a query is never caught
+against a half-swapped table.
+
+Superseded generations are reclaimed by deleting their materialization record
+with `dropTables=true` — a destination-aware drop (Publisher only ever drops a
+table name it recorded building, never a catalog scan):
+
+```bash
+# delete the OLD generation's materialization (find its id in the list)
+curl -s -X DELETE \
+  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<OLD_ID>?dropTables=true" \
+  -o /dev/null -w "HTTP %{http_code}\n"
+# -> HTTP 204
+```
+
+```
+-- after GC: the old base table is gone; the newest table + the view remain
+-- daily_orders                      VIEW
+-- daily_orders__m693c1a823fa489fb   BASE TABLE
+
+info: Dropped materialized storage table on delete { physicalTableName: "daily_orders__m0e4de5c62e37c0b3", storageConnectionName: "lake" }
+```
 
 ---
 
