@@ -1,4 +1,5 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { FixedConnectionMap } from "@malloydata/malloy";
 import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
@@ -10,6 +11,10 @@ import {
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "./connection";
+import {
+   assertServesInDuckDB,
+   type ServeBinding,
+} from "./materialization_serve_transform";
 
 type ApiConnection = components["schemas"]["Connection"];
 type WireColumn = components["schemas"]["Column"];
@@ -250,6 +255,61 @@ export function logicalViewSql(
       "duckdb",
    );
    return `CREATE OR REPLACE VIEW ${view} AS SELECT * FROM ${table}`;
+}
+
+/**
+ * Build-time servability gate (the portable-DuckDB eligibility check, deferred
+ * from the pre-build pass because it needs the POST-build schema): compile the
+ * source's serve-shape in DuckDB against the captured schema and REFUSE the
+ * build if it does not compile. The served table lives in DuckDB, so a source
+ * authored against a warehouse must have a DuckDB-portable served shape — this
+ * turns a serve-time execution error into a build-time refusal (HTTP 422),
+ * running as part of stage→validate, the same step that captured the schema.
+ *
+ * The compile is schema-on-faith (the compiler does not type-check a virtual
+ * source's columns and no SQL runs), so a throwaway in-memory DuckDB connection
+ * suffices — no attach, no table read, nothing federated.
+ *
+ * @throws {MaterializationEligibilityError} (HTTP 422) if the shape can't compile.
+ */
+export async function assertStorageServeShapeCompiles(params: {
+   destinationName: string;
+   sourceName: string;
+   virtualHandle: string;
+   physicalTableName: string;
+   schema: WireColumn[];
+}): Promise<void> {
+   const { destinationName, sourceName, virtualHandle, physicalTableName } =
+      params;
+   const binding: ServeBinding = {
+      sourceName,
+      connectionName: destinationName,
+      virtualHandle,
+      tablePath: `${destinationName}.${physicalTableName}`,
+      schema: params.schema
+         .filter((c) => c.name && c.type)
+         .map((c) => ({ name: c.name as string, type: c.type as string })),
+   };
+   const conn = new DuckDBConnection(`gate_${destinationName}`, ":memory:");
+   try {
+      await assertServesInDuckDB(
+         sourceName,
+         binding,
+         new FixedConnectionMap(
+            new Map([[destinationName, conn]]),
+            destinationName,
+         ),
+      );
+   } finally {
+      try {
+         await conn.close();
+      } catch (err) {
+         logger.warn("Failed to close serve-shape gate session", {
+            destinationName,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
 }
 
 /** DDL to drop a content-addressed storage table, catalog-qualified for DuckDB. */

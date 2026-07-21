@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { BadRequestError } from "../errors";
 import type { components } from "../api";
 import {
+   assertStorageServeShapeCompiles,
    buildSourceIntoStorage,
    dropStorageTable,
    dropStorageTableSql,
@@ -11,6 +12,24 @@ import {
 } from "./materialization_build_session";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+describe("assertStorageServeShapeCompiles (build-time servability gate)", () => {
+   it("passes for a well-formed captured schema (compiles the serve shape in DuckDB)", async () => {
+      await expect(
+         assertStorageServeShapeCompiles({
+            destinationName: "lake",
+            sourceName: "daily_orders",
+            virtualHandle: "se_1",
+            physicalTableName: "daily_orders__mabc123",
+            schema: [
+               { name: "order_date", type: "DATE" },
+               { name: "order_count", type: "BIGINT" },
+               { name: "total_amount", type: "DOUBLE" },
+            ],
+         }),
+      ).resolves.toBeUndefined();
+   });
+});
 
 describe("dropStorageTableSql", () => {
    it("drops the content-addressed table, catalog-qualified and quoted", () => {

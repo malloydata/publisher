@@ -44,6 +44,7 @@ import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import {
+   assertStorageServeShapeCompiles,
    buildSourceIntoStorage,
    dropStorageTable,
 } from "./materialization_build_session";
@@ -1134,6 +1135,20 @@ export class MaterializationService {
                `destination '${destinationName}': ${safeDetail}`,
          );
       }
+
+      // Build-time servability gate: the serve-shape must compile in DuckDB
+      // against the authoritative post-build schema, or the build is refused
+      // (HTTP 422) — a serve-time execution error turned into a fail-loud
+      // build-time refusal. Outside the redaction try above so the eligibility
+      // error surfaces as-is (it carries no connection secrets). Runs here, in
+      // stage→validate, because it needs the captured schema.
+      await assertStorageServeShapeCompiles({
+         destinationName,
+         sourceName: persistSource.name,
+         virtualHandle: sourceEntityId,
+         physicalTableName,
+         schema: result.schema,
+      });
 
       // Make this table visible to downstream sources built later in this run
       // (single-source spike; chained materialized sources across stores are a
