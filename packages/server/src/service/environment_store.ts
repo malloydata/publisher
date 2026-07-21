@@ -29,6 +29,7 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
+import { redactPgSecrets } from "../pg_helpers";
 import {
    assertSafeEnvironmentPath,
    assertSafePackageName,
@@ -39,6 +40,9 @@ import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 type ApiEnvironment = components["schemas"]["Environment"];
+type LoadError = NonNullable<
+   components["schemas"]["ServerStatus"]["loadErrors"]
+>[number];
 
 const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
 const AZURE_DATA_EXTENSIONS = [
@@ -150,6 +154,16 @@ export function resolvePackageLocation(
 export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
+   /**
+    * Environments that were configured but did not load, keyed by name.
+    *
+    * A load failure is not fatal: the environment is skipped and the server
+    * still reports `serving`. Nothing else remembers it, because the throw
+    * happens before the environment reaches `this.environments` or the
+    * database, so this is the only record that a configured environment is
+    * missing rather than never asked for. Surfaced on `getStatus`.
+    */
+   private failedEnvironments = new Map<string, string>();
    private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
@@ -250,11 +264,21 @@ export class EnvironmentStore {
             true,
          );
       } catch (error) {
-         this.logEnvironmentInitializationError(environment.name, error);
+         this.recordEnvironmentInitializationFailure(environment.name, error);
       }
    }
 
-   private logEnvironmentInitializationError(
+   /**
+    * Log a skipped environment AND remember why, for getStatus to report.
+    *
+    * Both boot paths funnel through here: the config path
+    * ({@link addConfiguredEnvironment}) and the database-restore path taken by
+    * every restart against an existing publisher.db. Keeping the record here
+    * rather than in the callers is deliberate: recording it in only one of them
+    * would leave the other silently dropping failures, which is the bug this is
+    * meant to fix.
+    */
+   private recordEnvironmentInitializationFailure(
       environmentName: string | undefined,
       error: unknown,
    ) {
@@ -263,6 +287,24 @@ export class EnvironmentStore {
          `Error initializing environment${label}; skipping environment`,
          this.extractErrorDataFromError(error),
       );
+      // Only record an environment that is genuinely not there. An environment
+      // reaches `this.environments` before the rest of its setup (the database
+      // sync, its package listing) is done, and a throw from that tail lands
+      // here while the environment is live and serving. Reporting it would
+      // contradict `environments`, which still lists it, and a loadErrors entry
+      // with no `package` means the whole environment was skipped. It also could
+      // never be cleared: the clear below only runs when an environment is
+      // created, so a live one would carry the entry until restart.
+      if (environmentName && !this.environments.has(environmentName)) {
+         // Redacted because this is bound for an HTTP response body, not just a
+         // log line; see the same call in environment.ts.
+         this.failedEnvironments.set(
+            environmentName,
+            redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         );
+      }
    }
 
    private async initialize() {
@@ -381,7 +423,7 @@ export class EnvironmentStore {
 
                         return environmentInstance.listPackages();
                      } catch (error) {
-                        this.logEnvironmentInitializationError(
+                        this.recordEnvironmentInitializationFailure(
                            dbEnvironment.name,
                            error,
                         );
@@ -800,9 +842,16 @@ export class EnvironmentStore {
             : baseState
       ) as components["schemas"]["ServerStatus"]["operationalState"];
 
-      const status = {
+      const status: {
+         timestamp: number;
+         environments: Array<components["schemas"]["Environment"]>;
+         initialized: boolean;
+         frozenConfig: boolean;
+         operationalState: components["schemas"]["ServerStatus"]["operationalState"];
+         loadErrors?: LoadError[];
+      } = {
          timestamp: Date.now(),
-         environments: [] as Array<components["schemas"]["Environment"]>,
+         environments: [],
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState,
@@ -844,6 +893,34 @@ export class EnvironmentStore {
             }
          }),
       );
+
+      // Collected AFTER listEnvironments, not before: serialize() awaits
+      // listPackages(), which is what loads an environment's packages and so
+      // records their failures. Reading the maps at the top of this method risks
+      // reading them before the failures they report have been recorded.
+      //
+      // A read-time overlay over live state, like "throttled" above, so there is
+      // no fourth stored status to keep in sync.
+      const loadErrors: LoadError[] = [];
+      for (const [environmentName, message] of this.failedEnvironments) {
+         loadErrors.push({ environment: environmentName, message });
+      }
+      for (const [environmentName, environment] of this.environments) {
+         for (const [packageName, message] of environment.getFailedPackages()) {
+            loadErrors.push({
+               environment: environmentName,
+               package: packageName,
+               message,
+            });
+         }
+      }
+      // Left unset when nothing failed, so the key is absent from the response
+      // and a healthy server's status body is byte-for-byte what it was before
+      // this field existed.
+      if (loadErrors.length > 0) {
+         status.loadErrors = loadErrors;
+      }
+
       return status;
    }
 
@@ -962,6 +1039,11 @@ export class EnvironmentStore {
       newEnvironment.metadata.location = absoluteEnvironmentPath;
 
       this.environments.set(environmentName, newEnvironment);
+      // It loaded, so any earlier failure for this name is stale. A boot
+      // failure can be followed by a successful POST or lazy load of the same
+      // environment, and a status that keeps reporting the old error would lie
+      // in the other direction.
+      this.failedEnvironments.delete(environmentName);
 
       environment?.packages?.forEach((_package) => {
          if (_package.name) {
