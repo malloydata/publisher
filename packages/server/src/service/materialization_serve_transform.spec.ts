@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
 import {
    assertServesInDuckDB,
+   buildChainedStorageBuildModel,
    buildServeShapeModel,
    buildServeShapeModelForBindings,
    buildVirtualMap,
@@ -770,5 +771,130 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
       expect(
          Object.fromEntries(out.map((r) => [r.region_name, r.total])),
       ).toEqual({ North: 40, South: 20 });
+   });
+});
+
+describe("buildChainedStorageBuildModel (Tier 3 transient build model)", () => {
+   const parent: ServeBinding = {
+      sourceName: "daily_orders",
+      connectionName: "lake",
+      virtualHandle: "daily_h",
+      tablePath: "lake.daily_orders__mabc",
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "total", type: "DOUBLE" },
+      ],
+   };
+   const downstreamDefText =
+      "monthly_orders is daily_orders -> {\n" +
+      "  group_by: order_month is order_date.month\n" +
+      "  aggregate: monthly_total is total.sum()\n}";
+
+   it("rebinds the parent as a virtual source and re-declares the persist-annotated downstream over it", () => {
+      const model = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly_orders",
+         downstreamDefText,
+         destinationName: "lake",
+      });
+      // Both experiments are enabled (persist + virtual_source).
+      expect(model).toContain(
+         "##! experimental { persistence virtual_source }",
+      );
+      // The parent is rebound to a virtual source carrying its captured schema.
+      expect(model).toContain("type: daily_orders__shape is {");
+      expect(model).toContain(
+         "source: daily_orders is lake.virtual('daily_h')::daily_orders__shape",
+      );
+      // The downstream is persist-annotated (so it surfaces in the transient
+      // build plan) and re-declared over the rebound parent with `source: `
+      // prepended to the lifted RHS.
+      expect(model).toContain("#@ persist storage=lake");
+      expect(model).toContain("source: monthly_orders is daily_orders ->");
+   });
+
+   it("compiles against DuckDB and its downstream getSQL reads the parent's mapped table", async () => {
+      const conn = new DuckDBConnection("lake", ":memory:");
+      const model = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly_orders",
+         downstreamDefText,
+         destinationName: "lake",
+      });
+      const root = "file:///t3-assemble/";
+      const url = `${root}m.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, model]])),
+         connections: new FixedConnectionMap(new Map([["lake", conn]]), "lake"),
+      });
+      const compiled = await runtime
+         .loadModel(new URL(url), { importBaseURL: new URL(root) })
+         .getModel();
+      const plan = compiled.getBuildPlan();
+      const names = Object.values(plan.sources).map((s) => s.name);
+      // Only the downstream is a persist source; the rebound parent is virtual.
+      expect(names).toEqual(["monthly_orders"]);
+      const downstream = Object.values(plan.sources).find(
+         (s) => s.name === "monthly_orders",
+      )!;
+      const virtualMap = buildVirtualMap([parent]);
+      const sql = downstream.getSQL({ virtualMap });
+      // The generated SQL reads the parent's content-addressed lake table, not
+      // a re-scan of raw — the whole point of stacking on the parent.
+      expect(sql).toContain("daily_orders__mabc");
+   });
+
+   it("runs the downstream over the parent's stored rows and computes the frozen roll-up", async () => {
+      // The end-to-end proof of the mechanism, entirely in-memory (no file, so
+      // it is deterministic under full-suite load): a live DuckDB holds the
+      // parent's STORED rows, the transient model rebinds it, and running the
+      // downstream over it yields Jan = 150+225 = 375, Feb = 99 — a pure
+      // function of the parent's rows, never a re-scan of raw.
+      const conn = new DuckDBConnection("lake", ":memory:");
+      await conn.runSQL(
+         'CREATE TABLE "daily_orders__mabc" AS ' +
+            "SELECT CAST('2026-01-01' AS DATE) AS order_date, 150.0 AS total " +
+            "UNION ALL SELECT CAST('2026-01-02' AS DATE), 225.0 " +
+            "UNION ALL SELECT CAST('2026-02-01' AS DATE), 99.0",
+      );
+      // Bare (unqualified) table path so the virtualMap resolves against the
+      // in-memory connection's default catalog rather than a `lake.` catalog.
+      const memParent: ServeBinding = {
+         ...parent,
+         tablePath: "daily_orders__mabc",
+      };
+      const model = buildChainedStorageBuildModel({
+         upstreams: [memParent],
+         downstreamName: "monthly_orders",
+         downstreamDefText,
+         destinationName: "lake",
+      });
+      const root = "file:///t3-run/";
+      const url = `${root}m.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, model]])),
+         connections: new FixedConnectionMap(new Map([["lake", conn]]), "lake"),
+      });
+      const query = runtime
+         .loadModel(new URL(url), { importBaseURL: new URL(root) })
+         .loadQuery(
+            "run: monthly_orders -> { select: order_month, monthly_total }",
+         );
+      const virtualMap = buildVirtualMap([memParent]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await query.run({ virtualMap } as any);
+      const out = result.data.toObject() as {
+         order_month: { toISOString(): string } | string;
+         monthly_total: number;
+      }[];
+      const byMonth = Object.fromEntries(
+         out.map((r) => [
+            typeof r.order_month === "string"
+               ? r.order_month.slice(0, 7)
+               : r.order_month.toISOString().slice(0, 7),
+            Number(r.monthly_total),
+         ]),
+      );
+      expect(byMonth).toEqual({ "2026-01": 375, "2026-02": 99 });
    });
 });

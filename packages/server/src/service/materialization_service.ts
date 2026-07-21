@@ -13,6 +13,7 @@ import { logger } from "../logger";
 import {
    MaterializationMode,
    recordAutoLoadOutcome,
+   recordChainedStorageBuild,
    recordDropTables,
    recordManifestBindDegraded,
    recordMaterializationRun,
@@ -46,10 +47,22 @@ import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
+   buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
+   type StorageBuildResult,
 } from "./materialization_build_session";
+import {
+   buildChainedStorageBuildModel,
+   buildVirtualMap,
+   deriveServeBindings,
+   type ServeBinding,
+   type SourceLocation,
+   sliceSourceRange,
+} from "./materialization_serve_transform";
 import type { ApiConnection } from "./model";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
 import {
    bareTableName,
    quoteIdentifier,
@@ -1049,12 +1062,26 @@ export class MaterializationService {
       // federation, and a captured authoritative schema for the serve transform.
       // Gated by the kill switch: when off, ignore a destination and build path C.
       if (isStorageBuild) {
+         // Tier-3 detection: does the source's SQL change when storage upstreams
+         // are PRESENT in the manifest (mapped to their lake tables) vs EXCLUDED
+         // (inlined, the buildSQL above)? If so it reads a storage-materialized
+         // upstream, so it can be built by reading the parent's lake table
+         // ("stack on the parent") instead of recomputing from raw. The compare
+         // is graph-free and self-contained; a single-source build's two SQLs are
+         // identical, so it skips straight to the passthrough below.
+         const dependsOnStorageUpstream =
+            persistSource.getSQL({
+               buildManifest: manifest.buildManifest,
+               connectionDigests,
+            }) !== buildSQL;
          return this.buildOneSourceIntoStorage(
             persistSource,
             instruction,
             manifest,
             environment,
             buildSQL,
+            builtEntries,
+            dependsOnStorageUpstream,
          );
       }
 
@@ -1136,6 +1163,8 @@ export class MaterializationService {
       manifest: Manifest,
       environment: BuildEnvironment,
       buildSQL: string,
+      builtEntries: Record<string, ManifestEntry>,
+      dependsOnStorageUpstream: boolean,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -1148,43 +1177,94 @@ export class MaterializationService {
 
       const startTime = performance.now();
       let result;
-      try {
-         result = await buildSourceIntoStorage({
-            destinationName,
-            destinationConnection,
-            sourceConnection,
-            buildSQL,
-            physicalTableName,
-            // Expose the logical name as a convenience view over the hashed
-            // physical table (best-effort; publisher always reads the physical
-            // name). Skipped when they coincide.
-            logicalViewName: selfAssignTableName(persistSource),
-            environmentPath: environment.getEnvironmentPath(),
-         });
-      } catch (err) {
-         // Redaction (design §5): a failed federation / passthrough / attach
-         // error can echo source- or catalog-connection detail (connstrings,
-         // account names, service-account JSON) from the DuckDB engine. Strip
-         // the actual credential VALUES but keep the message, so an operator sees
-         // a legible, actionable error (e.g. "schema 'analytics' not found" when
-         // a `name=schema.table` target's schema wasn't provisioned) rather than
-         // an opaque failure — without leaking secrets into the user-visible run
-         // `error` column.
-         const safeDetail = redactConnectionSecrets(
-            errMessage(err),
-            sourceConnection,
-            destinationConnection,
-         );
-         recordStorageBuildFailure(destinationName);
-         logger.warn("Storage materialization build failed", {
-            sourceName: persistSource.name,
-            destinationName,
-            error: safeDetail,
-         });
-         throw new Error(
-            `Failed to materialize source '${persistSource.name}' into storage ` +
-               `destination '${destinationName}': ${safeDetail}`,
-         );
+
+      // Tier 3 ("stack on the parent"): a source that reads a storage-materialized
+      // upstream is built by reading the parent's STORED lake table instead of
+      // recomputing it from raw against the warehouse (Tier 2). This reuses the
+      // parent's work and is consistent-by-construction (the downstream is a pure
+      // function of the parent's stored rows). Attempted only when the source
+      // actually reads a storage upstream; on any ineligibility (a parent
+      // refinement not carried into the rebind, a live-warehouse join, a
+      // cross-catalog parent) it throws and we fall back: recompute-from-raw when
+      // non-strict, or a loud refusal under `strictUpstreams` (the orchestrated
+      // contract — never silently recompute).
+      if (dependsOnStorageUpstream) {
+         try {
+            result = await this.buildDownstreamViaParents(
+               persistSource,
+               destinationName,
+               destinationConnection,
+               builtEntries,
+               environment,
+               physicalTableName,
+            );
+            recordChainedStorageBuild("parent_reuse");
+         } catch (err) {
+            if (manifest.strict) {
+               recordChainedStorageBuild("strict_refused");
+               recordStorageBuildFailure(destinationName);
+               throw new Error(
+                  `Failed to materialize chained source '${persistSource.name}' ` +
+                     `into storage destination '${destinationName}' by reading ` +
+                     `its materialized upstream, and strict upstreams forbid ` +
+                     `recomputing it from raw: ${errMessage(err)}`,
+               );
+            }
+            recordChainedStorageBuild("inline_fallback");
+            logger.warn(
+               "Chained storage build could not reuse the parent table; " +
+                  "recomputing the upstream from raw (Tier 2 fallback)",
+               {
+                  sourceName: persistSource.name,
+                  destinationName,
+                  reason: errMessage(err),
+               },
+            );
+         }
+      }
+
+      // Tier 2 / single-source passthrough: materialize `buildSQL` (with storage
+      // upstreams inlined) in the source warehouse and CTAS the result into the
+      // destination. Skipped when Tier 3 already produced the table above.
+      if (!result) {
+         try {
+            result = await buildSourceIntoStorage({
+               destinationName,
+               destinationConnection,
+               sourceConnection,
+               buildSQL,
+               physicalTableName,
+               // Expose the logical name as a convenience view over the hashed
+               // physical table (best-effort; publisher always reads the physical
+               // name). Skipped when they coincide.
+               logicalViewName: selfAssignTableName(persistSource),
+               environmentPath: environment.getEnvironmentPath(),
+            });
+         } catch (err) {
+            // Redaction (design §5): a failed federation / passthrough / attach
+            // error can echo source- or catalog-connection detail (connstrings,
+            // account names, service-account JSON) from the DuckDB engine. Strip
+            // the actual credential VALUES but keep the message, so an operator
+            // sees a legible, actionable error (e.g. "schema 'analytics' not
+            // found" when a `name=schema.table` target's schema wasn't
+            // provisioned) rather than an opaque failure — without leaking
+            // secrets into the user-visible run `error` column.
+            const safeDetail = redactConnectionSecrets(
+               errMessage(err),
+               sourceConnection,
+               destinationConnection,
+            );
+            recordStorageBuildFailure(destinationName);
+            logger.warn("Storage materialization build failed", {
+               sourceName: persistSource.name,
+               destinationName,
+               error: safeDetail,
+            });
+            throw new Error(
+               `Failed to materialize source '${persistSource.name}' into ` +
+                  `storage destination '${destinationName}': ${safeDetail}`,
+            );
+         }
       }
 
       // Build-time servability gate: the serve-shape must compile in DuckDB
@@ -1201,9 +1281,8 @@ export class MaterializationService {
          schema: result.schema,
       });
 
-      // Make this table visible to downstream sources built later in this run
-      // (single-source spike; chained materialized sources across stores are a
-      // tracked follow-on).
+      // Make this table visible to downstream sources built later in this run,
+      // so a chained storage source can be built by reading it (Tier 3, above).
       manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
@@ -1229,6 +1308,90 @@ export class MaterializationService {
          realization: instruction.realization,
          rowCount: null,
       };
+   }
+
+   /**
+    * Tier 3 build: materialize a chained storage source by reading its
+    * already-materialized upstream(s) from the SAME destination store. Rebinds
+    * every same-destination materialized upstream to a virtual source (base-only,
+    * the captured schema), re-declares the downstream over them (its definition
+    * text lifted from the author's model), and hands the assembled transient
+    * model to {@link buildDownstreamIntoStorage}, which compiles it against the
+    * build session and CTASes the downstream's SQL — now reading the parents'
+    * lake tables — into the destination.
+    *
+    * Throws (⇒ the caller falls back to recompute-from-raw) when there is no
+    * same-destination upstream to build on, the definition text can't be lifted,
+    * or the transient model doesn't compile (a parent refinement not carried, a
+    * live-warehouse join, a cross-catalog parent).
+    */
+   private async buildDownstreamViaParents(
+      persistSource: PersistSource,
+      destinationName: string,
+      destinationConnection: ApiConnection,
+      builtEntries: Record<string, ManifestEntry>,
+      environment: BuildEnvironment,
+      physicalTableName: string,
+   ): Promise<StorageBuildResult> {
+      // Rebind every upstream materialized into THIS destination. A parent in a
+      // DIFFERENT destination is absent here, so the downstream def fails to
+      // compile against the rebind model and the caller falls back — cross-catalog
+      // parent reuse is out of scope for the spike.
+      const upstreams: ServeBinding[] = deriveServeBindings(
+         builtEntries,
+      ).filter((b) => b.connectionName === destinationName);
+      if (upstreams.length === 0) {
+         throw new Error(
+            "no materialized upstream is available in this destination to build on",
+         );
+      }
+      const downstreamDefText = this.liftDownstreamDefText(persistSource);
+      if (!downstreamDefText) {
+         throw new Error(
+            "could not recover the downstream source definition text from the model",
+         );
+      }
+      const transientModel = buildChainedStorageBuildModel({
+         upstreams,
+         downstreamName: persistSource.name,
+         downstreamDefText,
+         destinationName,
+      });
+      return buildDownstreamIntoStorage({
+         destinationName,
+         destinationConnection,
+         transientModel,
+         downstreamName: persistSource.name,
+         virtualMap: buildVirtualMap(upstreams),
+         physicalTableName,
+         logicalViewName: selfAssignTableName(persistSource),
+         environmentPath: environment.getEnvironmentPath(),
+      });
+   }
+
+   /**
+    * Lift the verbatim RHS of a persist source's `source: <name> is …`
+    * declaration from the author's model file (same technique as the serve
+    * transform's join/view lift): read the file named by the source's compiled
+    * `location`, slice the covered range. A top-level source's range starts just
+    * after the `source: ` keyword, so the result is `<name> is <def>` and the
+    * transient-model assembler prepends `source: `. Returns undefined (⇒ fall
+    * back) when there is no file-backed location or the file can't be read/sliced.
+    */
+   private liftDownstreamDefText(
+      persistSource: PersistSource,
+   ): string | undefined {
+      const location = (
+         persistSource._explore as unknown as { location?: SourceLocation }
+      ).location;
+      if (!location?.url?.startsWith("file:")) return undefined;
+      let text: string;
+      try {
+         text = readFileSync(fileURLToPath(location.url), "utf8");
+      } catch {
+         return undefined;
+      }
+      return sliceSourceRange(text, location.range);
    }
 
    // ==================== CANCELLATION ====================

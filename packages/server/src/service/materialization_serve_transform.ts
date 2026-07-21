@@ -365,6 +365,47 @@ export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
 }
 
 /**
+ * Assemble the transient BUILD model for a chained `storage=` source — the
+ * "stack on the parent" (Tier 3) build. Every materialized upstream is rebound
+ * to a virtual source on its storage connection (via the SAME serve-shape rebind
+ * as the serve path), so the downstream computes over the parents' STORED lake
+ * tables in DuckDB; the downstream source is then re-declared over them and
+ * annotated `#@ persist` so it surfaces as a persist source when the caller
+ * compiles this model and reads `PersistSource.getSQL({ virtualMap })` (the exact
+ * mirror of the warehouse build's `getSQL`, only over rebound parents).
+ *
+ * `downstreamDefText` is the RHS of the author's `source: <name> is …` statement,
+ * lifted verbatim by location (a top-level source's `location.range` starts just
+ * after the `source: ` keyword), so this prepends `source: `. The `#@ persist
+ * storage=<dest>` annotation only makes the source appear in the transient build
+ * plan — the value is not otherwise consumed (the build session already knows the
+ * destination), but naming the real destination keeps the model self-consistent.
+ *
+ * Upstream rebinds here are base-only (the captured schema, no re-emitted
+ * dimensions/joins/views): the dominant chained case is a rollup over the
+ * parent's stored OUTPUT columns. A downstream that references a parent
+ * refinement not carried here fails to compile against this model, and the
+ * caller falls back to recompute-from-raw (Tier 2) — re-emitting parent
+ * refinements to widen coverage is a follow-on.
+ */
+export function buildChainedStorageBuildModel(params: {
+   upstreams: ServeBinding[];
+   downstreamName: string;
+   downstreamDefText: string;
+   destinationName: string;
+}): string {
+   const upstreamFragments = orderBindingsByJoinDeps(params.upstreams)
+      .map(serveShapeFragment)
+      .join("\n");
+   return (
+      `##! experimental { persistence virtual_source }\n` +
+      `${upstreamFragments}\n` +
+      `#@ persist storage=${params.destinationName}\n` +
+      `source: ${params.downstreamDefText}\n`
+   );
+}
+
+/**
  * Order bindings so a joined source is declared before the source that joins it:
  * Malloy resolves `source:` statements top-to-bottom, so a join to a source not
  * yet declared is an "undefined object" error. Only intra-set join dependencies

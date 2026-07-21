@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BadRequestError } from "../errors";
 import type { components } from "../api";
 import {
    assertStorageServeShapeCompiles,
+   buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
    dropStorageTableSql,
@@ -10,6 +15,11 @@ import {
    passthroughSourceType,
    wrapPassthrough,
 } from "./materialization_build_session";
+import {
+   buildChainedStorageBuildModel,
+   buildVirtualMap,
+   type ServeBinding,
+} from "./materialization_serve_transform";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -157,5 +167,111 @@ describe("buildSourceIntoStorage gating (no session I/O before the gates)", () =
             environmentPath: "/tmp/env",
          }),
       ).rejects.toThrow(/query-passthrough build supports/i);
+   });
+});
+
+describe("buildDownstreamIntoStorage (Tier 3 stack-on-parent, real DuckDB)", () => {
+   const parent: ServeBinding = {
+      sourceName: "daily_orders",
+      connectionName: "lake",
+      virtualHandle: "daily_h",
+      tablePath: "lake.daily_orders__mabc",
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "total", type: "DOUBLE" },
+      ],
+   };
+   const downstreamDefText =
+      "monthly_orders is daily_orders -> {\n" +
+      "  group_by: order_month is order_date.month\n" +
+      "  aggregate: monthly_total is total.sum()\n}";
+
+   /** Seed a plain-DuckDB "lake" file with the parent's content-addressed table. */
+   async function seedLake(dir: string): Promise<void> {
+      const seed = new DuckDBConnection("lake", join(dir, "lake.duckdb"));
+      try {
+         await seed.runSQL(
+            'CREATE TABLE "daily_orders__mabc" AS ' +
+               "SELECT CAST('2026-01-01' AS DATE) AS order_date, 150.0 AS total " +
+               "UNION ALL SELECT CAST('2026-01-02' AS DATE), 225.0 " +
+               "UNION ALL SELECT CAST('2026-02-01' AS DATE), 99.0",
+         );
+      } finally {
+         await seed.close();
+      }
+   }
+
+   it("compiles the rebind model, runs the downstream over the parent, and captures the rolled-up schema", async () => {
+      // Drives the full build-session path against a real plain-DuckDB file
+      // destination: attach read-write → compile the transient rebind model →
+      // getSQL over the rebound parent → CTAS into the lake → DESCRIBE. A clean
+      // return proves the downstream's SQL compiled AND executed against the
+      // attached parent table, and the captured schema is exactly the roll-up's
+      // output columns (the parent's raw columns are gone — it aggregated them).
+      // Row VALUES are pinned in-memory in the serve-transform spec (a file
+      // reopened by a second DuckDB instance is not reliably visible under load;
+      // production serves via a transactional catalog, not a file reopen).
+      const dir = mkdtempSync(join(tmpdir(), "t3-build-"));
+      try {
+         await seedLake(dir);
+         const result = await buildDownstreamIntoStorage({
+            destinationName: "lake",
+            destinationConnection: {
+               name: "lake",
+               type: "duckdb",
+            } as ApiConnection,
+            transientModel: buildChainedStorageBuildModel({
+               upstreams: [parent],
+               downstreamName: "monthly_orders",
+               downstreamDefText,
+               destinationName: "lake",
+            }),
+            downstreamName: "monthly_orders",
+            virtualMap: buildVirtualMap([parent]),
+            physicalTableName: "monthly_orders__mdef456",
+            logicalViewName: "monthly_orders",
+            environmentPath: dir,
+         });
+
+         expect(result.storageConnectionName).toBe("lake");
+         expect(result.schema.map((c) => c.name).sort()).toEqual([
+            "monthly_total",
+            "order_month",
+         ]);
+      } finally {
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("throws (⇒ caller falls back) when the downstream references a source the rebind model does not provide", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "t3-miss-"));
+      try {
+         await seedLake(dir);
+         await expect(
+            buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               // The downstream reads `weekly_orders`, which is NOT rebound here —
+               // the transient model can't compile, mirroring the mixed-engine /
+               // uncarried-parent case that must fall back to recompute-from-raw.
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText:
+                     "monthly_orders is weekly_orders -> { group_by: x is 1 }",
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            }),
+         ).rejects.toThrow();
+      } finally {
+         rmSync(dir, { recursive: true, force: true });
+      }
    });
 });
