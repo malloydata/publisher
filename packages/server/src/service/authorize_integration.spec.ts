@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS customers (
    region VARCHAR
 );
 INSERT INTO customers VALUES (1, 'a', 'us-west'), (2, 'b', 'us-east');
+
+CREATE TABLE IF NOT EXISTS nested_cols (
+   id INTEGER,
+   rec STRUCT(a INTEGER),
+   arr INTEGER[],
+   arr_rec STRUCT(b INTEGER)[]
+);
+INSERT INTO nested_cols VALUES (1, {'a': 1}, [1, 2, 3], [{'b': 2}]);
 `;
 
 function getConnections(): Map<string, Connection> {
@@ -1917,6 +1925,117 @@ source: outer_qs is qs_over_combo -> { group_by: locked_region }
             "run: outer_qs -> { group_by: locked_region }",
             {},
          ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+});
+
+// MUST-FIX 1 (review regression): Malloy's RecordDef/RepeatedRecordDef/
+// BasicArrayDef (STRUCT/ARRAY/JSON-shaped nested columns) extend JoinBase,
+// so `isJoined()` is true for them even though they are ordinary columns,
+// not joins to another authorize-gated source. `isSourceDef()` correctly
+// excludes them ('record'/'array' aren't source kinds), which used to trip
+// the "isJoined but not isSourceDef" drift invariant and deny a query
+// against any table with a nested column — even with zero authorize
+// annotations anywhere in the model.
+describe("authorize tolerates record/array-typed columns (MUST-FIX 1)", () => {
+   it("allows a query against a table with STRUCT/ARRAY/nested-STRUCT-ARRAY columns and no gates", async () => {
+      await writeModel(
+         "rt_nested.malloy",
+         `source: nested_src is duckdb.table('nested_cols') extend {
+  measure: c is count()
+}
+`,
+      );
+      const { result } = await runGated(
+         "rt_nested.malloy",
+         "run: nested_src -> { aggregate: c }",
+         {},
+      );
+      expect(result.data).toBeDefined();
+   });
+});
+
+// MUST-FIX 2 (review regression): evaluateSelfContainedFirst treated
+// `decls.length === 0` as "unsatisfiable, deny" unconditionally — but that
+// conflates "the expression references givens the caller can't supply"
+// (correct deny) with "the expression references NO givens at all" (e.g. a
+// constant/public gate like `#(authorize) "true"` — there's nothing ambient
+// to isolate from, so there's nothing wrong with running it with no decls).
+describe("authorize allows a givens-free joined gate (MUST-FIX 2)", () => {
+   it('allows a same-file `#(authorize) "true"` source joined by an ungated top', async () => {
+      await writeModel(
+         "rt_pub.malloy",
+         `#(authorize) "true"
+source: pub_gated is duckdb.table('customers') extend { measure: c is count() }
+
+source: pub_joiner is duckdb.table('customers') extend {
+  join_one: pub_gated on id = pub_gated.id
+  measure: c is count()
+}
+`,
+      );
+      const { result } = await runGated(
+         "rt_pub.malloy",
+         "run: pub_joiner -> { aggregate: c }",
+         {},
+      );
+      expect(result.data).toBeDefined();
+   });
+});
+
+// MUST-FIX 3 (review regression): when a joined gate references TWO givens
+// and the caller supplies only ONE of them, the self-contained probe throws
+// (the other given is unbound) and the old code fell back to the AMBIENT
+// probe — which compiles against the ENTRY model's own given namespace. If
+// the entry model happens to declare its OWN given of the SAME NAME as the
+// unsupplied one (a two-hop-away collision, same setup as the existing
+// BLOCKING-4 $LEVEL-collision test), the entry's default silently decided
+// the outcome — reopening exactly the name-collision hole the
+// self-contained-first fix exists to close. Fix: only fall back to ambient
+// when EVERY referenced given was covered by the self-contained decls.
+describe("authorize multi-given joined gate stays fail-closed on partial given supply (MUST-FIX 3)", () => {
+   it("denies when only one of two referenced givens is supplied and the entry model has a colliding default for the other", async () => {
+      await writeModel(
+         "mg_base.malloy",
+         `##! experimental.givens
+
+given:
+  LEVEL :: number
+  REGION :: string
+
+#(authorize) "$LEVEL > 3 and $REGION = 'us-west'"
+source: mg_base_gated is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      await writeModel(
+         "mg_mid.malloy",
+         `import "mg_base.malloy"
+
+source: mg_mid is duckdb.table('customers') extend {
+  join_one: mg_base_gated on id = mg_base_gated.id
+  measure: c is count()
+}
+`,
+      );
+      await writeModel(
+         "mg_entry.malloy",
+         `import "mg_mid.malloy"
+
+##! experimental.givens
+
+given:
+  LEVEL :: number is 99
+
+source: mg_top is duckdb.table('customers') extend {
+  join_one: mg_mid on id = mg_mid.id
+  measure: c is count()
+}
+`,
+      );
+      await expect(
+         runGated("mg_entry.malloy", "run: mg_top -> { aggregate: c }", {
+            REGION: "us-west",
+         }),
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });

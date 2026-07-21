@@ -230,13 +230,22 @@ async function runProbe(
  *    happens to declare its OWN given of the SAME NAME the joined gate
  *    references, an ambient-first probe would compile successfully against
  *    the ENTRY model's default/value instead of failing closed — silently
- *    granting access based on an unrelated given. Trying self-contained
- *    first means "no suppliable value for this name" (`decls.length === 0`)
- *    denies immediately, with NO ambient fallback — that fallback is exactly
- *    the hole this order closes. Ambient is tried as a last resort only if
- *    the self-contained probe itself throws for some OTHER reason after
- *    successfully binding at least one value (so the caller did supply
- *    something; this isn't the "no value supplied" case).
+ *    granting access based on an unrelated given. An expression referencing
+ *    NO givens at all (a constant/public gate, e.g. `#(authorize) "true"`)
+ *    has nothing ambient to isolate from, so it's evaluated with a no-decls
+ *    self-contained probe and returned directly — no fallback needed.
+ *    Otherwise, the probe is attempted ONLY when EVERY referenced given got
+ *    a decl — a probe that declares just SOME of them is not actually
+ *    isolated: `executor.loadQuery` still compiles it against the ENTRY
+ *    model's own materializer, so an undeclared referenced name resolves via
+ *    the entry model's own ambient value/default for that name INSTEAD OF
+ *    THROWING — reopening the collision hole for a partially supplied
+ *    multi-given gate without ever reaching a catch block. So "not every
+ *    referenced name could be bound" denies immediately, with NO probe
+ *    attempted and NO ambient fallback. Once every referenced name IS
+ *    declared, ambient is tried as a last resort only if that fully-declared
+ *    probe itself throws for some OTHER reason — safe at that point since no
+ *    referenced name is left for an entry default to decide.
  *
  * Either order still lets a gate on a source reached through a multi-hop
  * transitive import evaluate correctly — Malloy does not flatten a `given:`
@@ -296,10 +305,13 @@ export async function evaluateAuthorize(
 
 /**
  * One expression's self-contained-first evaluation (see
- * {@link evaluateAuthorize}'s `selfContainedFirst` mode). No ambient fallback
- * when nothing could be bound — that's the isolation this mode exists to
- * provide. Ambient is tried as a last resort only when the self-contained
- * probe itself throws after having bound at least one value.
+ * {@link evaluateAuthorize}'s `selfContainedFirst` mode). A probe is only
+ * ever attempted once every given the expression references has been
+ * declared — a partially-declared probe still compiles against the ENTRY
+ * model's own materializer, so an undeclared name silently resolves via the
+ * entry's own ambient value/default instead of throwing, which is not
+ * isolation at all. Ambient is tried as a last resort only when the
+ * fully-declared self-contained probe itself throws for some other reason.
  */
 async function evaluateSelfContainedFirst(
    executor: AuthorizeProbeExecutor,
@@ -307,13 +319,30 @@ async function evaluateSelfContainedFirst(
    givens: Record<string, GivenValue>,
    declaredTypes?: Map<string, string>,
 ): Promise<boolean> {
+   const referenced = referencedGivenNames(expr);
+   if (referenced.length === 0) {
+      // The expression references NO givens at all — a constant/public gate
+      // (e.g. `#(authorize) "true"`). There's nothing ambient to isolate
+      // from, so run the no-decls probe (still fully self-contained: it
+      // declares no givens and is handed none) and use its result directly.
+      // This is NOT the "unsatisfiable" case below — that's specifically
+      // about a referenced given the caller can't supply.
+      try {
+         return await runProbe(executor, buildAuthorizeProbe([expr]), {});
+      } catch {
+         return false;
+      }
+   }
    const { decls, bound } = bindProbeGivens(expr, givens, declaredTypes);
-   if (decls.length === 0) {
-      // Nothing suppliable to bind for an isolated probe — deny this branch.
-      // Do NOT fall back to ambient: that would let a joined source's
-      // isolated gate be evaluated against the entry model's own ambient
-      // given namespace/default, exactly the name-collision hole this mode
-      // closes.
+   if (decls.length !== referenced.length) {
+      // Not every referenced given could be bound — deny. A probe that
+      // declares only SOME of the referenced names is not actually isolated:
+      // `executor.loadQuery` compiles it against the ENTRY model's own
+      // materializer, so an undeclared referenced given resolves via the
+      // ENTRY model's own ambient value/default for that name instead of
+      // throwing — reopening the name-collision hole for a partially
+      // supplied multi-given gate. Only attempt a probe once every
+      // referenced name can be declared (and thus shadowed) ourselves.
       return false;
    }
    try {
@@ -323,13 +352,14 @@ async function evaluateSelfContainedFirst(
          bound,
       );
    } catch {
-      // Fall through — the caller DID supply something, so this isn't the
-      // "no value supplied" hole; try ambient as a last resort.
-   }
-   try {
-      return await runProbe(executor, buildAuthorizeProbe([expr]), givens);
-   } catch {
-      return false;
+      // Every referenced given was supplied and declared, so a throw here
+      // isn't the collision case — there's no unsupplied name left for an
+      // entry default to decide. Ambient is a safe last resort.
+      try {
+         return await runProbe(executor, buildAuthorizeProbe([expr]), givens);
+      } catch {
+         return false;
+      }
    }
 }
 

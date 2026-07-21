@@ -4,7 +4,9 @@ import {
    Connection,
    FixedConnectionMap,
    GivenValue,
+   isBasicArray,
    isJoined,
+   isRepeatedRecord,
    isSourceDef,
    MalloyConfig,
    MalloyError,
@@ -97,6 +99,28 @@ const MALLOY_VERSION = (
 
 export type ModelType = "model" | "notebook";
 type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
+
+/** One reachable authorize gate found by {@link Model.collectAllReachableGates}. */
+type GateEntry = { label: string; exprs: string[]; selfContained: boolean };
+
+/**
+ * True for a struct field that Malloy's own `isJoined()` recognizes as a join
+ * (`'join' in sd`) purely because it's a nested-column kind — `RecordDef`,
+ * `RepeatedRecordDef`, and `BasicArrayDef` all extend `JoinBase` — rather than
+ * an actual join to another source. `isSourceDef()` already excludes
+ * `'record'`/`'array'`, but that alone doesn't distinguish "ordinary
+ * STRUCT/ARRAY/JSON column" from genuine join/source-shape drift; this checks
+ * the field kinds explicitly so the two can't be conflated. These field kinds
+ * can never carry `#(authorize)`, so a walk must skip them, not treat them as
+ * an unresolvable join.
+ */
+function isRecordOrArrayField(field: FieldDef): boolean {
+   return (
+      (field as { type?: string }).type === "record" ||
+      isBasicArray(field) ||
+      isRepeatedRecord(field)
+   );
+}
 
 interface RunnableNotebookCell {
    type: "code" | "markdown";
@@ -542,14 +566,19 @@ export class Model {
          // }` refinement live on the pipeline segment's `extendSource`, not on
          // the run target's `struct.fields` — the walk above never sees them
          // from `struct` alone. Walk each the same way as everything else.
+         const runTargetLabel = ownSourceName ?? "(run target)";
          for (const field of extendSources) {
-            if (!isJoined(field) || !isSourceDef(field)) continue;
+            const { resolved, denyGate } = this.classifyJoinedField(
+               field,
+               runTargetLabel,
+            );
+            if (denyGate) {
+               joinedGates.push(denyGate);
+               continue;
+            }
+            if (!resolved) continue;
             joinedGates.push(
-               ...this.collectAllReachableGates(
-                  field as SourceDef,
-                  modelDef,
-                  seen,
-               ),
+               ...this.collectAllReachableGates(resolved, modelDef, seen),
             );
          }
       }
@@ -709,6 +738,53 @@ export class Model {
    }
 
    /**
+    * Classify one struct field found while walking a join site — shared by
+    * every call site in this file that iterates a `FieldDef[]` looking for
+    * joins (`collectAllReachableGates`'s own `struct.fields` walk, the
+    * `extendSources` walk, and the query-source inner-join walk), so the
+    * record/array-skip + drift-deny logic below lives in exactly one place.
+    *
+    * Returns:
+    *  - `{ resolved }` — `field` is a genuine joined `SourceDef`; caller
+    *    recurses into it via {@link collectAllReachableGates};
+    *  - `{}` (both empty) — `field` isn't a join at all, or is a
+    *    record/array-typed nested column ({@link isRecordOrArrayField}) that
+    *    merely LOOKS like a join to `isJoined()`; skip it, there's no gate to
+    *    find;
+    *  - `{ denyGate }` — `field` is joined but resolved to neither of the
+    *    above: real join/source-shape drift. Log loudly and return a
+    *    synthetic always-false gate entry rather than silently `continue`-ing
+    *    past it (fail OPEN), which is exactly the join-bypass this walk
+    *    exists to close.
+    */
+   private classifyJoinedField(
+      field: FieldDef,
+      parentLabel: string,
+   ): { resolved?: SourceDef; denyGate?: GateEntry } {
+      if (!isJoined(field)) return {};
+      if (isRecordOrArrayField(field)) return {};
+      if (!isSourceDef(field)) {
+         logger.error(
+            "authorize: joined field failed to resolve to a walkable SourceDef; denying rather than silently skipping its gate (possible Malloy struct-shape drift)",
+            {
+               modelPath: this.modelPath,
+               parentSource: parentLabel,
+               fieldName: (field as { name?: string }).name,
+               fieldType: (field as { type?: string }).type,
+            },
+         );
+         return {
+            denyGate: {
+               label: `${parentLabel} (unresolvable joined source)`,
+               exprs: ["false"],
+               selfContained: false,
+            },
+         };
+      }
+      return { resolved: field as SourceDef };
+   }
+
+   /**
     * Canonical entry point for "every gate reachable from `struct`" — the
     * single walk every call site in this file uses, replacing what used to
     * be a hand-composed sequence of narrower collectors per call site (the
@@ -779,15 +855,11 @@ export class Model {
       modelDef: ModelDef | undefined,
       seen: Set<SourceDef> = new Set(),
       treatAsOwnGate = false,
-   ): { label: string; exprs: string[]; selfContained: boolean }[] {
+   ): GateEntry[] {
       if (!struct || !modelDef || seen.has(struct)) return [];
       seen.add(struct);
 
-      const results: {
-         label: string;
-         exprs: string[];
-         selfContained: boolean;
-      }[] = [];
+      const results: GateEntry[] = [];
       const label = (struct as { as?: string }).as ?? struct.name;
       const ownExprs = this.gateExprsForOwnAnnotations(struct);
       if (ownExprs.length > 0) {
@@ -799,34 +871,13 @@ export class Model {
       }
 
       for (const field of struct.fields as FieldDef[]) {
-         if (!isJoined(field)) continue;
-         if (!isSourceDef(field)) {
-            // `field` IS a join (Malloy's own `isJoined` — `'join' in sd` —
-            // says so) but doesn't have a `SourceDef` shape we can recurse
-            // into. That combination should be impossible for a real join
-            // field; seeing it means something about Malloy's join/source
-            // representation has drifted out from under this duck-typed
-            // walk. Silently `continue`-ing here (the old behavior) would
-            // fail OPEN: the joined source's gate would never be found or
-            // evaluated. Deny loudly instead — this is exactly the
-            // join-bypass this walk exists to close.
-            logger.error(
-               "authorize: joined field failed to resolve to a walkable SourceDef; denying rather than silently skipping its gate (possible Malloy struct-shape drift)",
-               {
-                  modelPath: this.modelPath,
-                  parentSource: label,
-                  fieldName: (field as { name?: string }).name,
-                  fieldType: (field as { type?: string }).type,
-               },
-            );
-            results.push({
-               label: `${label} (unresolvable joined source)`,
-               exprs: ["false"],
-               selfContained: false,
-            });
+         const { resolved, denyGate } = this.classifyJoinedField(field, label);
+         if (denyGate) {
+            results.push(denyGate);
             continue;
          }
-         const joinedSource = field as SourceDef;
+         if (!resolved) continue;
+         const joinedSource = resolved;
          results.push(
             ...this.collectAllReachableGates(joinedSource, modelDef, seen),
          );
@@ -891,10 +942,16 @@ export class Model {
             (segment) => segment.extendSource ?? [],
          );
          for (const field of innerJoins) {
-            if (!isJoined(field) || !isSourceDef(field)) continue;
+            const { resolved: innerJoinSource, denyGate: innerJoinDenyGate } =
+               this.classifyJoinedField(field, label);
+            if (innerJoinDenyGate) {
+               results.push(innerJoinDenyGate);
+               continue;
+            }
+            if (!innerJoinSource) continue;
             results.push(
                ...this.collectAllReachableGates(
-                  field as SourceDef,
+                  innerJoinSource,
                   modelDef,
                   seen,
                ),
