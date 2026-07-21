@@ -15,9 +15,11 @@ import { MaterializationEligibilityError } from "../errors";
 import {
    assertServesInDuckDB,
    buildServeShapeModel,
+   buildServeShapeModelForBindings,
    buildVirtualMap,
    deriveServeBindings,
    duckdbTypeToMalloy,
+   extractRefinements,
    type ServeBinding,
 } from "./materialization_serve_transform";
 
@@ -198,7 +200,7 @@ describe("deriveServeBindings", () => {
          se_storage: {
             sourceEntityId: "se_storage",
             sourceName: "mz",
-            physicalTableName: "lake.mz_g003",
+            physicalTableName: "mz_g003",
             connectionName: "wh",
             storageConnectionName: "lake",
             schema: [{ name: "amount", type: "BIGINT" }],
@@ -238,5 +240,81 @@ describe("deriveServeBindings", () => {
             freshAsOf: "2026-07-20T00:00:00Z",
          },
       ]);
+      // The table path is qualified with the destination catalog (attach alias)
+      // so the serve reads <store>.<table>, not an unqualified name.
+      expect(bindings[0].tablePath).toBe("lake.mz_g003");
+   });
+});
+
+describe("extractRefinements", () => {
+   it("maps derived fields to dimensions/measures and skips raw columns + joins", () => {
+      const fields = [
+         { name: "order_date", type: "date", expressionType: "scalar" }, // raw col (no code)
+         { name: "total_amount", type: "number", expressionType: "scalar" }, // raw col
+         {
+            name: "avg_order_value",
+            type: "number",
+            expressionType: "scalar",
+            code: "total_amount / order_count",
+         },
+         {
+            name: "grand_total",
+            type: "number",
+            expressionType: "aggregate",
+            code: "total_amount.sum()",
+         },
+         // analytic / window -> skipped (falls back)
+         {
+            name: "running",
+            type: "number",
+            expressionType: "analytic",
+            code: "sum(total_amount)",
+         },
+         // join -> no code -> skipped
+         { name: "region_dim", type: "join", join: "one" },
+      ];
+      expect(extractRefinements(fields)).toEqual([
+         {
+            kind: "dimension",
+            name: "avg_order_value",
+            code: "total_amount / order_count",
+         },
+         { kind: "measure", name: "grand_total", code: "total_amount.sum()" },
+      ]);
+   });
+
+   it("returns [] for undefined/empty fields", () => {
+      expect(extractRefinements(undefined)).toEqual([]);
+      expect(extractRefinements([])).toEqual([]);
+   });
+});
+
+describe("buildServeShapeModelForBindings with refinements", () => {
+   it("re-declares dimensions/measures as an extend on the virtual base", () => {
+      const { modelText } = buildServeShapeModelForBindings([
+         {
+            sourceName: "daily",
+            connectionName: "lake",
+            virtualHandle: "h",
+            tablePath: "lake.daily",
+            schema: [
+               { name: "total_amount", type: "BIGINT" },
+               { name: "order_count", type: "BIGINT" },
+            ],
+            refinements: [
+               {
+                  kind: "dimension",
+                  name: "avg_order_value",
+                  code: "total_amount / order_count",
+               },
+            ],
+         },
+      ]);
+      expect(modelText).toContain(
+         "source: daily is lake.virtual('h')::daily__shape extend {",
+      );
+      expect(modelText).toContain(
+         "dimension: avg_order_value is total_amount / order_count",
+      );
    });
 });

@@ -53,6 +53,7 @@ import { logger } from "../logger";
 import {
    buildServeShapeModelForBindings,
    buildVirtualMap,
+   extractRefinements,
    type ServeBinding,
 } from "./materialization_serve_transform";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -1787,7 +1788,7 @@ export class Model {
          .join("|");
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
          const { modelText } = buildServeShapeModelForBindings(
-            this.serveBindings,
+            this.serveBindingsWithRefinements(),
          );
          const root = "file:///storage-serve-shape/";
          const url = `${root}shape.malloy`;
@@ -1810,6 +1811,25 @@ export class Model {
       // serve shape is pure virtual sources, so no buildManifest is needed.
       await runnable.getSQL({ virtualMap });
       return { runnable, virtualMap };
+   }
+
+   /**
+    * The serve bindings enriched with each source's dimensions/measures, read
+    * from this model's compiled definition, so the serve shape re-declares them
+    * on the virtual base (computed from the stored columns) instead of falling
+    * back to live. Joins/views are not carried (see {@link extractRefinements}).
+    */
+   private serveBindingsWithRefinements(): ServeBinding[] {
+      const contents = (
+         this.modelDef as { contents?: Record<string, unknown> } | undefined
+      )?.contents;
+      return this.serveBindings.map((b) => {
+         const source = contents?.[b.sourceName] as
+            | { fields?: unknown[] }
+            | undefined;
+         const refinements = extractRefinements(source?.fields);
+         return refinements.length > 0 ? { ...b, refinements } : b;
+      });
    }
 
    public async getQueryResults(
@@ -1963,6 +1983,10 @@ export class Model {
                const shaped = await this.loadServeShapeQuery(queryString);
                runnable = shaped.runnable;
                serveVirtualMap = shaped.virtualMap;
+               logger.info("Serving query from storage tier (virtual-source)", {
+                  modelPath: this.modelPath,
+                  storageSources: this.serveBindings.map((b) => b.sourceName),
+               });
             } catch (shapeErr) {
                logger.debug(
                   "storage serve-shape ineligible for this query; serving live",
@@ -2050,6 +2074,14 @@ export class Model {
       // (for the row limit) and the run so a stale persist source falls back per
       // its declared policy — and prep/run agree on the same substitution.
       const buildManifest = this.resolveFreshBuildManifest();
+      // The serve-shape runnable resolves its tables through `virtualMap`, not
+      // the same-connection build manifest, and its transient model carries no
+      // `##! experimental.persistence` — so passing a non-empty buildManifest to
+      // it errors. When routing through the shape, suppress the manifest; the
+      // original (live) runnable still gets it.
+      const effectiveBuildManifest = serveVirtualMap
+         ? undefined
+         : buildManifest;
 
       // Prepare INSIDE the run try/catch: a bad-given / value-type throw at
       // prepare time (getPreparedResult binds the givens) gets the same
@@ -2069,7 +2101,7 @@ export class Model {
             (
                await runnable.getPreparedResult({
                   givens: querySurfaceGivens,
-                  buildManifest,
+                  buildManifest: effectiveBuildManifest,
                   virtualMap: serveVirtualMap,
                })
             ).resultExplore.limit,
@@ -2081,7 +2113,7 @@ export class Model {
             rowLimit,
             givens: querySurfaceGivens,
             abortSignal,
-            buildManifest,
+            buildManifest: effectiveBuildManifest,
             virtualMap: serveVirtualMap,
          });
       } catch (error) {
