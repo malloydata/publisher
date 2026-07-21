@@ -51,6 +51,32 @@ server binds every interface (the default); a configured `--host` shows as itsel
 fails, a `PUBLISHER_INIT_FAILED` line is printed in its place; a startup failure outside
 initialization, like a port already in use, crashes without either token.
 
+## Start from your own data
+
+The command above serves the bundled examples. To serve a CSV or Parquet file of your own, scaffold a
+package around it:
+
+```bash
+npm create malloy-package sales
+```
+
+That writes the package (a manifest, a starter model over your data, and the data itself), registers
+it so the server actually serves it, and sets up the workspace around it: start and reset scripts, an
+MCP config, agent instructions, and the Malloy agent skills as files your agent can read.
+
+To build the starter model over a file of your own, pass it in. The two entry points differ in one
+way that matters, so both forms are shown:
+
+```bash
+npm create malloy-package sales -- --data ./orders.csv   # npm create needs the --
+npx create-malloy-package sales --data ./orders.csv      # npx does not, and rejects it
+```
+
+`npm create` reads anything before the `--` as one of its own options, so the separator is required
+there. `npx` passes flags through untouched, and a `--` would reach the tool as an extra argument.
+
+The package it creates is an ordinary directory you can commit, move, or hand to someone else.
+
 ## Point your agent at it
 
 This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the
