@@ -20,6 +20,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
+import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import { recordManifestBind } from "../materialization_metrics";
@@ -831,6 +832,10 @@ export class Environment {
     */
    private async rebindStorageServeBindings(pkg: Package): Promise<void> {
       if (!this.storageBindingResolver) return;
+      // Ships dark: when the storage tier is off, serve bindings are never
+      // consumed (serve routing requires mode `on`), so skip the per-load
+      // materialization lookup entirely — an off deployment does no extra work.
+      if (getPersistStorageMode() === "off") return;
       const packageName = pkg.getPackageName();
       try {
          const entries = await this.storageBindingResolver(packageName);
