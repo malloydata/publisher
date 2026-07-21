@@ -17,6 +17,18 @@ import { quoteTablePath } from "./quoting";
  * is the AUTHORITATIVE DuckDB column schema captured post-build (raw DuckDB type
  * strings), which the transform declares verbatim — see {@link buildServeShapeModel}.
  */
+/**
+ * A source refinement (a dimension or measure defined on the materialized
+ * source in the author's model) to re-declare on the serve shape's virtual
+ * base, so it is computed at serve time from the stored columns rather than
+ * forcing a live fallback. `code` is the original Malloy expression text.
+ */
+export interface SourceRefinement {
+   kind: "dimension" | "measure";
+   name: string;
+   code: string;
+}
+
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
    sourceName: string;
@@ -28,6 +40,14 @@ export interface ServeBinding {
    tablePath: string;
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
+   /**
+    * Dimensions/measures defined on the source in the author's model, re-emitted
+    * as an `extend {}` on the virtual base so queries using them serve from the
+    * materialized table (computed over the stored columns) instead of falling
+    * back to live. Joins and views are NOT carried — a query using them still
+    * falls back. Attached at serve time from the compiled model, not the build.
+    */
+   refinements?: SourceRefinement[];
    /** Optional freshness anchor (data-as-of instant); carried through verbatim. */
    freshAsOf?: string;
 }
@@ -69,7 +89,11 @@ export function deriveServeBindings(
          sourceName: entry.sourceName,
          connectionName: entry.storageConnectionName,
          virtualHandle: entry.sourceEntityId,
-         tablePath: entry.physicalTableName,
+         // Qualify the table with the destination catalog (the attach alias) so
+         // the serve reads `<store>.<table>` — the build wrote it there, and an
+         // unqualified name would resolve against the serve session's default
+         // catalog, not the attached store.
+         tablePath: `${entry.storageConnectionName}.${entry.physicalTableName}`,
          schema,
          freshAsOf: entry.dataAsOf,
       });
@@ -216,10 +240,22 @@ function serveShapeFragment(binding: ServeBinding): string {
    const fields = binding.schema
       .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
       .join(",\n");
-   return (
-      `type: ${shapeTypeName} is {\n${fields}\n}\n` +
-      `source: ${binding.sourceName} is ${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`
-   );
+   let source =
+      `source: ${binding.sourceName} is ` +
+      `${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+   // Re-declare the source's dimensions/measures on the virtual base so queries
+   // that use them are computed from the stored columns at serve time (the
+   // wrapper), rather than falling back to live. The expressions reference the
+   // shape's columns (or earlier refinements); anything they reference that the
+   // shape lacks makes the serve shape fail to compile, which safely falls back.
+   const refinements = binding.refinements ?? [];
+   if (refinements.length > 0) {
+      const body = refinements
+         .map((r) => `   ${r.kind}: ${r.name} is ${r.code}`)
+         .join("\n");
+      source += ` extend {\n${body}\n}`;
+   }
+   return `type: ${shapeTypeName} is {\n${fields}\n}\n${source}`;
 }
 
 /**
@@ -245,6 +281,41 @@ export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
    return {
       modelText: `##! experimental.virtual_source\n${fragments}\n`,
    };
+}
+
+/**
+ * Extract a materialized source's re-emittable refinements — the dimensions and
+ * measures defined on it in the author's model — from its compiled field list,
+ * so they can be re-declared on the serve shape's virtual base.
+ *
+ * A derived field carries its original expression as `code` and an
+ * `expressionType`; the source's raw output columns have neither (they are the
+ * stored columns, already in the shape's `::` type). Scalar → dimension,
+ * aggregate → measure. Joins, views (turtles), and analytic/calculation fields
+ * are deliberately skipped — re-emitting them is out of scope, and a query that
+ * uses one simply falls back to live (safe).
+ */
+export function extractRefinements(
+   fields: readonly unknown[] | undefined,
+): SourceRefinement[] {
+   const out: SourceRefinement[] = [];
+   for (const field of fields ?? []) {
+      const f = field as {
+         name?: string;
+         code?: unknown;
+         expressionType?: unknown;
+      };
+      if (typeof f.name !== "string") continue;
+      if (typeof f.code !== "string" || f.code.length === 0) continue; // raw column
+      if (f.expressionType === "scalar") {
+         out.push({ kind: "dimension", name: f.name, code: f.code });
+      } else if (f.expressionType === "aggregate") {
+         out.push({ kind: "measure", name: f.name, code: f.code });
+      }
+      // analytic / calculation / ungrouped-aggregate and non-atomic fields
+      // (joins, turtles have no `code`) are skipped → those queries fall back.
+   }
+   return out;
 }
 
 /**
