@@ -13,7 +13,10 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
-import { assertMaterializationEligible } from "./materialization_eligibility";
+import {
+   assertMaterializationEligible,
+   assertStorageNameSupported,
+} from "./materialization_eligibility";
 
 const ROOT = "file:///elig/";
 let connections: FixedConnectionMap;
@@ -96,6 +99,58 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
       );
       expect(() => assertMaterializationEligible(sources.mz_given)).toThrow(
          /given/i,
+      );
+   });
+
+   it("refuses a source that reaches a given through a JOIN (not just its own pipeline)", async () => {
+      // The given lives on a joined source, not on mz_joined's own where/fields.
+      // The compiled struct embeds the joined SourceDef, so the fail-closed walk
+      // must still reach it — a join must not launder a given-filtered source.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: tenant :: string is 'acme'
+source: gated is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant") extend {
+  where: tenant = $tenant
+}
+source: joiner is duckdb.sql("SELECT 2 AS n, 'acme' AS tenant")
+#@ persist name="mz_joined"
+source: mz_joined is joiner extend {
+  join_one: g is gated on tenant = g.tenant
+} -> { aggregate: c is count() }`);
+      expect(sources.mz_joined).toBeDefined();
+      expect(() => assertMaterializationEligible(sources.mz_joined)).toThrow(
+         MaterializationEligibilityError,
+      );
+   });
+});
+
+describe("assertStorageNameSupported (quoted name= refusal)", () => {
+   it("accepts an unquoted name", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount")
+#@ persist name="mz_ok" storage=lake
+source: mz_ok is base -> { aggregate: c is count() }`);
+      expect(() => assertStorageNameSupported(sources.mz_ok)).not.toThrow();
+   });
+
+   it("accepts a dotted schema.table name", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount")
+#@ persist name="analytics.mz_dotted" storage=lake
+source: mz_dotted is base -> { aggregate: c is count() }`);
+      expect(() => assertStorageNameSupported(sources.mz_dotted)).not.toThrow();
+   });
+
+   it("refuses a quoted name= identifier", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount")
+#@ persist name='"Quoted Name"' storage=lake
+source: mz_quoted is base -> { aggregate: c is count() }`);
+      expect(() => assertStorageNameSupported(sources.mz_quoted)).toThrow(
+         MaterializationEligibilityError,
+      );
+      expect(() => assertStorageNameSupported(sources.mz_quoted)).toThrow(
+         /quoted identifier/i,
       );
    });
 });

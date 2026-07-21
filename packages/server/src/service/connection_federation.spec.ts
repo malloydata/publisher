@@ -89,7 +89,26 @@ describe("federateSourceForPassthrough", () => {
       expect(result).toEqual({ handle: "src_pg", sourceType: "postgres" });
       const attach = sql.find((s) => s.startsWith("ATTACH"));
       expect(attach).toBeDefined();
-      expect(attach).toContain("AS src_pg (TYPE postgres, READ_ONLY)");
+      // The ATTACH alias is dialect-quoted; the handle stays the raw name (it
+      // becomes the postgres_query string literal, which matches the catalog).
+      expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+   });
+
+   it("postgres: dialect-quotes an alias that needs quoting (e.g. a hyphen)", async () => {
+      const { conn, sql } = stubbedConnection();
+      const result = await federateSourceForPassthrough(conn, "postgres", {
+         name: "my-pg",
+         postgresConnection: {
+            host: "h",
+            port: 5432,
+            databaseName: "d",
+            userName: "u",
+            password: "pw",
+         } as components["schemas"]["PostgresConnection"],
+      });
+      expect(result.handle).toBe("my-pg");
+      const attach = sql.find((s) => s.startsWith("ATTACH"));
+      expect(attach).toContain('AS "my-pg" (TYPE postgres, READ_ONLY)');
    });
 
    it("rejects a source type with no native passthrough", async () => {

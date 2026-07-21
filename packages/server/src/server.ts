@@ -38,6 +38,7 @@ import {
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
+   getPersistStorageMode,
 } from "./config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
@@ -163,6 +164,12 @@ function parseArgs() {
 
 // Parse CLI arguments before setting up constants
 parseArgs();
+
+// Fail fast at boot on a malformed PERSIST_STORAGE_MODE. The getter throws on an
+// invalid value; without this it would only throw lazily inside a per-request
+// package-metadata call (storageWarnings), on every deployment regardless of
+// whether the tier is used. Reading it once here surfaces a typo at startup.
+getPersistStorageMode();
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";

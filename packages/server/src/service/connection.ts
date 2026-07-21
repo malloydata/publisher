@@ -52,6 +52,7 @@ import {
 } from "./connection_config";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
+import { quoteIdentifier } from "./quoting";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -853,14 +854,20 @@ async function federateSnowflake(
       warehouse: sf.warehouse ? escapeSQL(sf.warehouse) : undefined,
    };
    const secretName = sanitizeSecretName(`snowflake_${config.name}`);
-   await connection.runSQL(`CREATE OR REPLACE SECRET ${secretName} (
-      TYPE snowflake,
-      ACCOUNT '${params.account}',
-      USER '${params.user}',
-      PASSWORD '${params.password}',
-      DATABASE '${params.database}',
-      WAREHOUSE '${params.warehouse}'
-   );`);
+   // DATABASE/WAREHOUSE are optional — emit them only when supplied, so an
+   // absent one doesn't interpolate the literal string 'undefined' into the
+   // secret (which Snowflake would then try to use as a real db/warehouse name).
+   const secretLines = [
+      `   TYPE snowflake`,
+      `   ACCOUNT '${params.account}'`,
+      `   USER '${params.user}'`,
+      `   PASSWORD '${params.password}'`,
+      ...(params.database ? [`   DATABASE '${params.database}'`] : []),
+      ...(params.warehouse ? [`   WAREHOUSE '${params.warehouse}'`] : []),
+   ];
+   await connection.runSQL(
+      `CREATE OR REPLACE SECRET ${secretName} (\n${secretLines.join(",\n")}\n);`,
+   );
    logger.info(`Federated Snowflake source for passthrough: ${secretName}`);
    // snowflake_query takes the SQL first and the secret name second — the secret
    // name is the passthrough handle; no ATTACH is needed.
@@ -881,14 +888,15 @@ async function federatePostgres(
    await installAndLoadExtension(connection, "postgres");
 
    const attachString = buildPgConnectionString(pg);
-   // `name` is a caller-sanitized base; postgres_query references this ATTACH
-   // alias, so the alias IS the passthrough handle.
+   // `name` is the ATTACH alias AND (verbatim) the postgres_query handle, so the
+   // handle stays the raw name while the ATTACH identifier is dialect-quoted —
+   // a name needing quoting (e.g. a hyphen) would otherwise be a parser error.
    const alias = config.name;
    logger.info(
       `Federating Postgres source for passthrough as alias '${alias}': ${redactPgSecrets(attachString)}`,
    );
    await connection.runSQL(
-      `ATTACH '${escapeSQL(attachString)}' AS ${alias} (TYPE postgres, READ_ONLY);`,
+      `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
    );
    return { handle: alias, sourceType: "postgres" };
 }

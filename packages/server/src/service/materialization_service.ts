@@ -44,7 +44,10 @@ import {
 } from "./build_plan";
 import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
-import { assertMaterializationEligible } from "./materialization_eligibility";
+import {
+   assertMaterializationEligible,
+   assertStorageNameSupported,
+} from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
    buildDownstreamIntoStorage,
@@ -52,6 +55,7 @@ import {
    dropStorageTable,
    type StorageBuildResult,
 } from "./materialization_build_session";
+import { escapeSQL } from "./connection";
 import {
    buildChainedStorageBuildModel,
    buildVirtualMap,
@@ -172,8 +176,10 @@ export function storagePhysicalTableName(
 /**
  * Length of the sourceEntityId fragment in a `storage=` physical name. 16 hex
  * chars is 64 bits — ample collision headroom for the generations one source
- * accumulates — and, with the `__m` join, stays well inside Postgres's 63-char
- * catalog identifier limit for any reasonable logical name.
+ * accumulates — and, with the `__m` join, stays a short, well-formed identifier.
+ * (Unlike the in-warehouse staging name, this targets a DuckDB/DuckLake store,
+ * which records table names as catalog rows — no destination-side identifier
+ * length limit applies, so this bound is just for tidiness.)
  */
 const STORAGE_ID_LEN = 16;
 
@@ -244,7 +250,14 @@ export function redactConnectionSecrets(
    const secrets = new Set<string>();
    for (const c of connections) collectSensitiveValues(c, secrets);
    let redacted = redactPgSecrets(message);
-   for (const s of secrets) redacted = redacted.split(s).join("***");
+   for (const s of secrets) {
+      redacted = redacted.split(s).join("***");
+      // A DuckDB error often echoes the offending SQL statement, in which a
+      // secret containing a single quote appears single-quote-escaped (`''`) —
+      // so the raw value won't match. Also redact the escaped form.
+      const escaped = escapeSQL(s);
+      if (escaped !== s) redacted = redacted.split(escaped).join("***");
+   }
    return redacted;
 }
 
@@ -668,6 +681,11 @@ export class MaterializationService {
                // throw opaquely, so the eligibility refusal must fire first to
                // give a clean, actionable 422.
                assertMaterializationEligible(persistSource);
+               // Standalone-only: the self-assigned physical name is derived by
+               // decorating the annotation `name=`, so a quoted name= would
+               // produce a malformed content-addressed table. (Orchestrated
+               // trusts the host-supplied name, so this check is not run there.)
+               assertStorageNameSupported(persistSource);
             }
 
             const sourceEntityId = computeSourceEntityId(
@@ -1036,21 +1054,21 @@ export class MaterializationService {
       const physicalTableName = instruction.physicalTableName;
       const isStorageBuild =
          !!instruction.destination && getPersistStorageMode() !== "off";
-      // A storage build executes in the SOURCE warehouse (native passthrough),
-      // but a storage-materialized upstream's table lives in the DuckDB/DuckLake
-      // store — a different engine. Substituting that upstream's manifest table
-      // name into warehouse SQL would reference a table the warehouse can't see.
-      // So for a storage build, exclude storage-materialized upstreams from the
-      // manifest: in the default (non-strict) build they INLINE (recompute from
-      // raw against the warehouse) so a chained `storage=` source still
+      // ANY warehouse-executed build SQL — a path-C CTAS or a storage build's
+      // native passthrough — runs against the SOURCE warehouse, which cannot see
+      // a storage-materialized upstream's DuckDB/DuckLake table (a different
+      // engine). Substituting that upstream's lake table name into warehouse SQL
+      // would reference a table the warehouse can't resolve (a confusing "table
+      // not found"), whether the downstream is a storage build OR a path-C
+      // source reading a storage upstream. So exclude storage-materialized
+      // upstreams from the build manifest in BOTH cases: non-strict, they INLINE
+      // (recompute from raw against the warehouse) so a chained source still
       // materializes; under `strictUpstreams` the excluded reference becomes a
       // clean strict-miss error (the orchestrated contract — don't silently
-      // recompute). Reusing the parent's materialized table instead of
-      // recomputing (the same-engine "stack on the parent" build) is a follow-on;
-      // serve is identical either way, since it reads this source's own table.
-      const buildManifest = isStorageBuild
-         ? manifestExcludingStorage(manifest, builtEntries)
-         : manifest.buildManifest;
+      // recompute). Tier 3 ("stack on the parent") reads the parent's lake table
+      // instead, but via a separate DuckDB recompile that does NOT use this
+      // warehouse buildSQL — this remains its recompute-from-raw fallback.
+      const buildManifest = manifestExcludingStorage(manifest, builtEntries);
       const buildSQL = persistSource.getSQL({
          buildManifest,
          connectionDigests,
@@ -1273,13 +1291,42 @@ export class MaterializationService {
       // build-time refusal. Outside the redaction try above so the eligibility
       // error surfaces as-is (it carries no connection secrets). Runs here, in
       // stage→validate, because it needs the captured schema.
-      await assertStorageServeShapeCompiles({
-         destinationName,
-         sourceName: persistSource.name,
-         virtualHandle: sourceEntityId,
-         physicalTableName,
-         schema: result.schema,
-      });
+      try {
+         await assertStorageServeShapeCompiles({
+            destinationName,
+            sourceName: persistSource.name,
+            virtualHandle: sourceEntityId,
+            physicalTableName,
+            schema: result.schema,
+         });
+      } catch (gateErr) {
+         // The table was already CTAS'd before this post-build gate, and no
+         // manifest entry records it yet — so a refusal would strand it where
+         // manifest-driven GC (which only drops names it recorded building) can
+         // never see it. Best-effort drop of the just-built table so a refused
+         // generation doesn't leak (the operator convenience view, if any, is
+         // left dangling but is re-pointed on the next successful build).
+         try {
+            await dropStorageTable({
+               destinationName,
+               destinationConnection,
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+            });
+         } catch (dropErr) {
+            logger.warn(
+               "Failed to drop a storage table stranded by a serve-shape gate " +
+                  "refusal (physical leak)",
+               {
+                  sourceName: persistSource.name,
+                  destinationName,
+                  physicalTableName,
+                  error: errMessage(dropErr),
+               },
+            );
+         }
+         throw gateErr;
+      }
 
       // Make this table visible to downstream sources built later in this run,
       // so a chained storage source can be built by reading it (Tier 3, above).
@@ -1460,6 +1507,54 @@ export class MaterializationService {
       }
 
       await this.repository.deleteMaterialization(id);
+
+      // Re-derive the package's storage serve bindings from the latest REMAINING
+      // successful materialization. The deleted run may have been the one bound
+      // for serving — and with `dropTables` its tables are now gone — so without
+      // this a query would keep routing (schema-on-faith, no run-time fallback)
+      // to a deleted/dropped table and error until the next reload or build.
+      // Rebinding picks the next-latest generation, or CLEARS the bindings when
+      // none remain (empty entries ⇒ deriveServeBindings([]) ⇒ serve live).
+      await this.rebindStorageServeBindings(environmentName, packageName);
+   }
+
+   /**
+    * Re-derive a package's `storage=` serve bindings from its latest remaining
+    * successful materialization and push them onto the loaded models. Called
+    * after a delete so serving never points at a removed table; picks the
+    * next-latest generation, or clears the bindings when none remain. Dark-ship
+    * (no-op when the tier is off, so an off deployment does no extra work) and
+    * best-effort (a failure logs and leaves the current bindings — a later
+    * reload/build re-derives).
+    */
+   private async rebindStorageServeBindings(
+      environmentName: string,
+      packageName: string,
+   ): Promise<void> {
+      if (getPersistStorageMode() === "off") return;
+      try {
+         const environmentId = await this.resolveEnvironmentId(environmentName);
+         // "" excludes nothing — the deleted record is already gone from the repo.
+         const entries = await this.getMostRecentManifestEntries(
+            environmentId,
+            packageName,
+            "",
+         );
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         await environment.bindPackageStorageServeBindings(
+            packageName,
+            entries,
+         );
+      } catch (err) {
+         logger.warn(
+            "Failed to rebind storage serve bindings after delete (leaving " +
+               "current bindings; a reload/build will re-derive)",
+            { packageName, error: errMessage(err) },
+         );
+      }
    }
 
    /**
