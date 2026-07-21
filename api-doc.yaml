@@ -4299,6 +4299,15 @@ components:
           type: string
           description: >-
             Fully-qualified physical table the upstream currently serves.
+        connectionName:
+          type: string
+          description: >-
+            The connection the upstream table lives on. The publisher quotes the
+            reference for this connection's dialect when it seeds the build
+            manifest, so a downstream persist source resolves the upstream on a
+            case-folding engine (Snowflake). Optional: omit it and the reference
+            seeds unquoted (the pre-existing behavior), which fails a downstream
+            build on such an engine.
 
     BuildInstruction:
       type: object
