@@ -197,9 +197,9 @@ const STORAGE_SOURCE_SENTINEL = "source";
  * in-warehouse path. Read publisher-side from the compiled annotation (the same
  * `annotationFields` map the plan echoes); the reference resolves generically
  * against registered connections. Absent or the reserved `source` value ⇒
- * undefined (path C). Any managed-tier alias (e.g. `credible`) is resolved
- * upstream by the control plane and set on the wire instruction's `destination`
- * — it never reaches this publisher-side generic resolution.
+ * undefined (path C). Any managed-tier alias is resolved by the host/control
+ * plane upstream and set on the wire instruction's `destination` — it never
+ * reaches this publisher-side generic resolution.
  *
  * When `PERSIST_STORAGE_MODE=off` this returns undefined regardless of the
  * annotation — the source builds path C — so the feature is a runtime kill

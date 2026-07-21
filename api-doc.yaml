@@ -4392,8 +4392,8 @@ components:
             the manifest records the destination connection + captured schema so
             the source can later be served cross-dialect from the destination.
             The name resolves generically against registered connections; any
-            managed-tier aliasing (e.g. `credible`) is resolved upstream and
-            never reaches the publisher.
+            managed-tier alias is resolved by the host upstream and never
+            reaches the publisher.
 
     BuildManifest:
       type: object
