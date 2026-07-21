@@ -4,6 +4,8 @@ import {
    Connection,
    FixedConnectionMap,
    GivenValue,
+   isJoined,
+   isSourceDef,
    MalloyConfig,
    MalloyError,
    ModelDef,
@@ -13,6 +15,8 @@ import {
    QueryData,
    QueryMaterializer,
    Runtime,
+   type FieldDef,
+   type SourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -52,6 +56,7 @@ import { modelAnnotations } from "./annotations";
 import {
    collectAuthorizeExprs,
    evaluateAuthorize,
+   referencedGivenNames,
    validateAuthorizeProbes,
 } from "./authorize";
 import {
@@ -149,6 +154,14 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
+   /** Given names (`$NAME`) referenced by any authorize gate reachable
+    *  anywhere in this model -- the file-level gate, every top-level
+    *  source's own gate, and every gate reached transitively from a
+    *  top-level source via join_* / query-source derivation (the same walk
+    *  {@link assertAuthorizedForAllSources} runs at request time). Computed
+    *  once at construction; see {@link filterGivensToModelSurface}, the only
+    *  consumer. */
+   private authorizeReferencedGivenNames: Set<string> = new Set();
    /** Whether discovery accessors curate to the `export {}` closure. Pushed
     *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
     *  true only when the package declares `explores` in publisher.json.
@@ -238,6 +251,16 @@ export class Model {
       } catch {
          this.fileLevelAuthorize = [];
       }
+      // Guarded the same way as fileLevelAuthorize above: a malformed gate
+      // reachable only through a join/derivation must not throw out of the
+      // constructor (gateExprsForOwnAnnotations already fails closed per
+      // struct, so this can only throw on something unrelated).
+      try {
+         this.authorizeReferencedGivenNames =
+            this.computeAuthorizeReferencedGivenNames();
+      } catch {
+         this.authorizeReferencedGivenNames = new Set();
+      }
       this.modelInfo =
          modelInfo ??
          (this.modelDef ? modelDefToModelInfo(this.modelDef) : undefined);
@@ -267,6 +290,24 @@ export class Model {
    }
 
    /**
+    * Given name → declared Malloy type, from this model's own given surface
+    * ({@link givens}). Passed to {@link evaluateAuthorize}'s self-contained
+    * probe fallback so it prefers the gate author's DECLARED type over
+    * inferring one from the caller's JS value (e.g. `$LEVEL > 3` compares
+    * numerically even if the caller sends `"5"`). Only reaches a given
+    * declared within one import hop of this model — a gate on a source
+    * reached through a deeper transitive import isn't on this surface, so
+    * that case still falls back to inferring from the value.
+    */
+   private givenDeclaredTypes(): Map<string, string> {
+      return new Map(
+         (this.givens ?? [])
+            .filter((g) => g.name != null && g.type != null)
+            .map((g) => [g.name, g.type] as [string, string]),
+      );
+   }
+
+   /**
     * Effective authorize expressions gating a source: file-level
     * `##(authorize)` followed by the source's own `#(authorize)`, evaluated as
     * one OR disjunction at request time. Empty array means unrestricted. Reads
@@ -279,6 +320,78 @@ export class Model {
          this.sources?.find((source) => source.name === sourceName)
             ?.authorize ?? []
       );
+   }
+
+   /**
+    * Filter caller-supplied givens down to the ones safe to forward to the
+    * REAL query's `getPreparedResult`/`run`. A caller may legitimately need
+    * to supply a value only so a joined source's `#(authorize)` gate can see
+    * it — that gate is evaluated separately, against the FULL unfiltered
+    * givens (see `assertAuthorizedForAllSources`, which runs before this
+    * filter is applied). Malloy's own given-resolution doesn't flatten a
+    * `given:` declared more than one import hop away into the entry model's
+    * namespace (see `docs/authorize.md`), so passing such an authorize-only
+    * name straight through to the real query throws ("givens: unknown
+    * given"). Dropping it here is safe: the query itself can't reference a
+    * given it doesn't declare, so there is nothing for the dropped value to
+    * have affected.
+    *
+    * Only drops a name that is BOTH absent from this model's own given
+    * surface ({@link givens}) AND referenced by an authorize gate reachable
+    * in this model ({@link authorizeReferencedGivenNames}) — i.e. a name
+    * that could only have been supplied for gate evaluation. A name that no
+    * gate references is left untouched even when the model doesn't surface
+    * it, so a genuinely unknown / typo'd / legitimately-needed-but-unsurfaced
+    * `where:` given still reaches the real query and fails closed via
+    * Malloy's own "unknown given" error, instead of being silently swallowed
+    * and falling back to its declared default (over-exposure).
+    */
+   private filterGivensToModelSurface(
+      givens: Record<string, GivenValue> | undefined,
+   ): Record<string, GivenValue> | undefined {
+      if (!givens) return givens;
+      const surfaceNames = new Set((this.givens ?? []).map((g) => g.name));
+      const filtered: Record<string, GivenValue> = {};
+      for (const [name, value] of Object.entries(givens)) {
+         const authorizeOnly =
+            !surfaceNames.has(name) &&
+            this.authorizeReferencedGivenNames.has(name);
+         if (!authorizeOnly) filtered[name] = value;
+      }
+      return filtered;
+   }
+
+   /**
+    * Compute {@link authorizeReferencedGivenNames}: every given name (`$NAME`)
+    * referenced by an authorize gate expression reachable anywhere in this
+    * model. Walks the file-level gate plus, for every top-level source in
+    * `modelDef.contents`, every gate reached from it via
+    * {@link collectAllReachableGates} — the exact same unified traversal
+    * {@link assertAuthorizedForAllSources} runs per-query, just rooted at
+    * every top-level source instead of one run target. Runs once at
+    * construction, not per request.
+    */
+   private computeAuthorizeReferencedGivenNames(): Set<string> {
+      const names = new Set<string>();
+      const addExprs = (exprs: string[]) => {
+         for (const expr of exprs) {
+            for (const name of referencedGivenNames(expr)) names.add(name);
+         }
+      };
+      addExprs(this.fileLevelAuthorize);
+      const modelDef = this.modelDef;
+      if (!modelDef) return names;
+      for (const entry of Object.values(modelDef.contents)) {
+         if (!isSourceDef(entry)) continue;
+         for (const { exprs } of this.collectAllReachableGates(
+            entry,
+            modelDef,
+            new Set(),
+         )) {
+            addExprs(exprs);
+         }
+      }
+      return names;
    }
 
    /**
@@ -323,9 +436,26 @@ export class Model {
       sourceName: string | undefined,
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      const exprs = this.effectiveAuthorizeFor(sourceName);
+      await this.assertAuthorizedExprs(
+         sourceName ?? "(query)",
+         this.effectiveAuthorizeFor(sourceName),
+         givens,
+      );
+   }
+
+   /**
+    * Core runtime gate, factored out of {@link assertAuthorized} so the
+    * joined-source walk ({@link assertAuthorizedForAllSources}) can evaluate a
+    * gate it read directly off a join field's own struct annotations, without
+    * going through a `this.sources` name lookup (which would miss deep
+    * transitively-imported and inline-extend joins — see the design doc).
+    */
+   private async assertAuthorizedExprs(
+      label: string,
+      exprs: string[],
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
       if (exprs.length === 0) return; // unrestricted
-      const label = sourceName ?? "(query)";
       const deny = () => {
          throw new AccessDeniedError(`Access denied for source "${label}".`);
       };
@@ -336,6 +466,7 @@ export class Model {
             this.modelMaterializer!,
             exprs,
             givens,
+            this.givenDeclaredTypes(),
          );
       } catch (err) {
          // Fail closed — e.g. a referenced given had no supplied value.
@@ -347,6 +478,340 @@ export class Model {
          deny();
       }
       if (!passed) deny();
+   }
+
+   /**
+    * Gate a compiled query against every gate reachable in its struct — the
+    * run target's own gate PLUS every joined source's gate, recursed
+    * transitively (A→B→C). Closes the join-bypass: `#(authorize)` on a source
+    * reached only via `join_*` was previously never enforced (see
+    * `docs/authorize.md` "Known limitations" and the design doc's W1).
+    *
+    * Each joined source's gate is read directly from the join field's OWN
+    * struct annotations (the struct spread in Malloy's `join.js` preserves
+    * them), not from a `this.sources` name lookup — a name lookup would
+    * silently miss a deep transitively-imported source (absent from
+    * `modelDef.contents`) or an inline-extend join (`referenceID` cleared),
+    * leaving both bypassable. File-level `##(authorize)` still prepends to
+    * every joined source, so the permissive-admin idiom keeps working
+    * transitively. Semantics are AND across sources: any single reachable
+    * gate failing denies the whole query, while each source's own list of
+    * expressions stays an OR disjunction. Identical expr-lists are evaluated
+    * once.
+    *
+    * Runs UNCONDITIONALLY — NOT guarded by {@link hasAuthorize}. `hasAuthorize`
+    * only inspects `this.sources` (top-level `modelDef.contents` sources), so a
+    * gated source reached only through a cross-file/deep-transitive join is
+    * invisible to it and the walk below would never run. The own-source probe
+    * and the joined-gate walk are both cheap no-ops for a genuinely ungated
+    * model (empty expr lists / no joined sources to find), so there is nothing
+    * to save by skipping them.
+    */
+   public async assertAuthorizedForAllSources(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      const ownSourceName =
+         await this.resolveAuthorizeSourceFromRunnable(runnable);
+      await this.assertAuthorized(ownSourceName, givens);
+
+      const { struct, modelDef, compositeResolvedSourceDef, extendSources } =
+         await this.resolveRunTargetStruct(runnable);
+      const seen = new Set<SourceDef>();
+      const joinedGates = this.collectAllReachableGates(struct, modelDef, seen);
+      if (modelDef) {
+         // Sources joined LOCALLY inside the query's own `-> { join_one: ...
+         // }` refinement live on the pipeline segment's `extendSource`, not on
+         // the run target's `struct.fields` — the walk above never sees them
+         // from `struct` alone. Walk each the same way as everything else.
+         for (const field of extendSources) {
+            if (!isJoined(field) || !isSourceDef(field)) continue;
+            joinedGates.push(
+               ...this.collectAllReachableGates(
+                  field as SourceDef,
+                  modelDef,
+                  seen,
+               ),
+            );
+         }
+      }
+      if (compositeResolvedSourceDef && modelDef) {
+         // The run target itself may be a composite source (`compose(a, b)`).
+         // Malloy resolves it to exactly one concrete member branch per query
+         // (surfaced as Query.compositeResolvedSourceDef), based on which
+         // fields the query references — so gate everything reachable from
+         // that RESOLVED branch, not every member. Gating every member would
+         // deny access through an open branch just because a sibling branch
+         // happens to be locked.
+         joinedGates.push(
+            ...this.collectAllReachableGates(
+               compositeResolvedSourceDef,
+               modelDef,
+               seen,
+            ),
+         );
+      }
+      // Evaluate every reachable source's gate independently — do NOT dedup by
+      // expression text. AND-across-sources requires a probe per source: two
+      // distinct sources with identical gate text must each be evaluated, or a
+      // non-deterministic gate (e.g. one referencing random()) would be
+      // under-enforced (evaluated once, reused) — a fail-open relative to
+      // per-source enforcement. Probes are ~microsecond one-row DuckDB queries
+      // and reachable gated sources are few, so there is nothing worth deduping.
+      // (Cycles/repeat structs are already pruned in collectAllReachableGates
+      // by struct identity, so joinedGates holds no literal duplicates.)
+      for (const { label, exprs } of joinedGates) {
+         await this.assertAuthorizedExprs(label, exprs, givens);
+      }
+   }
+
+   /**
+    * Resolve the run-target `SourceDef` and its `ModelDef`, for walking joined
+    * sources. `prepared._modelDef` is the modelDef the query actually compiled
+    * against (falls back to `this.modelDef`); a string `structRef` resolves
+    * through `modelDef.contents`. Also surfaces `compositeResolvedSourceDef` —
+    * when the run target is itself a composite source (`compose(a, b)`), this
+    * is the ONE concrete member branch Malloy resolved the query against (see
+    * {@link assertAuthorizedForAllSources}). Also surfaces `extendSources` —
+    * `FieldDef[]` pulled from every pipeline segment's `extendSource`, i.e.
+    * every source joined LOCALLY inside the query's own `-> { join_one: ...
+    * }` refinement. Such a join lives on the query pipeline's segment, not on
+    * the run target's own `struct.fields`, so {@link collectAllReachableGates}
+    * walking `struct.fields` alone would never see it. Returns `undefined`s /
+    * an empty array if any of these can't be resolved — callers treat that as
+    * "no joins to check" rather than denying, since
+    * {@link assertAuthorizedForAllSources}'s own-source gate above is still the
+    * authoritative deny for an unresolvable target.
+    */
+   private async resolveRunTargetStruct(runnable: {
+      getPreparedQuery(): Promise<unknown>;
+   }): Promise<{
+      struct: SourceDef | undefined;
+      modelDef: ModelDef | undefined;
+      compositeResolvedSourceDef: SourceDef | undefined;
+      extendSources: FieldDef[];
+   }> {
+      try {
+         const prepared = (await runnable.getPreparedQuery()) as {
+            _query?: {
+               structRef?: unknown;
+               compositeResolvedSourceDef?: SourceDef;
+               pipeline?: { extendSource?: FieldDef[] }[];
+            };
+            _modelDef?: ModelDef;
+         };
+         const modelDef = prepared._modelDef ?? this.modelDef;
+         if (!modelDef)
+            return {
+               struct: undefined,
+               modelDef: undefined,
+               compositeResolvedSourceDef: undefined,
+               extendSources: [],
+            };
+         const structRef = prepared._query?.structRef;
+         const struct =
+            typeof structRef === "string"
+               ? modelDef.contents[structRef]
+               : structRef;
+         const extendSources = (prepared._query?.pipeline ?? []).flatMap(
+            (segment) => segment.extendSource ?? [],
+         );
+         return {
+            struct:
+               struct && typeof struct === "object"
+                  ? (struct as SourceDef)
+                  : undefined,
+            modelDef,
+            compositeResolvedSourceDef:
+               prepared._query?.compositeResolvedSourceDef,
+            extendSources,
+         };
+      } catch {
+         // Not fail-open: if getPreparedQuery() throws here, execution's own
+         // getPreparedResult()/run() (same compilation) throws too, so no data
+         // is returned. Safety depends on execution sharing this compilation.
+         return {
+            struct: undefined,
+            modelDef: undefined,
+            compositeResolvedSourceDef: undefined,
+            extendSources: [],
+         };
+      }
+   }
+
+   /**
+    * Effective authorize exprs read directly off a struct's OWN block
+    * annotations (file-level `##(authorize)` ++ its own `#(authorize)`). Used
+    * by the joined-source and composite-member walks below, which read a
+    * struct's gate straight off its own annotations rather than through a
+    * `this.sources` name lookup (a name lookup only covers top-level
+    * `modelDef.contents` sources and would miss these).
+    *
+    * Fails CLOSED: `extractSourcesFromModelDef` only validates authorize
+    * annotations for top-level `modelDef.contents` sources at model load, so
+    * a malformed gate on a source reachable ONLY through a join or a
+    * composite member is never probed there — a parse failure here can't be
+    * assumed unreachable/already-validated. Force denial (a single
+    * unsatisfiable `"false"` expr) rather than treating the parse failure as
+    * "no gate" (fail-open).
+    */
+   private gateExprsForOwnAnnotations(struct: SourceDef): string[] {
+      const ownNotes = (struct.annotations?.blockNotes ?? []).map(
+         (note) => note.text,
+      );
+      try {
+         return [
+            ...this.fileLevelAuthorize,
+            ...collectAuthorizeExprs(ownNotes),
+         ];
+      } catch {
+         return ["false"];
+      }
+   }
+
+   /**
+    * Canonical entry point for "every gate reachable from `struct`" — the
+    * single walk every call site in this file uses, replacing what used to
+    * be a hand-composed sequence of narrower collectors per call site (the
+    * inconsistency between those sequences is what let two derivations
+    * launder a locked base's gate away — see the composite-branch and
+    * query-local-join call sites in {@link assertAuthorizedForAllSources}).
+    * Collects, for `struct` and recursively for everything below:
+    *  - its own annotations ({@link gateExprsForOwnAnnotations});
+    *  - every joined source (`struct.fields`), including every member of a
+    *    joined composite (`compose(a, b)` reached via `join_*`) — Malloy
+    *    doesn't surface which branch a JOINED composite resolved to (unlike
+    *    a run target's own composite resolution, which the caller handles
+    *    by passing the resolved branch in as `struct` directly), so a joined
+    *    composite is walked conservatively: every member gated, any one
+    *    failing denies the whole query;
+    *  - if `struct` is itself query-derived (`source: x is y -> {...}`), the
+    *    base it derives from (`query.structRef`, resolved the same way
+    *    {@link resolveRunTargetStruct} resolves a run target's structRef) —
+    *    a `QuerySourceDef`'s own `.fields`/`.annotations` reflect the
+    *    DERIVED shape, not `y`'s gate, so without this the derivation
+    *    launders the base's gate away;
+    *  - if `struct` is itself query-derived, its own inner-pipeline
+    *    `join_one`s (`-> { extend: { join_one: locked ... } ... }`), which
+    *    live on the derivation's pipeline segment, not on `struct.fields`
+    *    and not reachable via `query.structRef` — mirrors the run target's
+    *    own `extendSources` handling in {@link assertAuthorizedForAllSources},
+    *    applied to a query-source's `query.pipeline` instead of the run
+    *    query's;
+    *  - if `struct` is itself query-derived AND its base is a composite
+    *    (`source: x is compose(a, b) -> {...}`), the ONE resolved member
+    *    branch Malloy picked for THIS derivation (`query.compositeResolvedSourceDef`)
+    *    — mirrors the run target's own composite-resolution handling in
+    *    {@link assertAuthorizedForAllSources}, applied to a query-source's
+    *    own resolution instead of the run query's.
+    * Every case above recurses through this SAME function, so a derivation,
+    * a join, and a composite member compose uniformly no matter how deep
+    * (a query-source over a joined query-source, a chained derivation, a
+    * composite member that is itself query-derived, etc).
+    *
+    * `seen` (struct-identity keyed) is shared across the whole walk by the
+    * caller, guarding cycles and repeat structs — a struct already visited
+    * anywhere in the walk is not walked again.
+    *
+    * `QuerySourceDef` isn't re-exported from the package root (same
+    * situation as `given.ts`'s `MalloyGiven` duck type), so query-source
+    * detection checks `.type` and reaches `.query.structRef`/`.query.pipeline`
+    * through a local shape rather than importing the real type.
+    */
+   private collectAllReachableGates(
+      struct: SourceDef | undefined,
+      modelDef: ModelDef | undefined,
+      seen: Set<SourceDef> = new Set(),
+   ): { label: string; exprs: string[] }[] {
+      if (!struct || !modelDef || seen.has(struct)) return [];
+      seen.add(struct);
+
+      const results: { label: string; exprs: string[] }[] = [];
+      const label = (struct as { as?: string }).as ?? struct.name;
+      const ownExprs = this.gateExprsForOwnAnnotations(struct);
+      if (ownExprs.length > 0) {
+         results.push({ label, exprs: ownExprs });
+      }
+
+      for (const field of struct.fields as FieldDef[]) {
+         if (!isJoined(field) || !isSourceDef(field)) continue;
+         const joinedSource = field as SourceDef;
+         results.push(
+            ...this.collectAllReachableGates(joinedSource, modelDef, seen),
+         );
+         // A JOINED source that is itself a composite (`compose(a, b)`
+         // reached via `join_*`) is walked conservatively: unlike a run
+         // target's own composite resolution (handled by the caller passing
+         // the resolved branch in as `struct` directly, never as a joined
+         // field), Malloy doesn't surface which member a JOINED composite
+         // resolved to, so every member is gated — any member's gate
+         // failing denies the whole query.
+         if (joinedSource.type === "composite") {
+            const members = (
+               joinedSource as SourceDef & { sources: SourceDef[] }
+            ).sources;
+            for (const member of members) {
+               results.push(
+                  ...this.collectAllReachableGates(member, modelDef, seen),
+               );
+            }
+         }
+      }
+
+      const duck = struct as unknown as {
+         type: string;
+         query?: {
+            structRef?: SourceDef | string;
+            compositeResolvedSourceDef?: SourceDef;
+            pipeline?: { extendSource?: FieldDef[] }[];
+         };
+      };
+      if (duck.type === "query_source") {
+         const ref = duck.query?.structRef;
+         const base = typeof ref === "string" ? modelDef.contents[ref] : ref;
+         if (base && isSourceDef(base)) {
+            results.push(
+               ...this.collectAllReachableGates(
+                  base as SourceDef,
+                  modelDef,
+                  seen,
+               ),
+            );
+         }
+         // A query-source's own base may itself be a composite
+         // (`source: qs is compose(a, b) -> {...}`) — Malloy resolves that
+         // composite to exactly one concrete member branch for THIS
+         // query-source's derivation (surfaced the same way as a run
+         // target's own composite resolution, see
+         // assertAuthorizedForAllSources), carried on the query-source's
+         // OWN `query.compositeResolvedSourceDef`, not on `query.structRef`
+         // (the raw composite) or `query.pipeline`. Without walking it, a
+         // query-source derived from a locked composite member laundered
+         // that member's gate away. Recursing through this same function
+         // means a query-source nested at any depth (query-source over
+         // composite over query-source, etc) is covered uniformly.
+         const resolved = duck.query?.compositeResolvedSourceDef;
+         if (resolved) {
+            results.push(
+               ...this.collectAllReachableGates(resolved, modelDef, seen),
+            );
+         }
+         const innerJoins = (duck.query?.pipeline ?? []).flatMap(
+            (segment) => segment.extendSource ?? [],
+         );
+         for (const field of innerJoins) {
+            if (!isJoined(field) || !isSourceDef(field)) continue;
+            results.push(
+               ...this.collectAllReachableGates(
+                  field as SourceDef,
+                  modelDef,
+                  seen,
+               ),
+            );
+         }
+      }
+
+      return results;
    }
 
    /**
@@ -369,17 +834,16 @@ export class Model {
     * Gate a compiled query by the source it actually reads, resolved from the
     * prepared query's `structRef` (authoritative — survives named-query and
     * multi-statement indirection that surface syntax misses, e.g. the executed
-    * `run:` statement isn't the first one). Used as the `/compile` backstop once
-    * a runnable exists.
+    * `run:` statement isn't the first one), PLUS every source reached
+    * transitively via join_* (see assertAuthorizedForAllSources). Used as the
+    * `/compile` backstop once a runnable exists, so `/compile` inherits the
+    * same join-bypass protection as the query path.
     */
    public async assertAuthorizedForRunnable(
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.assertAuthorized(
-         await this.resolveAuthorizeSourceFromRunnable(runnable),
-         givens,
-      );
+      await this.assertAuthorizedForAllSources(runnable, givens);
    }
 
    /**
@@ -1290,18 +1754,22 @@ export class Model {
          this.assertQueryBoundaryCompiled(compiledSource, query);
       }
 
-      // Run unless it's the redundant re-probe of the exact named source the
-      // early gate already cleared. When compiledSource is unknown/unresolved,
-      // this still runs and assertAuthorized applies the model-wide file-level
-      // gate via effectiveAuthorizeFor. Note: on this path an ad-hoc inline
+      // Gate the compiled run target's own source PLUS every source reached
+      // transitively via join_* (assertAuthorizedForAllSources) — this MUST
+      // run unconditionally, not just when compiledSource !== earlySource:
+      // the common `run: joiner -> {...}` case has an ungated top-level source
+      // (so compiledSource === earlySource and the own-source re-probe really
+      // would be redundant), but a joined source's gate has never been checked
+      // yet on this request. The walk runs UNCONDITIONALLY (do NOT re-add a
+      // hasAuthorize() guard here — it only sees top-level sources, so guarding
+      // on it re-opens the deep-import join bypass); it is a cheap no-op for an
+      // ungated model. When compiledSource is unknown/unresolved,
+      // the own-source half still applies the model-wide file-level gate via
+      // effectiveAuthorizeFor. Note: on this path an ad-hoc inline
       // `duckdb.sql(...)` query is rejected by restricted mode (the raw-SQL
       // ban from loadRestrictedQuery above) before it can run, so the
       // raw-warehouse bypass is closed by restricted mode — not by this gate.
-      // This fallback's job is to apply the file-level gate to permitted ad-hoc
-      // forms (declared-source references) whose source can't be named.
-      if (!(compiledSource && compiledSource === earlySource)) {
-         await this.assertAuthorized(compiledSource, givens ?? {});
-      }
+      await this.assertAuthorizedForAllSources(runnable, givens ?? {});
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
@@ -1319,17 +1787,26 @@ export class Model {
       let rowLimit = 0;
       let executionTime = 0;
       let queryResults;
+      // Givens supplied only so a joined source's authorize gate could see
+      // them (checked above, against the full unfiltered set) must not reach
+      // the real query if this model doesn't itself surface them — see
+      // filterGivensToModelSurface.
+      const querySurfaceGivens = this.filterGivensToModelSurface(givens);
       try {
          rowLimit = resolveModelQueryRowLimit(
-            (await runnable.getPreparedResult({ givens, buildManifest }))
-               .resultExplore.limit,
+            (
+               await runnable.getPreparedResult({
+                  givens: querySurfaceGivens,
+                  buildManifest,
+               })
+            ).resultExplore.limit,
             { defaultLimit: getDefaultQueryRowLimit(), maxRows },
          );
          executionTime = performance.now() - startTime;
 
          queryResults = await runnable.run({
             rowLimit,
-            givens,
+            givens: querySurfaceGivens,
             abortSignal,
             buildManifest,
          });
@@ -1552,16 +2029,13 @@ export class Model {
 
       // Authorize gate — only cells that actually run a query touch data, so
       // gate exactly those (a source-def / import cell has no runnable and
-      // accesses nothing). Resolve the source from the COMPILED cell query
-      // (authoritative — survives `run: <named query>` cells the text regex
-      // misses); assertAuthorized applies the source's gate, or the model-wide
-      // file-level gate for an unknown/inline source. Before the execution try
-      // below so AccessDeniedError stays a 403; independent of bypassFilters.
+      // accesses nothing). Gates the COMPILED cell query's own source (the
+      // model-wide file-level gate for an unknown/inline source) PLUS every
+      // source reached transitively via join_* — see
+      // assertAuthorizedForAllSources. Before the execution try below so
+      // AccessDeniedError stays a 403; independent of bypassFilters.
       if (cell.runnable) {
-         const authorizeSource = await this.resolveAuthorizeSourceFromRunnable(
-            cell.runnable,
-         );
-         await this.assertAuthorized(authorizeSource, givens ?? {});
+         await this.assertAuthorizedForAllSources(cell.runnable, givens ?? {});
       }
 
       // For code cells, execute the runnable if available
@@ -1599,10 +2073,13 @@ export class Model {
             // Per-query freshness gate (see getQueryResults): the same
             // freshness-filtered manifest gates notebook-cell queries.
             const buildManifest = this.resolveFreshBuildManifest();
+            // See getQueryResults / filterGivensToModelSurface: the gate
+            // above already saw the full unfiltered givens.
+            const cellSurfaceGivens = this.filterGivensToModelSurface(givens);
             const rowLimit = resolveModelQueryRowLimit(
                (
                   await runnableToExecute.getPreparedResult({
-                     givens,
+                     givens: cellSurfaceGivens,
                      buildManifest,
                   })
                ).resultExplore.limit,
@@ -1613,7 +2090,7 @@ export class Model {
             );
             const result = await runnableToExecute.run({
                rowLimit,
-               givens,
+               givens: cellSurfaceGivens,
                abortSignal,
                buildManifest,
             });

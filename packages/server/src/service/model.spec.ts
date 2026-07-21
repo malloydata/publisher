@@ -420,6 +420,11 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
+               // Model surfaces `region` so filterGivensToModelSurface (see
+               // model.ts) forwards it rather than dropping it as unknown.
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               [{ name: "region", type: "string" }] as any,
             );
 
             await expect(
@@ -716,6 +721,11 @@ describe("service/model", () => {
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                runnableCells as any,
                undefined,
+               undefined,
+               // Model surfaces `target_code` so filterGivensToModelSurface
+               // (see model.ts) forwards it rather than dropping it as unknown.
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               [{ name: "target_code", type: "string" }] as any,
             );
 
             await expect(

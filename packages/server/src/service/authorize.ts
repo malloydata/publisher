@@ -27,6 +27,12 @@ const FILE_PREFIX = "##(authorize)";
 /** source name → effective authorize expressions (file-level then source-level). */
 export type AuthorizeMap = Map<string, string[]>;
 
+/** A `given:` declaration to prepend to a probe so it compiles standalone. */
+export interface ProbeGivenDecl {
+   name: string;
+   type: string;
+}
+
 /**
  * Build the synthetic probe query that evaluates a source's authorize
  * expressions. Each expression becomes a boolean `select` column over a
@@ -37,16 +43,110 @@ export type AuthorizeMap = Map<string, string[]>;
  * compile errors); running it evaluates the gate. The reserved dummy column
  * name is deliberately obscure so a real authorize expression is unlikely to
  * collide with it — a bare field reference in an expression is meant to fail.
+ *
+ * `givenDecls`, when supplied, are prepended as the probe's OWN `given:`
+ * block, making the probe self-contained: it compiles against whatever
+ * givens it declares itself rather than depending on the ambient model's
+ * given namespace. This is what lets {@link evaluateAuthorize} gate a joined
+ * source whose givens live in a model that isn't the one the probe is
+ * compiled against (see the two-hop transitive-import case in
+ * `docs/authorize.md`). Compile-time validation (`validateAuthorizeProbes`)
+ * calls this with no decls, so it still validates against the ambient
+ * namespace of the model it's compiling in.
  */
-export function buildAuthorizeProbe(exprs: string[]): string {
+export function buildAuthorizeProbe(
+   exprs: string[],
+   givenDecls: ProbeGivenDecl[] = [],
+): string {
    const selects = exprs
       .map((expr, i) => `__auth_${i} is (${expr})`)
       .join("\n      ");
-   return `run: duckdb.sql("SELECT 1 AS __authorize_probe_row") -> {
+   const givenBlock =
+      givenDecls.length > 0
+         ? `given:\n${givenDecls.map((g) => `  ${g.name} :: ${g.type}`).join("\n")}\n\n`
+         : "";
+   return `${givenBlock}run: duckdb.sql("SELECT 1 AS __authorize_probe_row") -> {
     select:
       ${selects}
     limit: 1
   }`;
+}
+
+const GIVEN_REF_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
+
+/**
+ * Given names an authorize expression references (`$NAME` tokens), deduped,
+ * in first-seen order. Used to figure out which givens a self-contained
+ * probe needs to declare for a given expression.
+ */
+export function referencedGivenNames(expr: string): string[] {
+   const names: string[] = [];
+   const seen = new Set<string>();
+   for (const match of expr.matchAll(GIVEN_REF_PATTERN)) {
+      const name = match[1];
+      if (!seen.has(name)) {
+         seen.add(name);
+         names.push(name);
+      }
+   }
+   return names;
+}
+
+/**
+ * Infer a Malloy given type from a caller-supplied JS value, so a
+ * self-contained probe can declare exactly the givens an expression
+ * references without depending on the ambient model's own given namespace —
+ * which a joined source pulled in from a different (possibly multi-hop
+ * transitively imported) file may not share. Returns `null` for a value with
+ * no sensible Malloy type (null, a plain object, an empty untyped array);
+ * callers skip declaring that given, which fails the probe closed —
+ * consistent with the existing "referenced given has no value" behavior.
+ */
+function inferGivenType(value: GivenValue): string | null {
+   if (typeof value === "string") return "string";
+   if (typeof value === "number" || typeof value === "bigint") return "number";
+   if (typeof value === "boolean") return "boolean";
+   if (value instanceof Date) return "timestamp";
+   if (Array.isArray(value)) {
+      if (value.length === 0) return null;
+      const elementType = inferGivenType(value[0]);
+      return elementType ? `${elementType}[]` : null;
+   }
+   return null;
+}
+
+/**
+ * Build the self-contained `given:` declarations + bound values a probe
+ * needs for one expression, from whatever the caller supplied. A referenced
+ * name that's absent from `givens` (or whose value has no inferrable type) is
+ * simply left undeclared — the probe then fails to compile for that
+ * expression (an undeclared `$NAME`), which {@link evaluateAuthorize} already
+ * treats as "this disjunct can't be evaluated" and denies that branch.
+ *
+ * `declaredTypes`, when supplied, is preferred over inferring the type from
+ * the caller's JS value — the gate author's own `given:` declaration is the
+ * source of truth (e.g. `$LEVEL > 3` should compare numerically even if the
+ * caller sends `"5"` as a string). Only covers a name declared within one
+ * import hop of the entry model (the same reach as `this.givens` — see
+ * `docs/authorize.md`); a gate on a source reached through a deeper
+ * transitive import falls back to inferring from the value, same as before.
+ */
+function bindProbeGivens(
+   expr: string,
+   givens: Record<string, GivenValue>,
+   declaredTypes?: Map<string, string>,
+): { decls: ProbeGivenDecl[]; bound: Record<string, GivenValue> } {
+   const decls: ProbeGivenDecl[] = [];
+   const bound: Record<string, GivenValue> = {};
+   for (const name of referencedGivenNames(expr)) {
+      if (!(name in givens)) continue;
+      const value = givens[name];
+      const type = declaredTypes?.get(name) ?? inferGivenType(value);
+      if (!type) continue;
+      decls.push({ name, type });
+      bound[name] = value;
+   }
+   return { decls, bound };
 }
 
 /**
@@ -75,6 +175,25 @@ interface AuthorizeProbeExecutor {
 }
 
 /**
+ * Run one probe (already-built query text) and report whether it evaluated
+ * true. Any throw (compile error, runtime "no value" for a referenced given,
+ * a missing/malformed result) propagates to the caller, which decides how to
+ * react — {@link evaluateAuthorize} treats it as "can't evaluate this way,
+ * try something else" rather than granting.
+ */
+async function runProbe(
+   executor: AuthorizeProbeExecutor,
+   probeText: string,
+   givens: Record<string, GivenValue>,
+): Promise<boolean> {
+   const result = await executor
+      .loadQuery(probeText)
+      .run({ rowLimit: 1, givens });
+   const row = result?.data?.value?.[0];
+   return !!(row && isProbeTrue(row.__auth_0));
+}
+
+/**
  * Evaluate a source's authorize disjunction against the supplied givens.
  * Returns true if ANY expression evaluates true (OR semantics).
  *
@@ -88,25 +207,56 @@ interface AuthorizeProbeExecutor {
  * Per-branch failures are swallowed to false (fail closed at the branch level);
  * access is granted only if some branch genuinely returns true. Short-circuits
  * on the first true. Returns false (→ caller denies) if none grant.
+ *
+ * Each expression is tried TWICE if needed:
+ *  1. Ambient: compile against `executor`'s own given namespace, passing the
+ *     full supplied `givens` — the original approach, unchanged for the
+ *     common case where `executor` (always the ENTRY model's materializer)
+ *     already has the referenced givens in scope (same file, or a directly
+ *     imported one — Malloy merges one level of import into a model's given
+ *     namespace).
+ *  2. Self-contained fallback ({@link bindProbeGivens}), tried only if (1)
+ *     throws: declare just the givens this expression references, preferring
+ *     `declaredTypes` (the gate author's own declaration) over inferring
+ *     from the caller-supplied value, so the probe compiles
+ *     independently of `executor`'s namespace. This is what lets a gate on a
+ *     source reached through a multi-hop transitive import evaluate
+ *     correctly — Malloy does not flatten a `given:` declaration through more
+ *     than one level of import, so the entry model's own namespace can be
+ *     missing a given that's declared two-or-more imports away from a
+ *     JOINED source's home file (see `docs/authorize.md`). Skipped as a
+ *     no-op (denies) when no referenced given has a suppliable value, same
+ *     as when (1) fails for an ordinary "no value supplied" reason.
  */
 export async function evaluateAuthorize(
    executor: AuthorizeProbeExecutor,
    exprs: string[],
    givens: Record<string, GivenValue>,
+   declaredTypes?: Map<string, string>,
 ): Promise<boolean> {
    for (const expr of exprs) {
       try {
-         const result = await executor
-            .loadQuery(buildAuthorizeProbe([expr]))
-            .run({ rowLimit: 1, givens });
-         const row = result?.data?.value?.[0];
-         if (row && isProbeTrue(row.__auth_0)) {
+         if (await runProbe(executor, buildAuthorizeProbe([expr]), givens)) {
+            return true;
+         }
+         continue;
+      } catch {
+         // Ambient compile/eval failed — fall through to the self-contained
+         // retry below rather than immediately treating this disjunct as
+         // not-granting.
+      }
+      try {
+         const { decls, bound } = bindProbeGivens(expr, givens, declaredTypes);
+         if (decls.length === 0) continue; // nothing left to try — deny
+         if (
+            await runProbe(executor, buildAuthorizeProbe([expr], decls), bound)
+         ) {
             return true;
          }
       } catch {
-         // This disjunct can't be evaluated (e.g. a referenced given has no
-         // value) — treat as not-granting and try the next. It does not fail
-         // the whole request, which is what keeps OR semantics intact.
+         // Still can't be evaluated — deny this branch and try the next.
+         // Does not fail the whole request, which is what keeps OR
+         // semantics intact.
          continue;
       }
    }

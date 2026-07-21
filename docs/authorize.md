@@ -80,14 +80,15 @@ source: orders is duckdb.table('orders.parquet')
 
 This is the intended admin-override idiom — use it deliberately.
 
-### Top-level source only (not inherited, not joined)
+### Run target, plus every joined source (not inherited through extend)
 
-Authorize is checked **only on the source the query directly runs against**. It is **not** inherited through `extend` and **not** walked through joins:
+Authorize is checked on the source the query directly runs against **and on every source reached transitively via `join_*`** — a gate on a joined source is not bypassed by joining instead of naming it directly. It is still **not** inherited through `extend`:
 
 - **Extend footgun:** a source that extends a locked base is governed *solely by its own* annotations. `source: b is a extend { … }` does **not** inherit `a`'s gate — if `b` declares none, `b` is unrestricted even if `a` is `#(authorize) "false"`.
-- **Joins:** a gate on a source reached only via `join_*` does not fire; the gate applies to the run target, not its joins.
+- **Joins are enforced.** A gate on a source reached only via `join_*` — including a deep transitive join (A→B→C), a query-local `join_one` inside a `-> { … }` refinement, and a composite source (`compose(a, b)`) resolved to a locked branch — fires the same as a gate on the run target itself. Semantics are AND across sources: any single reachable gate failing denies the whole query.
+- **Query-source derivation doesn't launder the gate away.** `source: laundered is locked_src -> { … }` gates on `locked_src` too — Malloy's compiled `QuerySourceDef` keeps the base reachable via `query.structRef`, so the walk resolves and gates it (recursing through a chained derivation, or through a join to a query-source). This also covers a query-source reached only via `join_*`.
 
-To keep a locked base's data from leaking through an extension or join, pair the gate with Malloy [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) so the extension re-exposes only a curated column surface. See the [recommended pattern](#recommended-pattern-locked-base-and-curated-extensions).
+To keep a locked base's data from leaking through an extension, pair the gate with Malloy [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) so the extension re-exposes only a curated column surface. See the [recommended pattern](#recommended-pattern-locked-base-and-curated-extensions).
 
 ## Recommended pattern: locked base and curated extensions
 
@@ -162,9 +163,11 @@ Authorize expressions are validated at **model load** (compile-only, no executio
 
 ## Known limitations
 
-- **Not inherited / not joined** (see [above](#top-level-source-only-not-inherited-not-joined)) — pair locked bases with access modifiers.
+- **Not inherited through extend** (see [above](#run-target-plus-every-joined-source-not-inherited-through-extend)) — pair locked bases with access modifiers. (Joins ARE enforced — see above.)
+- **Joining a composite over-denies conservatively.** When a composite (`compose(a, b)`) is reached via `join_*`, Malloy does not surface which branch resolved, so every member's gate is applied. A query using only an ungated member of a *joined* composite is therefore denied if any sibling member is locked. This fails closed (safe) and affects only the experimental composite-source feature. (A composite used as the run target resolves precisely via `compositeResolvedSourceDef` and does not over-deny.)
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.
 - **No per-request caching.** Each gate runs a fresh probe against bundled DuckDB (microseconds); a security decision is intentionally not memoized.
+- **A given-based gate on a source reached through a multi-hop transitive import works, but needs a self-contained probe to get there.** Malloy's own given-namespace merge covers only one level of `import` — a `given:` declared two-or-more imports away from the entry model is not in the entry model's namespace, so a request-scoped `Model.getQueryResults`/`executeNotebookCell` value for it is also dropped before it ever reaches the real query (`filterGivensToModelSurface`, `model.ts`). The gate's own probe is unaffected: it's self-contained (`bindProbeGivens`, `authorize.ts`) — it declares just the given(s) an expression references, inferring type from the supplied value, rather than depending on the entry model's namespace — so the *gate* correctly evaluates a value the real query can't otherwise see. Author-side implication: for a caller to actually reach data behind such a gate, some source or file within one import hop of the entry model must also declare (or import) the same given, so the real query's own given-resolution surfaces it.
 
 ## Runnable example
 
