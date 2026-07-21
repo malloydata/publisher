@@ -462,9 +462,11 @@ export type ExtensionFetchPolicy = "on-demand" | "local-only";
  *   lazy-loads; a genuinely missing extension surfaces as a loud, actionable
  *   error instead of a silent fetch. For air-gapped / pinned-image deployments.
  *
- * Throws at startup on an unrecognised value so a typo in a k8s manifest
- * surfaces loudly rather than silently selecting a policy the operator did not
- * intend (matching the loud-failure stance of the other getters here).
+ * Throws on an unrecognised value. Validated at server startup (server.ts calls
+ * this during boot) so a typo in a k8s manifest fails the boot loudly rather
+ * than surfacing on the first query that resolves a DuckDB connection — which,
+ * for a DuckLake-only deployment, could be well after `serving`. Also read on
+ * each connection resolve, so the value is honoured without a restart.
  */
 export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
    const raw = process.env.EXTENSION_FETCH_POLICY;

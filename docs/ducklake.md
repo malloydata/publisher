@@ -107,6 +107,14 @@ them from the network with the `EXTENSION_FETCH_POLICY` environment variable:
   fails with a **loud, actionable error naming the extension and the policy**, rather than a silent
   fetch attempt. This is the mode for **air-gapped / pinned-image deployments**.
 
+**`local-only` needs a pre-populated cache — pick your install route.** The bake runs during `build`
+and writes to the DuckDB extension cache under `~/.duckdb/extensions/v<version>/<platform>/`, *not*
+into the npm package. So an `npx` / `npm install` consumer starts with an **empty** cache and
+genuinely needs a first-use `INSTALL` (i.e. `on-demand`) — raw `npx` cannot be made offline-safe.
+`local-only` is offline-safe only where a platform-matched bake has already populated that cache: the
+**published Docker image** (which copies the builder's cache into the final image) or a **from-source
+`bun run build` on the target platform**. Air-gapped deployments should use one of those two routes.
+
 Regardless of the policy, the DuckLake attach session disables DuckDB's *implicit* auto-install for
 itself — it only ever needs the curated set of extensions Publisher installs explicitly.
 
