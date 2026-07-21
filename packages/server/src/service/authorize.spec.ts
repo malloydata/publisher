@@ -8,15 +8,17 @@ import {
 
 describe("referencedGivenNames", () => {
    it("returns the $NAME tokens deduped in first-seen order", () => {
-      expect(referencedGivenNames("$ROLE = 'admin' and $ROLE != $PRIOR")).toEqual(
-         ["ROLE", "PRIOR"],
-      );
+      expect(
+         referencedGivenNames("$ROLE = 'admin' and $ROLE != $PRIOR"),
+      ).toEqual(["ROLE", "PRIOR"]);
    });
 
    it("ignores a $NAME inside a string literal (not a real reference)", () => {
       // Otherwise a joined gate's referenced-given count is inflated and the
       // full-coverage check wrongly denies a correctly-authorized request.
-      expect(referencedGivenNames("$ROLE = 'the $BOSS role'")).toEqual(["ROLE"]);
+      expect(referencedGivenNames("$ROLE = 'the $BOSS role'")).toEqual([
+         "ROLE",
+      ]);
       expect(referencedGivenNames("'$A $B $C'")).toEqual([]);
       expect(referencedGivenNames("$X = 'it\\'s $Y' or $Z = 1")).toEqual([
          "X",
