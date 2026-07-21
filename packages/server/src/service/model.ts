@@ -2263,9 +2263,11 @@ export class Model {
             "malloy.model.query.source": sourceName,
             "malloy.model.query.query": query,
             "malloy.model.query.status": "error",
-            "malloy.model.query.served_from": serveVirtualMap
-               ? "storage"
-               : "live",
+            // Ships dark: only tag storage-served queries. A live/off query gets
+            // no new attribute, so an off deployment's histogram is unchanged.
+            ...(serveVirtualMap
+               ? { "malloy.model.query.served_from": "storage" }
+               : {}),
          });
 
          // Bad client-supplied givens (unknown name, wrong-typed value, an
@@ -2340,7 +2342,10 @@ export class Model {
          "malloy.model.query.rows_total": queryResults.totalRows,
          "malloy.model.query.connection": queryResults.connectionName,
          "malloy.model.query.status": "success",
-         "malloy.model.query.served_from": serveVirtualMap ? "storage" : "live",
+         // Ships dark: only tag storage-served queries (see the error path).
+         ...(serveVirtualMap
+            ? { "malloy.model.query.served_from": "storage" }
+            : {}),
       });
       return {
          result: wrappedResult,
