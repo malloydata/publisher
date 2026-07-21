@@ -29,7 +29,7 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { FreshnessManifest } from "../storage/DatabaseInterface";
+import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
@@ -1263,6 +1263,33 @@ export class Environment {
             );
          }
          await pkg.reloadAllModels(manifest);
+      });
+   }
+
+   /**
+    * Bind a package's `storage=` serve bindings from a build's FULL manifest
+    * entries (carrying `storageConnectionName` + captured `schema`), so a query
+    * against a materialized-into-storage source can be routed through the
+    * virtual-source serve transform. Distinct from
+    * {@link reloadAllModelsForPackage}, which binds the tableName-only manifest
+    * for same-connection persistence. No-op (logged) if the package isn't
+    * loaded — best-effort, like the post-build auto-load itself.
+    */
+   public async bindPackageStorageServeBindings(
+      packageName: string,
+      entries: Record<string, ManifestEntry>,
+   ): Promise<void> {
+      assertSafePackageName(packageName);
+      return this.withPackageLock(packageName, async () => {
+         const pkg = this.packages.get(packageName);
+         if (!pkg) {
+            logger.warn(
+               "Cannot bind storage serve bindings: package not loaded",
+               { packageName },
+            );
+            return;
+         }
+         pkg.bindStorageServeBindings(entries);
       });
    }
 

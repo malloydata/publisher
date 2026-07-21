@@ -40,6 +40,7 @@ import {
    deriveAnnotationFields,
    iterGraphSources,
 } from "./build_plan";
+import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import { buildSourceIntoStorage } from "./materialization_build_session";
@@ -97,18 +98,24 @@ function selfAssignTableName(persistSource: PersistSource): string {
 const STORAGE_SOURCE_SENTINEL = "source";
 
 /**
- * Resolve a persist source's `#@ persist storage=<ref>` to a destination
- * connection name, or undefined for the default in-warehouse path. Read
- * publisher-side from the compiled annotation (the same `annotationFields` map
- * the plan echoes); the reference resolves generically against registered
- * connections. Absent or the reserved `source` value ⇒ undefined (path C).
- * Any managed-tier alias (e.g. `credible`) is resolved upstream by the control
- * plane and set on the wire instruction's `destination` — it never reaches this
- * publisher-side generic resolution.
+ * Resolve a persist source's `#@ persist storage=<ref>` to the EFFECTIVE
+ * destination connection name for a build, or undefined for the default
+ * in-warehouse path. Read publisher-side from the compiled annotation (the same
+ * `annotationFields` map the plan echoes); the reference resolves generically
+ * against registered connections. Absent or the reserved `source` value ⇒
+ * undefined (path C). Any managed-tier alias (e.g. `credible`) is resolved
+ * upstream by the control plane and set on the wire instruction's `destination`
+ * — it never reaches this publisher-side generic resolution.
+ *
+ * When `PERSIST_STORAGE_MODE=off` this returns undefined regardless of the
+ * annotation — the source builds path C — so the feature is a runtime kill
+ * switch that never fails a package (the ignored `storage=` is surfaced as a
+ * package warning, not an error).
  */
 function resolveStorageDestination(
    persistSource: PersistSource,
 ): string | undefined {
+   if (getPersistStorageMode() === "off") return undefined;
    const storage = deriveAnnotationFields(persistSource).storage?.trim();
    if (!storage || storage === STORAGE_SOURCE_SENTINEL) return undefined;
    return storage;
@@ -633,6 +640,10 @@ export class MaterializationService {
             packageName: string,
             manifest: FreshnessManifest,
          ): Promise<void>;
+         bindPackageStorageServeBindings(
+            packageName: string,
+            entries: Record<string, ManifestEntry>,
+         ): Promise<void>;
       },
       packageName: string,
       entries: Record<string, ManifestEntry>,
@@ -659,6 +670,14 @@ export class MaterializationService {
          await environment.reloadAllModelsForPackage(
             packageName,
             manifestEntries,
+         );
+         // Separately bind the FULL entries as storage serve bindings — sources
+         // materialized into a storage destination serve cross-connection via
+         // the virtual-source transform, not the tableName manifest above. No-op
+         // for a package with no storage= sources (deriveServeBindings → []).
+         await environment.bindPackageStorageServeBindings(
+            packageName,
+            entries,
          );
          recordAutoLoadOutcome("success");
          logger.info("Auto-run: loaded manifest into package models", {
@@ -839,7 +858,9 @@ export class MaterializationService {
             // refuses an ineligible source into the tier itself, not on trust.
             // (Auto-run already gated pre-getSQL in deriveSelfInstructions; a
             // second call here is idempotent and covers the orchestrated path.)
-            if (instruction.destination) {
+            // Skipped when the mode is off: the kill switch ignores a
+            // CP-supplied destination too and builds path C.
+            if (instruction.destination && getPersistStorageMode() !== "off") {
                assertMaterializationEligible(persistSource);
             }
 
@@ -882,7 +903,8 @@ export class MaterializationService {
       // build-scoped session (never on the source or serve connection). Diverges
       // fully from the in-warehouse CTAS below — different engine, credential
       // federation, and a captured authoritative schema for the serve transform.
-      if (instruction.destination) {
+      // Gated by the kill switch: when off, ignore a destination and build path C.
+      if (instruction.destination && getPersistStorageMode() !== "off") {
          return this.buildOneSourceIntoStorage(
             persistSource,
             instruction,

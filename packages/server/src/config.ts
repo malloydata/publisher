@@ -480,6 +480,53 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
    );
 };
 
+/**
+ * The three `#@ persist storage=<conn>` deployment modes, read from
+ * `PERSIST_STORAGE_MODE`. This is a runtime kill switch — flipping DOWN must
+ * never fail an already-loaded package, only change how `storage=` is honored:
+ *
+ *  - `off` (default): `storage=` is inert. Sources build into (path C) and serve
+ *    from their own warehouse exactly as before the feature existed; a source
+ *    that declares `storage=` is served live and surfaced as a package warning.
+ *    The safe resting state and the incident kill switch.
+ *  - `write-only`: builds materialize into the storage destination (so operators
+ *    can measure and inspect the tables), but the serve path still ignores
+ *    `storage=` and serves live. The de-risking / measurement rung.
+ *  - `on`: full end to end — build into storage AND serve via the virtual-source
+ *    transform, with a per-query fallback to live for anything the transform
+ *    cannot yet serve.
+ *
+ * The publisher NEVER hard-fails a package on `storage=` in any mode; any
+ * stricter "refuse a new package that uses storage= while off" policy lives in
+ * the orchestrator, not here (the mechanism/policy split).
+ */
+export type PersistStorageMode = "off" | "write-only" | "on";
+
+const PERSIST_STORAGE_MODES: readonly PersistStorageMode[] = [
+   "off",
+   "write-only",
+   "on",
+];
+
+/**
+ * Resolve the `storage=` deployment mode from `PERSIST_STORAGE_MODE`. Defaults
+ * to `off` (feature dark) when unset/empty; loud-fails on an unrecognized value
+ * so a typo can't silently leave the fleet in a surprising mode.
+ */
+export const getPersistStorageMode = (): PersistStorageMode => {
+   const raw = process.env.PERSIST_STORAGE_MODE;
+   if (raw === undefined || raw.trim() === "") return "off";
+   const value = raw.trim();
+   if ((PERSIST_STORAGE_MODES as readonly string[]).includes(value)) {
+      return value as PersistStorageMode;
+   }
+   throw new Error(
+      `PERSIST_STORAGE_MODE must be one of ${PERSIST_STORAGE_MODES.join(
+         " | ",
+      )} (got ${JSON.stringify(raw)})`,
+   );
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

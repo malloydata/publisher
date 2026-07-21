@@ -44,8 +44,11 @@ import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
+   ManifestEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
+import { getPersistStorageMode } from "../config";
+import { deriveServeBindings } from "./materialization_serve_transform";
 import { computePackageBuildPlan } from "./build_plan";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
@@ -124,6 +127,13 @@ export class Package {
    // freshness fields so the serve path can re-evaluate `age vs window` per
    // query. Undefined when the package is serving live (unbound).
    private freshnessEntries: FreshnessManifest | undefined;
+   // `storage=` serve bindings (materialized-into-storage sources), derived from
+   // a build's full manifest entries and pushed onto each Model so a query can
+   // route through the virtual-source serve transform. Distinct from the
+   // same-connection freshnessEntries above (which the manifest substitution
+   // uses); a storage source serves cross-connection via bindings, not the
+   // manifest. Empty ⇒ no storage serve routing.
+   private storageServeBindings: ReturnType<typeof deriveServeBindings> = [];
    // Memoized freshness-filtered manifest for the serve path. Almost all queries
    // in a window share the same included set, so this is recomputed only when a
    // retained entry actually crosses its window (`validUntil`, the next
@@ -632,8 +642,14 @@ export class Package {
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
       }
-      if (this.renderTagWarnings.length > 0) {
-         metadata.warnings = [...this.renderTagWarnings];
+      // Render-tag findings and storage= warnings share the one operator-facing
+      // warnings array (the {model, target, message} shape carries both).
+      const allWarnings = [
+         ...this.renderTagWarnings,
+         ...this.storageWarnings(),
+      ];
+      if (allWarnings.length > 0) {
+         metadata.warnings = allWarnings;
       }
       return metadata;
    }
@@ -733,6 +749,29 @@ export class Package {
    }
 
    /**
+    * Bind (or clear) the package's `storage=` serve bindings from a build's full
+    * manifest entries, and push them onto every loaded model so a query can be
+    * routed through the virtual-source serve transform. Called by the build's
+    * post-run distribution with the full {@link ManifestEntry} map (which
+    * carries `storageConnectionName` + captured `schema`); only entries that
+    * were materialized into a storage destination produce a binding. Re-applied
+    * on model reload via {@link pushStorageServeBindingsToModels}.
+    */
+   public bindStorageServeBindings(
+      entries: Record<string, ManifestEntry>,
+   ): void {
+      this.storageServeBindings = deriveServeBindings(entries);
+      this.pushStorageServeBindingsToModels();
+   }
+
+   /** Push the current storage serve bindings onto every loaded model. */
+   private pushStorageServeBindingsToModels(): void {
+      for (const model of this.models.values()) {
+         model.setServeBindings(this.storageServeBindings);
+      }
+   }
+
+   /**
     * Declared `explores` (publisher.json) that don't resolve to a real
     * `.malloy` model in this package, each with an actionable reason. Empty
     * when explores is absent/empty or every entry resolves.
@@ -815,6 +854,44 @@ export class Package {
     * Strict at publish (package.controller), warn-only at load/reload
     * (loadViaWorker) — same split as explores.
     */
+   /**
+    * Operator-facing warnings for `#@ persist storage=<conn>` sources whose
+    * storage annotation is NOT being honored on the serve path, so a degraded
+    * source is visible on `/status` rather than silently serving live. Emitted
+    * per {@link getPersistStorageMode}:
+    *  - `off`: the annotation is ignored entirely (serving live from the source
+    *    warehouse) — the kill-switch resting state.
+    *  - `write-only`: the source materializes into storage but the serve path is
+    *    not routed to the materialized table (served live).
+    *  - `on`: no warning — the source is (or falls back to being) served per the
+    *    transform; per-query fallback is a query-time event, not a load warning.
+    * Read straight off the compiled build plan's `annotationFields.storage`
+    * (undefined when the package declares no persist sources).
+    */
+   private storageWarnings(): ApiPackageWarning[] {
+      const mode = getPersistStorageMode();
+      if (mode === "on" || !this.buildPlan?.sources) return [];
+      const warnings: ApiPackageWarning[] = [];
+      for (const source of Object.values(this.buildPlan.sources)) {
+         const storage = source.annotationFields?.storage?.trim();
+         if (!storage || storage === "source") continue;
+         const message =
+            mode === "off"
+               ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+                 `the annotation is ignored and the source is served live from ` +
+                 `its own warehouse.`
+               : `is materialized into storage "${storage}" but ` +
+                 `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+                 `routed to the materialized table (served live).`;
+         warnings.push({
+            model: source.modelPath ?? "",
+            target: source.name,
+            message,
+         });
+      }
+      return warnings;
+   }
+
    public persistencePolicyWarnings(): string[] {
       const warnings: string[] = [];
       const sources = this.buildPlan?.sources
@@ -1144,6 +1221,9 @@ export class Package {
          }
       }
       this.models = nextModels;
+      // The freshly-compiled models start with no serve bindings; re-apply the
+      // package's current storage= bindings so a reload preserves serve routing.
+      this.pushStorageServeBindingsToModels();
       this.renderTagWarnings = renderTagWarnings;
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate

@@ -18,6 +18,8 @@ import { quoteTablePath } from "./quoting";
  * strings), which the transform declares verbatim — see {@link buildServeShapeModel}.
  */
 export interface ServeBinding {
+   /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
+   sourceName: string;
    /** The DuckDB/DuckLake connection the physical table lives in. */
    connectionName: string;
    /** The virtualMap handle for this source (its build-posture identity). */
@@ -50,13 +52,21 @@ export function deriveServeBindings(
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
    for (const entry of Object.values(entries)) {
-      if (!entry.storageConnectionName || !entry.physicalTableName) continue;
+      // Need the source name to rebind it, plus a storage destination + table.
+      if (
+         !entry.sourceName ||
+         !entry.storageConnectionName ||
+         !entry.physicalTableName
+      ) {
+         continue;
+      }
       // The wire Column has optional name/type; keep only complete columns.
       const schema = (entry.schema ?? [])
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string }));
       if (schema.length === 0) continue;
       bindings.push({
+         sourceName: entry.sourceName,
          connectionName: entry.storageConnectionName,
          virtualHandle: entry.sourceEntityId,
          tablePath: entry.physicalTableName,
@@ -194,6 +204,47 @@ ${fields}
 source: ${sourceName} is ${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}
 `;
    return { modelText, shapeTypeName };
+}
+
+/**
+ * The `type:` + `source:` fragment that rebinds ONE materialized source to its
+ * virtual form (no flag line — callers emit `##! experimental.virtual_source`
+ * once for the whole model).
+ */
+function serveShapeFragment(binding: ServeBinding): string {
+   const shapeTypeName = `${binding.sourceName}__shape`;
+   const fields = binding.schema
+      .map((c) => `   ${emitFieldName(c.name)}::${duckdbTypeToMalloy(c.type)}`)
+      .join(",\n");
+   return (
+      `type: ${shapeTypeName} is {\n${fields}\n}\n` +
+      `source: ${binding.sourceName} is ${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`
+   );
+}
+
+/**
+ * Generate ONE transient serve-shape model rebinding every supplied
+ * materialized source to its virtual form — the model the serve path compiles
+ * queries against when `PERSIST_STORAGE_MODE=on`. The `##! experimental.virtual_source`
+ * flag is emitted once. Each source declares the authoritative captured schema
+ * (see {@link buildServeShapeModel} for why the declared schema is trusted on
+ * faith and must match the built table).
+ *
+ * Coverage note: this rebinds each source's BASE to the virtual table with the
+ * captured columns — the leaf/simple-semantic-layer case. A source whose queries
+ * rely on measures/dims/joins defined on it in the author's model is not
+ * reproduced here; the serve path compiles the caller's query against this model
+ * and, if it does not compile (a refinement this shape lacks), falls back to
+ * serving live. Widening this to preserve rich extend blocks is the
+ * base-swap-preserve-refinements follow-on.
+ */
+export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
+   modelText: string;
+} {
+   const fragments = bindings.map(serveShapeFragment).join("\n");
+   return {
+      modelText: `##! experimental.virtual_source\n${fragments}\n`,
+   };
 }
 
 /**

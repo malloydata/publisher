@@ -4,6 +4,7 @@ import {
    Connection,
    FixedConnectionMap,
    GivenValue,
+   InMemoryURLReader,
    isBasicArray,
    isJoined,
    isRepeatedRecord,
@@ -19,6 +20,7 @@ import {
    Runtime,
    type FieldDef,
    type SourceDef,
+   type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -46,7 +48,13 @@ import {
    NotQueryableError,
    PayloadTooLargeError,
 } from "../errors";
+import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
+import {
+   buildServeShapeModelForBindings,
+   buildVirtualMap,
+   type ServeBinding,
+} from "./materialization_serve_transform";
 import { deserializeError } from "../package_load/package_load_pool";
 import type {
    SerializedModel,
@@ -164,6 +172,20 @@ export class Model {
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
+   /**
+    * Connection config to compile a transient serve-shape model against, when a
+    * query is routed through the `storage=` virtual-source transform. Captured
+    * at hydration (fromSerialized) so serve can build a fresh Runtime.
+    */
+   private serveMalloyConfig?: ModelConnectionInput;
+   /**
+    * The package's `storage=` serve bindings, set by the owning Package when a
+    * build/manifest binds materialized-into-storage sources. Empty ⇒ no serve
+    * routing (the common case; the serve path is unchanged).
+    */
+   private serveBindings: ServeBinding[] = [];
+   /** Memoized serve-shape materializer, keyed by the bound source set. */
+   private serveShapeCache?: { key: string; materializer: ModelMaterializer };
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -1275,7 +1297,7 @@ export class Model {
             ? hydrateNotebookCells(runtime, data.notebookCells)
             : undefined;
 
-      return new Model(
+      const model = new Model(
          packageName,
          data.modelPath,
          dataStyles,
@@ -1291,6 +1313,10 @@ export class Model {
          givens,
          modelInfo,
       );
+      // Capture the config so a storage= serve query can compile a transient
+      // serve-shape model against the same connections.
+      model.setServeMalloyConfig(malloyConfig);
+      return model;
    }
 
    /**
@@ -1724,6 +1750,68 @@ export class Model {
       }
    }
 
+   /** Capture the config used to compile a transient serve-shape model. */
+   public setServeMalloyConfig(config: ModelConnectionInput): void {
+      this.serveMalloyConfig = config;
+   }
+
+   /**
+    * Set (or clear) this model's `storage=` serve bindings. Invalidates the
+    * memoized serve-shape materializer so the next routed query recompiles
+    * against the new binding set.
+    */
+   public setServeBindings(bindings: ServeBinding[]): void {
+      this.serveBindings = bindings;
+      this.serveShapeCache = undefined;
+   }
+
+   /**
+    * Compile an untrusted query against the transient serve-shape model that
+    * rebinds this package's materialized-into-storage sources to virtual sources
+    * on their storage connection. Returns the runnable and the `virtualMap` that
+    * binds each virtual handle to its physical table.
+    *
+    * Throwing is the eligibility signal: a query that references a refinement
+    * the serve shape does not reproduce (a measure/dim/join defined on the
+    * source in the author's model, or a source with no binding) fails to compile
+    * here, and {@link getQueryResults} falls back to serving it live. The
+    * compiled materializer is memoized per binding set (the serve-variant cache).
+    */
+   private async loadServeShapeQuery(queryString: string): Promise<{
+      runnable: QueryMaterializer;
+      virtualMap: VirtualMap;
+   }> {
+      const key = this.serveBindings
+         .map((b) => `${b.sourceName}@${b.connectionName}/${b.virtualHandle}`)
+         .sort()
+         .join("|");
+      if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
+         const { modelText } = buildServeShapeModelForBindings(
+            this.serveBindings,
+         );
+         const root = "file:///storage-serve-shape/";
+         const url = `${root}shape.malloy`;
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(new Map([[url, modelText]])),
+            config: Model.toMalloyConfig(this.serveMalloyConfig!),
+         });
+         const materializer = runtime.loadModel(new URL(url), {
+            importBaseURL: new URL(root),
+         });
+         this.serveShapeCache = { key, materializer };
+      }
+      const virtualMap = buildVirtualMap(this.serveBindings);
+      const runnable =
+         this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
+      // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
+      // unbound source, a bad connection) surfaces HERE — Malloy compiles lazily,
+      // so without this the error would escape at prepare/run instead of at the
+      // caller's try, defeating the safe fallback. Cheap relative to the run. The
+      // serve shape is pure virtual sources, so no buildManifest is needed.
+      await runnable.getSQL({ virtualMap });
+      return { runnable, virtualMap };
+   }
+
    public async getQueryResults(
       sourceName?: string,
       queryName?: string,
@@ -1761,6 +1849,10 @@ export class Model {
       }
 
       let runnable: QueryMaterializer;
+      // Set when this query is routed through the `storage=` serve-shape
+      // transform; threaded into prepare + run so the virtual sources resolve to
+      // their physical tables. Undefined ⇒ served live (the default path).
+      let serveVirtualMap: VirtualMap | undefined;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
@@ -1852,6 +1944,38 @@ export class Model {
          // `sourceName`/`queryName` pair are untrusted, so both compile here;
          // only author-curated notebook cells use the unrestricted `loadQuery`.
          runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
+
+         // storage= serve routing: when enabled and this package has sources
+         // materialized into a storage destination, try compiling the query
+         // against the transient serve-shape model (materialized sources rebound
+         // to virtual sources on their storage connection). If it compiles, we
+         // serve from the materialized tables via the virtualMap; if it does not
+         // (a refinement the shape lacks, or an unbound source), we keep the
+         // original runnable and serve live — safe fallback, no behavior change
+         // for anything the transform can't yet reproduce. Off / write-only and
+         // packages with no storage bindings skip this entirely.
+         if (
+            getPersistStorageMode() === "on" &&
+            this.serveBindings.length > 0 &&
+            this.serveMalloyConfig
+         ) {
+            try {
+               const shaped = await this.loadServeShapeQuery(queryString);
+               runnable = shaped.runnable;
+               serveVirtualMap = shaped.virtualMap;
+            } catch (shapeErr) {
+               logger.debug(
+                  "storage serve-shape ineligible for this query; serving live",
+                  {
+                     modelPath: this.modelPath,
+                     error:
+                        shapeErr instanceof Error
+                           ? shapeErr.message
+                           : String(shapeErr),
+                  },
+               );
+            }
+         }
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
@@ -1946,6 +2070,7 @@ export class Model {
                await runnable.getPreparedResult({
                   givens: querySurfaceGivens,
                   buildManifest,
+                  virtualMap: serveVirtualMap,
                })
             ).resultExplore.limit,
             { defaultLimit: getDefaultQueryRowLimit(), maxRows },
@@ -1957,6 +2082,7 @@ export class Model {
             givens: querySurfaceGivens,
             abortSignal,
             buildManifest,
+            virtualMap: serveVirtualMap,
          });
       } catch (error) {
          // Record error metrics
