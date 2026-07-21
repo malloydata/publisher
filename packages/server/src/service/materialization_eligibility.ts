@@ -1,5 +1,6 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
+import { recordEligibilityRefused } from "../materialization_metrics";
 
 /**
  * Compile-time eligibility gate for materializing a persist source into a
@@ -46,6 +47,7 @@ export function assertMaterializationEligible(
 
    const unbound = unboundParameterNames(persistSource);
    if (unbound.length > 0) {
+      recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
@@ -58,6 +60,7 @@ export function assertMaterializationEligible(
    }
 
    if (referencesGiven(persistSource)) {
+      recordEligibilityRefused("given");
       throw new MaterializationEligibilityError({
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +

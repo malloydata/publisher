@@ -18,6 +18,7 @@ import {
    recordMaterializationRun,
    recordSourceBuildDuration,
    recordSourcesOutcome,
+   recordStorageBuildFailure,
 } from "../materialization_metrics";
 import {
    BuildInstruction,
@@ -1054,7 +1055,7 @@ export class MaterializationService {
       manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
-      recordSourceBuildDuration(durationMs);
+      recordSourceBuildDuration(durationMs, "in_warehouse");
       logger.info(`Built materialized source ${persistSource.name}`, {
          physicalTableName,
          durationMs,
@@ -1125,6 +1126,7 @@ export class MaterializationService {
             sourceConnection,
             destinationConnection,
          );
+         recordStorageBuildFailure(destinationName);
          logger.warn("Storage materialization build failed", {
             sourceName: persistSource.name,
             destinationName,
@@ -1156,7 +1158,7 @@ export class MaterializationService {
       manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
-      recordSourceBuildDuration(durationMs);
+      recordSourceBuildDuration(durationMs, "storage");
       logger.info(
          `Built materialized source ${persistSource.name} into storage`,
          {
@@ -1300,14 +1302,14 @@ export class MaterializationService {
                   physicalTableName,
                   environmentPath: environment.getEnvironmentPath(),
                });
-               recordDropTables("success");
+               recordDropTables("success", "storage");
                logger.info("Dropped materialized storage table on delete", {
                   materializationId: m.id,
                   physicalTableName,
                   storageConnectionName: entry.storageConnectionName,
                });
             } catch (err) {
-               recordDropTables("failure");
+               recordDropTables("failure", "storage");
                logger.warn("Failed to drop a storage-materialized table", {
                   materializationId: m.id,
                   physicalTableName,
@@ -1343,14 +1345,14 @@ export class MaterializationService {
                   dialect,
                )}`,
             );
-            recordDropTables("success");
+            recordDropTables("success", "in_warehouse");
             logger.info("Dropped materialized table on delete", {
                materializationId: m.id,
                physicalTableName,
                connectionName,
             });
          } catch (err) {
-            recordDropTables("failure");
+            recordDropTables("failure", "in_warehouse");
             logger.warn("Failed to drop materialized table on delete", {
                materializationId: m.id,
                physicalTableName,

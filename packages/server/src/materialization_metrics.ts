@@ -19,6 +19,19 @@ export type MaterializationMode = "auto" | "orchestrated";
 export type MaterializationOutcome = "success" | "failed" | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
+/**
+ * Which engine a source build / table drop ran against: the source's own
+ * warehouse (path C, in-warehouse CTAS) or a DuckDB/DuckLake `storage=`
+ * destination (federated passthrough CTAS). The two have very different latency
+ * and failure profiles, so build/drop metrics are labeled with it rather than
+ * pooling the two into one series.
+ */
+export type StorageBuildEngine = "storage" | "in_warehouse";
+/** Why a source was refused materialization into a storage destination. */
+export type EligibilityRefusalReason =
+   | "free_parameter"
+   | "given"
+   | "not_duckdb_portable";
 
 const resetHooks: (() => void)[] = [];
 
@@ -103,6 +116,27 @@ const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
    "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback').",
 );
+const storageBuildFailureCounter = lazyCounter(
+   "publisher_storage_build_failures_total",
+   "storage= build failures (federation/passthrough/attach/CTAS), distinct from " +
+      "in-warehouse build failures. Label: destination (connection name).",
+);
+const eligibilityRefusedCounter = lazyCounter(
+   "publisher_materialization_eligibility_refused_total",
+   "storage= materialization-eligibility refusals. Label: reason " +
+      "('free_parameter'|'given'|'not_duckdb_portable').",
+);
+const serveShapeTierDropCounter = lazyCounter(
+   "publisher_storage_serve_shape_tier_drop_total",
+   "storage serve-shape compile escalations: a refinement tier failed to " +
+      "compile and the riskiest category was dropped. Label: tier (the failed " +
+      "tier index, 0=full).",
+);
+const serveShapeTypeFallbackCounter = lazyCounter(
+   "publisher_storage_serve_shape_type_fallback_total",
+   "Captured DuckDB column types mapped to json in the serve shape (type " +
+      "fidelity loss). Label: kind ('array'|'unrecognized').",
+);
 
 /**
  * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
@@ -184,14 +218,67 @@ export function recordManifestBindDegraded(): void {
    manifestBindDegradedCounter().add(1);
 }
 
-/** Record the wall-clock duration of building one persist source's table. */
-export function recordSourceBuildDuration(durationMs: number): void {
-   sourceBuildDuration().record(durationMs);
+/**
+ * Record the wall-clock duration of building one persist source's table,
+ * labeled by engine so the DuckDB passthrough path and the in-warehouse CTAS
+ * path (very different latency profiles) don't pool into one series.
+ */
+export function recordSourceBuildDuration(
+   durationMs: number,
+   engine: StorageBuildEngine,
+): void {
+   sourceBuildDuration().record(durationMs, { engine });
 }
 
 /** Record a best-effort physical-table drop on materialization delete. */
-export function recordDropTables(outcome: "success" | "failure"): void {
-   dropTablesCounter().add(1, { outcome });
+export function recordDropTables(
+   outcome: "success" | "failure",
+   engine: StorageBuildEngine,
+): void {
+   dropTablesCounter().add(1, { outcome, engine });
+}
+
+/**
+ * Record a `storage=` build failure (federation / passthrough / attach / CTAS),
+ * counted separately from in-warehouse build failures because the storage path
+ * has its own failure modes and destination axis.
+ */
+export function recordStorageBuildFailure(destination: string): void {
+   storageBuildFailureCounter().add(1, { destination });
+}
+
+/**
+ * Record a materialization-eligibility refusal (a source that can't be safely
+ * materialized into a storage destination). The `given` reason is a security
+ * refusal (a frozen given-filtered table would leak rows across tenants); worth
+ * tracking how often authors attempt it.
+ */
+export function recordEligibilityRefused(
+   reason: EligibilityRefusalReason,
+): void {
+   eligibilityRefusedCounter().add(1, { reason });
+}
+
+/**
+ * Record a serve-shape compile escalation: the refinement tier at `failedTier`
+ * did not compile, so the riskiest category was dropped and the shape retried.
+ * A systematically-dropping source tells authors which refinements aren't
+ * servable from storage.
+ */
+export function recordServeShapeTierDrop(failedTier: number): void {
+   serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
+}
+
+/**
+ * Record a captured DuckDB column type that could not map onto a Malloy basic
+ * type and was carried as json in the serve shape — a type-fidelity loss
+ * specific to the storage tier. `array` = a collection/array type; `unrecognized`
+ * = an unknown/nested/struct/enum/blob type.
+ */
+export function recordServeShapeTypeFallback(
+   kind: "array" | "unrecognized",
+): void {
+   serveShapeTypeFallbackCounter().add(1, { kind });
 }
 
 /**

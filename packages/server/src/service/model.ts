@@ -29,7 +29,10 @@ import {
 } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
 import { publisherMeter } from "../telemetry";
-import { recordStorageServeRouting } from "../materialization_metrics";
+import {
+   recordServeShapeTierDrop,
+   recordStorageServeRouting,
+} from "../materialization_metrics";
 import * as fs from "fs/promises";
 import { readFileSync } from "fs";
 import { createRequire } from "module";
@@ -1867,6 +1870,7 @@ export class Model {
             await materializer.getModel();
             return materializer;
          } catch (err) {
+            recordServeShapeTierDrop(tier);
             logger.warn(
                "Storage serve shape failed to compile; dropping the riskiest refinement category and retrying",
                {

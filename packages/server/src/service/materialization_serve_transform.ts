@@ -6,6 +6,10 @@ import {
 } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import {
+   recordEligibilityRefused,
+   recordServeShapeTypeFallback,
+} from "../materialization_metrics";
 import type { ManifestEntry } from "../storage/DatabaseInterface";
 import { quoteTablePath } from "./quoting";
 
@@ -180,6 +184,7 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
    const raw = duckdbType.trim();
    // Arrays / nested collections carry as json (lossy but safe) for now.
    if (/\[\s*\]/.test(raw)) {
+      recordServeShapeTypeFallback("array");
       logger.warn(
          "Mapping DuckDB array/collection type to json for serve shape",
          {
@@ -241,6 +246,7 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
       case "BOOL":
          return "boolean";
       default:
+         recordServeShapeTypeFallback("unrecognized");
          logger.warn(
             "Unrecognized DuckDB type; mapping to json for serve shape",
             {
@@ -649,6 +655,7 @@ export async function assertServesInDuckDB(
          })
          .getModel();
    } catch (err) {
+      recordEligibilityRefused("not_duckdb_portable");
       throw new MaterializationEligibilityError({
          message:
             `Source '${sourceName}' cannot be served from its storage ` +
