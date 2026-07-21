@@ -465,11 +465,14 @@ debug: storage serve-shape ineligible for this query; serving live { modelPath: 
 Fallback means turning the feature on can never make a query wrong — at worst it
 serves live, exactly as it would with the feature off.
 
-### Eligibility refusals (build time, HTTP 422)
+### Eligibility refusals (refused at build time)
 
 Some sources can't be safely materialized into a shared store, and Publisher
-refuses them at build time rather than producing a subtly wrong table. Add a
-given-filtered persist source and materialize it:
+refuses them at build time rather than producing a subtly wrong table. In the
+**auto-run** flow shown here the refusal surfaces as a **failed materialization**
+(`status: FAILED`, reason in `error`); the **orchestrated** build path (a
+caller-supplied `buildInstructions`) returns the same refusal synchronously as
+**HTTP 422**. Add a given-filtered persist source and materialize it:
 
 ```bash
 cat > "$ENVDIR/persist-tutorial/givens.malloy" <<'MALLOY'
@@ -529,6 +532,14 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 
 Remove `paramtest.malloy` and reload to continue.
 
+A third check runs **after** the build, once the table's authoritative schema is
+captured: the served shape must **compile in DuckDB** (the served table lives
+there, even for a warehouse-authored source). A source whose materialized shape
+isn't DuckDB-portable is refused the same way — a serve-time error turned into a
+build-time refusal. In practice it rarely fires, because the served shape is
+just the stored columns; it's the floor that guarantees the captured schema
+forms a valid DuckDB source.
+
 ---
 
 ## 8. Observability recap
@@ -546,6 +557,11 @@ Everything you need is on the package status and the logs:
   with `storageConnectionName` and the captured `schema`.
 - Server logs → `info` when a query serves from storage; `debug` when a query
   falls back to live.
+- Metrics (OpenTelemetry, under the `publisher` meter):
+  - `publisher_storage_serve_routing_total{outcome=storage|live_fallback}` — the
+    serve hit rate; the headline signal for "is the tier actually serving?"
+  - `malloy_model_query_duration` carries a `served_from=storage|live` attribute,
+    so storage-served vs live-served query latency compare side by side.
 
 `PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a
