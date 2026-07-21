@@ -465,6 +465,53 @@ debug: storage serve-shape ineligible for this query; serving live { modelPath: 
 Fallback means turning the feature on can never make a query wrong — at worst it
 serves live, exactly as it would with the feature off.
 
+### Joining and chaining sources
+
+**Joining non-persisted sources is the simple case.** A persist source whose
+query joins plain (non-persist) sources materializes the _joined result_ — the
+join runs once, at build time, in the source warehouse, and only the result
+lands in storage. You do **not** persist the joined-in sources:
+
+```malloy
+source: orders is orders_pg.table('public.orders')
+source: customers is orders_pg.table('public.customers') // NOT persisted
+
+source: orders_with_region is orders extend {
+  join_one: c is customers on customer_id = c.customer_id
+}
+#@ persist name="orders_by_region" storage=lake   // only this is persisted
+source: orders_by_region is orders_with_region -> {
+  group_by: region is c.region
+  aggregate: total_amount is amount.sum()
+}
+```
+
+`orders_by_region` materializes as a flat `region, total_amount` table and serves
+from storage; `orders`/`customers` are just its build-time inputs. (This assumes
+the joined sources share one connection — Malloy can't join across two warehouses
+in a single query, with or without `storage=`.)
+
+**Chaining persist sources works too.** A persist source can read _another_
+persist source:
+
+```malloy
+#@ persist name="daily_orders" storage=lake
+source: daily_orders is orders -> { group_by: order_date; aggregate: total_amount is amount.sum() }
+
+#@ persist name="monthly_orders" storage=lake
+source: monthly_orders is daily_orders -> { group_by: order_month is order_date.month; aggregate: monthly_total is total_amount.sum() }
+```
+
+Both materialize, and each serves from its own table. Today the downstream
+(`monthly_orders`) is built by **recomputing from raw** (the upstream is inlined
+into its build query) rather than reading the upstream's materialized table, so
+its numbers can drift from the upstream's if the two are built at different
+times. To keep a chain consistent, rebuild the whole package together
+(`forceRefresh`). Under `strictUpstreams` (orchestrated builds) a chained source
+is refused rather than silently recomputed. Reusing the upstream's materialized
+table directly (so a chain reuses work and stays consistent by construction) is
+a tracked enhancement.
+
 ### Eligibility refusals (refused at build time)
 
 Some sources can't be safely materialized into a shared store, and Publisher
