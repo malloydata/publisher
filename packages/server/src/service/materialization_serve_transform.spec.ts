@@ -52,6 +52,7 @@ describe("duckdbTypeToMalloy", () => {
 describe("buildServeShapeModel", () => {
    it("emits the flag, a double-colon type shape, and the virtual source line", () => {
       const binding: ServeBinding = {
+         sourceName: "mz_orders",
          connectionName: "lake",
          virtualHandle: "mz_orders__g1",
          tablePath: "analytics.mz_orders",
@@ -78,6 +79,7 @@ describe("buildServeShapeModel", () => {
 
    it("backtick-quotes a field name that is not a bare identifier", () => {
       const { modelText } = buildServeShapeModel("s", {
+         sourceName: "s",
          connectionName: "lake",
          virtualHandle: "h",
          tablePath: "t",
@@ -91,12 +93,14 @@ describe("buildVirtualMap", () => {
    it("groups handles by connection and quotes the table path for DuckDB", () => {
       const map = buildVirtualMap([
          {
+            sourceName: "a",
             connectionName: "lake",
             virtualHandle: "h1",
             tablePath: "analytics.a",
             schema: [],
          },
          {
+            sourceName: "b",
             connectionName: "lake",
             virtualHandle: "h2",
             tablePath: "b",
@@ -134,6 +138,7 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
          type: String(r.column_type),
       }));
       return {
+         sourceName: "mz",
          connectionName: "duckdb",
          virtualHandle: "mz_handle",
          tablePath: "mz_physical",
@@ -175,6 +180,7 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
       // use a connection name that does not resolve — the virtual source's
       // connection must exist, so an unknown connection fails compilation.
       const binding: ServeBinding = {
+         sourceName: "mz",
          connectionName: "does_not_exist",
          virtualHandle: "h",
          tablePath: "t",
@@ -191,6 +197,7 @@ describe("deriveServeBindings", () => {
       const bindings = deriveServeBindings({
          se_storage: {
             sourceEntityId: "se_storage",
+            sourceName: "mz",
             physicalTableName: "lake.mz_g003",
             connectionName: "wh",
             storageConnectionName: "lake",
@@ -203,6 +210,7 @@ describe("deriveServeBindings", () => {
             // In-warehouse (no storage): served via the manifest, not the
             // transform — must NOT produce a binding.
             sourceEntityId: "se_pathC",
+            sourceName: "orders",
             physicalTableName: "orders_v1",
             connectionName: "wh",
             realization: "COPY",
@@ -211,6 +219,7 @@ describe("deriveServeBindings", () => {
          se_noschema: {
             // Storage but no captured schema — skipped (can't declare a shape).
             sourceEntityId: "se_noschema",
+            sourceName: "x",
             physicalTableName: "lake.x",
             connectionName: "wh",
             storageConnectionName: "lake",
@@ -221,6 +230,7 @@ describe("deriveServeBindings", () => {
       });
       expect(bindings).toEqual([
          {
+            sourceName: "mz",
             connectionName: "lake",
             virtualHandle: "se_storage",
             tablePath: "lake.mz_g003",
