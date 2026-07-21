@@ -679,6 +679,25 @@ export class EnvironmentStore {
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
                         );
+                        // Re-establish storage= serve bindings when a package
+                        // loads, from its latest successful materialization —
+                        // so serving survives a restart, not only a fresh build.
+                        const envId = dbEnvironment.id;
+                        environmentInstance.setStorageBindingResolver(
+                           async (packageName) => {
+                              const runs =
+                                 await repository.listMaterializations(
+                                    envId,
+                                    packageName,
+                                 );
+                              const latest = runs.find(
+                                 (m) =>
+                                    m.status === "MANIFEST_FILE_READY" &&
+                                    m.manifest?.entries,
+                              );
+                              return latest?.manifest?.entries ?? {};
+                           },
+                        );
 
                         // Get packages from database
                         const packages = await repository.listPackages(

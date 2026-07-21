@@ -167,6 +167,15 @@ export class Environment {
    private apiConnections: ApiConnection[];
    private environmentPath: string;
    private environmentName: string;
+   // Resolves a package's latest persisted storage-materialization manifest
+   // entries (with storageConnectionName + captured schema), so `storage=` serve
+   // bindings are re-established when a package (re)loads — e.g. after a worker
+   // restart — instead of only when a build's auto-load runs. Injected by the
+   // EnvironmentStore, which owns the materialization repository. Undefined ⇒ no
+   // re-bind on load (bindings then depend on a fresh build, the old behavior).
+   private storageBindingResolver?: (
+      packageName: string,
+   ) => Promise<Record<string, ManifestEntry>>;
    public metadata: ApiEnvironment;
    // The shared memory governor that consults process RSS. Optional —
    // when null the gate is a no-op and the environment behaves exactly
@@ -803,6 +812,40 @@ export class Environment {
    }
 
    /**
+    * Inject the resolver that fetches a package's latest persisted storage
+    * materialization entries (see {@link storageBindingResolver}).
+    */
+   public setStorageBindingResolver(
+      resolver: (packageName: string) => Promise<Record<string, ManifestEntry>>,
+   ): void {
+      this.storageBindingResolver = resolver;
+   }
+
+   /**
+    * Re-establish a package's `storage=` serve bindings from its latest
+    * persisted materialization when it (re)loads, so serving survives a restart
+    * (bindings are otherwise in-memory, set only by a build's auto-load). Runs
+    * beside {@link bindManifestIfConfigured} — same "bind serve state on load"
+    * step, for the cross-connection tier. Best-effort: a lookup failure logs and
+    * leaves the package serving live (a subsequent build will bind it).
+    */
+   private async rebindStorageServeBindings(pkg: Package): Promise<void> {
+      if (!this.storageBindingResolver) return;
+      const packageName = pkg.getPackageName();
+      try {
+         const entries = await this.storageBindingResolver(packageName);
+         if (Object.keys(entries).length > 0) {
+            pkg.bindStorageServeBindings(entries);
+         }
+      } catch (err) {
+         logger.warn("Failed to rebind storage serve bindings on load", {
+            packageName,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+
+   /**
     * Choke-point check called from every code path that would allocate
     * a *new* package into the in-memory map (lazy load on cache miss,
     * explicit reload, `addPackage`). Throws HTTP 503 when the governor
@@ -929,6 +972,7 @@ export class Environment {
             () => this.malloyConfig.malloyConfig,
          );
          await this.bindManifestIfConfigured(_package);
+         await this.rebindStorageServeBindings(_package);
          if (existingPackage !== undefined && reload) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
                existingPackage.getMalloyConfig().shutdown("close"),
@@ -1209,6 +1253,7 @@ export class Environment {
          // rollback window: a manifest that can't be fetched must not undo an
          // otherwise-successful install (the package serves live instead).
          await this.bindManifestIfConfigured(newPackage);
+         await this.rebindStorageServeBindings(newPackage);
 
          this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
