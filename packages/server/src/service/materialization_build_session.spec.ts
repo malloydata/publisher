@@ -68,7 +68,6 @@ describe("buildSourceIntoStorage gating (no session I/O before the gates)", () =
             sourceConnection: okSource,
             buildSQL: "SELECT 1",
             physicalTableName: "t",
-            stagingTableName: "t_stg",
             environmentPath: "/tmp/env",
          }),
       ).rejects.toThrow(/must be one of/i);
@@ -88,7 +87,6 @@ describe("buildSourceIntoStorage gating (no session I/O before the gates)", () =
             } as ApiConnection,
             buildSQL: "SELECT 1",
             physicalTableName: "t",
-            stagingTableName: "t_stg",
             environmentPath: "/tmp/env",
          }),
       ).rejects.toThrow(/query-passthrough build supports/i);

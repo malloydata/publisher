@@ -651,6 +651,15 @@ export class Package {
       if (allWarnings.length > 0) {
          metadata.warnings = allWarnings;
       }
+      // Surface what's bound for the cross-connection storage serve so a caller
+      // can confirm a materialized source is routed (vs. inferring from logs).
+      if (this.storageServeBindings.length > 0) {
+         metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
+            sourceName: b.sourceName,
+            storageConnectionName: b.connectionName,
+            tablePath: b.tablePath,
+         }));
+      }
       return metadata;
    }
 
