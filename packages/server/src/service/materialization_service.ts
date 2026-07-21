@@ -101,7 +101,10 @@ function selfAssignTableName(persistSource: PersistSource): string {
  * those entries makes the compiler INLINE the upstream (non-strict) or raise a
  * clean strict-miss (strict), instead of emitting a cross-engine table
  * reference. Path-C (in-warehouse) entries are kept — the warehouse build can
- * reference them. Preserves the manifest's `strict` flag.
+ * reference them, carrying forward the DIALECT-QUOTED table path the seed loop
+ * already stamped (publisher #904's quoteSeedTablePath), so the downstream FROM
+ * resolves a case-preserved upstream on a case-folding engine. Preserves the
+ * manifest's `strict` flag.
  */
 export function manifestExcludingStorage(
    manifest: Manifest,
@@ -109,9 +112,13 @@ export function manifestExcludingStorage(
 ): Manifest["buildManifest"] {
    const reduced = new Manifest();
    reduced.strict = manifest.strict;
+   // The source manifest's entries are already dialect-quoted (#904); reuse that
+   // quoting rather than the raw physical name so the kept path-C references
+   // stay canonical for the downstream FROM.
+   const quoted = manifest.buildManifest.entries;
    for (const [id, entry] of Object.entries(builtEntries)) {
-      if (!entry.storageConnectionName && entry.physicalTableName) {
-         reduced.update(id, { tableName: entry.physicalTableName });
+      if (!entry.storageConnectionName && quoted[id]) {
+         reduced.update(id, { tableName: quoted[id].tableName });
       }
    }
    return reduced.buildManifest;
