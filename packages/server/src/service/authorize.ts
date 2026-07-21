@@ -208,33 +208,64 @@ async function runProbe(
  * access is granted only if some branch genuinely returns true. Short-circuits
  * on the first true. Returns false (→ caller denies) if none grant.
  *
- * Each expression is tried TWICE if needed:
- *  1. Ambient: compile against `executor`'s own given namespace, passing the
- *     full supplied `givens` — the original approach, unchanged for the
- *     common case where `executor` (always the ENTRY model's materializer)
- *     already has the referenced givens in scope (same file, or a directly
- *     imported one — Malloy merges one level of import into a model's given
- *     namespace).
- *  2. Self-contained fallback ({@link bindProbeGivens}), tried only if (1)
- *     throws: declare just the givens this expression references, preferring
- *     `declaredTypes` (the gate author's own declaration) over inferring
- *     from the caller-supplied value, so the probe compiles
- *     independently of `executor`'s namespace. This is what lets a gate on a
- *     source reached through a multi-hop transitive import evaluate
- *     correctly — Malloy does not flatten a `given:` declaration through more
- *     than one level of import, so the entry model's own namespace can be
- *     missing a given that's declared two-or-more imports away from a
- *     JOINED source's home file (see `docs/authorize.md`). Skipped as a
- *     no-op (denies) when no referenced given has a suppliable value, same
- *     as when (1) fails for an ordinary "no value supplied" reason.
+ * Each expression is tried TWICE if needed, in one of two orders depending on
+ * `selfContainedFirst`:
+ *
+ *  - AMBIENT FIRST (`selfContainedFirst` false — the default, used only for
+ *    the run target's OWN source gate): compile against `executor`'s own
+ *    given namespace, passing the full supplied `givens` — the original
+ *    approach, unchanged for the common case where `executor` (always the
+ *    ENTRY model's materializer) already has the referenced givens in scope
+ *    (same file, or a directly imported one — Malloy merges one level of
+ *    import into a model's given namespace). Falls back to the
+ *    self-contained probe below only if the ambient probe THROWS.
+ *
+ *  - SELF-CONTAINED FIRST (`selfContainedFirst` true — used for every gate
+ *    reached via a join/derivation/composite-member walk): declare just the
+ *    givens this expression references ({@link bindProbeGivens}), preferring
+ *    `declaredTypes` (the gate author's own declaration) over inferring from
+ *    the caller-supplied value, so the probe compiles independently of
+ *    `executor`'s namespace. This is what isolates a JOINED source's gate
+ *    from the entry model's own ambient given namespace: if the entry model
+ *    happens to declare its OWN given of the SAME NAME the joined gate
+ *    references, an ambient-first probe would compile successfully against
+ *    the ENTRY model's default/value instead of failing closed — silently
+ *    granting access based on an unrelated given. Trying self-contained
+ *    first means "no suppliable value for this name" (`decls.length === 0`)
+ *    denies immediately, with NO ambient fallback — that fallback is exactly
+ *    the hole this order closes. Ambient is tried as a last resort only if
+ *    the self-contained probe itself throws for some OTHER reason after
+ *    successfully binding at least one value (so the caller did supply
+ *    something; this isn't the "no value supplied" case).
+ *
+ * Either order still lets a gate on a source reached through a multi-hop
+ * transitive import evaluate correctly — Malloy does not flatten a `given:`
+ * declaration through more than one level of import, so the entry model's own
+ * namespace can be missing a given that's declared two-or-more imports away
+ * from a JOINED source's home file (see `docs/authorize.md`).
  */
 export async function evaluateAuthorize(
    executor: AuthorizeProbeExecutor,
    exprs: string[],
    givens: Record<string, GivenValue>,
    declaredTypes?: Map<string, string>,
+   options?: { selfContainedFirst?: boolean },
 ): Promise<boolean> {
+   const selfContainedFirst = options?.selfContainedFirst ?? false;
    for (const expr of exprs) {
+      if (selfContainedFirst) {
+         if (
+            await evaluateSelfContainedFirst(
+               executor,
+               expr,
+               givens,
+               declaredTypes,
+            )
+         ) {
+            return true;
+         }
+         continue;
+      }
       try {
          if (await runProbe(executor, buildAuthorizeProbe([expr]), givens)) {
             return true;
@@ -261,6 +292,45 @@ export async function evaluateAuthorize(
       }
    }
    return false;
+}
+
+/**
+ * One expression's self-contained-first evaluation (see
+ * {@link evaluateAuthorize}'s `selfContainedFirst` mode). No ambient fallback
+ * when nothing could be bound — that's the isolation this mode exists to
+ * provide. Ambient is tried as a last resort only when the self-contained
+ * probe itself throws after having bound at least one value.
+ */
+async function evaluateSelfContainedFirst(
+   executor: AuthorizeProbeExecutor,
+   expr: string,
+   givens: Record<string, GivenValue>,
+   declaredTypes?: Map<string, string>,
+): Promise<boolean> {
+   const { decls, bound } = bindProbeGivens(expr, givens, declaredTypes);
+   if (decls.length === 0) {
+      // Nothing suppliable to bind for an isolated probe — deny this branch.
+      // Do NOT fall back to ambient: that would let a joined source's
+      // isolated gate be evaluated against the entry model's own ambient
+      // given namespace/default, exactly the name-collision hole this mode
+      // closes.
+      return false;
+   }
+   try {
+      return await runProbe(
+         executor,
+         buildAuthorizeProbe([expr], decls),
+         bound,
+      );
+   } catch {
+      // Fall through — the caller DID supply something, so this isn't the
+      // "no value supplied" hole; try ambient as a last resort.
+   }
+   try {
+      return await runProbe(executor, buildAuthorizeProbe([expr]), givens);
+   } catch {
+      return false;
+   }
 }
 
 /** A source plus its effective authorize expressions. */

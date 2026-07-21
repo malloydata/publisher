@@ -1132,6 +1132,36 @@ source: combo is compose(open_src, locked_src)
       );
       expect(result.data).toBeDefined();
    });
+
+   // `Query.compositeResolvedSourceDef` is what lets assertAuthorizedForAllSources
+   // gate the ONE concrete branch a composite run target resolved to (see
+   // model.ts's resolveRunTargetStruct/assertAuthorizedForAllSources) instead
+   // of every member. This confirms it's populated even when the query
+   // references NO field that discriminates between members (just the shared
+   // `c` measure) — Malloy's composite resolver still picks a concrete first
+   // candidate rather than leaving the resolution unset, so the gate still
+   // fires on whichever member happens to resolve first.
+   it("still denies when the composite resolves with no field forcing a choice (locked member listed first)", async () => {
+      await writeModel(
+         "c_composite_no_disambiguator.malloy",
+         `##! experimental.composite_sources
+
+source: open_src is duckdb.table('customers') extend { measure: c is count() }
+
+#(authorize) "false"
+source: locked_src is duckdb.table('customers') extend { measure: c is count() }
+
+source: combo_locked_first is compose(locked_src, open_src)
+`,
+      );
+      await expect(
+         runGated(
+            "c_composite_no_disambiguator.malloy",
+            "run: combo_locked_first -> { aggregate: c }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
 });
 
 // BLOCKING-3: codex vs. Fable disagreed on whether a QUERY-LOCAL `join_one`
@@ -1480,6 +1510,65 @@ source: oh_top is duckdb.table('customers') extend {
          runGated("oh_entry.malloy", "run: oh_top -> { aggregate: c }", {
             ROLE: "intern",
          }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   // Name-collision isolation: the entry model declares its OWN `$LEVEL`
+   // given (default 99), and a deep-joined source's gate ALSO references
+   // `$LEVEL` but means its own, unrelated given. Root cause: evaluateAuthorize
+   // tried the AMBIENT probe first — compiled and evaluated against the
+   // ENTRY model's `modelMaterializer` — so on a name collision it happily
+   // compiled against the entry model's OWN `$LEVEL` default and granted a
+   // caller who supplied no `LEVEL` at all, never falling back to the
+   // isolating self-contained probe (that fallback only fires when the
+   // ambient probe THROWS, and here it didn't). Fixed by evaluating a
+   // joined-source's gate self-contained FIRST, so a caller supplying no
+   // `LEVEL` fails to build a self-contained probe for the joined gate and is
+   // denied, regardless of what the entry model's own `$LEVEL` default is.
+   it("denies a joined source's $LEVEL gate on a name collision with the entry model's own $LEVEL given, when no LEVEL is supplied", async () => {
+      // coll_base's $LEVEL is TWO hops from the entry (via coll_mid), so it is
+      // never merged into the entry's own ambient given namespace (only a
+      // one-hop import merges) — this is what lets the entry separately
+      // declare its OWN, unrelated $LEVEL without a "Cannot redefine"
+      // compile error, setting up the name collision.
+      await writeModel(
+         "coll_base.malloy",
+         `##! experimental.givens
+
+given:
+  LEVEL :: number
+
+#(authorize) "$LEVEL > 3"
+source: coll_base_gated is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      await writeModel(
+         "coll_mid.malloy",
+         `import "coll_base.malloy"
+
+source: coll_mid is duckdb.table('customers') extend {
+  join_one: coll_base_gated on id = coll_base_gated.id
+  measure: c is count()
+}
+`,
+      );
+      await writeModel(
+         "coll_entry.malloy",
+         `import "coll_mid.malloy"
+
+##! experimental.givens
+
+given:
+  LEVEL :: number is 99
+
+source: coll_top is duckdb.table('customers') extend {
+  join_one: coll_mid on id = coll_mid.id
+  measure: c is count()
+}
+`,
+      );
+      await expect(
+         runGated("coll_entry.malloy", "run: coll_top -> { aggregate: c }", {}),
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });

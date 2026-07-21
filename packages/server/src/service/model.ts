@@ -449,11 +449,19 @@ export class Model {
     * gate it read directly off a join field's own struct annotations, without
     * going through a `this.sources` name lookup (which would miss deep
     * transitively-imported and inline-extend joins — see the design doc).
+    *
+    * `selfContainedFirst`, passed through to {@link evaluateAuthorize},
+    * isolates a joined/derived source's gate from the entry model's own
+    * ambient given namespace — see {@link collectAllReachableGates}'s
+    * `selfContained` tag. Left `false` (ambient-first) for the run target's
+    * OWN source gate ({@link assertAuthorized}'s call), which is correct to
+    * evaluate against the entry model's ambient namespace.
     */
    private async assertAuthorizedExprs(
       label: string,
       exprs: string[],
       givens: Record<string, GivenValue>,
+      selfContainedFirst = false,
    ): Promise<void> {
       if (exprs.length === 0) return; // unrestricted
       const deny = () => {
@@ -467,6 +475,7 @@ export class Model {
             exprs,
             givens,
             this.givenDeclaredTypes(),
+            { selfContainedFirst },
          );
       } catch (err) {
          // Fail closed — e.g. a referenced given had no supplied value.
@@ -518,7 +527,16 @@ export class Model {
       const { struct, modelDef, compositeResolvedSourceDef, extendSources } =
          await this.resolveRunTargetStruct(runnable);
       const seen = new Set<SourceDef>();
-      const joinedGates = this.collectAllReachableGates(struct, modelDef, seen);
+      // `struct` IS the run target itself — its own gate stays ambient-first
+      // (`treatAsOwnGate: true`), matching `assertAuthorized` above. Do NOT
+      // dedup this against that call: AND-across-sources evaluates every
+      // reachable source's gate independently (see the comment below).
+      const joinedGates = this.collectAllReachableGates(
+         struct,
+         modelDef,
+         seen,
+         true,
+      );
       if (modelDef) {
          // Sources joined LOCALLY inside the query's own `-> { join_one: ...
          // }` refinement live on the pipeline segment's `extendSource`, not on
@@ -542,12 +560,33 @@ export class Model {
          // fields the query references — so gate everything reachable from
          // that RESOLVED branch, not every member. Gating every member would
          // deny access through an open branch just because a sibling branch
-         // happens to be locked.
+         // happens to be locked. This branch stands in for the run target
+         // ITSELF (just the concrete resolved shape), so its own gate stays
+         // ambient-first too (`treatAsOwnGate: true`) — same reasoning as the
+         // `struct` walk above.
+         //
+         // `compositeResolvedSourceDef && modelDef` is not a fail-open gap for
+         // a runnable composite RUN TARGET: Malloy's composite resolver
+         // (`_resolveCompositeSources` in `@malloydata/malloy`'s
+         // `composite-source-utils.ts`) marks composite resolution as
+         // required as soon as the top-level source is itself a composite,
+         // before any field-usage logic runs — so it always resolves to a
+         // concrete member (even one no query field discriminates, it just
+         // picks the first candidate — see the "no field forcing a choice"
+         // test in authorize_integration.spec.ts) or the compile fails
+         // outright (no member satisfies the query). The `undefined` case
+         // here is only ever "the run target genuinely isn't a composite" —
+         // not "a composite run target resolved to nothing". (A composite
+         // reached via a JOIN is a different story — Malloy doesn't surface
+         // which member it resolved to there, which is why the `joinedSource
+         // .type === "composite"` branch above walks every member
+         // conservatively instead.)
          joinedGates.push(
             ...this.collectAllReachableGates(
                compositeResolvedSourceDef,
                modelDef,
                seen,
+               true,
             ),
          );
       }
@@ -560,8 +599,8 @@ export class Model {
       // and reachable gated sources are few, so there is nothing worth deduping.
       // (Cycles/repeat structs are already pruned in collectAllReachableGates
       // by struct identity, so joinedGates holds no literal duplicates.)
-      for (const { label, exprs } of joinedGates) {
-         await this.assertAuthorizedExprs(label, exprs, givens);
+      for (const { label, exprs, selfContained } of joinedGates) {
+         await this.assertAuthorizedExprs(label, exprs, givens, selfContained);
       }
    }
 
@@ -717,24 +756,76 @@ export class Model {
     * situation as `given.ts`'s `MalloyGiven` duck type), so query-source
     * detection checks `.type` and reaches `.query.structRef`/`.query.pipeline`
     * through a local shape rather than importing the real type.
+    *
+    * Each returned entry carries `selfContained`, telling the caller which
+    * order {@link evaluateAuthorize} should try for that gate (see
+    * `assertAuthorizedExprs`'s `selfContainedFirst`). `treatAsOwnGate` — true
+    * only for the run target's own struct and its own resolved composite
+    * branch (the two call sites in {@link assertAuthorizedForAllSources} that
+    * represent the run target ITSELF, not something reached by walking a
+    * join/derivation) — marks `struct`'s OWN top-level annotations entry
+    * `selfContained: false` (ambient-first, matching {@link assertAuthorized}'s
+    * treatment of the same gate). Every other entry — everything reached by
+    * recursing into a joined field, a composite member, a query-source's
+    * base, or an inner pipeline join, no matter how deep — is tagged
+    * `selfContained: true`: those are gates that live in a DIFFERENT source
+    * (possibly a different file/given-namespace) than the run target, so
+    * evaluating them ambiently against the entry model's own namespace risks
+    * a name collision silently granting access off the wrong given (see
+    * `evaluateAuthorize`'s `selfContainedFirst` doc).
     */
    private collectAllReachableGates(
       struct: SourceDef | undefined,
       modelDef: ModelDef | undefined,
       seen: Set<SourceDef> = new Set(),
-   ): { label: string; exprs: string[] }[] {
+      treatAsOwnGate = false,
+   ): { label: string; exprs: string[]; selfContained: boolean }[] {
       if (!struct || !modelDef || seen.has(struct)) return [];
       seen.add(struct);
 
-      const results: { label: string; exprs: string[] }[] = [];
+      const results: {
+         label: string;
+         exprs: string[];
+         selfContained: boolean;
+      }[] = [];
       const label = (struct as { as?: string }).as ?? struct.name;
       const ownExprs = this.gateExprsForOwnAnnotations(struct);
       if (ownExprs.length > 0) {
-         results.push({ label, exprs: ownExprs });
+         results.push({
+            label,
+            exprs: ownExprs,
+            selfContained: !treatAsOwnGate,
+         });
       }
 
       for (const field of struct.fields as FieldDef[]) {
-         if (!isJoined(field) || !isSourceDef(field)) continue;
+         if (!isJoined(field)) continue;
+         if (!isSourceDef(field)) {
+            // `field` IS a join (Malloy's own `isJoined` — `'join' in sd` —
+            // says so) but doesn't have a `SourceDef` shape we can recurse
+            // into. That combination should be impossible for a real join
+            // field; seeing it means something about Malloy's join/source
+            // representation has drifted out from under this duck-typed
+            // walk. Silently `continue`-ing here (the old behavior) would
+            // fail OPEN: the joined source's gate would never be found or
+            // evaluated. Deny loudly instead — this is exactly the
+            // join-bypass this walk exists to close.
+            logger.error(
+               "authorize: joined field failed to resolve to a walkable SourceDef; denying rather than silently skipping its gate (possible Malloy struct-shape drift)",
+               {
+                  modelPath: this.modelPath,
+                  parentSource: label,
+                  fieldName: (field as { name?: string }).name,
+                  fieldType: (field as { type?: string }).type,
+               },
+            );
+            results.push({
+               label: `${label} (unresolvable joined source)`,
+               exprs: ["false"],
+               selfContained: false,
+            });
+            continue;
+         }
          const joinedSource = field as SourceDef;
          results.push(
             ...this.collectAllReachableGates(joinedSource, modelDef, seen),
