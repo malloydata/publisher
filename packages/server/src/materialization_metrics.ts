@@ -99,6 +99,10 @@ const scheduledFireCounter = lazyCounter(
    "Standalone-scheduler attempts to fire a package's materialization.schedule. " +
       "Label: outcome ('fired'|'conflict'|'error').",
 );
+const storageServeRoutingCounter = lazyCounter(
+   "publisher_storage_serve_routing_total",
+   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback').",
+);
 
 /**
  * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
@@ -188,6 +192,20 @@ export function recordSourceBuildDuration(durationMs: number): void {
 /** Record a best-effort physical-table drop on materialization delete. */
 export function recordDropTables(outcome: "success" | "failure"): void {
    dropTablesCounter().add(1, { outcome });
+}
+
+/**
+ * Record a `storage=` serve-routing decision: `storage` = the query was served
+ * from the materialized table via the virtual-source transform; `live_fallback`
+ * = the transform was ineligible for this query (a refinement it can't
+ * reproduce, an unbound source, mode not `on`) so it was served live. This hit
+ * rate is the headline KPI of the storage tier — otherwise the fallback side is
+ * only a DEBUG log.
+ */
+export function recordStorageServeRouting(
+   outcome: "storage" | "live_fallback",
+): void {
+   storageServeRoutingCounter().add(1, { outcome });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

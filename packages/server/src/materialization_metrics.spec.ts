@@ -5,6 +5,7 @@ import {
    recordDropTables,
    recordMaterializationRun,
    recordSourcesOutcome,
+   recordStorageServeRouting,
    resetMaterializationTelemetryForTesting,
 } from "./materialization_metrics";
 import {
@@ -79,6 +80,23 @@ describe("materialization_metrics", () => {
          await harness.collectCounter(
             "publisher_materialization_connection_digest_skipped_total",
          ),
+      ).toBe(1);
+   });
+
+   it("counts storage= serve-routing decisions labeled by outcome", async () => {
+      recordStorageServeRouting("storage");
+      recordStorageServeRouting("storage");
+      recordStorageServeRouting("live_fallback");
+
+      expect(
+         await harness.collectCounter("publisher_storage_serve_routing_total", {
+            outcome: "storage",
+         }),
+      ).toBe(2);
+      expect(
+         await harness.collectCounter("publisher_storage_serve_routing_total", {
+            outcome: "live_fallback",
+         }),
       ).toBe(1);
    });
 });

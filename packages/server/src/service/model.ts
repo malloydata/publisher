@@ -29,6 +29,7 @@ import {
 } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
 import { publisherMeter } from "../telemetry";
+import { recordStorageServeRouting } from "../materialization_metrics";
 import * as fs from "fs/promises";
 import { readFileSync } from "fs";
 import { createRequire } from "module";
@@ -2117,11 +2118,13 @@ export class Model {
                const shaped = await this.loadServeShapeQuery(queryString);
                runnable = shaped.runnable;
                serveVirtualMap = shaped.virtualMap;
+               recordStorageServeRouting("storage");
                logger.info("Serving query from storage tier (virtual-source)", {
                   modelPath: this.modelPath,
                   storageSources: this.serveBindings.map((b) => b.sourceName),
                });
             } catch (shapeErr) {
+               recordStorageServeRouting("live_fallback");
                logger.debug(
                   "storage serve-shape ineligible for this query; serving live",
                   {
@@ -2260,6 +2263,9 @@ export class Model {
             "malloy.model.query.source": sourceName,
             "malloy.model.query.query": query,
             "malloy.model.query.status": "error",
+            "malloy.model.query.served_from": serveVirtualMap
+               ? "storage"
+               : "live",
          });
 
          // Bad client-supplied givens (unknown name, wrong-typed value, an
@@ -2334,6 +2340,7 @@ export class Model {
          "malloy.model.query.rows_total": queryResults.totalRows,
          "malloy.model.query.connection": queryResults.connectionName,
          "malloy.model.query.status": "success",
+         "malloy.model.query.served_from": serveVirtualMap ? "storage" : "live",
       });
       return {
          result: wrappedResult,
