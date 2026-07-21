@@ -30,8 +30,10 @@ import {
 import { DataStyles } from "@malloydata/render";
 import { publisherMeter } from "../telemetry";
 import * as fs from "fs/promises";
+import { readFileSync } from "fs";
 import { createRequire } from "module";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    getDefaultQueryRowLimit,
@@ -53,8 +55,11 @@ import { logger } from "../logger";
 import {
    buildServeShapeModelForBindings,
    buildVirtualMap,
+   extractJoins,
    extractRefinements,
+   sliceSourceRange,
    type ServeBinding,
+   type SourceLocation,
 } from "./materialization_serve_transform";
 import { deserializeError } from "../package_load/package_load_pool";
 import type {
@@ -1787,18 +1792,42 @@ export class Model {
          .sort()
          .join("|");
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
-         const { modelText } = buildServeShapeModelForBindings(
-            this.serveBindingsWithRefinements(),
+         const enriched = this.serveBindingsWithRefinements();
+         let materializer = this.buildServeShapeMaterializer(enriched);
+         // A join is emitted only when its target is materialized, but the join
+         // text or a non-portable on-condition can still fail to compile the
+         // whole shape — which would disable storage serving for EVERY source in
+         // the package. Validate the rich shape once (per binding set) and, if it
+         // fails, degrade to the base + dimensions/measures shape rather than
+         // losing all storage serving. The per-query eager compile below remains
+         // the final net for query-specific ineligibility.
+         const hasJoins = enriched.some((b) =>
+            (b.refinements ?? []).some((r) => r.kind === "join"),
          );
-         const root = "file:///storage-serve-shape/";
-         const url = `${root}shape.malloy`;
-         const runtime = new Runtime({
-            urlReader: new InMemoryURLReader(new Map([[url, modelText]])),
-            config: Model.toMalloyConfig(this.serveMalloyConfig!),
-         });
-         const materializer = runtime.loadModel(new URL(url), {
-            importBaseURL: new URL(root),
-         });
+         if (hasJoins) {
+            try {
+               await materializer.getModel();
+            } catch (err) {
+               logger.warn(
+                  "Storage serve shape with joins failed to compile; dropping joins and serving base + dimensions/measures",
+                  {
+                     model: this.modelPath,
+                     error: err instanceof Error ? err.message : String(err),
+                  },
+               );
+               const noJoins = enriched.map((b) =>
+                  b.refinements
+                     ? {
+                          ...b,
+                          refinements: b.refinements.filter(
+                             (r) => r.kind !== "join",
+                          ),
+                       }
+                     : b,
+               );
+               materializer = this.buildServeShapeMaterializer(noJoins);
+            }
+         }
          this.serveShapeCache = { key, materializer };
       }
       const virtualMap = buildVirtualMap(this.serveBindings);
@@ -1813,21 +1842,83 @@ export class Model {
       return { runnable, virtualMap };
    }
 
+   /** Build the transient serve-shape materializer for a set of bindings. */
+   private buildServeShapeMaterializer(
+      bindings: ServeBinding[],
+   ): ModelMaterializer {
+      const { modelText } = buildServeShapeModelForBindings(bindings);
+      const root = "file:///storage-serve-shape/";
+      const url = `${root}shape.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, modelText]])),
+         config: Model.toMalloyConfig(this.serveMalloyConfig!),
+      });
+      return runtime.loadModel(new URL(url), {
+         importBaseURL: new URL(root),
+      });
+   }
+
    /**
-    * The serve bindings enriched with each source's dimensions/measures, read
-    * from this model's compiled definition, so the serve shape re-declares them
-    * on the virtual base (computed from the stored columns) instead of falling
-    * back to live. Joins/views are not carried (see {@link extractRefinements}).
+    * The serve bindings enriched with the refinements to re-declare on each
+    * virtual base — the source's dimensions/measures (computed from the stored
+    * columns) and its joins whose target source is ALSO materialized (the join
+    * runs over the stored tables). Both are read from this model's compiled
+    * definition. Views/turtles and analytic fields are not carried; a query
+    * using one falls back to live.
+    *
+    * Join declaration text is lifted verbatim from the author's source files by
+    * location (read once per file, best-effort — an unreadable file just drops
+    * that source's joins, which fall back). The materialization gate is a
+    * `sourceID`-keyed lookup, so it never depends on parsing that text.
     */
    private serveBindingsWithRefinements(): ServeBinding[] {
       const contents = (
-         this.modelDef as { contents?: Record<string, unknown> } | undefined
+         this.modelDef as
+            | {
+                 contents?: Record<
+                    string,
+                    { sourceID?: unknown; fields?: unknown[] }
+                 >;
+              }
+            | undefined
       )?.contents;
+      // sourceID -> author source name, for the join materialization gate.
+      const sourceNameById = new Map<string, string>();
+      for (const [name, def] of Object.entries(contents ?? {})) {
+         if (typeof def?.sourceID === "string") {
+            sourceNameById.set(def.sourceID, name);
+         }
+      }
+      const materializedSourceNames = new Set(
+         this.serveBindings.map((b) => b.sourceName),
+      );
+      // Cache each source file's text (or null when unreadable) across bindings.
+      const fileCache = new Map<string, string | null>();
+      const liftText = (location: SourceLocation): string | undefined => {
+         if (!location?.url?.startsWith("file:")) return undefined;
+         if (!fileCache.has(location.url)) {
+            try {
+               fileCache.set(
+                  location.url,
+                  readFileSync(fileURLToPath(location.url), "utf8"),
+               );
+            } catch {
+               fileCache.set(location.url, null);
+            }
+         }
+         const text = fileCache.get(location.url);
+         return text ? sliceSourceRange(text, location.range) : undefined;
+      };
       return this.serveBindings.map((b) => {
-         const source = contents?.[b.sourceName] as
-            | { fields?: unknown[] }
-            | undefined;
-         const refinements = extractRefinements(source?.fields);
+         const fields = contents?.[b.sourceName]?.fields;
+         const refinements = [
+            ...extractJoins(fields, {
+               sourceNameById,
+               materializedSourceNames,
+               liftText,
+            }),
+            ...extractRefinements(fields),
+         ];
          return refinements.length > 0 ? { ...b, refinements } : b;
       });
    }
