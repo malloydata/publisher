@@ -145,6 +145,55 @@ describe("MaterializationService", () => {
       });
    });
 
+   describe("deleteMaterialization drop of a storage= table", () => {
+      it("routes a storage entry to a destination-aware RW drop (best-effort, delete still completes)", async () => {
+         // getApiConnection returns a non-storage type so the RW drop refuses
+         // at its destination gate (pre-session), exercising the routing + the
+         // best-effort failure handling without needing a live DuckDB attach.
+         const getApiConnection = sinon
+            .stub()
+            .returns({ name: "lake", type: "postgres" });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon
+               .stub()
+               .resolves({ getMalloyConnection: async () => ({}) }),
+            getApiConnection,
+            getEnvironmentPath: () => "/test",
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  entries: {
+                     se1: {
+                        sourceEntityId: "se1",
+                        sourceName: "daily",
+                        physicalTableName: "daily__mabc123",
+                        connectionName: "wh",
+                        storageConnectionName: "lake",
+                     },
+                  },
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               } as any,
+            }),
+         );
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+            dropTables: true,
+         });
+
+         // Routed to the storage path (resolved the destination connection for
+         // an RW drop, not the old skip), and the delete completed despite the
+         // drop's best-effort failure.
+         expect(getApiConnection.calledWith("lake")).toBe(true);
+         expect(
+            (
+               ctx.repository.deleteMaterialization as sinon.SinonStub
+            ).calledWith("mat-1"),
+         ).toBe(true);
+      });
+   });
+
    describe("queries", () => {
       it("lists materializations for a package", async () => {
          const rows = [
