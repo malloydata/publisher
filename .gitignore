@@ -39,6 +39,7 @@ publisher_data/
 # These are local Credible workflow files (an installed skill tree + IDE rules) and are
 # ignored by the `credible-` prefix so a stray `git add` can't pull them in.
 .credible/
+skills/credible-*/
 .claude/skills/credible-*/
 .claude/rules/credible-*.md
 .cursor/rules/credible-*.mdc

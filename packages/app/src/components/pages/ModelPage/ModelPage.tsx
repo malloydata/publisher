@@ -3,6 +3,7 @@ import {
    Model,
    Notebook,
    PageViewer,
+   useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
 import { useParams } from "react-router-dom";
@@ -10,6 +11,7 @@ import { useParams } from "react-router-dom";
 function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
+   const navigate = useRouterClickHandler();
    if (!params.environmentName) {
       return (
          <div>
@@ -67,7 +69,11 @@ function ModelPage() {
    if (modelPath?.endsWith(".malloynb")) {
       return (
          <Box sx={wrapperSx}>
-            <Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />
+            <Notebook
+               resourceUri={resourceUri}
+               maxResultSize={1024 * 1024}
+               onNavigate={navigate}
+            />
          </Box>
       );
    }

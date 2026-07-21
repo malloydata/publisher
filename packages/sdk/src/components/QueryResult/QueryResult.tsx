@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
+import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import ResultContainer from "../RenderedResult/ResultContainer";
@@ -90,6 +91,7 @@ export default function QueryResult({
                versionId: versionId,
             },
          ),
+      ...CHART_RESULT_QUERY_OPTIONS,
    });
 
    return (
@@ -99,7 +101,11 @@ export default function QueryResult({
          )}
          {isSuccess && (
             <Suspense fallback={<div>Loading...</div>}>
-               <ResultContainer result={data.data.result} maxHeight={height} />
+               <ResultContainer
+                  result={data.data.result}
+                  maxHeight={height}
+                  renderLogs={data.data.renderLogs}
+               />
             </Suspense>
          )}
          {isError && (

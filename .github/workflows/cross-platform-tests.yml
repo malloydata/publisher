@@ -74,6 +74,12 @@ jobs:
         run: bun run build
         shell: bash
 
+      # The skills package copies a directory tree and resolves it back by
+      # path, so it is exactly the kind of code that breaks on Windows only.
+      - name: Run skills package tests
+        run: bun run --cwd packages/skills test
+        shell: bash
+
       # Split into two bun-test invocations (two processes). The unit specs
       # under src/ use `mock.module(...)` to stub out `StorageManager` and
       # other modules; Bun does not scope those mocks to a single file —

@@ -71,7 +71,13 @@ function resolvePublisherConfigPath(serverRoot: string): {
    return null;
 }
 
-type FilesystemPath = `./${string}` | `../${string}` | `/${string}`;
+// Home paths are POSIX form only: `~/` expands, while bare `~`, `~user/…`,
+// and Windows-style `~\` are not local paths and are rejected downstream.
+type FilesystemPath =
+   | `./${string}`
+   | `../${string}`
+   | `/${string}`
+   | `~/${string}`;
 type GcsPath = `gs://${string}`;
 type ApiConnection = components["schemas"]["Connection"];
 export type Theme = components["schemas"]["Theme"];
@@ -469,6 +475,35 @@ function processConfigValue(value: unknown): unknown {
 
    return value;
 }
+
+/**
+ * Absolute directory that a relative package `location` is resolved against:
+ * the one holding the active config file.
+ *
+ * Null when there is nothing sensible to anchor to, leaving the caller to pick
+ * a base. That covers three cases: no config at all; the bundled default, which
+ * lives inside the installed package, where anchoring a user's relative path
+ * somewhere under node_modules would be meaningless (and which declares only
+ * remote locations of its own); and a `--config` that names a directory rather
+ * than a file, which cannot be read as a config, so its parent is not an anchor
+ * anyone asked for.
+ */
+export const getPublisherConfigDir = (serverRoot: string): string | null => {
+   const resolved = resolvePublisherConfigPath(serverRoot);
+   if (!resolved || resolved.isBundledDefault) {
+      return null;
+   }
+   try {
+      if (!fs.statSync(resolved.path).isFile()) {
+         return null;
+      }
+   } catch {
+      return null;
+   }
+   // Resolve: `--config` may be relative, and an anchor that is itself relative
+   // would re-resolve against the cwd of whoever reads it.
+   return path.resolve(path.dirname(resolved.path));
+};
 
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    const resolved = resolvePublisherConfigPath(serverRoot);
