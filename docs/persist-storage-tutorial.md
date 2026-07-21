@@ -560,8 +560,9 @@ Everything you need is on the package status and the logs:
 - Metrics (OpenTelemetry, under the `publisher` meter):
   - `publisher_storage_serve_routing_total{outcome=storage|live_fallback}` — the
     serve hit rate; the headline signal for "is the tier actually serving?"
-  - `malloy_model_query_duration` carries a `served_from=storage|live` attribute,
-    so storage-served vs live-served query latency compare side by side.
+  - `malloy_model_query_duration` tags storage-served queries with
+    `served_from=storage` (the attribute is absent otherwise, so an `off`
+    deployment's histogram is unchanged), isolating storage-served latency.
 
 `PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a
