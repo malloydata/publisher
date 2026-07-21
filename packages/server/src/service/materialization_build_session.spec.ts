@@ -3,12 +3,43 @@ import { BadRequestError } from "../errors";
 import type { components } from "../api";
 import {
    buildSourceIntoStorage,
+   dropStorageTable,
+   dropStorageTableSql,
    logicalViewSql,
    passthroughSourceType,
    wrapPassthrough,
 } from "./materialization_build_session";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+describe("dropStorageTableSql", () => {
+   it("drops the content-addressed table, catalog-qualified and quoted", () => {
+      expect(dropStorageTableSql("lake", "daily__mabc123")).toBe(
+         'DROP TABLE IF EXISTS "lake"."daily__mabc123"',
+      );
+   });
+   it("qualifies a dotted schema.table name", () => {
+      expect(dropStorageTableSql("lake", "analytics.daily__mabc123")).toBe(
+         'DROP TABLE IF EXISTS "lake"."analytics"."daily__mabc123"',
+      );
+   });
+});
+
+describe("dropStorageTable gating (no session I/O before the gate)", () => {
+   it("refuses a non-DuckDB-family destination before creating a session", async () => {
+      await expect(
+         dropStorageTable({
+            destinationName: "bq_dest",
+            destinationConnection: {
+               name: "bq_dest",
+               type: "bigquery",
+            } as ApiConnection,
+            physicalTableName: "t__mabc",
+            environmentPath: "/tmp/env",
+         }),
+      ).rejects.toThrow(/must be one of/i);
+   });
+});
 
 describe("logicalViewSql", () => {
    it("points the logical name at the physical table, catalog-qualified and quoted", () => {

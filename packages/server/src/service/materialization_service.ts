@@ -43,7 +43,10 @@ import {
 import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
-import { buildSourceIntoStorage } from "./materialization_build_session";
+import {
+   buildSourceIntoStorage,
+   dropStorageTable,
+} from "./materialization_build_session";
 import type { ApiConnection } from "./model";
 import {
    bareTableName,
@@ -1266,21 +1269,37 @@ export class MaterializationService {
          }
 
          // A storage= table lives in `storageConnectionName` (a DuckDB/DuckLake
-         // destination), not in `connectionName` (the source warehouse). Dropping
-         // it needs a build-scoped read-write attach — the serve attach is
-         // read-only — so it is NOT dropped here; issuing the drop on the source
-         // connection would target the wrong engine. Destination-aware GC is a
-         // tracked follow-on; skip (and log) rather than mis-drop.
+         // destination), not in `connectionName` (the source warehouse), and
+         // dropping it needs a build-scoped READ-WRITE attach — the serve attach
+         // is read-only — so it is dropped on its own RW session rather than on
+         // the (wrong-engine, read-only) source connection. Best-effort: a
+         // failure is logged and the sweep continues, so one unreachable
+         // destination never blocks reclaiming the rest.
          if (entry.storageConnectionName) {
-            logger.info(
-               "Skipping delete-time drop of a storage-materialized table " +
-                  "(destination-aware GC is handled separately)",
-               {
+            try {
+               await dropStorageTable({
+                  destinationName: entry.storageConnectionName,
+                  destinationConnection: environment.getApiConnection(
+                     entry.storageConnectionName,
+                  ),
+                  physicalTableName,
+                  environmentPath: environment.getEnvironmentPath(),
+               });
+               recordDropTables("success");
+               logger.info("Dropped materialized storage table on delete", {
                   materializationId: m.id,
                   physicalTableName,
                   storageConnectionName: entry.storageConnectionName,
-               },
-            );
+               });
+            } catch (err) {
+               recordDropTables("failure");
+               logger.warn("Failed to drop a storage-materialized table", {
+                  materializationId: m.id,
+                  physicalTableName,
+                  storageConnectionName: entry.storageConnectionName,
+                  error: errMessage(err),
+               });
+            }
             continue;
          }
 

@@ -252,6 +252,66 @@ export function logicalViewSql(
    return `CREATE OR REPLACE VIEW ${view} AS SELECT * FROM ${table}`;
 }
 
+/** DDL to drop a content-addressed storage table, catalog-qualified for DuckDB. */
+export function dropStorageTableSql(
+   destinationName: string,
+   physicalTableName: string,
+): string {
+   return `DROP TABLE IF EXISTS ${quoteTablePath(
+      `${destinationName}.${physicalTableName}`,
+      "duckdb",
+   )}`;
+}
+
+/**
+ * Drop one materialized table from a `storage=` destination, on a build-scoped
+ * read-write session (the SERVE attach is read-only, so GC cannot run there).
+ * Mirrors {@link buildSourceIntoStorage}'s session lifecycle: attach read-write
+ * → drop → dispose, so no read-write attach survives the GC.
+ *
+ * Only the content-addressed physical table is dropped; the convenience view is
+ * left alone. The view is `CREATE OR REPLACE`d to the latest generation on every
+ * build, so reclaiming a SUPERSEDED generation's table never dangles it (it
+ * points at the current table, not this one).
+ */
+export async function dropStorageTable(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   physicalTableName: string;
+   environmentPath: string;
+}): Promise<void> {
+   const {
+      destinationName,
+      destinationConnection,
+      physicalTableName,
+      environmentPath,
+   } = params;
+   // Fail fast (pre-session, pre-attach) on a destination the build can't target.
+   assertSupportedDestination(destinationName, destinationConnection);
+
+   const session = new DuckDBConnection(`gc_${destinationName}`, ":memory:");
+   try {
+      await attachDestinationReadWrite(
+         session,
+         destinationName,
+         destinationConnection,
+         environmentPath,
+      );
+      await session.runSQL(
+         dropStorageTableSql(destinationName, physicalTableName),
+      );
+   } finally {
+      try {
+         await session.close();
+      } catch (err) {
+         logger.warn("Failed to close GC session (leaked in-memory session)", {
+            destinationName,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+}
+
 /** Attach the destination connection read-write on the build session. */
 async function attachDestinationReadWrite(
    session: DuckDBConnection,
