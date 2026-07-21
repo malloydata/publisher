@@ -28,7 +28,10 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { formatDuration, logger } from "../logger";
-import { recordBuildPlanComputeDuration } from "../materialization_metrics";
+import {
+   recordBuildPlanComputeDuration,
+   recordManifestBindDegraded,
+} from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
    recordPackageLoadPhases,
@@ -44,6 +47,7 @@ import { errMessage, ignoreDotfiles } from "../utils";
 import { computePackageBuildPlan } from "./build_plan";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
+import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 
@@ -943,6 +947,71 @@ export class Package {
       return this.malloyConfig.connections.lookupConnection(connectionName);
    }
 
+   /**
+    * Quote each manifest entry's physical table path for its connection's
+    * dialect, mirroring the build side: the builder CREATEs the table with
+    * {@link quoteTablePath} (per-segment, case-preserved), so on a case-folding
+    * engine (Snowflake uppercases unquoted identifiers) the stored name is only
+    * reachable through the same quoting. Malloy pastes a manifest `tableName`
+    * into `FROM` verbatim by contract (a bare name means "let the engine
+    * fold"), so the case-preserving producer — us — must hand it the quoted
+    * form. Same module quotes CREATE and read: the two sides cannot drift.
+    *
+    * A name already carrying a quote character is passed through verbatim (it
+    * is already canonical SQL; control-plane-assigned names are sanitized to
+    * `[A-Za-z0-9_\-.]` and can never contain one).
+    *
+    * Two cases bind verbatim, and they are NOT the same signal:
+    * - No `connectionName`: a bare/engine-folding producer that never recorded
+    *   a connection (simple_builder / malloy-cli). Expected and benign — the
+    *   pre-change behavior, bound silently, nothing regresses.
+    * - `connectionName` present but unresolvable: a genuine misconfiguration
+    *   (the connection was renamed/removed, or the manifest is out of sync with
+    *   this package's config). This one entry is degraded — but the source
+    *   would not serve regardless of quoting, since Malloy needs the connection
+    *   to run any query against it, so we degrade just this entry rather than
+    *   fail the whole package bind, and log at ERROR with a fix.
+    */
+   private async quoteBoundTableNames(
+      entries: FreshnessManifest,
+   ): Promise<FreshnessManifest> {
+      const out: FreshnessManifest = {};
+      for (const [sourceEntityId, entry] of Object.entries(entries)) {
+         let tableName = entry.tableName;
+         if (entry.connectionName && !isQuotedIdentifierPath(tableName)) {
+            try {
+               const connection = await this.getMalloyConnection(
+                  entry.connectionName,
+               );
+               tableName = quoteManifestTablePath(
+                  tableName,
+                  connection.dialectName,
+               );
+            } catch (err) {
+               recordManifestBindDegraded();
+               logger.error(
+                  `Manifest entry '${sourceEntityId}' names connection ` +
+                     `'${entry.connectionName}', which this package cannot ` +
+                     `resolve: binding its table path unquoted, so this source ` +
+                     `will not serve on a case-folding engine (and queries ` +
+                     `against it fail regardless, since Malloy needs the ` +
+                     `connection to run them). Fix: ensure a connection named ` +
+                     `'${entry.connectionName}' exists in this package's ` +
+                     `config, or rebuild the manifest against the current config.`,
+                  {
+                     packageName: this.packageName,
+                     sourceEntityId,
+                     connectionName: entry.connectionName,
+                     error: err instanceof Error ? err.message : String(err),
+                  },
+               );
+            }
+         }
+         out[sourceEntityId] = { ...entry, tableName };
+      }
+      return out;
+   }
+
    public getMalloyConfig(): MalloyConfig {
       return this.malloyConfig;
    }
@@ -971,6 +1040,11 @@ export class Package {
     * — the caller (manifest service) decides how to retry.
     */
    public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+      // Quote each bound physical name for its connection's dialect BEFORE any
+      // projection: everything downstream (model hydration, the per-query
+      // freshness gate, /compile, /status) reads the entries recorded here, so
+      // this is the one place the write side's quoting is mirrored onto reads.
+      entries = await this.quoteBoundTableNames(entries);
       // Models are hydrated against the tableName-only projection; the freshness
       // fields gate the serve path per query (via getFreshBuildManifest), not
       // model hydration.

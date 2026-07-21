@@ -42,7 +42,9 @@ describe("fetchManifestEntries", () => {
 
       expect(entries).toEqual({
          b1: { tableName: "schema.orders_mz" },
-         b2: { tableName: "schema.daily_mz" },
+         // connectionName is carried through so the bind step can quote the
+         // table path for that connection's dialect (Package.quoteBoundTableNames).
+         b2: { tableName: "schema.daily_mz", connectionName: "bq" },
       });
    });
 
