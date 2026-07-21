@@ -357,11 +357,16 @@ a query using `avg_order_value` is served from the lake — the expression is
 projected over the materialized table (`SELECT total_amount / order_count …
 FROM lake.daily_orders`), not recomputed in the warehouse.
 
+It also re-declares the source's **joins whose joined source is itself
+materialized**, so a query traversing such a join is served from storage — the
+join runs in DuckDB over the two stored tables. A join to a source that is *not*
+materialized is not carried, so a query using it falls back to live (below).
+
 What still **falls back to serving live** (no error; the right answer, computed
 in the warehouse): a query that reaches something the serve shape can't
-reproduce from the stored columns alone — a **join** to another source, a
-**view** defined on the source, a **window/analytic** field, or a query against
-a source that isn't materialized. You'll see:
+reproduce — a join to a source that isn't materialized, a **view** defined on
+the source, a **window/analytic** field, or a query against a source that isn't
+materialized. You'll see:
 
 ```
 debug: storage serve-shape ineligible for this query; serving live { modelPath: "orders.malloy", ... }

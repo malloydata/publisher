@@ -18,16 +18,49 @@ import { quoteTablePath } from "./quoting";
  * strings), which the transform declares verbatim — see {@link buildServeShapeModel}.
  */
 /**
- * A source refinement (a dimension or measure defined on the materialized
- * source in the author's model) to re-declare on the serve shape's virtual
- * base, so it is computed at serve time from the stored columns rather than
- * forcing a live fallback. `code` is the original Malloy expression text.
+ * A dimension or measure defined on the materialized source in the author's
+ * model, re-declared on the serve shape's virtual base so it is computed at
+ * serve time from the stored columns rather than forcing a live fallback.
+ * `code` is the original Malloy expression text.
  */
-export interface SourceRefinement {
+export interface FieldRefinement {
    kind: "dimension" | "measure";
    name: string;
    code: string;
 }
+
+/**
+ * A join defined on the materialized source in the author's model, re-declared
+ * on the serve shape's virtual base so a query traversing it serves from the
+ * materialized tables (DuckDB runs the join over the stored tables) instead of
+ * falling back to live.
+ *
+ * A join is only re-emitted when its joined source is ITSELF materialized (has a
+ * binding) — the serve shape is one model, so a join to a source that is not a
+ * sibling virtual source would fail to compile the WHOLE shape and disable
+ * storage serving for the entire package (see {@link extractJoins}'s gate). The
+ * `text` is the author's verbatim join declaration (`<alias> is <source> [on|
+ * with ...]`), lifted from the source by location — the on-condition is an
+ * arbitrary expression, so lifting text carries any condition for free, whereas
+ * reconstructing it from the compiled expression tree would not.
+ */
+export interface JoinRefinement {
+   kind: "join";
+   /** The join alias (`join_one: <alias> is ...`); used for logging/ordering. */
+   name: string;
+   /** The join keyword to emit, from the compiled join relationship. */
+   keyword: "join_one" | "join_many" | "join_cross";
+   /** Verbatim author declaration `<alias> is <source> [on|with ...]`. */
+   text: string;
+   /** The joined source's author name; emitted only when it is materialized. */
+   dependsOn: string;
+}
+
+/**
+ * A refinement to re-declare on the serve shape's virtual base: a dimension or
+ * measure ({@link FieldRefinement}) or a join ({@link JoinRefinement}).
+ */
+export type SourceRefinement = FieldRefinement | JoinRefinement;
 
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
@@ -41,11 +74,13 @@ export interface ServeBinding {
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
    /**
-    * Dimensions/measures defined on the source in the author's model, re-emitted
-    * as an `extend {}` on the virtual base so queries using them serve from the
-    * materialized table (computed over the stored columns) instead of falling
-    * back to live. Joins and views are NOT carried — a query using them still
-    * falls back. Attached at serve time from the compiled model, not the build.
+    * Refinements defined on the source in the author's model, re-emitted as an
+    * `extend {}` on the virtual base so queries using them serve from the
+    * materialized tables instead of falling back to live: dimensions/measures
+    * (computed over the stored columns) and joins whose target is also
+    * materialized (the join runs over the stored tables). Views (turtles) and
+    * analytic fields are still not carried — a query using one falls back.
+    * Attached at serve time from the compiled model, not the build.
     */
    refinements?: SourceRefinement[];
    /** Optional freshness anchor (data-as-of instant); carried through verbatim. */
@@ -243,17 +278,27 @@ function serveShapeFragment(binding: ServeBinding): string {
    let source =
       `source: ${binding.sourceName} is ` +
       `${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
-   // Re-declare the source's dimensions/measures on the virtual base so queries
-   // that use them are computed from the stored columns at serve time (the
-   // wrapper), rather than falling back to live. The expressions reference the
-   // shape's columns (or earlier refinements); anything they reference that the
-   // shape lacks makes the serve shape fail to compile, which safely falls back.
+   // Re-declare the source's joins, then its dimensions/measures, on the virtual
+   // base so queries that use them are computed from the stored tables at serve
+   // time (the wrapper) rather than falling back to live. Joins are emitted first
+   // so a dimension/measure may reference a joined field. Everything here
+   // references the shape's columns, a sibling virtual source, or an earlier
+   // refinement; anything it references that the shape lacks makes the serve
+   // shape fail to compile, which safely falls back.
    const refinements = binding.refinements ?? [];
-   if (refinements.length > 0) {
-      const body = refinements
-         .map((r) => `   ${r.kind}: ${r.name} is ${r.code}`)
-         .join("\n");
-      source += ` extend {\n${body}\n}`;
+   const lines: string[] = [];
+   for (const r of refinements) {
+      if (r.kind === "join") {
+         lines.push(`   ${r.keyword}: ${r.text}`);
+      }
+   }
+   for (const r of refinements) {
+      if (r.kind !== "join") {
+         lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
+      }
+   }
+   if (lines.length > 0) {
+      source += ` extend {\n${lines.join("\n")}\n}`;
    }
    return `type: ${shapeTypeName} is {\n${fields}\n}\n${source}`;
 }
@@ -267,20 +312,76 @@ function serveShapeFragment(binding: ServeBinding): string {
  * faith and must match the built table).
  *
  * Coverage note: this rebinds each source's BASE to the virtual table with the
- * captured columns — the leaf/simple-semantic-layer case. A source whose queries
- * rely on measures/dims/joins defined on it in the author's model is not
- * reproduced here; the serve path compiles the caller's query against this model
- * and, if it does not compile (a refinement this shape lacks), falls back to
- * serving live. Widening this to preserve rich extend blocks is the
- * base-swap-preserve-refinements follow-on.
+ * captured columns, and re-declares the source's dimensions, measures, and
+ * materialized-target joins (see {@link ServeBinding.refinements}) on top. A
+ * query relying on a refinement not carried here (a view/turtle, an analytic
+ * field, or a join to a non-materialized source) does not compile against this
+ * model, and the serve path falls back to serving it live.
  */
 export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
    modelText: string;
 } {
-   const fragments = bindings.map(serveShapeFragment).join("\n");
+   const fragments = orderBindingsByJoinDeps(bindings)
+      .map(serveShapeFragment)
+      .join("\n");
    return {
       modelText: `##! experimental.virtual_source\n${fragments}\n`,
    };
+}
+
+/**
+ * Order bindings so a joined source is declared before the source that joins it:
+ * Malloy resolves `source:` statements top-to-bottom, so a join to a source not
+ * yet declared is an "undefined object" error. Only intra-set join dependencies
+ * are ordered (a join is emitted only when its target is in the set anyway).
+ * Stable: independent sources keep their original order. On a dependency cycle
+ * (mutual joins, which cannot be single-pass forward-referenced), the remaining
+ * sources are appended in original order — the resulting shape fails to compile
+ * and the caller drops joins / falls back, rather than looping.
+ */
+function orderBindingsByJoinDeps(bindings: ServeBinding[]): ServeBinding[] {
+   const present = new Set(bindings.map((b) => b.sourceName));
+   const dependsOn = new Map<string, Set<string>>();
+   for (const b of bindings) {
+      const set = new Set<string>();
+      for (const r of b.refinements ?? []) {
+         if (
+            r.kind === "join" &&
+            r.dependsOn !== b.sourceName &&
+            present.has(r.dependsOn)
+         ) {
+            set.add(r.dependsOn);
+         }
+      }
+      dependsOn.set(b.sourceName, set);
+   }
+   const ordered: ServeBinding[] = [];
+   const emitted = new Set<string>();
+   const remaining = new Set(present);
+   while (remaining.size > 0) {
+      let progressed = false;
+      for (const b of bindings) {
+         if (!remaining.has(b.sourceName)) continue;
+         const ready = [...dependsOn.get(b.sourceName)!].every((d) =>
+            emitted.has(d),
+         );
+         if (ready) {
+            ordered.push(b);
+            emitted.add(b.sourceName);
+            remaining.delete(b.sourceName);
+            progressed = true;
+         }
+      }
+      if (!progressed) {
+         for (const b of bindings) {
+            if (remaining.has(b.sourceName)) {
+               ordered.push(b);
+               remaining.delete(b.sourceName);
+            }
+         }
+      }
+   }
+   return ordered;
 }
 
 /**
@@ -291,14 +392,15 @@ export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
  * A derived field carries its original expression as `code` and an
  * `expressionType`; the source's raw output columns have neither (they are the
  * stored columns, already in the shape's `::` type). Scalar → dimension,
- * aggregate → measure. Joins, views (turtles), and analytic/calculation fields
- * are deliberately skipped — re-emitting them is out of scope, and a query that
- * uses one simply falls back to live (safe).
+ * aggregate → measure. Joins are handled separately ({@link extractJoins});
+ * views (turtles) and analytic/calculation fields are deliberately skipped —
+ * re-emitting them is out of scope, and a query that uses one simply falls back
+ * to live (safe).
  */
 export function extractRefinements(
    fields: readonly unknown[] | undefined,
-): SourceRefinement[] {
-   const out: SourceRefinement[] = [];
+): FieldRefinement[] {
+   const out: FieldRefinement[] = [];
    for (const field of fields ?? []) {
       const f = field as {
          name?: string;
@@ -314,6 +416,115 @@ export function extractRefinements(
       }
       // analytic / calculation / ungrouped-aggregate and non-atomic fields
       // (joins, turtles have no `code`) are skipped → those queries fall back.
+   }
+   return out;
+}
+
+/** A zero-based Malloy source range (as carried on a compiled field's `location`). */
+export interface SourceRange {
+   start: { line: number; character: number };
+   end: { line: number; character: number };
+}
+
+/** A compiled field's source location: the file URL plus the range it spans. */
+export interface SourceLocation {
+   url: string;
+   range: SourceRange;
+}
+
+/**
+ * Slice the substring covered by a Malloy `location.range` out of the full
+ * source text (both line and character are zero-based). Returns undefined when
+ * the range is out of bounds — a stale or mismatched source — so the caller
+ * skips the refinement and falls back to live rather than emitting garbage.
+ */
+export function sliceSourceRange(
+   text: string,
+   range: SourceRange,
+): string | undefined {
+   const lines = text.split("\n");
+   const { start, end } = range;
+   if (start.line < 0 || start.line > end.line || end.line >= lines.length) {
+      return undefined;
+   }
+   if (start.line === end.line) {
+      return lines[start.line].slice(start.character, end.character);
+   }
+   let out = lines[start.line].slice(start.character);
+   for (let i = start.line + 1; i < end.line; i++) {
+      out += "\n" + lines[i];
+   }
+   out += "\n" + lines[end.line].slice(0, end.character);
+   return out;
+}
+
+/** What {@link extractJoins} needs beyond the compiled field list. */
+export interface JoinExtractionContext {
+   /**
+    * The joined source's author name, keyed by the compiled join field's
+    * `sourceID` (which equals the joined source's own `sourceID`). Only a join
+    * whose target maps here — a named, in-model source — is a candidate; an
+    * anonymous/inline join target is absent from the map and is skipped.
+    */
+   sourceNameById: Map<string, string>;
+   /** Author source names that are materialized (have a serve binding). */
+   materializedSourceNames: ReadonlySet<string>;
+   /** Lift a field's verbatim source text from its `location`, or undefined. */
+   liftText: (location: SourceLocation) => string | undefined;
+}
+
+/**
+ * Extract a materialized source's re-emittable joins from its compiled field
+ * list. A join is carried only when BOTH hold: (1) its joined source is a
+ * named, in-model source (its `sourceID` maps to a name), and (2) that source
+ * is itself materialized (has a binding). The second is load-bearing, not an
+ * optimization: the serve shape is one model, so a join to a source it does not
+ * declare would fail the whole shape's compile and disable storage serving for
+ * every source in the package.
+ *
+ * The declaration text is lifted verbatim from the author's source by location
+ * (the on-condition is an arbitrary expression; lifting text carries any
+ * condition, whereas reconstructing it from the compiled expression tree would
+ * not); the keyword comes from the compiled relationship. A join we cannot map
+ * or lift is skipped, and a query using it falls back to live (safe).
+ */
+export function extractJoins(
+   fields: readonly unknown[] | undefined,
+   ctx: JoinExtractionContext,
+): JoinRefinement[] {
+   const out: JoinRefinement[] = [];
+   for (const field of fields ?? []) {
+      const f = field as {
+         as?: unknown;
+         name?: unknown;
+         join?: unknown;
+         sourceID?: unknown;
+         location?: SourceLocation;
+      };
+      if (typeof f.join !== "string") continue;
+      const keyword =
+         f.join === "one"
+            ? "join_one"
+            : f.join === "many"
+              ? "join_many"
+              : f.join === "cross"
+                ? "join_cross"
+                : undefined;
+      if (!keyword) continue;
+      if (typeof f.sourceID !== "string") continue;
+      const dependsOn = ctx.sourceNameById.get(f.sourceID);
+      if (!dependsOn) continue; // anonymous/inline join target → skip
+      if (!ctx.materializedSourceNames.has(dependsOn)) continue; // the gate
+      if (!f.location) continue;
+      const text = ctx.liftText(f.location);
+      if (!text) continue; // couldn't recover the declaration → skip
+      const alias =
+         typeof f.as === "string"
+            ? f.as
+            : typeof f.name === "string"
+              ? f.name
+              : dependsOn;
+      out.push({ kind: "join", name: alias, keyword, text, dependsOn });
    }
    return out;
 }
