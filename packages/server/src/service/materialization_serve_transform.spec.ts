@@ -115,6 +115,21 @@ describe("buildVirtualMap", () => {
       expect(map.get("lake")?.get("h1")).toBe('"analytics"."a"');
       expect(map.get("lake")?.get("h2")).toBe('"b"');
    });
+
+   it("passes an already-quoted path through unchanged (no double-quoting)", () => {
+      // Mirrors #904's quoteManifestTablePath: an author-quoted `name=` is
+      // canonical SQL and must not be re-quoted into `""foo""`.
+      const map = buildVirtualMap([
+         {
+            sourceName: "a",
+            connectionName: "lake",
+            virtualHandle: "h",
+            tablePath: '"My Table"',
+            schema: [],
+         },
+      ]);
+      expect(map.get("lake")?.get("h")).toBe('"My Table"');
+   });
 });
 
 describe("serve transform end-to-end (generate -> compile -> bind -> run)", () => {

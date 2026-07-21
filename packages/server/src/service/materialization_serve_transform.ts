@@ -11,7 +11,7 @@ import {
    recordServeShapeTypeFallback,
 } from "../materialization_metrics";
 import type { ManifestEntry } from "../storage/DatabaseInterface";
-import { quoteTablePath } from "./quoting";
+import { quoteManifestTablePath } from "./quoting";
 
 /**
  * The per-source serve pointer the virtual-source serve transform consumes. Two
@@ -603,6 +603,12 @@ export function extractViews(
  * dialect and then pastes it verbatim (it does not quote it), so an unquoted or
  * mis-cased path is a run-time error. Multiple bindings on one connection fold
  * into that connection's inner map.
+ *
+ * This is a FROM-bind site, so it uses {@link quoteManifestTablePath} — the same
+ * quoting authority as the build-side manifest seed and the serve-side manifest
+ * bind (publisher #904) — which quotes for the dialect UNLESS the path is already
+ * canonical SQL (an author-supplied `name=` the author already quoted), so an
+ * already-quoted name is never double-quoted.
  */
 export function buildVirtualMap(
    bindings: ServeBinding[],
@@ -614,7 +620,7 @@ export function buildVirtualMap(
          inner = new Map<string, string>();
          map.set(b.connectionName, inner);
       }
-      inner.set(b.virtualHandle, quoteTablePath(b.tablePath, "duckdb"));
+      inner.set(b.virtualHandle, quoteManifestTablePath(b.tablePath, "duckdb"));
    }
    return map;
 }

@@ -704,9 +704,13 @@ describe("storagePhysicalTableName", () => {
 });
 
 describe("manifestExcludingStorage (Tier 2 chained-storage inline)", () => {
-   it("drops storage-materialized entries, keeps path-C entries, preserves strict", () => {
+   it("drops storage entries, keeps path-C entries with the manifest's quoting, preserves strict", () => {
+      // The source manifest is already dialect-quoted by the seed loop (#904);
+      // manifestExcludingStorage reuses that quoting for the kept entries.
       const manifest = new Manifest();
       manifest.strict = true;
+      manifest.update("wh_up", { tableName: '"wh_up_v1"' });
+      manifest.update("lake_up", { tableName: '"lake"."lake_up__mabc"' });
       const built: Record<string, unknown> = {
          wh_up: {
             sourceEntityId: "wh_up",
@@ -724,7 +728,8 @@ describe("manifestExcludingStorage (Tier 2 chained-storage inline)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reduced = manifestExcludingStorage(manifest, built as any) as any;
       expect(Object.keys(reduced.entries)).toEqual(["wh_up"]);
-      expect(reduced.entries.wh_up.tableName).toBe("wh_up_v1");
+      // Kept with the manifest's dialect-quoted name, not the raw physical name.
+      expect(reduced.entries.wh_up.tableName).toBe('"wh_up_v1"');
       expect(reduced.entries.lake_up).toBeUndefined();
       expect(reduced.strict).toBe(true);
    });
