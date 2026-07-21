@@ -868,15 +868,16 @@ describe("connection integration tests", () => {
                   const envStore = new EnvironmentStore(tempServerRoot);
                   await envStore.finishedInitialization;
 
-                  // operationalState=serving is the only signal that
-                  // initialize() actually succeeded. initialize swallows
-                  // top-level errors and just calls markNotReady() (see
-                  // environment_store.ts:297-301), so
-                  // finishedInitialization always resolves regardless of
-                  // success. By construction (env_store:288-292), serving
-                  // also implies all configured environments loaded.
+                  // initialize() swallows top-level errors and just calls
+                  // markNotReady(), so finishedInitialization always resolves
+                  // regardless of success; operationalState is what says it
+                  // succeeded. It does NOT imply every configured environment
+                  // and package loaded: a load failure is skipped and still
+                  // reports "serving", which is why loadErrors exists. Assert
+                  // on both, and on the package list below.
                   const status = await envStore.getStatus();
                   expect(status.operationalState).toBe("serving");
+                  expect(status.loadErrors).toBeUndefined();
 
                   const env = await envStore.getEnvironment("malloy-samples");
                   const apiPackages = await env.listPackages();
