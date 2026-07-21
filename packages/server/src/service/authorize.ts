@@ -73,6 +73,12 @@ export function buildAuthorizeProbe(
 }
 
 const GIVEN_REF_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
+// Malloy string literals are single-quoted; a `$NAME` inside one is literal
+// text, not a given reference. Strip literals (honoring `\'` escapes) before
+// scanning, so e.g. `$ROLE = 'the $BOSS role'` references only ROLE — otherwise
+// a joined gate's referenced-count is inflated and the full-coverage check
+// wrongly denies a correctly-authorized request.
+const STRING_LITERAL_PATTERN = /'(?:\\.|[^'\\])*'/g;
 
 /**
  * Given names an authorize expression references (`$NAME` tokens), deduped,
@@ -80,9 +86,10 @@ const GIVEN_REF_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
  * probe needs to declare for a given expression.
  */
 export function referencedGivenNames(expr: string): string[] {
+   const scanned = expr.replace(STRING_LITERAL_PATTERN, "''");
    const names: string[] = [];
    const seen = new Set<string>();
-   for (const match of expr.matchAll(GIVEN_REF_PATTERN)) {
+   for (const match of scanned.matchAll(GIVEN_REF_PATTERN)) {
       const name = match[1];
       if (!seen.has(name)) {
          seen.add(name);
