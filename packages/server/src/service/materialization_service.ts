@@ -90,6 +90,46 @@ function selfAssignTableName(persistSource: PersistSource): string {
 }
 
 /**
+ * Content-address of a `storage=` physical table: the logical name decorated
+ * with a `sourceEntityId`-derived fragment, so one physical table exists per
+ * content generation. A definition change (new `sourceEntityId`) yields a NEW
+ * physical table — generations coexist, the serve binding for each generation
+ * resolves to its own table, and a swap is a pointer flip (the old table
+ * survives until GC) rather than an in-place `CREATE OR REPLACE` of a table a
+ * live binding still reads. A freshness refresh of the SAME definition reuses
+ * the same name (an atomic, same-schema replace — safe).
+ *
+ * Only the STANDALONE self-instruction path uses this: an orchestrated build
+ * trusts the host-supplied `physicalTableName` verbatim (matching path C), and
+ * serve/GC read the recorded name from the manifest, so the two never need to
+ * agree on a derivation. A dotted `name="schema.table"` (a user-owned DuckLake
+ * honoring `name=` as schema.table) decorates only the table part; the schema
+ * must pre-exist, unchanged from today.
+ */
+export function storagePhysicalTableName(
+   logicalName: string,
+   sourceEntityId: string,
+): string {
+   // Hyphen-stripped so the fragment stays a bare identifier when the id becomes
+   // a UUID5 (a no-op for the current hex ids), matching stagingSuffix.
+   const fragment = sourceEntityId
+      .replace(/-/g, "")
+      .substring(0, STORAGE_ID_LEN);
+   const dot = logicalName.lastIndexOf(".");
+   const schema = dot >= 0 ? logicalName.slice(0, dot + 1) : "";
+   const table = dot >= 0 ? logicalName.slice(dot + 1) : logicalName;
+   return `${schema}${table}__m${fragment}`;
+}
+
+/**
+ * Length of the sourceEntityId fragment in a `storage=` physical name. 16 hex
+ * chars is 64 bits — ample collision headroom for the generations one source
+ * accumulates — and, with the `__m` join, stays well inside Postgres's 63-char
+ * catalog identifier limit for any reasonable logical name.
+ */
+const STORAGE_ID_LEN = 16;
+
+/**
  * The reserved `storage=` value meaning "materialize into the persist source's
  * own warehouse" (path C, the default). A connection may not be named this
  * (enforced at registration in connection_config), so it never collides with a
@@ -605,13 +645,19 @@ export class MaterializationService {
                continue;
             }
 
+            // A `storage=` table is content-addressed (one physical table per
+            // generation) so generations coexist and a swap is a pointer flip;
+            // path C keeps the plain logical name (in-warehouse, unchanged).
+            const logicalName = selfAssignTableName(persistSource);
             instructions.push({
                sourceEntityId,
                materializedTableId: `local-${sourceEntityId.substring(
                   0,
                   STAGING_ID_LEN,
                )}`,
-               physicalTableName: selfAssignTableName(persistSource),
+               physicalTableName: destination
+                  ? storagePhysicalTableName(logicalName, sourceEntityId)
+                  : logicalName,
                realization: "COPY",
                ...(destination ? { destination } : {}),
             });
@@ -1055,6 +1101,10 @@ export class MaterializationService {
             sourceConnection,
             buildSQL,
             physicalTableName,
+            // Expose the logical name as a convenience view over the hashed
+            // physical table (best-effort; publisher always reads the physical
+            // name). Skipped when they coincide.
+            logicalViewName: selfAssignTableName(persistSource),
             environmentPath: environment.getEnvironmentPath(),
          });
       } catch (err) {

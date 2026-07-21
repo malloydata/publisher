@@ -3,11 +3,28 @@ import { BadRequestError } from "../errors";
 import type { components } from "../api";
 import {
    buildSourceIntoStorage,
+   logicalViewSql,
    passthroughSourceType,
    wrapPassthrough,
 } from "./materialization_build_session";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+describe("logicalViewSql", () => {
+   it("points the logical name at the physical table, catalog-qualified and quoted", () => {
+      expect(logicalViewSql("lake", "daily", "daily__mabc123")).toBe(
+         'CREATE OR REPLACE VIEW "lake"."daily" AS SELECT * FROM "lake"."daily__mabc123"',
+      );
+   });
+
+   it("qualifies a dotted schema.table logical name", () => {
+      expect(
+         logicalViewSql("lake", "analytics.daily", "analytics.daily__mabc123"),
+      ).toBe(
+         'CREATE OR REPLACE VIEW "lake"."analytics"."daily" AS SELECT * FROM "lake"."analytics"."daily__mabc123"',
+      );
+   });
+});
 
 describe("wrapPassthrough", () => {
    const SQL = "SELECT a, b FROM t WHERE s = 'x'";

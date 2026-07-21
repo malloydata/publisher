@@ -27,6 +27,7 @@ import {
    MaterializationService,
    redactConnectionSecrets,
    stagingSuffix,
+   storagePhysicalTableName,
 } from "./materialization_service";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import {
@@ -625,6 +626,33 @@ describe("stagingSuffix", () => {
    });
 });
 
+describe("storagePhysicalTableName", () => {
+   const ID = "abcdef1234567890fedcba9876543210";
+   it("content-addresses the table with a 16-char id fragment", () => {
+      expect(storagePhysicalTableName("daily", ID)).toBe(
+         "daily__mabcdef1234567890",
+      );
+   });
+   it("decorates only the table part of a dotted schema.table name", () => {
+      expect(storagePhysicalTableName("analytics.daily", ID)).toBe(
+         "analytics.daily__mabcdef1234567890",
+      );
+   });
+   it("is deterministic and distinct across differing entity ids", () => {
+      expect(storagePhysicalTableName("t", ID)).toBe(
+         storagePhysicalTableName("t", ID),
+      );
+      expect(storagePhysicalTableName("t", ID)).not.toBe(
+         storagePhysicalTableName("t", "0000000000000000ffff"),
+      );
+   });
+   it("strips hyphens so a UUID5 id yields a bare identifier fragment", () => {
+      expect(
+         storagePhysicalTableName("t", "1b4e28ba-2fa1-11d2-883f-0016d3cca427"),
+      ).toBe("t__m1b4e28ba2fa111d2");
+   });
+});
+
 describe("deriveSelfInstructions", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
@@ -665,6 +693,51 @@ describe("deriveSelfInstructions", () => {
       expect(
          (carried as Record<string, unknown>)["b1aaaaaaaaaaaaaa"],
       ).toBeDefined();
+   });
+
+   it("content-addresses a storage= source's physical table; path C keeps the logical name", () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      try {
+         const compiled = compiledWith(
+            {
+               lake_src: fakeSource({
+                  name: "lake_src",
+                  sourceEntityId: "aa11aa11aa11aa11aa11",
+                  annotationFields: { storage: "lake", name: "daily" },
+               }),
+               wh_src: fakeSource({
+                  name: "wh_src",
+                  sourceEntityId: "bb22bb22bb22bb22bb22",
+               }),
+            },
+            [["lake_src", "wh_src"]],
+         );
+         const { instructions } = (
+            ctx.service as unknown as {
+               deriveSelfInstructions: (
+                  c: unknown,
+                  n: string[] | undefined,
+                  p: unknown,
+               ) => { instructions: BuildInstruction[] };
+            }
+         ).deriveSelfInstructions(compiled, undefined, {});
+         const byId = Object.fromEntries(
+            instructions.map((i) => [i.sourceEntityId, i]),
+         );
+         const lake = byId["aa11aa11aa11aa11aa11"];
+         const wh = byId["bb22bb22bb22bb22bb22"];
+         // storage= → content-addressed hashed name in the destination.
+         expect(lake.destination).toBe("lake");
+         expect(lake.physicalTableName).toBe(
+            storagePhysicalTableName("daily", "aa11aa11aa11aa11aa11"),
+         );
+         expect(lake.physicalTableName).toBe("daily__maa11aa11aa11aa11");
+         // path C → the plain logical (source) name, no destination.
+         expect(wh.destination).toBeUndefined();
+         expect(wh.physicalTableName).toBe("wh_src");
+      } finally {
+         delete process.env.PERSIST_STORAGE_MODE;
+      }
    });
 
    it("honors the sourceNames filter (excluded sources are neither built nor carried)", () => {
