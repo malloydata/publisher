@@ -69,6 +69,21 @@ describe("redactConnectionSecrets", () => {
          "Catalog Error: Schema 'analytics' not found in DuckLake 'lake'";
       expect(redactConnectionSecrets(msg, source)).toBe(msg);
    });
+
+   it("redacts a secret in its SQL-escaped form (single quotes doubled)", () => {
+      // A DuckDB error echoes the offending statement, in which a secret with a
+      // single quote appears escaped (`'` -> `''`), so the raw value won't match.
+      const source = {
+         name: "pg",
+         type: "postgres",
+         postgresConnection: { password: "pa'ss'word" },
+      };
+      const msg =
+         "Parser Error: syntax error near 'password=pa''ss''word host=h'";
+      const out = redactConnectionSecrets(msg, source);
+      expect(out).not.toContain("pa''ss''word");
+      expect(out).toContain("***");
+   });
 });
 
 function createMocks() {
@@ -192,6 +207,83 @@ describe("MaterializationService", () => {
                ctx.repository.deleteMaterialization as sinon.SinonStub
             ).calledWith("mat-1"),
          ).toBe(true);
+      });
+   });
+
+   describe("deleteMaterialization rebinds storage serve bindings", () => {
+      const storageEntry = {
+         se1: {
+            sourceEntityId: "se1",
+            sourceName: "daily",
+            physicalTableName: "daily__mabc",
+            connectionName: "wh",
+            storageConnectionName: "lake",
+            schema: [{ name: "a", type: "BIGINT" }],
+         },
+      };
+
+      function setupEnv(): sinon.SinonStub {
+         const bindSpy = sinon.stub().resolves();
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon
+               .stub()
+               .resolves({ getMalloyConnection: async () => ({}) }),
+            getApiConnection: () => ({ name: "lake", type: "duckdb" }),
+            getEnvironmentPath: () => "/test",
+            bindPackageStorageServeBindings: bindSpy,
+         });
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               status: "MANIFEST_FILE_READY",
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               manifest: { entries: {} } as any,
+            }),
+         );
+         return bindSpy;
+      }
+
+      it("re-derives from the next-latest materialization after delete (on)", async () => {
+         process.env.PERSIST_STORAGE_MODE = "on";
+         try {
+            const bindSpy = setupEnv();
+            // The latest REMAINING successful run carries a storage entry.
+            ctx.repository.listMaterializations.resolves([
+               makeMaterialization({
+                  id: "m-prev",
+                  status: "MANIFEST_FILE_READY",
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  manifest: { entries: storageEntry } as any,
+               }),
+            ]);
+
+            await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+
+            expect(bindSpy.calledOnce).toBe(true);
+            expect(Object.keys(bindSpy.firstCall.args[1])).toContain("se1");
+         } finally {
+            delete process.env.PERSIST_STORAGE_MODE;
+         }
+      });
+
+      it("clears bindings when no successful materialization remains (on)", async () => {
+         process.env.PERSIST_STORAGE_MODE = "on";
+         try {
+            const bindSpy = setupEnv();
+            ctx.repository.listMaterializations.resolves([]); // none remain
+
+            await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+
+            expect(bindSpy.calledOnce).toBe(true);
+            expect(bindSpy.firstCall.args[1]).toEqual({}); // empty ⇒ serve live
+         } finally {
+            delete process.env.PERSIST_STORAGE_MODE;
+         }
+      });
+
+      it("does not rebind when the tier is off (dark-ship)", async () => {
+         const bindSpy = setupEnv(); // PERSIST_STORAGE_MODE unset ⇒ off
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+         expect(bindSpy.called).toBe(false);
       });
    });
 
@@ -1247,6 +1339,8 @@ describe("buildOneSource", () => {
                c: unknown,
                d: Record<string, string>,
                m: Manifest,
+               env: unknown,
+               built: Record<string, unknown>,
             ) => Promise<{ sourceEntityId: string; physicalTableName: string }>;
          }
       ).buildOneSource(
@@ -1255,6 +1349,13 @@ describe("buildOneSource", () => {
          connection,
          { duckdb: "dig" },
          manifest,
+         {
+            getApiConnection: () => {
+               throw new Error("no connection config in this path-C test");
+            },
+            getEnvironmentPath: () => "/tmp/env",
+         },
+         {}, // builtEntries — path-C build with no prior storage upstreams
       );
    }
 
@@ -1337,6 +1438,66 @@ describe("buildOneSource", () => {
          "ALTER TABLE `ds`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
       ]);
       expect(entry.physicalTableName).toBe("ds.orders_v1");
+   });
+
+   it("path-C build excludes a storage upstream from its warehouse manifest (mixed chain)", async () => {
+      // A path-C (in-warehouse) downstream that reads a storage-materialized
+      // upstream must NOT get the lake table name in its warehouse build SQL —
+      // the warehouse can't resolve it. The storage upstream is excluded (⇒
+      // inlined/recomputed); a path-C upstream is kept.
+      const runSQL = sinon.stub().resolves();
+      let seenManifest:
+         | { entries?: Record<string, { tableName?: string }> }
+         | undefined;
+      const down = fakeSource({
+         name: "down",
+         sourceEntityId: "downdowndowndown",
+         sql: "SELECT 1",
+         onGetSQL: (o) => {
+            seenManifest = (o as { buildManifest?: typeof seenManifest })
+               .buildManifest;
+         },
+      });
+      const manifest = new Manifest();
+      manifest.update("up_storage", { tableName: "daily__mabc" });
+      manifest.update("up_pathc", { tableName: '"orders_v1"' });
+      const builtEntries = {
+         up_storage: {
+            sourceEntityId: "up_storage",
+            physicalTableName: "daily__mabc",
+            storageConnectionName: "lake",
+         },
+         up_pathc: {
+            sourceEntityId: "up_pathc",
+            physicalTableName: "orders_v1",
+            connectionName: "duckdb",
+         },
+      };
+      await (
+         ctx.service as unknown as {
+            buildOneSource: (...a: unknown[]) => Promise<unknown>;
+         }
+      ).buildOneSource(
+         down,
+         {
+            sourceEntityId: "downdowndowndown",
+            materializedTableId: "mt",
+            physicalTableName: "down_v1",
+            realization: "COPY",
+         }, // no destination ⇒ path C
+         { runSQL },
+         { duckdb: "dig" },
+         manifest,
+         {
+            getApiConnection: () => {
+               throw new Error("unused in path-C");
+            },
+            getEnvironmentPath: () => "/tmp/env",
+         },
+         builtEntries,
+      );
+      expect(seenManifest?.entries?.up_storage).toBeUndefined();
+      expect(seenManifest?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
    });
 
    it("records the QUOTED just-built name in the build manifest (matches the CREATE)", async () => {

@@ -596,6 +596,20 @@ build-time refusal. In practice it rarely fires, because the served shape is
 just the stored columns; it's the floor that guarantees the captured schema
 forms a valid DuckDB source.
 
+A source whose `#@ persist name=` is a **quoted identifier** is also refused: the
+content-addressed physical name is derived by decorating that logical name, and a
+quote inside it produces a malformed table name. Use an unquoted name (a dotted
+`schema.table` is fine).
+
+These are the checks derivable from the compiled source and the built schema
+alone. One more belongs here and is **not yet enforced**: a source protected by
+`#(authorize)` — directly, or transitively through a join or derivation — should
+not be materialized into a shared store, because the serve path rebinds it to a
+virtual source whose shape carries no `#(authorize)` annotation, so the gate
+can't be evaluated on the served table. Until that refusal lands (alongside the
+upstream transitive-`#(authorize)` enforcement it reuses), do not materialize an
+authorize-gated source; serve it live.
+
 ---
 
 ## 8. Observability recap
