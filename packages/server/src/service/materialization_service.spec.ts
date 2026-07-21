@@ -1367,6 +1367,98 @@ describe("buildOneSource", () => {
    });
 });
 
+describe("buildOneSourceIntoStorage (Tier-3 fallback ladder)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   function callInto(opts: {
+      strict: boolean;
+      tier3: "ok" | "throw";
+   }): Promise<{
+      physicalTableName: string;
+      storageConnectionName?: string;
+   }> {
+      const source = fakeSource({
+         name: "monthly",
+         sourceEntityId: "abcdef1234567890",
+         annotationFields: { storage: "lake" },
+      });
+      const instruction: BuildInstruction = {
+         sourceEntityId: "abcdef1234567890",
+         materializedTableId: "mt",
+         physicalTableName: "monthly__mabc",
+         realization: "COPY",
+         destination: "lake",
+      };
+      const manifest = new Manifest();
+      manifest.strict = opts.strict;
+      const environment = {
+         getApiConnection: (n: string) => ({
+            name: n,
+            type: n === "lake" ? "duckdb" : "postgres",
+         }),
+         getEnvironmentPath: () => "/tmp/env",
+      };
+      const svc = ctx.service as unknown as {
+         buildDownstreamViaParents: unknown;
+         buildOneSourceIntoStorage: (
+            s: unknown,
+            i: BuildInstruction,
+            m: Manifest,
+            e: unknown,
+            sql: string,
+            built: Record<string, unknown>,
+            dep: boolean,
+         ) => Promise<{
+            physicalTableName: string;
+            storageConnectionName?: string;
+         }>;
+      };
+      // Stub the Tier-3 seam so the test exercises the LADDER, not the build.
+      svc.buildDownstreamViaParents =
+         opts.tier3 === "ok"
+            ? sinon.stub().resolves({
+                 storageConnectionName: "lake",
+                 schema: [
+                    { name: "order_month", type: "DATE" },
+                    { name: "monthly_total", type: "DOUBLE" },
+                 ],
+              })
+            : sinon.stub().rejects(new Error("uncarried parent"));
+      return svc.buildOneSourceIntoStorage(
+         source,
+         instruction,
+         manifest,
+         environment,
+         "SELECT should_not_run",
+         {
+            up: {
+               sourceEntityId: "up",
+               sourceName: "daily",
+               physicalTableName: "daily__mabc",
+               storageConnectionName: "lake",
+               schema: [{ name: "order_date", type: "DATE" }],
+            },
+         },
+         true, // dependsOnStorageUpstream
+      );
+   }
+
+   it("Tier 3 success: builds by reading the parent and returns the storage entry", async () => {
+      const entry = await callInto({ strict: false, tier3: "ok" });
+      expect(entry.storageConnectionName).toBe("lake");
+      expect(entry.physicalTableName).toBe("monthly__mabc");
+   });
+
+   it("strict + Tier 3 ineligible: refuses loudly instead of recomputing from raw", async () => {
+      await expect(callInto({ strict: true, tier3: "throw" })).rejects.toThrow(
+         /strict upstreams forbid/i,
+      );
+   });
+});
+
 describe("runBuild (branch behavior)", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {

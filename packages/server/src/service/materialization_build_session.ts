@@ -1,5 +1,10 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { FixedConnectionMap } from "@malloydata/malloy";
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   type PersistSource,
+   Runtime,
+} from "@malloydata/malloy";
 import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
@@ -226,6 +231,157 @@ export async function buildSourceIntoStorage(params: {
       } catch (err) {
          logger.warn(
             "Failed to close build session (leaked in-memory session)",
+            {
+               destinationName,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+      }
+   }
+}
+
+/**
+ * Build a CHAINED `storage=` source by reading its already-materialized
+ * upstream(s) from the destination store — the "stack on the parent" (Tier 3)
+ * path — instead of recomputing the upstream from raw against the source
+ * warehouse (Tier 2). Reuses the parent's work and is consistent-by-construction
+ * (the downstream is a pure function of the parent's STORED rows).
+ *
+ * The `transientModel` (assembled by the caller from the serve-shape rebind
+ * machinery, see {@link buildChainedStorageBuildModel}) rebinds every upstream to
+ * a virtual source on THIS destination and re-declares the downstream as a
+ * persist source over them. We compile it against the build session (the only
+ * connection it references is the attached destination), read the downstream
+ * persist source's `getSQL({ virtualMap })` — the exact mirror of the warehouse
+ * build's `getSQL`, only the SQL now reads the attached lake tables — and CTAS
+ * the result into the destination. No source federation, no passthrough: nothing
+ * leaves DuckDB. The `virtualMap` maps each upstream's handle to its (quoted)
+ * physical lake path.
+ *
+ * Session lifecycle mirrors {@link buildSourceIntoStorage} exactly (create →
+ * attach read-write → build → dispose), so no read-write attach survives the
+ * build, and the same authoritative-schema capture + convenience-view creation
+ * applies.
+ *
+ * @returns the destination connection name and the captured authoritative schema.
+ */
+export async function buildDownstreamIntoStorage(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   /** Transient rebind model: upstream virtuals + persist-annotated downstream. */
+   transientModel: string;
+   /** The downstream source's Malloy name, to locate it in the transient plan. */
+   downstreamName: string;
+   /** connectionName → handle → quoted physical path for the upstream virtuals. */
+   virtualMap: Map<string, Map<string, string>>;
+   /** Logical, unquoted physical table path for the downstream's own table. */
+   physicalTableName: string;
+   /** Logical convenience-view name (best-effort); see {@link buildSourceIntoStorage}. */
+   logicalViewName?: string;
+   environmentPath: string;
+}): Promise<StorageBuildResult> {
+   const {
+      destinationName,
+      destinationConnection,
+      transientModel,
+      downstreamName,
+      virtualMap,
+      physicalTableName,
+      logicalViewName,
+      environmentPath,
+   } = params;
+
+   assertSupportedDestination(destinationName, destinationConnection);
+
+   const session = new DuckDBConnection(`build_${destinationName}`, ":memory:");
+   try {
+      await attachDestinationReadWrite(
+         session,
+         destinationName,
+         destinationConnection,
+         environmentPath,
+      );
+      if (destinationConnection.type === "ducklake") {
+         // Same rationale as buildSourceIntoStorage: keep materialized rows out
+         // of the shared catalog database.
+         await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+      }
+
+      // Compile the transient rebind model against the build session. Its only
+      // connection is the attached destination; the upstream virtual sources
+      // declare their captured schema, so compiling reads no tables (schema-on-
+      // faith) — the CTAS below runs the real SQL against the attached lake.
+      const root = "file:///chained-build/";
+      const url = `${root}m.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, transientModel]])),
+         connections: new FixedConnectionMap(
+            new Map([[destinationName, session]]),
+            destinationName,
+         ),
+      });
+      const model = await runtime
+         .loadModel(new URL(url), { importBaseURL: new URL(root) })
+         .getModel();
+      const plan = model.getBuildPlan();
+      let downstream: PersistSource | undefined;
+      for (const ps of Object.values(plan.sources)) {
+         if (ps.name === downstreamName) {
+            downstream = ps;
+            break;
+         }
+      }
+      if (!downstream) {
+         // The downstream didn't survive as a persist source — its definition
+         // references something the rebind model doesn't provide (a parent
+         // refinement not carried, a live leaf). The caller falls back.
+         throw new Error(
+            `Chained build model did not yield a persist source named ` +
+               `'${downstreamName}' (the downstream references something the ` +
+               `rebound parents don't provide).`,
+         );
+      }
+      // The downstream's materialization SQL, over the rebound parents — DuckDB
+      // dialect, reading the attached lake tables via the virtualMap.
+      const sql = downstream.getSQL({ virtualMap });
+
+      const target = quoteTablePath(
+         `${destinationName}.${physicalTableName}`,
+         "duckdb",
+      );
+      await session.runSQL(`CREATE OR REPLACE TABLE ${target} AS (${sql})`);
+      const schema = await describeTable(session, target);
+
+      if (logicalViewName && logicalViewName !== physicalTableName) {
+         try {
+            await session.runSQL(
+               logicalViewSql(
+                  destinationName,
+                  logicalViewName,
+                  physicalTableName,
+               ),
+            );
+         } catch (err) {
+            logger.warn(
+               "Failed to create the logical convenience view over a chained " +
+                  "materialized table (non-fatal; publisher reads the physical name)",
+               {
+                  destinationName,
+                  logicalViewName,
+                  physicalTableName,
+                  error: err instanceof Error ? err.message : String(err),
+               },
+            );
+         }
+      }
+
+      return { storageConnectionName: destinationName, schema };
+   } finally {
+      try {
+         await session.close();
+      } catch (err) {
+         logger.warn(
+            "Failed to close chained build session (leaked in-memory session)",
             {
                destinationName,
                error: err instanceof Error ? err.message : String(err),

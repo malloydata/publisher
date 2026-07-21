@@ -32,6 +32,20 @@ export type EligibilityRefusalReason =
    | "free_parameter"
    | "given"
    | "not_duckdb_portable";
+/**
+ * How a chained `storage=` source (one that reads a storage-materialized
+ * upstream) was built: `parent_reuse` = built by reading the upstream's stored
+ * lake table (Tier 3, "stack on the parent" — reuses the parent's work and is
+ * consistent-by-construction); `inline_fallback` = Tier 3 was ineligible/failed
+ * so the upstream was recomputed from raw against the warehouse (Tier 2, non-
+ * strict); `strict_refused` = Tier 3 was ineligible under `strictUpstreams`, so
+ * the build failed loudly rather than silently recomputing. This is the headline
+ * signal for how far the parent-reuse path gets us in practice.
+ */
+export type ChainedStorageBuildOutcome =
+   | "parent_reuse"
+   | "inline_fallback"
+   | "strict_refused";
 
 const resetHooks: (() => void)[] = [];
 
@@ -136,6 +150,13 @@ const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
    "Captured DuckDB column types mapped to json in the serve shape (type " +
       "fidelity loss). Label: kind ('array'|'unrecognized').",
+);
+const chainedStorageBuildCounter = lazyCounter(
+   "publisher_storage_chained_build_total",
+   "Chained storage= source builds (a source reading a storage-materialized " +
+      "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
+      "'strict_refused'). The parent_reuse share is the headline signal for how " +
+      "far the parent-reuse (Tier 3) path gets us vs recompute-from-raw.",
 );
 
 /**
@@ -293,6 +314,18 @@ export function recordStorageServeRouting(
    outcome: "storage" | "live_fallback",
 ): void {
    storageServeRoutingCounter().add(1, { outcome });
+}
+
+/**
+ * Record how a chained `storage=` source was built (see
+ * {@link ChainedStorageBuildOutcome}). Only fired for a source that actually
+ * reads a storage-materialized upstream — a single-source build emits nothing
+ * here. The parent_reuse : inline_fallback ratio is the spike's key learning.
+ */
+export function recordChainedStorageBuild(
+   outcome: ChainedStorageBuildOutcome,
+): void {
+   chainedStorageBuildCounter().add(1, { outcome });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

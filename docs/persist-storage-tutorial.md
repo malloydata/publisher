@@ -502,15 +502,24 @@ source: daily_orders is orders -> { group_by: order_date; aggregate: total_amoun
 source: monthly_orders is daily_orders -> { group_by: order_month is order_date.month; aggregate: monthly_total is total_amount.sum() }
 ```
 
-Both materialize, and each serves from its own table. Today the downstream
-(`monthly_orders`) is built by **recomputing from raw** (the upstream is inlined
-into its build query) rather than reading the upstream's materialized table, so
-its numbers can drift from the upstream's if the two are built at different
-times. To keep a chain consistent, rebuild the whole package together
-(`forceRefresh`). Under `strictUpstreams` (orchestrated builds) a chained source
-is refused rather than silently recomputed. Reusing the upstream's materialized
-table directly (so a chain reuses work and stays consistent by construction) is
-a tracked enhancement.
+Both materialize, and each serves from its own table. When the whole chain lands
+in the same destination, the downstream (`monthly_orders`) is built by **reading
+the upstream's materialized table** — `daily_orders`'s stored rows are rolled up
+in DuckDB, the upstream is never re-scanned from raw. This reuses the parent's
+work and makes the downstream **consistent by construction**: it is a pure
+function of the parent's stored rows, so a chain built in one package run cannot
+drift between levels.
+
+If the downstream can't be built that way — it reaches a field defined on the
+parent that isn't a stored column, joins a live (non-materialized) source in the
+same query, or its upstream lives in a _different_ destination — Publisher falls
+back to **recomputing the upstream from raw** (inlining it into the downstream's
+build query). That still produces a correct table, but two independently-timed
+builds can then drift; rebuild the whole package together (`forceRefresh`) to
+keep them aligned. Under `strictUpstreams` (orchestrated builds) the fallback is
+refused rather than silently recomputing — the build fails loudly instead. The
+`publisher_storage_chained_build_total` counter (labeled `parent_reuse` /
+`inline_fallback` / `strict_refused`) reports which path each chained build took.
 
 ### Eligibility refusals (refused at build time)
 
@@ -607,6 +616,9 @@ Everything you need is on the package status and the logs:
 - Metrics (OpenTelemetry, under the `publisher` meter):
   - `publisher_storage_serve_routing_total{outcome=storage|live_fallback}` — the
     serve hit rate; the headline signal for "is the tier actually serving?"
+  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused}`
+    — for a chained source, whether it built by reading its parent's stored table
+    (`parent_reuse`) or fell back to recompute-from-raw.
   - `malloy_model_query_duration` tags storage-served queries with
     `served_from=storage` (the attribute is absent otherwise, so an `off`
     deployment's histogram is unchanged), isolating storage-served latency.

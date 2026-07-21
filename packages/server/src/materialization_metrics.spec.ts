@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
+   recordChainedStorageBuild,
    recordConnectionDigestSkipped,
    recordDropTables,
    recordEligibilityRefused,
@@ -106,6 +107,29 @@ describe("materialization_metrics", () => {
       expect(
          await harness.collectCounter("publisher_storage_serve_routing_total", {
             outcome: "live_fallback",
+         }),
+      ).toBe(1);
+   });
+
+   it("counts chained storage builds labeled by outcome", async () => {
+      recordChainedStorageBuild("parent_reuse");
+      recordChainedStorageBuild("parent_reuse");
+      recordChainedStorageBuild("inline_fallback");
+      recordChainedStorageBuild("strict_refused");
+
+      expect(
+         await harness.collectCounter("publisher_storage_chained_build_total", {
+            outcome: "parent_reuse",
+         }),
+      ).toBe(2);
+      expect(
+         await harness.collectCounter("publisher_storage_chained_build_total", {
+            outcome: "inline_fallback",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_storage_chained_build_total", {
+            outcome: "strict_refused",
          }),
       ).toBe(1);
    });
