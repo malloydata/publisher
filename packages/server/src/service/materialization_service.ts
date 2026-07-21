@@ -95,6 +95,29 @@ function selfAssignTableName(persistSource: PersistSource): string {
 }
 
 /**
+ * The build manifest for a `storage=` build, with storage-materialized entries
+ * removed. A storage build runs in the source warehouse (passthrough), so it
+ * cannot reference an upstream that landed in a DuckDB/DuckLake store — dropping
+ * those entries makes the compiler INLINE the upstream (non-strict) or raise a
+ * clean strict-miss (strict), instead of emitting a cross-engine table
+ * reference. Path-C (in-warehouse) entries are kept — the warehouse build can
+ * reference them. Preserves the manifest's `strict` flag.
+ */
+export function manifestExcludingStorage(
+   manifest: Manifest,
+   builtEntries: Record<string, ManifestEntry>,
+): Manifest["buildManifest"] {
+   const reduced = new Manifest();
+   reduced.strict = manifest.strict;
+   for (const [id, entry] of Object.entries(builtEntries)) {
+      if (!entry.storageConnectionName && entry.physicalTableName) {
+         reduced.update(id, { tableName: entry.physicalTableName });
+      }
+   }
+   return reduced.buildManifest;
+}
+
+/**
  * Content-address of a `storage=` physical table: the logical name decorated
  * with a `sourceEntityId`-derived fragment, so one physical table exists per
  * content generation. A definition change (new `sourceEntityId`) yields a NEW
@@ -966,6 +989,7 @@ export class MaterializationService {
                connectionDigests,
                manifest,
                environment,
+               entries,
             );
             entries[sourceEntityId] = entry;
          }
@@ -986,11 +1010,29 @@ export class MaterializationService {
       connectionDigests: Record<string, string>,
       manifest: Manifest,
       environment: BuildEnvironment,
+      builtEntries: Record<string, ManifestEntry>,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
+      const isStorageBuild =
+         !!instruction.destination && getPersistStorageMode() !== "off";
+      // A storage build executes in the SOURCE warehouse (native passthrough),
+      // but a storage-materialized upstream's table lives in the DuckDB/DuckLake
+      // store — a different engine. Substituting that upstream's manifest table
+      // name into warehouse SQL would reference a table the warehouse can't see.
+      // So for a storage build, exclude storage-materialized upstreams from the
+      // manifest: in the default (non-strict) build they INLINE (recompute from
+      // raw against the warehouse) so a chained `storage=` source still
+      // materializes; under `strictUpstreams` the excluded reference becomes a
+      // clean strict-miss error (the orchestrated contract — don't silently
+      // recompute). Reusing the parent's materialized table instead of
+      // recomputing (the same-engine "stack on the parent" build) is a follow-on;
+      // serve is identical either way, since it reads this source's own table.
+      const buildManifest = isStorageBuild
+         ? manifestExcludingStorage(manifest, builtEntries)
+         : manifest.buildManifest;
       const buildSQL = persistSource.getSQL({
-         buildManifest: manifest.buildManifest,
+         buildManifest,
          connectionDigests,
       });
 
@@ -999,7 +1041,7 @@ export class MaterializationService {
       // fully from the in-warehouse CTAS below — different engine, credential
       // federation, and a captured authoritative schema for the serve transform.
       // Gated by the kill switch: when off, ignore a destination and build path C.
-      if (instruction.destination && getPersistStorageMode() !== "off") {
+      if (isStorageBuild) {
          return this.buildOneSourceIntoStorage(
             persistSource,
             instruction,

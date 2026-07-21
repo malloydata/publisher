@@ -24,6 +24,7 @@ import {
    makeMaterialization,
 } from "./materialization_test_fixtures";
 import {
+   manifestExcludingStorage,
    MaterializationService,
    redactConnectionSecrets,
    stagingSuffix,
@@ -699,6 +700,33 @@ describe("storagePhysicalTableName", () => {
       expect(
          storagePhysicalTableName("t", "1b4e28ba-2fa1-11d2-883f-0016d3cca427"),
       ).toBe("t__m1b4e28ba2fa111d2");
+   });
+});
+
+describe("manifestExcludingStorage (Tier 2 chained-storage inline)", () => {
+   it("drops storage-materialized entries, keeps path-C entries, preserves strict", () => {
+      const manifest = new Manifest();
+      manifest.strict = true;
+      const built: Record<string, unknown> = {
+         wh_up: {
+            sourceEntityId: "wh_up",
+            physicalTableName: "wh_up_v1",
+            connectionName: "duckdb",
+            // no storageConnectionName -> in-warehouse (path C), keep it
+         },
+         lake_up: {
+            sourceEntityId: "lake_up",
+            physicalTableName: "lake_up__mabc",
+            connectionName: "wh",
+            storageConnectionName: "lake", // storage -> exclude it
+         },
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const reduced = manifestExcludingStorage(manifest, built as any) as any;
+      expect(Object.keys(reduced.entries)).toEqual(["wh_up"]);
+      expect(reduced.entries.wh_up.tableName).toBe("wh_up_v1");
+      expect(reduced.entries.lake_up).toBeUndefined();
+      expect(reduced.strict).toBe(true);
    });
 });
 
