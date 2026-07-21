@@ -21,6 +21,7 @@ import {
    duckdbTypeToMalloy,
    extractJoins,
    extractRefinements,
+   extractViews,
    sliceSourceRange,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -592,5 +593,167 @@ describe("extractJoins", () => {
             shared,
          ),
       ).toEqual([]);
+   });
+});
+
+describe("extractViews", () => {
+   const liftText = () =>
+      "by_region is { group_by: region; aggregate: c is count() }";
+
+   it("carries a turtle field, lifting its declaration text", () => {
+      const fields = [
+         {
+            type: "turtle",
+            name: "by_region",
+            location: { url: "file:///m", range: {} },
+         },
+      ];
+      expect(extractViews(fields, liftText)).toEqual([
+         {
+            kind: "view",
+            name: "by_region",
+            text: "by_region is { group_by: region; aggregate: c is count() }",
+         },
+      ]);
+   });
+
+   it("skips non-turtle fields and unliftable turtles", () => {
+      expect(
+         extractViews(
+            [{ name: "amount", type: "number", expressionType: "scalar" }],
+            liftText,
+         ),
+      ).toEqual([]);
+      expect(
+         extractViews(
+            [
+               {
+                  type: "turtle",
+                  name: "v",
+                  location: { url: "file:///m", range: {} },
+               },
+            ],
+            () => undefined,
+         ),
+      ).toEqual([]);
+   });
+
+   it("returns [] for undefined fields", () => {
+      expect(extractViews(undefined, liftText)).toEqual([]);
+   });
+});
+
+describe("buildServeShapeModelForBindings with a view", () => {
+   it("emits the view (verbatim, view: prefixed) after joins and measures", () => {
+      const { modelText } = buildServeShapeModelForBindings([
+         {
+            sourceName: "orders",
+            connectionName: "lake",
+            virtualHandle: "h",
+            tablePath: "lake.orders",
+            schema: [{ name: "amount", type: "BIGINT" }],
+            refinements: [
+               { kind: "measure", name: "total", code: "amount.sum()" },
+               {
+                  kind: "view",
+                  name: "by_amount",
+                  text: "by_amount is { group_by: amount; aggregate: total }",
+               },
+            ],
+         },
+      ]);
+      expect(modelText).toContain(
+         "view: by_amount is { group_by: amount; aggregate: total }",
+      );
+      // The view must come after the measure it references.
+      expect(modelText.indexOf("measure: total")).toBeLessThan(
+         modelText.indexOf("view: by_amount"),
+      );
+   });
+});
+
+describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
+   let connections: FixedConnectionMap;
+   let duckdb: DuckDBConnection;
+
+   beforeAll(async () => {
+      duckdb = new DuckDBConnection("duckdb", ":memory:");
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE v_orders AS " +
+            "SELECT 10 AS amount, 'r1' AS region_id " +
+            "UNION ALL SELECT 20, 'r2' UNION ALL SELECT 30, 'r1'",
+      );
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE v_regions AS " +
+            "SELECT 'r1' AS region_id, 'North' AS region_name " +
+            "UNION ALL SELECT 'r2', 'South'",
+      );
+      connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+   });
+
+   it("invokes a named view that groups by a joined field, served from storage", async () => {
+      const bindings: ServeBinding[] = [
+         {
+            sourceName: "regions",
+            connectionName: "duckdb",
+            virtualHandle: "vr",
+            tablePath: "v_regions",
+            schema: [
+               { name: "region_id", type: "VARCHAR" },
+               { name: "region_name", type: "VARCHAR" },
+            ],
+         },
+         {
+            sourceName: "orders",
+            connectionName: "duckdb",
+            virtualHandle: "vo",
+            tablePath: "v_orders",
+            schema: [
+               { name: "amount", type: "BIGINT" },
+               { name: "region_id", type: "VARCHAR" },
+            ],
+            refinements: [
+               {
+                  kind: "join",
+                  name: "regions",
+                  keyword: "join_one",
+                  text: "regions is regions on region_id = regions.region_id",
+                  dependsOn: "regions",
+               },
+               { kind: "measure", name: "total", code: "amount.sum()" },
+               {
+                  kind: "view",
+                  name: "by_region",
+                  text: "by_region is { group_by: regions.region_name; aggregate: total }",
+               },
+            ],
+         },
+      ];
+      const { modelText } = buildServeShapeModelForBindings(bindings);
+      const root = "file:///view-e2e/";
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([[`${root}m.malloy`, modelText]]),
+         ),
+         connections,
+      });
+      const query = runtime
+         .loadModel(new URL(`${root}m.malloy`), {
+            importBaseURL: new URL(root),
+         })
+         .loadQuery("run: orders -> by_region");
+      const virtualMap = buildVirtualMap(bindings);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await query.run({ virtualMap } as any);
+      const out = result.data.toObject() as {
+         region_name: string;
+         total: number;
+      }[];
+      expect(
+         Object.fromEntries(out.map((r) => [r.region_name, r.total])),
+      ).toEqual({ North: 40, South: 20 });
    });
 });
