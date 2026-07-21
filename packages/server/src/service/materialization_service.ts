@@ -121,6 +121,45 @@ function resolveStorageDestination(
    return storage;
 }
 
+/** Connection-config keys whose string values are credentials to redact. */
+const SENSITIVE_KEY =
+   /pass(word)?|secret|private_?key|service_?account|access_?key|token|connection_?string|account/i;
+
+/** Collect credential string values (from sensitively-named keys) in a config. */
+function collectSensitiveValues(value: unknown, out: Set<string>): void {
+   if (value === null || typeof value !== "object") return;
+   if (Array.isArray(value)) {
+      for (const v of value) collectSensitiveValues(v, out);
+      return;
+   }
+   for (const [key, v] of Object.entries(value)) {
+      if (typeof v === "string" && v.length >= 4 && SENSITIVE_KEY.test(key)) {
+         out.add(v);
+      } else {
+         collectSensitiveValues(v, out);
+      }
+   }
+}
+
+/**
+ * Redact the actual credential values (from the given connection configs) out
+ * of an error message, then surface the message. This keeps a build error
+ * legible — a "schema not found" or "table does not exist" tells the operator
+ * exactly what to fix — while never leaking the passwords / secrets / service
+ * account JSON / connection strings a federation or attach error can echo. Only
+ * the concrete secret values are removed, not the message structure.
+ */
+export function redactConnectionSecrets(
+   message: string,
+   ...connections: unknown[]
+): string {
+   const secrets = new Set<string>();
+   for (const c of connections) collectSensitiveValues(c, secrets);
+   let redacted = redactPgSecrets(message);
+   for (const s of secrets) redacted = redacted.split(s).join("***");
+   return redacted;
+}
+
 /** Classify a thrown build error as cancelled (cooperative abort) or failed. */
 function outcomeFor(
    _err: unknown,
@@ -654,7 +693,12 @@ export class MaterializationService {
       // bound un-gated (always serve the freshly-built table).
       const manifestEntries: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
-         if (entry.physicalTableName) {
+         // Storage entries serve cross-connection via the virtual-source
+         // bindings (below), NOT the same-connection manifest substitution —
+         // putting one here would make the original model try to substitute the
+         // source with a table on its OWN (source) connection, which doesn't
+         // exist there. Only path-C entries go into the tableName manifest.
+         if (entry.physicalTableName && !entry.storageConnectionName) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // Carried so the bind step can quote the physical path for the
@@ -1001,7 +1045,6 @@ export class MaterializationService {
       );
       const destinationConnection =
          environment.getApiConnection(destinationName);
-      const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
 
       const startTime = performance.now();
       let result;
@@ -1012,24 +1055,30 @@ export class MaterializationService {
             sourceConnection,
             buildSQL,
             physicalTableName,
-            stagingTableName,
             environmentPath: environment.getEnvironmentPath(),
          });
       } catch (err) {
-         // Redaction (design §5): a failed passthrough CTAS / federation error
-         // can echo source-connection detail (connstrings, account names, hosts,
-         // secret names) from the DuckDB engine. Log the redacted detail
-         // server-side for operators, but surface only a generic message — the
-         // thrown error is persisted verbatim into the user-visible run `error`
-         // column, so it must carry no credentials.
+         // Redaction (design §5): a failed federation / passthrough / attach
+         // error can echo source- or catalog-connection detail (connstrings,
+         // account names, service-account JSON) from the DuckDB engine. Strip
+         // the actual credential VALUES but keep the message, so an operator sees
+         // a legible, actionable error (e.g. "schema 'analytics' not found" when
+         // a `name=schema.table` target's schema wasn't provisioned) rather than
+         // an opaque failure — without leaking secrets into the user-visible run
+         // `error` column.
+         const safeDetail = redactConnectionSecrets(
+            errMessage(err),
+            sourceConnection,
+            destinationConnection,
+         );
          logger.warn("Storage materialization build failed", {
             sourceName: persistSource.name,
             destinationName,
-            error: redactPgSecrets(errMessage(err)),
+            error: safeDetail,
          });
          throw new Error(
             `Failed to materialize source '${persistSource.name}' into storage ` +
-               `destination '${destinationName}'. See server logs for detail.`,
+               `destination '${destinationName}': ${safeDetail}`,
          );
       }
 

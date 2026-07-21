@@ -25,6 +25,7 @@ import {
 } from "./materialization_test_fixtures";
 import {
    MaterializationService,
+   redactConnectionSecrets,
    stagingSuffix,
 } from "./materialization_service";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
@@ -34,6 +35,39 @@ import {
 } from "../test_helpers/metrics_harness";
 
 type MockRepo = sinon.SinonStubbedInstance<ResourceRepository>;
+
+describe("redactConnectionSecrets", () => {
+   it("strips credential values but keeps the message legible", () => {
+      const source = {
+         name: "orders_pg",
+         type: "postgres",
+         postgresConnection: {
+            host: "db.internal",
+            userName: "svc",
+            password: "sup3r-secret-pw",
+         },
+      };
+      const msg =
+         "IO Error: could not connect password=sup3r-secret-pw to db.internal";
+      const out = redactConnectionSecrets(msg, source);
+      expect(out).not.toContain("sup3r-secret-pw");
+      expect(out).toContain("could not connect");
+      expect(out).toContain("db.internal"); // host isn't a secret — stays
+   });
+
+   it("passes a credential-free error (e.g. schema not found) through verbatim", () => {
+      const source = {
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: { postgresConnection: { password: "catpw123" } },
+         },
+      };
+      const msg =
+         "Catalog Error: Schema 'analytics' not found in DuckLake 'lake'";
+      expect(redactConnectionSecrets(msg, source)).toBe(msg);
+   });
+});
 
 function createMocks() {
    const sandbox = sinon.createSandbox();

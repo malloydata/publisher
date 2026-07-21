@@ -2802,6 +2802,32 @@ components:
             served models. Usually equals `manifestLocation`, but can differ
             after an in-memory auto-load following a materialization build (no
             URI), in which case it is null. Null whenever the package is unbound.
+        storageServeBindings:
+          type: array
+          readOnly: true
+          description: >-
+            Server-computed, read-only: sources currently bound to serve from a
+            `storage=` destination via the virtual-source transform (distinct
+            from the same-connection manifest binding above — a storage source is
+            read cross-connection from its destination, not substituted in the
+            manifest). Present only when at least one source is bound. Whether a
+            query actually routes to these tables additionally depends on
+            `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
+            be present but the serve path still runs live (see `warnings`).
+          items:
+            type: object
+            properties:
+              sourceName:
+                type: string
+                description: The materialized source served from storage.
+              storageConnectionName:
+                type: string
+                description: >-
+                  The registered DuckDB/DuckLake connection the physical table
+                  lives in.
+              tablePath:
+                type: string
+                description: The physical table the source is served from.
         buildPlan:
           oneOf:
             - $ref: "#/components/schemas/BuildPlan"

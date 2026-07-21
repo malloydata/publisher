@@ -3,7 +3,7 @@ import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
-import { quoteIdentifier, quoteTablePath, bareTableName } from "./quoting";
+import { quoteIdentifier, quoteTablePath } from "./quoting";
 import {
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -93,11 +93,12 @@ export interface StorageBuildResult {
  * serve connection (the least-privilege boundary the design requires).
  *
  * Steps: create an in-memory DuckDB session → attach the destination read-write
- * → federate the source's credentials on demand → run a staging CTAS whose FROM
- * is the source passthrough → capture the built table's authoritative schema
- * (DESCRIBE) → atomically swap staging into the physical name → dispose the
- * session (releasing every credential/attach). The compiled SELECT (source
- * dialect) is unchanged; only where it executes and where the result lands move.
+ * → federate the source's credentials on demand → `CREATE OR REPLACE TABLE`
+ * (qualified with the destination catalog) whose FROM is the source passthrough
+ * → capture the built table's authoritative schema (DESCRIBE) → dispose the
+ * session (releasing every credential/attach). DuckLake's catalog swap is
+ * transactional, so the replace is atomic. The compiled SELECT (source dialect)
+ * is unchanged; only where it executes and where the result lands move.
  *
  * @returns the destination connection name and the captured authoritative
  *   schema, both recorded on the manifest entry for the serve transform.
@@ -110,8 +111,6 @@ export async function buildSourceIntoStorage(params: {
    buildSQL: string;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
-   /** Staging table path (unquoted); built, DESCRIBEd, then renamed in place. */
-   stagingTableName: string;
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const {
@@ -120,7 +119,6 @@ export async function buildSourceIntoStorage(params: {
       sourceConnection,
       buildSQL,
       physicalTableName,
-      stagingTableName,
       environmentPath,
    } = params;
 
@@ -138,17 +136,30 @@ export async function buildSourceIntoStorage(params: {
          environmentPath,
       );
 
+      if (destinationConnection.type === "ducklake") {
+         // Write-path: disable DuckLake row inlining for this build session so
+         // materialized rows land as Parquet in the data store, NOT inlined into
+         // the catalog database. Materializations are generally large, and in a
+         // shared/multitenant catalog inlining would push tenant data into the
+         // catalog Postgres. Session-scoped (this build only) — it does not
+         // mutate the shared catalog's persisted options.
+         await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
+      }
+
       const federated = await federateSourceForPassthrough(
          session,
          sourceType,
          sourceFederationConfig(sourceConnection),
       );
 
-      // DuckDB dialect for the destination-side DDL identifiers.
-      const quotedStaging = quoteTablePath(stagingTableName, "duckdb");
-      const quotedPhysical = quoteTablePath(physicalTableName, "duckdb");
-      const quotedBareName = quoteIdentifier(
-         bareTableName(physicalTableName),
+      // The CTAS target MUST be qualified with the destination catalog (the
+      // attach alias) — an unqualified name lands in the build session's own
+      // in-memory catalog, not the DuckLake/DuckDB store, so the rows would be
+      // captured for the schema and then vanish with the session. DuckLake's
+      // catalog swap is transactional, so CREATE OR REPLACE is atomic — no
+      // staging/rename dance needed on this path.
+      const target = quoteTablePath(
+         `${destinationName}.${physicalTableName}`,
          "duckdb",
       );
       const passthrough = wrapPassthrough(
@@ -157,16 +168,13 @@ export async function buildSourceIntoStorage(params: {
          buildSQL,
       );
 
-      await session.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
-      await session.runSQL(`CREATE TABLE ${quotedStaging} AS (${passthrough})`);
-      // Capture the authoritative schema from the freshly-built staging table
-      // BEFORE the swap — the serve transform declares exactly this, and the
-      // compiler does not type-check a virtual source's declared columns.
-      const schema = await describeTable(session, quotedStaging);
-      await session.runSQL(`DROP TABLE IF EXISTS ${quotedPhysical}`);
       await session.runSQL(
-         `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
+         `CREATE OR REPLACE TABLE ${target} AS (${passthrough})`,
       );
+      // Capture the authoritative schema from the freshly-built table — the
+      // serve transform declares exactly this, and the compiler does not
+      // type-check a virtual source's declared columns.
+      const schema = await describeTable(session, target);
 
       return { storageConnectionName: destinationName, schema };
    } finally {
