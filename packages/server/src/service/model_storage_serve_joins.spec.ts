@@ -1,11 +1,15 @@
-// Model-level routing contract for JOINS in the `storage=` serve path, through
-// the real Model.getQueryResults against a real in-memory DuckDB. This exercises
-// the glue the transform-level tests can't: serveBindingsWithRefinements reading
-// a REAL compiled modelDef, mapping the join's `sourceID` to the joined source
-// name, and lifting the join declaration verbatim from the on-disk source file
-// (as it does in production — hence a real temp file, not InMemoryURLReader
-// alone). The live sources return region_name 'LIVE'; the bound (materialized)
-// tables return 'STORE', so the value observed tells which path ran.
+// Model-level routing contract for JOINS and VIEWS in the `storage=` serve path,
+// through the real Model.getQueryResults against a real in-memory DuckDB. This
+// exercises the glue the transform-level tests can't: serveBindingsWithRefinements
+// reading a REAL compiled modelDef, mapping a join's `sourceID` to the joined
+// source name, and lifting join/view declarations verbatim from the on-disk
+// source file (as it does in production — hence a real temp file, not
+// InMemoryURLReader alone), plus the shape-compile escalation that keeps one
+// un-carriable refinement from disabling all storage serving.
+//
+// Signals: the live sources return region_name 'LIVE' and amount 10; the bound
+// (materialized) tables return 'STORE' and amount 99 — so the value observed
+// tells which path ran.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -24,10 +28,10 @@ import type { ServeBinding } from "./materialization_serve_transform";
 const MODEL_SRC = `source: regions is duckdb.sql("SELECT 'r1' AS region_id, 'LIVE' AS region_name")
 source: orders is duckdb.sql("SELECT 10 AS amount, 'r1' AS region_id") extend {
   join_one: regions is regions on region_id = regions.region_id
+  measure: total is amount.sum()
+  view: by_region is { group_by: regions.region_name; aggregate: total }
 }
 `;
-const QUERY =
-   "run: orders -> { group_by: regions.region_name; aggregate: t is amount.sum() }";
 
 const ORDERS_BINDING: ServeBinding = {
    sourceName: "orders",
@@ -60,9 +64,10 @@ async function buildModel(): Promise<Model> {
    const fileUrl = pathToFileURL(file).toString();
 
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   // Materialized tables (distinct region_name from the live sources).
+   // Materialized tables carry distinct values (region_name 'STORE', amount 99)
+   // from the live sources ('LIVE', 10), so a result value proves which ran.
    await duckdb.runSQL(
-      "CREATE OR REPLACE TABLE orders_mz AS SELECT 10 AS amount, 'r1' AS region_id",
+      "CREATE OR REPLACE TABLE orders_mz AS SELECT 99 AS amount, 'r1' AS region_id",
    );
    await duckdb.runSQL(
       "CREATE OR REPLACE TABLE regions_mz AS SELECT 'r1' AS region_id, 'STORE' AS region_name",
@@ -104,19 +109,24 @@ async function buildModel(): Promise<Model> {
    return model;
 }
 
-async function runRegionName(model: Model): Promise<string> {
+/** Run a query and return the first result row. */
+async function runRow<T>(model: Model, query: string): Promise<T> {
    const res = await model.getQueryResults(
       undefined,
       undefined,
-      QUERY,
+      query,
       {},
       true,
    );
-   const rows = res.compactResult as unknown as { region_name: string }[];
-   return rows[0].region_name;
+   return (res.compactResult as unknown as T[])[0];
 }
 
-describe("storage= serve routing with joins (end-to-end)", () => {
+const JOIN_QUERY =
+   "run: orders -> { group_by: regions.region_name; aggregate: t is amount.sum() }";
+const VIEW_QUERY = "run: orders -> by_region";
+const PLAIN_QUERY = "run: orders -> { aggregate: t is amount.sum() }";
+
+describe("storage= serve routing with joins and views (end-to-end)", () => {
    afterEach(() => {
       delete process.env.PERSIST_STORAGE_MODE;
    });
@@ -128,23 +138,56 @@ describe("storage= serve routing with joins (end-to-end)", () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       const model = await buildModel();
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
-      // 'STORE' => the join ran over the bound tables (regions_mz), not live.
-      expect(await runRegionName(model)).toBe("STORE");
+      const row = await runRow<{ region_name: string }>(model, JOIN_QUERY);
+      expect(row.region_name).toBe("STORE"); // join ran over the bound tables
+   });
+
+   it("serves a named view (grouping by a joined field) from the materialized tables", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+      model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
+      const row = await runRow<{ region_name: string; total: number }>(
+         model,
+         VIEW_QUERY,
+      );
+      expect(row.region_name).toBe("STORE");
+      expect(Number(row.total)).toBe(99); // amount from orders_mz, not live 10
    });
 
    it("falls back to live when the joined source is not materialized (the gate)", async () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       const model = await buildModel();
-      // Only `orders` is bound; `regions` is not, so the join is not carried and
-      // a query traversing it cannot compile against the serve shape → live.
+      // Only `orders` is bound; the join to `regions` is not carried, so a query
+      // traversing it cannot compile against the serve shape → live.
       model.setServeBindings([ORDERS_BINDING]);
-      expect(await runRegionName(model)).toBe("LIVE");
+      expect(
+         (await runRow<{ region_name: string }>(model, JOIN_QUERY)).region_name,
+      ).toBe("LIVE");
    });
 
-   it("mode=off serves the join live even with both bindings present", async () => {
+   it("a view that reaches a non-materialized join does not disable base serving (escalation)", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+      // Only `orders` bound: the join is gated out, so the emitted `by_region`
+      // view references an absent join and the RICH shape fails to compile. The
+      // escalation must drop the view category and keep serving base + measures,
+      // rather than losing all storage serving. A plain aggregate must still be
+      // served from storage (amount 99), while the view query falls back to live.
+      model.setServeBindings([ORDERS_BINDING]);
+      expect(Number((await runRow<{ t: number }>(model, PLAIN_QUERY)).t)).toBe(
+         99,
+      );
+      expect(
+         (await runRow<{ region_name: string }>(model, VIEW_QUERY)).region_name,
+      ).toBe("LIVE");
+   });
+
+   it("mode=off serves live even with both bindings present", async () => {
       process.env.PERSIST_STORAGE_MODE = "off";
       const model = await buildModel();
       model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
-      expect(await runRegionName(model)).toBe("LIVE");
+      expect(
+         (await runRow<{ region_name: string }>(model, JOIN_QUERY)).region_name,
+      ).toBe("LIVE");
    });
 });

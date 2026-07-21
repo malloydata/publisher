@@ -57,6 +57,7 @@ import {
    buildVirtualMap,
    extractJoins,
    extractRefinements,
+   extractViews,
    sliceSourceRange,
    type ServeBinding,
    type SourceLocation,
@@ -1792,43 +1793,12 @@ export class Model {
          .sort()
          .join("|");
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
-         const enriched = this.serveBindingsWithRefinements();
-         let materializer = this.buildServeShapeMaterializer(enriched);
-         // A join is emitted only when its target is materialized, but the join
-         // text or a non-portable on-condition can still fail to compile the
-         // whole shape — which would disable storage serving for EVERY source in
-         // the package. Validate the rich shape once (per binding set) and, if it
-         // fails, degrade to the base + dimensions/measures shape rather than
-         // losing all storage serving. The per-query eager compile below remains
-         // the final net for query-specific ineligibility.
-         const hasJoins = enriched.some((b) =>
-            (b.refinements ?? []).some((r) => r.kind === "join"),
-         );
-         if (hasJoins) {
-            try {
-               await materializer.getModel();
-            } catch (err) {
-               logger.warn(
-                  "Storage serve shape with joins failed to compile; dropping joins and serving base + dimensions/measures",
-                  {
-                     model: this.modelPath,
-                     error: err instanceof Error ? err.message : String(err),
-                  },
-               );
-               const noJoins = enriched.map((b) =>
-                  b.refinements
-                     ? {
-                          ...b,
-                          refinements: b.refinements.filter(
-                             (r) => r.kind !== "join",
-                          ),
-                       }
-                     : b,
-               );
-               materializer = this.buildServeShapeMaterializer(noJoins);
-            }
-         }
-         this.serveShapeCache = { key, materializer };
+         this.serveShapeCache = {
+            key,
+            materializer: await this.compileServeShape(
+               this.serveBindingsWithRefinements(),
+            ),
+         };
       }
       const virtualMap = buildVirtualMap(this.serveBindings);
       const runnable =
@@ -1840,6 +1810,76 @@ export class Model {
       // serve shape is pure virtual sources, so no buildManifest is needed.
       await runnable.getSQL({ virtualMap });
       return { runnable, virtualMap };
+   }
+
+   /**
+    * Compile the serve-shape materializer for a binding set, degrading
+    * gracefully if the richest shape does not compile. A single un-carriable
+    * refinement (a join or view that reaches a non-materialized source, a
+    * non-portable expression) would otherwise fail the WHOLE shape's compile and
+    * disable storage serving for every source in the package. So the shape is
+    * validated once (per binding set — the result is cached) and, on failure,
+    * the riskiest refinement category is dropped and it retries: full → drop
+    * views → drop views + joins → base-only. Base-only is pure virtual sources
+    * and always compiles, so it is the guaranteed floor. Each surviving tier
+    * still serves everything it can; the per-query eager compile in
+    * {@link loadServeShapeQuery} remains the final net for query-specific
+    * ineligibility.
+    */
+   private async compileServeShape(
+      enriched: ServeBinding[],
+   ): Promise<ModelMaterializer> {
+      // Richest first; each predicate keeps fewer refinement kinds than the last.
+      const keepKinds: Array<ReadonlySet<string>> = [
+         new Set(["join", "dimension", "measure", "view"]),
+         new Set(["join", "dimension", "measure"]),
+         new Set(["dimension", "measure"]),
+         new Set(),
+      ];
+      // Skip escalation entirely when nothing beyond the base is carried.
+      const hasRefinements = enriched.some(
+         (b) => (b.refinements ?? []).length > 0,
+      );
+      const lastTier = keepKinds.length - 1;
+      for (let tier = 0; tier <= lastTier; tier++) {
+         const keep = keepKinds[tier];
+         const shaped =
+            tier === 0
+               ? enriched
+               : enriched.map((b) =>
+                    b.refinements
+                       ? {
+                            ...b,
+                            refinements: b.refinements.filter((r) =>
+                               keep.has(r.kind),
+                            ),
+                         }
+                       : b,
+                 );
+         const materializer = this.buildServeShapeMaterializer(shaped);
+         // Base-only (last tier) always compiles; trust it without a probe. And
+         // when there are no refinements at all, tier 0 IS the base — skip too.
+         if (tier === lastTier || (tier === 0 && !hasRefinements)) {
+            return materializer;
+         }
+         try {
+            await materializer.getModel();
+            return materializer;
+         } catch (err) {
+            logger.warn(
+               "Storage serve shape failed to compile; dropping the riskiest refinement category and retrying",
+               {
+                  model: this.modelPath,
+                  tier,
+                  error: err instanceof Error ? err.message : String(err),
+               },
+            );
+         }
+      }
+      // Unreachable: the last tier returns above. Satisfy the type checker.
+      return this.buildServeShapeMaterializer(
+         enriched.map((b) => ({ ...b, refinements: [] })),
+      );
    }
 
    /** Build the transient serve-shape materializer for a set of bindings. */
@@ -1861,15 +1901,17 @@ export class Model {
    /**
     * The serve bindings enriched with the refinements to re-declare on each
     * virtual base — the source's dimensions/measures (computed from the stored
-    * columns) and its joins whose target source is ALSO materialized (the join
-    * runs over the stored tables). Both are read from this model's compiled
-    * definition. Views/turtles and analytic fields are not carried; a query
-    * using one falls back to live.
+    * columns), its joins whose target source is ALSO materialized (the join runs
+    * over the stored tables), and its views (turtles). All are read from this
+    * model's compiled definition. Analytic source-fields are not carried; a
+    * query using one falls back to live.
     *
-    * Join declaration text is lifted verbatim from the author's source files by
-    * location (read once per file, best-effort — an unreadable file just drops
-    * that source's joins, which fall back). The materialization gate is a
-    * `sourceID`-keyed lookup, so it never depends on parsing that text.
+    * Join and view declaration text is lifted verbatim from the author's source
+    * files by location (read once per file, best-effort — an unreadable file
+    * just drops that source's joins/views, which fall back). The join
+    * materialization gate is a `sourceID`-keyed lookup, so it never depends on
+    * parsing that text; views are emitted optimistically and pruned by the
+    * shape-compile escalation in {@link compileServeShape} if they don't hold.
     */
    private serveBindingsWithRefinements(): ServeBinding[] {
       const contents = (
@@ -1918,6 +1960,7 @@ export class Model {
                liftText,
             }),
             ...extractRefinements(fields),
+            ...extractViews(fields, liftText),
          ];
          return refinements.length > 0 ? { ...b, refinements } : b;
       });

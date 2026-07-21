@@ -57,10 +57,36 @@ export interface JoinRefinement {
 }
 
 /**
- * A refinement to re-declare on the serve shape's virtual base: a dimension or
- * measure ({@link FieldRefinement}) or a join ({@link JoinRefinement}).
+ * A view (turtle) defined on the materialized source in the author's model,
+ * re-declared on the serve shape so a query invoking it by name serves from the
+ * materialized tables. A view is a nested query pipeline, not a single
+ * expression, so — like a join — its declaration `text` is lifted verbatim from
+ * the author's source by location rather than reconstructed.
+ *
+ * A view has no cheap dependency gate (it can reference any of the source's
+ * columns, dimensions, measures, and joins): it is emitted optimistically and,
+ * if the resulting shape does not compile (it reaches a refinement not carried —
+ * a join to a non-materialized source, a nested view), the serve path drops the
+ * view category and falls back for those queries (see the shape-compile
+ * escalation in the model's serve path).
  */
-export type SourceRefinement = FieldRefinement | JoinRefinement;
+export interface ViewRefinement {
+   kind: "view";
+   /** The view name (`view: <name> is { ... }`); used for logging/ordering. */
+   name: string;
+   /** Verbatim author declaration `<name> is { ... }`. */
+   text: string;
+}
+
+/**
+ * A refinement to re-declare on the serve shape's virtual base: a dimension or
+ * measure ({@link FieldRefinement}), a join ({@link JoinRefinement}), or a view
+ * ({@link ViewRefinement}).
+ */
+export type SourceRefinement =
+   | FieldRefinement
+   | JoinRefinement
+   | ViewRefinement;
 
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
@@ -77,10 +103,11 @@ export interface ServeBinding {
     * Refinements defined on the source in the author's model, re-emitted as an
     * `extend {}` on the virtual base so queries using them serve from the
     * materialized tables instead of falling back to live: dimensions/measures
-    * (computed over the stored columns) and joins whose target is also
-    * materialized (the join runs over the stored tables). Views (turtles) and
-    * analytic fields are still not carried — a query using one falls back.
-    * Attached at serve time from the compiled model, not the build.
+    * (computed over the stored columns), joins whose target is also materialized
+    * (the join runs over the stored tables), and views (turtles) reproducible
+    * from those. Analytic source-fields are still not carried — a query using
+    * one falls back. Attached at serve time from the compiled model, not the
+    * build.
     */
    refinements?: SourceRefinement[];
    /** Optional freshness anchor (data-as-of instant); carried through verbatim. */
@@ -278,24 +305,26 @@ function serveShapeFragment(binding: ServeBinding): string {
    let source =
       `source: ${binding.sourceName} is ` +
       `${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
-   // Re-declare the source's joins, then its dimensions/measures, on the virtual
-   // base so queries that use them are computed from the stored tables at serve
-   // time (the wrapper) rather than falling back to live. Joins are emitted first
-   // so a dimension/measure may reference a joined field. Everything here
-   // references the shape's columns, a sibling virtual source, or an earlier
-   // refinement; anything it references that the shape lacks makes the serve
-   // shape fail to compile, which safely falls back.
+   // Re-declare the source's refinements on the virtual base so queries that use
+   // them are computed from the stored tables at serve time (the wrapper) rather
+   // than falling back to live. Emission order matters for resolution: joins
+   // first (a dimension/measure/view may reference a joined field), then
+   // dimensions/measures, then views (a view may reference any of them).
+   // Everything here references the shape's columns, a sibling virtual source, or
+   // an earlier refinement; anything it references that the shape lacks makes the
+   // serve shape fail to compile, which safely falls back.
    const refinements = binding.refinements ?? [];
    const lines: string[] = [];
    for (const r of refinements) {
-      if (r.kind === "join") {
-         lines.push(`   ${r.keyword}: ${r.text}`);
+      if (r.kind === "join") lines.push(`   ${r.keyword}: ${r.text}`);
+   }
+   for (const r of refinements) {
+      if (r.kind === "dimension" || r.kind === "measure") {
+         lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
       }
    }
    for (const r of refinements) {
-      if (r.kind !== "join") {
-         lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
-      }
+      if (r.kind === "view") lines.push(`   view: ${r.text}`);
    }
    if (lines.length > 0) {
       source += ` extend {\n${lines.join("\n")}\n}`;
@@ -312,11 +341,11 @@ function serveShapeFragment(binding: ServeBinding): string {
  * faith and must match the built table).
  *
  * Coverage note: this rebinds each source's BASE to the virtual table with the
- * captured columns, and re-declares the source's dimensions, measures, and
- * materialized-target joins (see {@link ServeBinding.refinements}) on top. A
- * query relying on a refinement not carried here (a view/turtle, an analytic
- * field, or a join to a non-materialized source) does not compile against this
- * model, and the serve path falls back to serving it live.
+ * captured columns, and re-declares the source's dimensions, measures,
+ * materialized-target joins, and views (see {@link ServeBinding.refinements}) on
+ * top. A query relying on a refinement not carried here (an analytic field, or a
+ * join/view that reaches a non-materialized source) does not compile against
+ * this model, and the serve path falls back to serving it live.
  */
 export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
    modelText: string;
@@ -525,6 +554,38 @@ export function extractJoins(
               ? f.name
               : dependsOn;
       out.push({ kind: "join", name: alias, keyword, text, dependsOn });
+   }
+   return out;
+}
+
+/**
+ * Extract a materialized source's re-emittable views (turtles) from its compiled
+ * field list. A view is a nested query pipeline, not a single expression, so its
+ * declaration text is lifted verbatim from the author's source by location
+ * rather than reconstructed. Unlike a join, a view has no cheap dependency gate
+ * (it can reference any column/dimension/measure/join of the source), so it is
+ * emitted optimistically: if the resulting shape does not compile — the view
+ * reaches something not carried (a join to a non-materialized source, a nested
+ * view) — the serve path drops the view category and those queries fall back to
+ * live (safe). A view we cannot lift is skipped.
+ */
+export function extractViews(
+   fields: readonly unknown[] | undefined,
+   liftText: (location: SourceLocation) => string | undefined,
+): ViewRefinement[] {
+   const out: ViewRefinement[] = [];
+   for (const field of fields ?? []) {
+      const f = field as {
+         type?: unknown;
+         name?: unknown;
+         location?: SourceLocation;
+      };
+      if (f.type !== "turtle") continue;
+      if (typeof f.name !== "string") continue;
+      if (!f.location) continue;
+      const text = liftText(f.location);
+      if (!text) continue;
+      out.push({ kind: "view", name: f.name, text });
    }
    return out;
 }

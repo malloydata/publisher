@@ -17,7 +17,7 @@ do. Every step here was run against a real server; the outputs shown are real.
 > **Terminology.** `storage=` is the authoring keyword on the persist
 > annotation. "Path C" is the default (no `storage=`): the source materializes
 > into and serves from its own warehouse, unchanged. This tutorial is about the
-> new path — materialize into a *separate* DuckDB/DuckLake store and serve from
+> new path — materialize into a _separate_ DuckDB/DuckLake store and serve from
 > there.
 
 ---
@@ -170,8 +170,11 @@ Because the server is in `off` mode, the persist plan compiles but the
   "name": "persist-tutorial",
   "sources": ["daily_orders"],
   "warnings": [
-    { "model": "orders.malloy", "target": "daily_orders",
-      "message": "declares storage=\"lake\" but PERSIST_STORAGE_MODE is off; the annotation is ignored and the source is served live from its own warehouse." }
+    {
+      "model": "orders.malloy",
+      "target": "daily_orders",
+      "message": "declares storage=\"lake\" but PERSIST_STORAGE_MODE is off; the annotation is ignored and the source is served live from its own warehouse."
+    }
   ]
 }
 ```
@@ -213,12 +216,19 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 ```
 
 ```json
-{ "status": "MANIFEST_FILE_READY",
-  "entry": { "sourceName": "daily_orders", "storageConnectionName": "lake",
-             "physicalTableName": "daily_orders",
-             "schema": [ {"name":"order_date","type":"DATE"},
-                         {"name":"order_count","type":"BIGINT"},
-                         {"name":"total_amount","type":"DOUBLE"} ] } }
+{
+  "status": "MANIFEST_FILE_READY",
+  "entry": {
+    "sourceName": "daily_orders",
+    "storageConnectionName": "lake",
+    "physicalTableName": "daily_orders",
+    "schema": [
+      { "name": "order_date", "type": "DATE" },
+      { "name": "order_count", "type": "BIGINT" },
+      { "name": "total_amount", "type": "DOUBLE" }
+    ]
+  }
+}
 ```
 
 ### Where your data lands
@@ -226,7 +236,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 Because you own this lake, it's worth knowing exactly where the rows go. The
 physical location is **`<connection>.<schema>.<table>`**, where `schema.table`
 comes from `name=` and the schema defaults to `main`. So `name="daily_orders"
-storage=lake` lands at **`lake.main.daily_orders`**. `name=` *is* the physical
+storage=lake` lands at **`lake.main.daily_orders`**. `name=` _is_ the physical
 location: `name="analytics.daily"` would write to schema `analytics`, table
 `daily` (the schema must already exist in your lake — Publisher writes into it
 but does not create it; provision schemas yourself, e.g. a one-off
@@ -297,7 +307,11 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 ```json
 {
   "storageServeBindings": [
-    { "sourceName": "daily_orders", "storageConnectionName": "lake", "tablePath": "lake.daily_orders" }
+    {
+      "sourceName": "daily_orders",
+      "storageConnectionName": "lake",
+      "tablePath": "lake.daily_orders"
+    }
   ],
   "warnings": null
 }
@@ -358,15 +372,17 @@ projected over the materialized table (`SELECT total_amount / order_count …
 FROM lake.daily_orders`), not recomputed in the warehouse.
 
 It also re-declares the source's **joins whose joined source is itself
-materialized**, so a query traversing such a join is served from storage — the
-join runs in DuckDB over the two stored tables. A join to a source that is *not*
-materialized is not carried, so a query using it falls back to live (below).
+materialized** (the join runs in DuckDB over the two stored tables) and its
+**views** built from what's carried, so a query traversing such a join or
+invoking such a view by name is served from storage too.
 
 What still **falls back to serving live** (no error; the right answer, computed
 in the warehouse): a query that reaches something the serve shape can't
-reproduce — a join to a source that isn't materialized, a **view** defined on
-the source, a **window/analytic** field, or a query against a source that isn't
-materialized. You'll see:
+reproduce — a join or view that reaches a **non-materialized source**, a
+**window/analytic** field defined on the source, or a query against a source
+that isn't materialized. (When a view reaches something not carried, only that
+view falls back; the source's other queries still serve from storage.) You'll
+see:
 
 ```
 debug: storage serve-shape ineligible for this query; serving live { modelPath: "orders.malloy", ... }
@@ -402,8 +418,10 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 ```
 
 ```json
-{ "status": "FAILED",
-  "error": "Source 'secret_rollup' cannot be materialized into a storage destination: it references a given. Givens bind per query and are used for row-level access control, so a materialized-once table served to everyone would leak filtered rows across tenants. This is refused for safety. Serve this source live (drop 'storage=')." }
+{
+  "status": "FAILED",
+  "error": "Source 'secret_rollup' cannot be materialized into a storage destination: it references a given. Givens bind per query and are used for row-level access control, so a materialized-once table served to everyone would leak filtered rows across tenants. This is refused for safety. Serve this source live (drop 'storage=')."
+}
 ```
 
 The build fails with a clear, actionable message — and the package keeps
@@ -429,8 +447,10 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
 ```
 
 ```json
-{ "status": "FAILED",
-  "error": "Source 'param_rollup' cannot be materialized into a storage destination: it has unbound parameter(s) 'threshold'. A source with a free parameter is a template instantiated per query, so there is no single relation to materialize. Bind the parameter to a constant, or drop 'storage=' to serve it live from the source warehouse." }
+{
+  "status": "FAILED",
+  "error": "Source 'param_rollup' cannot be materialized into a storage destination: it has unbound parameter(s) 'threshold'. A source with a free parameter is a template instantiated per query, so there is no single relation to materialize. Bind the parameter to a constant, or drop 'storage=' to serve it live from the source warehouse."
+}
 ```
 
 Remove `paramtest.malloy` and reload to continue.
