@@ -29,6 +29,10 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
+import {
+   deleteEnvironmentEmbeddings,
+   deletePackageEmbeddings,
+} from "../mcp/tools/embedding_index";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    assertSafeEnvironmentPath,
@@ -500,6 +504,20 @@ export class EnvironmentStore {
       // Delete the environment (this will cascade delete connections and packages)
       await repository.deleteEnvironment(dbEnvironment.id);
       logger.info(`Deleted environment "${environmentName}" from database`);
+
+      // Best-effort: drop the environment's cached entity embeddings
+      // (see deletePackageFromDatabase for why failure never propagates).
+      try {
+         await deleteEnvironmentEmbeddings(
+            this.storageManager.getDuckDbConnection(),
+            environmentName,
+         );
+      } catch (error) {
+         logger.warn("Failed to clean up entity embeddings for environment", {
+            environmentName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
    }
 
    private async addEnvironmentMetadata(
@@ -775,6 +793,24 @@ export class EnvironmentStore {
       if (existingPackage) {
          await repository.deletePackage(existingPackage.id);
          logger.info(`Deleted package "${packageName}" from database`);
+      }
+
+      // Best-effort: drop the package's cached entity embeddings so
+      // package churn does not grow publisher.db forever. An orphaned
+      // row is inert (reads are scoped by environment + package), so a
+      // failed cleanup must never fail the delete.
+      try {
+         await deletePackageEmbeddings(
+            this.storageManager.getDuckDbConnection(),
+            environmentName,
+            packageName,
+         );
+      } catch (error) {
+         logger.warn("Failed to clean up entity embeddings for package", {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
       }
    }
 
