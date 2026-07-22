@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { promises as fsPromises } from "fs";
 import * as path from "path";
 import * as sinon from "sinon";
 import { components } from "../api";
@@ -470,6 +471,169 @@ describe("EnvironmentStore Service", () => {
       expect("loadErrors" in status).toBe(false);
    });
 
+   it("keeps good packages serving when a sibling's location is bad", async () => {
+      // The headline case: one bad location in an environment must not take
+      // down its healthy siblings. Two good packages plus one whose location
+      // does not exist -> both good ones serve, the bad one is a per-package
+      // loadError, and the environment is intact.
+      const goodA = path.join(serverRootPath, "good-a");
+      const goodB = path.join(serverRootPath, "good-b");
+      for (const dir of [goodA, goodB]) {
+         mkdirSync(dir, { recursive: true });
+         writeFileSync(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({ name: path.basename(dir) }),
+         );
+      }
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     { name: "good-a", location: goodA },
+                     { name: "bad", location: "/non/existent/path" },
+                     { name: "good-b", location: goodB },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.operationalState).toBe("serving");
+      expect(status.environments.map((e) => e.name)).toEqual([projectName]);
+
+      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      const packages = await environment.listPackages();
+      expect(packages.map((p) => p.name).sort()).toEqual(["good-a", "good-b"]);
+
+      expect(status.loadErrors).toHaveLength(1);
+      expect(status.loadErrors?.[0]?.environment).toBe(projectName);
+      expect(status.loadErrors?.[0]?.package).toBe("bad");
+      // The message has to name the location that is actually wrong. The
+      // un-mounted package also fails its lazy load on the manifest that was
+      // never copied, and reporting that instead points the reader at
+      // publisher_data/ for what is really a typo in the config.
+      expect(status.loadErrors?.[0]?.message).toContain("/non/existent/path");
+      expect(status.loadErrors?.[0]?.message).not.toContain("publisher_data");
+   });
+
+   it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
+      // Packages grouped under ONE location share a single download, then each
+      // is extracted separately. A failure in one extract must not strand the
+      // siblings queued behind it: the group-level catch used to wrap the whole
+      // loop, so with three packages from one repo a throw on the second meant
+      // the third was never copied even though nothing was wrong with it.
+      const shared = path.join(serverRootPath, "shared-src");
+      mkdirSync(shared, { recursive: true });
+      writeFileSync(
+         path.join(shared, "publisher.json"),
+         JSON.stringify({ name: "shared" }),
+      );
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     { name: "first", location: shared },
+                     { name: "middle", location: shared },
+                     { name: "last", location: shared },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      // Fail exactly one package's copy. Everything reachable from config is
+      // shared across the group (same location, hence the same source path), so
+      // the copy is the only per-package step that can realistically fail on
+      // its own — the same shape as a GitHub subdirectory that isn't there.
+      const realCp = fsPromises.cp;
+      const cpStub = sinon.stub(fsPromises, "cp").callsFake((async (
+         src: Parameters<typeof realCp>[0],
+         dest: Parameters<typeof realCp>[1],
+         opts?: Parameters<typeof realCp>[2],
+      ) => {
+         if (String(dest).endsWith(`${path.sep}middle`)) {
+            throw new Error("simulated extract failure for middle");
+         }
+         return realCp(src, dest, opts);
+      }) as typeof realCp);
+
+      try {
+         const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+         await newEnvironmentStore.finishedInitialization;
+
+         const environment =
+            await newEnvironmentStore.getEnvironment(projectName);
+         const packages = await environment.listPackages();
+         // "last" is the one that regressed: it is queued behind the failure.
+         expect(packages.map((p) => p.name).sort()).toEqual(["first", "last"]);
+
+         const status = await newEnvironmentStore.getStatus();
+         expect(status.operationalState).toBe("serving");
+         expect(status.loadErrors).toHaveLength(1);
+         expect(status.loadErrors?.[0]?.package).toBe("middle");
+         expect(status.loadErrors?.[0]?.message).toContain(
+            "simulated extract failure",
+         );
+      } finally {
+         cpStub.restore();
+      }
+   });
+
+   it("does not delete the environment directory when a package name is rejected", async () => {
+      // A package name that fails the allowlist throws as the FIRST statement of
+      // the extract, so the per-package catch runs before any path for it
+      // exists. safeJoinUnderRoot deliberately allows a name that resolves to
+      // the root, so re-deriving the cleanup target from the name would hand it
+      // the whole environment directory and take the healthy siblings with it.
+      const good = path.join(serverRootPath, "good-src");
+      mkdirSync(good, { recursive: true });
+      writeFileSync(
+         path.join(good, "publisher.json"),
+         JSON.stringify({ name: "good" }),
+      );
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            environments: [
+               {
+                  name: projectName,
+                  packages: [
+                     { name: "good", location: good },
+                     { name: ".", location: good },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      // Boot pre-validates the names and skips the environment, so reach the
+      // lazy path, which passes the config's package names through unchecked.
+      await newEnvironmentStore.getEnvironment(projectName).catch(() => {});
+
+      const envDir = path.join(serverRootPath, "publisher_data", projectName);
+      // The environment directory and the healthy sibling must both survive.
+      expect(existsSync(envDir)).toBe(true);
+      expect(existsSync(path.join(envDir, "good"))).toBe(true);
+   });
+
    it("should not report an environment that is serving even if its database sync fails", async () => {
       // An environment reaches this.environments before addEnvironmentToDatabase
       // runs, so a throw from that tail is caught by the same handler that
@@ -824,8 +988,10 @@ describe("EnvironmentStore Service", () => {
       { timeout: 30000 },
    );
 
-   it("should handle missing project paths", async () => {
-      // Create publisher config with non-existent project path
+   it("isolates a bad package location to that package, keeping the environment", async () => {
+      // A package whose location does not exist used to abort the whole
+      // environment. It now behaves like a bad manifest: the package is
+      // dropped and reported per-package, and the environment still loads.
       const publisherConfigPath = path.join(
          serverRootPath,
          "publisher.config.json",
@@ -847,10 +1013,20 @@ describe("EnvironmentStore Service", () => {
          }),
       );
 
-      // Test that getting the project throws an error
-      await expect(
-         environmentStore.getEnvironment(projectName),
-      ).rejects.toThrow();
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      // The environment loaded rather than being skipped.
+      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      expect(environment.metadata.name).toBe(projectName);
+
+      // And the failure is reported at the package level, not the env level.
+      const status = await newEnvironmentStore.getStatus();
+      expect(status.operationalState).toBe("serving");
+      expect(status.loadErrors).toHaveLength(1);
+      expect(status.loadErrors?.[0]?.environment).toBe(projectName);
+      expect(status.loadErrors?.[0]?.package).toBe(projectName);
+      expect(status.loadErrors?.[0]?.message).toBeTruthy();
    });
 
    it("should handle invalid publisher config", async () => {
@@ -1095,8 +1271,10 @@ describe("Project Service Error Recovery", () => {
    });
 
    describe("Project Loading Error Recovery", () => {
-      it("should handle missing project directories gracefully", async () => {
-         // Create publisher config with missing project directory
+      it("keeps the environment when a package directory is missing, reporting per-package", async () => {
+         // Same isolation as above, for a relative-to-serverRoot missing dir:
+         // the environment loads and the missing package is a per-package
+         // loadError rather than an environment-level skip.
          const publisherConfigPath = path.join(
             serverRootPath,
             "publisher.config.json",
@@ -1121,10 +1299,17 @@ describe("Project Service Error Recovery", () => {
             }),
          );
 
-         // Test that the project store handles the missing directory
-         await expect(
-            environmentStore.getEnvironment(projectName),
-         ).rejects.toThrow();
+         const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+         await newEnvironmentStore.finishedInitialization;
+
+         const environment =
+            await newEnvironmentStore.getEnvironment(projectName);
+         expect(environment.metadata.name).toBe(projectName);
+
+         const status = await newEnvironmentStore.getStatus();
+         expect(status.operationalState).toBe("serving");
+         expect(status.loadErrors).toHaveLength(1);
+         expect(status.loadErrors?.[0]?.package).toBe(projectName);
       });
 
       it(
