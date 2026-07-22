@@ -78,6 +78,13 @@ const manifestBindCounter = lazyCounter(
    "publisher_materialization_manifest_bind_total",
    "Manifest bind attempts. Label: outcome ('success'|'failure'|'timeout').",
 );
+const manifestBindDegradedCounter = lazyCounter(
+   "publisher_materialization_manifest_bind_degraded_total",
+   "Manifest entries bound with an UNQUOTED table path because their connection " +
+      "could not be resolved (serve-side bind) or is absent from the build " +
+      "(build-side seed). A misconfiguration that breaks the source on a " +
+      "case-folding engine (Snowflake); alertable.",
+);
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
    "Wall-clock duration of building a single persist source.",
@@ -161,6 +168,16 @@ export function recordConnectionDigestSkipped(): void {
  */
 export function recordManifestBind(outcome: ManifestBindOutcome): void {
    manifestBindCounter().add(1, { outcome });
+}
+
+/**
+ * A single manifest entry bound with an unquoted table path because its
+ * connection could not be resolved for quoting. Per-entry degradation (the rest
+ * of the bind succeeds), distinct from the whole-bind {@link recordManifestBind}
+ * outcome — hence its own counter rather than a label on that one.
+ */
+export function recordManifestBindDegraded(): void {
+   manifestBindDegradedCounter().add(1);
 }
 
 /** Record the wall-clock duration of building one persist source's table. */

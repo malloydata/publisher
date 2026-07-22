@@ -2453,6 +2453,34 @@ components:
             governor). Already-loaded packages remain serviceable while throttled;
             callers can treat a throttled server as unhealthy for new load.
             Only reported when the memory governor is enabled.
+        loadErrors:
+          type: array
+          readOnly: true
+          description:
+            Configured packages and environments that did not load, and why. A
+            load failure is not fatal to the server, so operationalState stays
+            serving and the affected packages are simply absent from
+            environments; this is the only place that difference is reported, so
+            check it before treating a serving server as complete. Present only
+            when something failed to load, so a healthy server omits the field.
+          items:
+            type: object
+            properties:
+              environment:
+                type: string
+                description:
+                  Name of the configured environment the failure belongs to.
+              package:
+                type: string
+                description:
+                  Name of the configured package that did not load. Absent when
+                  the whole environment was skipped, which is what happens when a
+                  package location cannot be mounted at all; in that case no
+                  package in the environment loads, including ones that would
+                  otherwise have succeeded.
+              message:
+                type: string
+                description: Why it did not load.
         frozenConfig:
           type: boolean
           description:
@@ -4271,6 +4299,15 @@ components:
           type: string
           description: >-
             Fully-qualified physical table the upstream currently serves.
+        connectionName:
+          type: string
+          description: >-
+            The connection the upstream table lives on. The publisher quotes the
+            reference for this connection's dialect when it seeds the build
+            manifest, so a downstream persist source resolves the upstream on a
+            case-folding engine (Snowflake). Optional: omit it and the reference
+            seeds unquoted (the pre-existing behavior), which fails a downstream
+            build on such an engine.
 
     BuildInstruction:
       type: object
