@@ -418,33 +418,92 @@ describe("trySemanticSearch", () => {
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
 
       // Instance B (a reload) triggers the dims heal with a 4-dim
-      // provider: the purge deletes ALL rows and bumps the generation.
+      // provider. Drive B ONLY until the purge lands (row count drops
+      // to zero) and then stop, so no re-sync repopulates the table:
+      // this reproduces the exact race window where a stale done memo
+      // sits over an empty table.
       const wide = mapProvider({
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
       });
       const pkgB = {} as unknown as Package;
-      const healed = await searchReady({
-         ...base,
-         provider: wide.provider,
-         pkg: pkgB,
-      });
-      if (!("hits" in healed)) throw new Error("expected hits");
+      for (let i = 0; i < 200; i++) {
+         await trySemanticSearch({
+            ...base,
+            provider: wide.provider,
+            pkg: pkgB,
+         });
+         const rows = await db.all<{ n: number }>(
+            "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
+         );
+         if (rows[0].n === 0) break;
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const purged = await db.all<{ n: number }>(
+         "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
+      );
+      expect(purged[0].n).toBe(0);
 
-      // A's memo says done, but the rows it synced are gone (B's heal
-      // purged and re-synced at 4 dims). Without generation tracking, A
-      // would trust its memo and serve empty "semantic" hits forever.
-      // With it, A re-syncs; its 3-dim queries against the now-4-dim
-      // rows then hit the purge backoff (two dimensionalities inside one
-      // window = inconsistent endpoint) and report cooldown, which the
-      // tool serves as marked lexical. The pin: never silently-empty
-      // hits.
+      // A's memo says done, but the table is empty. Without generation
+      // tracking, A would trust its memo, search zero rows, find no
+      // stale rows to heal, and serve `{hits: []}` marked semantic
+      // forever. With it, A's stale generation forces a re-sync (the
+      // table is empty, so A re-embeds at its own 3 dims) and A answers
+      // with real hits again.
       const back = await searchReady({
          ...base,
          provider: narrow.provider,
          pkg: pkgA,
       });
-      expect(back).toEqual({ unavailable: "cooldown" });
+      if (!("hits" in back))
+         throw new Error("expected hits, got " + JSON.stringify(back));
+      expect(back.hits.map((h) => h.name)).toEqual(["alpha"]);
+   });
+
+   it("heals the mixed-dims state where a partial sync stranded old rows", async () => {
+      // alpha indexed at 3 dims.
+      const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         query: "find alpha",
+         limit: 10,
+      };
+      await searchReady({
+         ...base,
+         provider: narrow.provider,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src")],
+      });
+
+      // The endpoint now returns 4-dim vectors for the same model, and a
+      // new entity (beta) arrives. The sync diff skips alpha (hash and
+      // model match) and embeds only beta, leaving a MIXED table: alpha
+      // at 3 dims, beta at 4. An empty-result heal trigger would never
+      // fire here (compatible rows exist), stranding alpha invisibly.
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         beta: [0.8, 0.6, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const pkg = {} as unknown as Package;
+      const args = {
+         ...base,
+         provider: wide.provider,
+         pkg,
+         entities: [entity("alpha", "src"), entity("beta", "src")],
+      };
+
+      const result = await searchReady(args);
+      if (!("hits" in result)) throw new Error("expected hits");
+      // Both entities retrievable: the stale-row heal purged alpha's
+      // 3-dim row and the follow-up sync re-embedded it at 4 dims.
+      expect(result.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
+      const dims = await db.all<{ dims: number }>(
+         "SELECT DISTINCT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
+      );
+      expect(dims.map((d) => d.dims)).toEqual([4]);
    });
 
    it("backs off instead of purging twice within the cool-down window", async () => {
