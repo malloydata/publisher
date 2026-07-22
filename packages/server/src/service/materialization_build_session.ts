@@ -121,13 +121,6 @@ export async function buildSourceIntoStorage(params: {
    buildSQL: string;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
-   /**
-    * Logical name to expose as a convenience VIEW over the (content-addressed)
-    * physical table, for operators poking at the DuckLake directly. Best-effort:
-    * publisher's own reads/writes always address `physicalTableName`, never the
-    * view. Omitted, or equal to `physicalTableName`, means no view.
-    */
-   logicalViewName?: string;
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const {
@@ -136,7 +129,6 @@ export async function buildSourceIntoStorage(params: {
       sourceConnection,
       buildSQL,
       physicalTableName,
-      logicalViewName,
       environmentPath,
    } = params;
 
@@ -194,34 +186,6 @@ export async function buildSourceIntoStorage(params: {
       // type-check a virtual source's declared columns.
       const schema = await describeTable(session, target);
 
-      // Best-effort operator convenience: point the logical name at this
-      // generation's physical table via a view. Publisher never reads or writes
-      // through it (it always addresses the hashed physical name), so a failure
-      // here — e.g. the logical name collides with a real object — is logged and
-      // ignored rather than failing the build.
-      if (logicalViewName && logicalViewName !== physicalTableName) {
-         try {
-            await session.runSQL(
-               logicalViewSql(
-                  destinationName,
-                  logicalViewName,
-                  physicalTableName,
-               ),
-            );
-         } catch (err) {
-            logger.warn(
-               "Failed to create the logical convenience view over a " +
-                  "materialized table (non-fatal; publisher reads the physical name)",
-               {
-                  destinationName,
-                  logicalViewName,
-                  physicalTableName,
-                  error: err instanceof Error ? err.message : String(err),
-               },
-            );
-         }
-      }
-
       return { storageConnectionName: destinationName, schema };
    } finally {
       // Dispose releases the session's secrets and attaches — nothing federated
@@ -260,8 +224,7 @@ export async function buildSourceIntoStorage(params: {
  *
  * Session lifecycle mirrors {@link buildSourceIntoStorage} exactly (create →
  * attach read-write → build → dispose), so no read-write attach survives the
- * build, and the same authoritative-schema capture + convenience-view creation
- * applies.
+ * build, and the same authoritative-schema capture applies.
  *
  * @returns the destination connection name and the captured authoritative schema.
  */
@@ -276,8 +239,6 @@ export async function buildDownstreamIntoStorage(params: {
    virtualMap: Map<string, Map<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
-   /** Logical convenience-view name (best-effort); see {@link buildSourceIntoStorage}. */
-   logicalViewName?: string;
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const {
@@ -287,7 +248,6 @@ export async function buildDownstreamIntoStorage(params: {
       downstreamName,
       virtualMap,
       physicalTableName,
-      logicalViewName,
       environmentPath,
    } = params;
 
@@ -352,29 +312,6 @@ export async function buildDownstreamIntoStorage(params: {
       await session.runSQL(`CREATE OR REPLACE TABLE ${target} AS (${sql})`);
       const schema = await describeTable(session, target);
 
-      if (logicalViewName && logicalViewName !== physicalTableName) {
-         try {
-            await session.runSQL(
-               logicalViewSql(
-                  destinationName,
-                  logicalViewName,
-                  physicalTableName,
-               ),
-            );
-         } catch (err) {
-            logger.warn(
-               "Failed to create the logical convenience view over a chained " +
-                  "materialized table (non-fatal; publisher reads the physical name)",
-               {
-                  destinationName,
-                  logicalViewName,
-                  physicalTableName,
-                  error: err instanceof Error ? err.message : String(err),
-               },
-            );
-         }
-      }
-
       return { storageConnectionName: destinationName, schema };
    } finally {
       try {
@@ -389,28 +326,6 @@ export async function buildDownstreamIntoStorage(params: {
          );
       }
    }
-}
-
-/**
- * DDL for the operator convenience view: `CREATE OR REPLACE VIEW` exposing the
- * logical name over the content-addressed physical table, both qualified with
- * the destination catalog and quoted for DuckDB. Pure (no I/O) so the SQL shape
- * is unit-testable; execution is best-effort in {@link buildSourceIntoStorage}.
- */
-export function logicalViewSql(
-   destinationName: string,
-   logicalViewName: string,
-   physicalTableName: string,
-): string {
-   const view = quoteTablePath(
-      `${destinationName}.${logicalViewName}`,
-      "duckdb",
-   );
-   const table = quoteTablePath(
-      `${destinationName}.${physicalTableName}`,
-      "duckdb",
-   );
-   return `CREATE OR REPLACE VIEW ${view} AS SELECT * FROM ${table}`;
 }
 
 /**

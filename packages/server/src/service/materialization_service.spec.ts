@@ -28,7 +28,6 @@ import {
    MaterializationService,
    redactConnectionSecrets,
    stagingSuffix,
-   storagePhysicalTableName,
 } from "./materialization_service";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import {
@@ -768,33 +767,6 @@ describe("stagingSuffix", () => {
    });
 });
 
-describe("storagePhysicalTableName", () => {
-   const ID = "abcdef1234567890fedcba9876543210";
-   it("content-addresses the table with a 16-char id fragment", () => {
-      expect(storagePhysicalTableName("daily", ID)).toBe(
-         "daily__mabcdef1234567890",
-      );
-   });
-   it("decorates only the table part of a dotted schema.table name", () => {
-      expect(storagePhysicalTableName("analytics.daily", ID)).toBe(
-         "analytics.daily__mabcdef1234567890",
-      );
-   });
-   it("is deterministic and distinct across differing entity ids", () => {
-      expect(storagePhysicalTableName("t", ID)).toBe(
-         storagePhysicalTableName("t", ID),
-      );
-      expect(storagePhysicalTableName("t", ID)).not.toBe(
-         storagePhysicalTableName("t", "0000000000000000ffff"),
-      );
-   });
-   it("strips hyphens so a UUID5 id yields a bare identifier fragment", () => {
-      expect(
-         storagePhysicalTableName("t", "1b4e28ba-2fa1-11d2-883f-0016d3cca427"),
-      ).toBe("t__m1b4e28ba2fa111d2");
-   });
-});
-
 describe("manifestExcludingStorage (Tier 2 chained-storage inline)", () => {
    it("drops storage entries, keeps path-C entries with the manifest's quoting, preserves strict", () => {
       // The source manifest is already dialect-quoted by the seed loop (#904);
@@ -869,7 +841,7 @@ describe("deriveSelfInstructions", () => {
       ).toBeDefined();
    });
 
-   it("content-addresses a storage= source's physical table; path C keeps the logical name", () => {
+   it("self-assigns the name= verbatim for a storage= source, exactly as path C", () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       try {
          const compiled = compiledWith(
@@ -900,12 +872,10 @@ describe("deriveSelfInstructions", () => {
          );
          const lake = byId["aa11aa11aa11aa11aa11"];
          const wh = byId["bb22bb22bb22bb22bb22"];
-         // storage= → content-addressed hashed name in the destination.
+         // storage= → the `name=` value verbatim in the destination (no
+         // content-hash decoration); only the destination differs from path C.
          expect(lake.destination).toBe("lake");
-         expect(lake.physicalTableName).toBe(
-            storagePhysicalTableName("daily", "aa11aa11aa11aa11aa11"),
-         );
-         expect(lake.physicalTableName).toBe("daily__maa11aa11aa11aa11");
+         expect(lake.physicalTableName).toBe("daily");
          // path C → the plain logical (source) name, no destination.
          expect(wh.destination).toBeUndefined();
          expect(wh.physicalTableName).toBe("wh_src");
