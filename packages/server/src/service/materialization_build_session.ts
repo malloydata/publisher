@@ -406,7 +406,14 @@ export async function assertStorageServeShapeCompiles(params: {
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string })),
    };
-   const conn = new DuckDBConnection(`gate_${destinationName}`, ":memory:");
+   // Own isolated instance, like the build/GC sessions: this gate compiles a
+   // throwaway serve shape (no attach, no credentials), so it has no cross-tenant
+   // collision surface of its own, but isolating it keeps every build-path
+   // session off the shared instance pool uniformly (see
+   // createIsolatedBuildSession).
+   const { session: conn, dispose } = createIsolatedBuildSession(
+      `gate_${destinationName}`,
+   );
    try {
       await assertServesInDuckDB(
          sourceName,
@@ -417,14 +424,7 @@ export async function assertStorageServeShapeCompiles(params: {
          ),
       );
    } finally {
-      try {
-         await conn.close();
-      } catch (err) {
-         logger.warn("Failed to close serve-shape gate session", {
-            destinationName,
-            error: err instanceof Error ? err.message : String(err),
-         });
-      }
+      await dispose();
    }
 }
 

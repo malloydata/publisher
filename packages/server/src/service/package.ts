@@ -701,6 +701,17 @@ export class Package {
    }
 
    /**
+    * Whether the package currently has (non-empty) `storage=` serve bindings.
+    * Used by the manifest-rebind tier split so a refresh whose storage entries
+    * vanished still clears the old bindings (rather than leaving them routing at
+    * a table the host no longer vouches for) — the storage mirror of
+    * {@link hasBoundTableNameManifest}.
+    */
+   public hasStorageServeBindings(): boolean {
+      return this.storageServeBindings.length > 0;
+   }
+
+   /**
     * The freshness-filtered build manifest for the serve path, evaluated at
     * `now`. Persistence.md §9.3 Phase B: a query on a `#@ persist` source may
     * use its materialized table only while the table is within its declared
@@ -1051,6 +1062,13 @@ export class Package {
          // the reserved `storage=source`) it lands in the source's own warehouse.
          const destination =
             storage && storage !== "source" ? storage : source.connectionName;
+         // Verbatim key. Limitation: names that differ only by case or quoting
+         // (`Foo` vs `foo`, `"foo"` vs `foo`) key distinctly here but may fold to
+         // the same physical table on a case-folding destination — such variants
+         // evade this within-package check. Normalizing correctly is
+         // destination-dialect-dependent, so it's left verbatim; the host's
+         // ownership-scoped production naming and the destination's own identifier
+         // rules are the backstop.
          const key = `${destination} ${physicalName}`;
          const bucket = targets.get(key) ?? {
             name: physicalName,

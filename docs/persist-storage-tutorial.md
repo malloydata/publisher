@@ -402,13 +402,19 @@ The lake still holds a single table at the logical name, now with the new column
 ```
 
 The replace itself is atomic (DuckLake's catalog swap is transactional), so a
-query never hits a half-swapped table. On a **schema-changing** rebuild there is
-a brief window where the running server's serve binding still describes the old
-columns until it rebinds (on the build's auto-load); a query in that window falls
-back to serving live rather than returning wrong data. Explicit generation
-management — immutable generations, a staged cutover, rollback — is the job of a
-caller that assigns physical names per build and distributes serve bindings (the
-orchestrated build path), not of the auto-run server.
+query never hits a half-swapped table. But on a **schema-changing** rebuild there
+is a brief window where the running server's serve binding still describes the
+old columns, until it rebinds on the build's auto-load — and the two directions
+differ. A query that reaches a **newly added** field fails the serve-shape
+compile and falls back to serving live (safe). A query over a **removed** field
+still compiles against the stale binding and then errors at run against the new
+table — there is no run-time fallback (see "Compile-time fallback only" in the
+release notes). So a column-removing rebuild can surface transient query errors
+until the binding refreshes; it does not return wrong data. Explicit generation
+management — immutable generations, a staged cutover, rollback — that closes this
+window is the job of a caller that assigns physical names per build and
+distributes serve bindings (the orchestrated build path), not of the auto-run
+server.
 
 A materialization record can be reclaimed by deleting it with `dropTables=true` —
 a destination-aware drop (Publisher only ever drops a table name it recorded

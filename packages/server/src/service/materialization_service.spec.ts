@@ -207,6 +207,61 @@ describe("MaterializationService", () => {
             ).calledWith("mat-1"),
          ).toBe(true);
       });
+
+      it("skips the drop when another MANIFEST_FILE_READY run still references the table (MED-3)", async () => {
+         // name=-verbatim: generations of a source share one physical name, so
+         // dropping a superseded record's table must NOT take out the table a
+         // remaining run still serves.
+         const getApiConnection = sinon
+            .stub()
+            .returns({ name: "lake", type: "duckdb" });
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            getPackage: sinon
+               .stub()
+               .resolves({ getMalloyConnection: async () => ({}) }),
+            getApiConnection,
+            getEnvironmentPath: () => "/test",
+         });
+         const entries = {
+            se1: {
+               sourceEntityId: "se1",
+               sourceName: "daily",
+               physicalTableName: "daily", // shared logical name
+               connectionName: "wh",
+               storageConnectionName: "lake",
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         } as any;
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({
+               id: "mat-1",
+               status: "MANIFEST_FILE_READY",
+               manifest: { entries },
+            }),
+         );
+         // Another remaining successful run references the SAME lake.daily table.
+         ctx.repository.listMaterializations.resolves([
+            makeMaterialization({ id: "mat-1", manifest: { entries } }),
+            makeMaterialization({
+               id: "mat-2",
+               status: "MANIFEST_FILE_READY",
+               manifest: { entries },
+            }),
+         ]);
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+            dropTables: true,
+         });
+
+         // The drop was skipped (never resolved the destination connection), and
+         // the record was still deleted.
+         expect(getApiConnection.called).toBe(false);
+         expect(
+            (
+               ctx.repository.deleteMaterialization as sinon.SinonStub
+            ).calledWith("mat-1"),
+         ).toBe(true);
+      });
    });
 
    describe("deleteMaterialization rebinds storage serve bindings", () => {
