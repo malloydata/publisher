@@ -658,11 +658,10 @@ export class Environment {
                   // the same reason). A log line was the old destination; this
                   // one is an HTTP response body.
                   //
-                  // Reduces the exposure, does not remove it: redactPgSecrets
-                  // only covers keyword-form `password=`, which is what
-                  // buildPgConnectionString emits. A URL-form connectionString
-                  // supplied verbatim in config still carries its credentials
-                  // through. Widen the helper rather than trusting this call.
+                  // redactPgSecrets covers both keyword-form `password=` (what
+                  // buildPgConnectionString emits) and URI userinfo
+                  // (`postgres://user:pass@host`), so a URL-form connectionString
+                  // supplied verbatim in config is redacted here too.
                   this.failedPackages.set(
                      packageName,
                      redactPgSecrets(
