@@ -901,19 +901,24 @@ export class Package {
          }
       }
 
-      // Rule 6: an incremental source with freshness fallback "live" is invalid.
-      // A live serve recomputes the source, which for an incremental definition
-      // returns only the delta, not the full dataset. Require stale_ok or fail.
-      const hasIncremental = sources.some(
-         (s) => (s.annotationFields ?? {}).refresh === "incremental",
-      );
-      if (hasIncremental && packageFreshness?.fallback === "live") {
-         warnings.push(
-            `An incremental #@ persist source with materialization.freshness.` +
-               `fallback "live" is invalid: a live serve of an incremental source ` +
-               `returns only the delta, not the full dataset. Use "stale_ok" or ` +
-               `"fail".`,
-         );
+      // Rule 6: an incremental source that resolves to freshness fallback "live"
+      // is invalid. A live serve recomputes the source, which for an incremental
+      // definition returns only the delta, not the full dataset. Require stale_ok
+      // or fail. The fallback can be set on the source itself or inherited from
+      // the package (source wins, most-specific-first, §3.1), so resolve both.
+      for (const source of sources) {
+         if ((source.annotationFields ?? {}).refresh !== "incremental")
+            continue;
+         const effectiveFallback =
+            source.freshness?.fallback ?? packageFreshness?.fallback;
+         if (effectiveFallback === "live") {
+            warnings.push(
+               `Incremental #@ persist source "${source.name}" resolves to ` +
+                  `freshness fallback "live", which is invalid: a live serve of an ` +
+                  `incremental source returns only the delta, not the full dataset. ` +
+                  `Use "stale_ok" or "fail".`,
+            );
+         }
       }
 
       return warnings;

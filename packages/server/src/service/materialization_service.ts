@@ -102,6 +102,15 @@ const INCREMENTAL_KEYS_CTE = "__malloy_incremental_keys";
  * source did not opt into the self-reference; the MERGE then upserts every row
  * the source returns). Boundary-safe: balances parentheses from the CTE's
  * opening paren.
+ *
+ * The CTE must be written in the canonical `WITH <name> AS ( ... )` form. The
+ * anchor matches the name + `AS` keyword + opening paren together and is
+ * case-INSENSITIVE on `AS`: a lowercase `as` is valid SQL, and a case-sensitive
+ * scan would silently skip hydration, leaving the incremental filter inert (the
+ * MERGE would then reprocess every row). Matching name+`AS` as a unit also
+ * avoids anchoring on an `AS` substring inside an unrelated upstream identifier.
+ * A column-list form (`<name> (cols) AS (...)`) is not recognized — the reserved
+ * CTE needs no column list.
  */
 export function hydrateIncrementalKeysCte(
    sql: string,
@@ -109,10 +118,11 @@ export function hydrateIncrementalKeysCte(
    primaryKey: string,
    dialect: string,
 ): string {
-   const marker = sql.indexOf(INCREMENTAL_KEYS_CTE);
-   if (marker === -1) return sql;
-   const asOpen = sql.indexOf("(", sql.indexOf("AS", marker));
-   if (asOpen === -1) return sql;
+   const anchor = new RegExp(`${INCREMENTAL_KEYS_CTE}\\s+AS\\s*\\(`, "i").exec(
+      sql,
+   );
+   if (!anchor) return sql;
+   const asOpen = anchor.index + anchor[0].length - 1; // index of the "("
    let depth = 0;
    let close = asOpen;
    for (; close < sql.length; close++) {

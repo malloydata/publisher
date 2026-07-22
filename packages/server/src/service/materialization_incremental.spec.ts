@@ -118,6 +118,30 @@ describe("hydrateIncrementalKeysCte", () => {
          "WITH __malloy_incremental_keys AS ( SELECT `order_id` FROM `ds`.`t` )",
       );
    });
+
+   it("matches the AS keyword case-insensitively (a lowercase `as` still hydrates)", () => {
+      // `as` is a valid SQL spelling; a case-sensitive scan would silently skip
+      // hydration, leaving the filter inert and reprocessing every row.
+      const sql =
+         "WITH __malloy_incremental_keys as (SELECT 1 WHERE false) SELECT * FROM src";
+      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "duckdb");
+      expect(out).toBe(
+         'WITH __malloy_incremental_keys as ( SELECT "id" FROM "t" ) SELECT * FROM src',
+      );
+   });
+
+   it("does not anchor on an `AS` substring in an unrelated upstream identifier", () => {
+      // A column alias containing "AS" before the reserved CTE must not be
+      // mistaken for the CTE's AS keyword.
+      const sql =
+         "WITH __malloy_incremental_keys AS (SELECT 1 WHERE false) " +
+         "SELECT gross_sales AS revenue FROM src";
+      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "duckdb");
+      expect(out).toBe(
+         'WITH __malloy_incremental_keys AS ( SELECT "id" FROM "t" ) ' +
+            "SELECT gross_sales AS revenue FROM src",
+      );
+   });
 });
 
 // ── buildMergeSQL (upsert on the primary key) ────────────────────────────────

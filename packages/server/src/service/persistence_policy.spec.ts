@@ -99,6 +99,14 @@ source: i is duckdb.sql("SELECT 1 as x")
 source: b is duckdb.sql("SELECT 1 as x")
 `;
 
+   // Incremental with a SOURCE-level freshness fallback of "live" (no package
+   // freshness) — Rule 6 must catch the source-level declaration too.
+   const INCREMENTAL_SRC_LIVE_MODEL = `##! experimental.persistence
+
+#@ persist name="i_table" refresh=incremental freshness.window="24h" freshness.fallback="live"
+source: i is duckdb.sql("SELECT 1 as x")
+`;
+
    // ── scope parsing + surfacing ─────────────────────────────────────────
 
    it(
@@ -334,6 +342,22 @@ source: b is duckdb.sql("SELECT 1 as x")
             },
          });
          expect(pkg.persistencePolicyWarnings()).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "rejects an incremental source whose OWN freshness fallback is live",
+      async () => {
+         // No package freshness — the dangerous fallback is declared on the
+         // source itself, which Rule 6 must still catch.
+         const pkg = await loadPackage(INCREMENTAL_SRC_LIVE_MODEL, {
+            scope: "package",
+         });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain('"i"');
+         expect(joined).toContain("live");
+         expect(joined).toContain("delta");
       },
       { timeout: 30000 },
    );

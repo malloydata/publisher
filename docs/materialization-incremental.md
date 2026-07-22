@@ -33,8 +33,10 @@ source: item_classifications_raw is bigquery.sql("""
   SELECT
     item_name,
     ML.GENERATE_TEXT(...) AS category
-  FROM `raw.items`
-  WHERE item_name NOT IN (SELECT item_name FROM __malloy_incremental_keys)
+  FROM `raw.items` s
+  WHERE NOT EXISTS (
+    SELECT 1 FROM __malloy_incremental_keys k WHERE k.item_name = s.item_name
+  )
 """)
 
 #@ persist name="analytics.item_classifications" refresh="incremental"
@@ -65,8 +67,15 @@ realized with no compiler change:
   <target>`. Because the filter sits **inside** the source SQL — before the expensive step — the
   expensive step only runs for rows not already present.
 
-The construct is optional. An incremental source that omits the CTE simply MERGEs every row it
-returns on every run (an upsert-refresh); the CTE is what turns that into "touch only new rows."
+Prefer a `NOT EXISTS` anti-join (as above) over `WHERE key NOT IN (SELECT key FROM
+__malloy_incremental_keys)`: `NOT IN` returns no rows if the subquery ever yields a `NULL` (SQL
+three-valued logic), which would silently process nothing. Primary keys are non-null so `NOT IN`
+happens to be safe here, but `NOT EXISTS` is robust regardless.
+
+Write the CTE in the canonical `WITH __malloy_incremental_keys AS ( ... )` form (the `AS` keyword may
+be any case; a column-list form is not recognized). The construct is optional: an incremental source
+that omits the CTE simply MERGEs every row it returns on every run (an upsert-refresh); the CTE is
+what turns that into "touch only new rows."
 
 ## Build behavior
 
@@ -111,6 +120,12 @@ they stay incremental unless `forceFullRebuild` is explicitly requested.
 - **Scope.** Incremental needs a physical table that persists across published versions, so use the
   default `scope: "package"` with hosted `freshness` (the recommended cadence surface). A
   version-scoped cron would give each version its own table and defeat the incrementality.
+- **Stable target name (assumption).** "Seed vs MERGE" is decided by whether the target table
+  already exists, so the source's assigned physical table name must be **stable across runs**. The
+  publisher's self-assigned name (standalone / scheduled builds) is stable. If an orchestrating
+  layer supplies the physical name instead, it must assign a stable name per incremental source — a
+  name that changes per version or per content hash makes every run miss the existing table and
+  re-seed (a silent full rebuild).
 - **`refresh` values.** Only `"full"` and `"incremental"` are accepted; any other value fails the
   publish gate rather than silently degrading to full.
 
