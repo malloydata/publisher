@@ -1,0 +1,229 @@
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   mock,
+   spyOn,
+} from "bun:test";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import * as path from "path";
+import { TEMP_DIR_PATH } from "../constants";
+
+/**
+ * Wiring coverage for the package git clone: the shallow-clone options must
+ * actually reach `simple-git`'s clone call, the factory must carry a progress
+ * handler whose output lands on stderr with the right label, and the readiness
+ * line must not print when boot fails. The pure helpers (options content,
+ * throttling, label text) are covered in environment_store.spec.ts; this file
+ * proves the plumbing.
+ *
+ * simple-git is module-mocked BEFORE the store is imported (the anchoring
+ * spec's ordering idiom). The mock leaks forward in bun's shared module cache,
+ * which is safe here: environment_store.ts is the only importer, and the only
+ * spec that performs a real clone (connection.spec.ts) is credential-gated and
+ * runs in its own workflow process.
+ */
+
+const serverRootPath = path.join(TEMP_DIR_PATH, "clone-spec-server-root");
+
+const ENV_NAME = "clone-env";
+const PKG_NAME = "pkg-a";
+
+interface RecordedClone {
+   repoUrl: string;
+   dir: string;
+   opts: Record<string, unknown>;
+}
+
+let recordedClones: RecordedClone[] = [];
+let lastFactoryOpts: {
+   progress?: (event: {
+      method: string;
+      stage: string;
+      progress: number;
+      processed: number;
+      total: number;
+   }) => void;
+} | null = null;
+let storageInitFails = false;
+
+mock.module("simple-git", () => ({
+   default: (factoryOpts?: typeof lastFactoryOpts) => {
+      lastFactoryOpts = factoryOpts ?? null;
+      return {
+         clone: (
+            repoUrl: string,
+            dir: string,
+            opts: Record<string, unknown>,
+            cb: (err: Error | null) => void,
+         ) => {
+            recordedClones.push({ repoUrl, dir, opts });
+            // Materialize the fixture the extraction step expects: the repo
+            // contains one package subdirectory.
+            const pkgDir = path.join(dir, PKG_NAME);
+            mkdirSync(pkgDir, { recursive: true });
+            writeFileSync(
+               path.join(pkgDir, "publisher.json"),
+               JSON.stringify({ name: PKG_NAME }),
+            );
+            // Drive the progress handler the way the real plugin would.
+            lastFactoryOpts?.progress?.({
+               method: "clone",
+               stage: "receiving",
+               progress: 50,
+               processed: 1,
+               total: 2,
+            });
+            cb(null);
+         },
+      };
+   },
+}));
+
+mock.module("../storage/StorageManager", () => ({
+   StorageManager: class MockStorageManager {
+      async initialize(): Promise<void> {
+         if (storageInitFails) {
+            throw new Error("storage init failed (test)");
+         }
+      }
+      getRepository() {
+         return {
+            listEnvironments: async () => [],
+            getEnvironmentByName: async () => null,
+            createEnvironment: async (data: Record<string, unknown>) => ({
+               id: "env-id",
+               name: data.name,
+               path: data.path,
+            }),
+            listPackages: async () => [],
+            getPackageByName: async () => null,
+            createPackage: async (data: Record<string, unknown>) => ({
+               id: "pkg-id",
+               name: data.name,
+            }),
+            listConnections: async () => [],
+         };
+      }
+   },
+   StorageConfig: {} as Record<string, unknown>,
+}));
+
+const { EnvironmentStore, GIT_CLONE_OPTIONS } = await import(
+   "./environment_store"
+);
+
+describe("git clone wiring", () => {
+   let stderrWrites: string[];
+   let stderrSpy: ReturnType<typeof spyOn>;
+
+   beforeEach(() => {
+      rmSync(serverRootPath, { recursive: true, force: true });
+      mkdirSync(serverRootPath, { recursive: true });
+      recordedClones = [];
+      lastFactoryOpts = null;
+      storageInitFails = false;
+      stderrWrites = [];
+      stderrSpy = spyOn(process.stderr, "write").mockImplementation(
+         (chunk: string | Uint8Array) => {
+            stderrWrites.push(String(chunk));
+            return true;
+         },
+      );
+   });
+
+   afterEach(() => {
+      stderrSpy.mockRestore();
+      rmSync(serverRootPath, { recursive: true, force: true });
+   });
+
+   it("boot clones shallow, streams labeled progress, and mounts the package", async () => {
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: ENV_NAME,
+                  packages: [
+                     {
+                        name: PKG_NAME,
+                        location: `https://github.com/example/repo/tree/main/${PKG_NAME}`,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      // The options object reaches .clone verbatim.
+      expect(recordedClones).toHaveLength(1);
+      expect(recordedClones[0].repoUrl).toBe("https://github.com/example/repo");
+      expect(recordedClones[0].opts).toEqual(GIT_CLONE_OPTIONS);
+
+      // The progress event surfaced on stderr, labeled with env and package.
+      const output = stderrWrites.join("");
+      expect(output).toContain(
+         `[${ENV_NAME}] cloning example/repo (${PKG_NAME}): receiving 50% (1/2)`,
+      );
+
+      // The package extracted from the (fake) clone and mounted.
+      expect(
+         existsSync(
+            path.join(
+               serverRootPath,
+               "publisher_data",
+               ENV_NAME,
+               PKG_NAME,
+               "publisher.json",
+            ),
+         ),
+      ).toBe(true);
+
+      // And the boot announced itself exactly once.
+      const readyLines = output
+         .split("\n")
+         .filter((line) => line.startsWith("PUBLISHER_READY"));
+      expect(readyLines).toHaveLength(1);
+      expect(readyLines[0]).toContain("environments=1");
+      expect(readyLines[0]).toContain("packages=1");
+      expect(readyLines[0]).toContain("load_errors=0");
+   });
+
+   it("direct download extracts the subdirectory and labels by repo alone", async () => {
+      // The controller add-package path: downloadGitHubDirectory is called
+      // with the raw /tree/... location and no progress context.
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      const target = path.join(serverRootPath, "publisher_data", "direct");
+      await store.downloadGitHubDirectory(
+         `https://github.com/example/repo/tree/main/${PKG_NAME}`,
+         target,
+      );
+
+      expect(recordedClones).toHaveLength(1);
+      expect(recordedClones[0].opts).toEqual(GIT_CLONE_OPTIONS);
+      // Subdirectory contents were hoisted to the target root.
+      expect(existsSync(path.join(target, "publisher.json"))).toBe(true);
+      expect(existsSync(path.join(target, PKG_NAME))).toBe(false);
+      // No environment context on this path, so the label is the repo alone.
+      expect(stderrWrites.join("")).toContain(
+         "cloning example/repo: receiving 50% (1/2)",
+      );
+   });
+
+   it("does not print a readiness line when boot fails", async () => {
+      storageInitFails = true;
+      const store = new EnvironmentStore(serverRootPath);
+      // initialize() swallows the failure by design; the promise resolves.
+      await store.finishedInitialization;
+      expect(stderrWrites.join("").includes("PUBLISHER_READY")).toBe(false);
+   });
+});

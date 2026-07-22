@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   mock,
+   spyOn,
+} from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { promises as fsPromises } from "fs";
 import * as path from "path";
@@ -8,7 +16,15 @@ import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
-import { EnvironmentStore, resolvePackageLocation } from "./environment_store";
+import {
+   CloneProgressReporter,
+   cloneProgressLabel,
+   EnvironmentStore,
+   formatReadinessLine,
+   GIT_CLONE_OPTIONS,
+   resolvePackageLocation,
+   stripGitProgressNoise,
+} from "./environment_store";
 
 type MockData = Record<string, unknown>;
 
@@ -1595,5 +1611,283 @@ describe("resolvePackageLocation", () => {
       expect(resolvePackageLocation("~user/foo", CONFIG_DIR, HOME)).toBe(
          path.join(CONFIG_DIR, "~user", "foo"),
       );
+   });
+});
+
+describe("GIT_CLONE_OPTIONS", () => {
+   it("clones shallow and single-branch", () => {
+      // The load-bearing content: packages serve the default branch's working
+      // tree only, so history is pure download cost. simple-git serializes
+      // this to `git clone --depth=1 --single-branch`.
+      expect(GIT_CLONE_OPTIONS["--depth"]).toBe(1);
+      expect(GIT_CLONE_OPTIONS).toHaveProperty("--single-branch", null);
+   });
+});
+
+describe("stripGitProgressNoise", () => {
+   it("drops progress lines and keeps the error", () => {
+      const message = [
+         "Cloning into '/tmp/x'...",
+         "remote: Counting objects: 45% (9/20)",
+         "Receiving objects: 99% (990/1000)",
+         "fatal: early EOF",
+         "fatal: fetch-pack: invalid index-pack output",
+      ].join("\n");
+      expect(stripGitProgressNoise(message)).toBe(
+         "fatal: early EOF\nfatal: fetch-pack: invalid index-pack output",
+      );
+   });
+
+   it("handles carriage-return separated progress spew", () => {
+      // git rewrites progress in place with \r, so the captured stderr is one
+      // long line unless split on \r too.
+      const message =
+         "Receiving objects: 10% (1/10)\rReceiving objects: 50% (5/10)\rfatal: the remote end hung up unexpectedly";
+      expect(stripGitProgressNoise(message)).toBe(
+         "fatal: the remote end hung up unexpectedly",
+      );
+   });
+
+   it("returns the input when every line is progress noise", () => {
+      const message = "Receiving objects: 10% (1/10)";
+      expect(stripGitProgressNoise(message)).toBe(message);
+   });
+});
+
+describe("cloneProgressLabel", () => {
+   it("names the environment, repo, and packages", () => {
+      expect(
+         cloneProgressLabel("malloydata/publisher", {
+            environmentName: "examples",
+            packageNames: ["storefront", "governed-analytics"],
+         }),
+      ).toBe(
+         "[examples] cloning malloydata/publisher (storefront, governed-analytics)",
+      );
+   });
+
+   it("truncates long package lists", () => {
+      expect(
+         cloneProgressLabel("o/r", {
+            environmentName: "e",
+            packageNames: ["a", "b", "c", "d", "e", "f"],
+         }),
+      ).toBe("[e] cloning o/r (a, b, c, +3 more)");
+   });
+
+   it("labels by repo alone without context", () => {
+      // The controller add-package path passes no context.
+      expect(cloneProgressLabel("o/r")).toBe("cloning o/r");
+   });
+});
+
+describe("CloneProgressReporter", () => {
+   const event = (stage: string, progress: number, processed = 0, total = 0) =>
+      ({ method: "clone", stage, progress, processed, total }) as Parameters<
+         CloneProgressReporter["onProgress"]
+      >[0];
+
+   const fakeOut = (isTTY: boolean) => {
+      const writes: string[] = [];
+      const out = {
+         isTTY,
+         write: (chunk: string) => {
+            writes.push(chunk);
+            return true;
+         },
+      } as unknown as NodeJS.WriteStream;
+      return { writes, out };
+   };
+
+   it("prints a line per stage and per 25-point step off a TTY", () => {
+      const { writes, out } = fakeOut(false);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("receiving", 0));
+      reporter.onProgress(event("receiving", 10)); // same milestone, suppressed
+      reporter.onProgress(event("receiving", 24)); // same milestone, suppressed
+      reporter.onProgress(event("receiving", 25, 25, 100));
+      reporter.onProgress(event("receiving", 90));
+      reporter.onProgress(event("resolving", 5)); // stage change, printed
+      reporter.done(); // no in-place line to finish
+      expect(writes).toEqual([
+         "cloning o/r: receiving 0%\n",
+         "cloning o/r: receiving 25% (25/100)\n",
+         "cloning o/r: receiving 90%\n",
+         "cloning o/r: resolving 5%\n",
+      ]);
+   });
+
+   it("tolerates arbitrary stage strings", () => {
+      // Server-side progress lines parse with stage "remote:".
+      const { writes, out } = fakeOut(false);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("remote:", 50));
+      expect(writes).toEqual(["cloning o/r: remote: 50%\n"]);
+   });
+
+   it("rewrites one line in place on a TTY and finishes it on done", () => {
+      const { writes, out } = fakeOut(true);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("receiving", 10, 1, 10));
+      reporter.onProgress(event("receiving", 11, 2, 10));
+      reporter.done();
+      expect(writes).toEqual([
+         "\rcloning o/r: receiving 10% (1/10)\x1b[K",
+         "\rcloning o/r: receiving 11% (2/10)\x1b[K",
+         "\n",
+      ]);
+   });
+});
+
+describe("formatReadinessLine", () => {
+   const SAVED = ["PUBLISHER_HOST", "PUBLISHER_PORT", "MCP_PORT"] as const;
+   let saved: Record<string, string | undefined>;
+
+   beforeEach(() => {
+      saved = {};
+      for (const key of SAVED) {
+         saved[key] = process.env[key];
+         delete process.env[key];
+      }
+   });
+
+   afterEach(() => {
+      for (const key of SAVED) {
+         if (saved[key] === undefined) delete process.env[key];
+         else process.env[key] = saved[key];
+      }
+   });
+
+   it("uses the server defaults and displays the wildcard bind as localhost", () => {
+      expect(
+         formatReadinessLine({ environments: 1, packages: 3, loadErrors: 0 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
+            "environments=1 packages=3 load_errors=0",
+      );
+   });
+
+   it("respects the flag-derived env vars", () => {
+      // parseArgs writes --host/--port/--mcp_port here before the store exists.
+      process.env.PUBLISHER_HOST = "127.0.0.1";
+      process.env.PUBLISHER_PORT = "4321";
+      process.env.MCP_PORT = "4361";
+      expect(
+         formatReadinessLine({ environments: 2, packages: 5, loadErrors: 1 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://127.0.0.1:4321 mcp=http://127.0.0.1:4361 " +
+            "environments=2 packages=5 load_errors=1",
+      );
+   });
+});
+
+describe("readiness line emission", () => {
+   const readinessRoot = path.join(TEMP_DIR_PATH, "readiness-line-test");
+   let stderrWrites: string[];
+   let stderrSpy: ReturnType<typeof spyOn>;
+
+   const readyLines = () =>
+      stderrWrites
+         .join("")
+         .split("\n")
+         .filter((line) => line.startsWith("PUBLISHER_READY"));
+
+   const writePackage = (name: string) => {
+      const dir = path.join(readinessRoot, "src-packages", name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "publisher.json"), JSON.stringify({ name }));
+      return dir;
+   };
+
+   beforeEach(() => {
+      if (existsSync(readinessRoot)) {
+         rmSync(readinessRoot, { recursive: true, force: true });
+      }
+      mkdirSync(readinessRoot, { recursive: true });
+      mock.module("../config", () => ({
+         isPublisherConfigFrozen: () => false,
+      }));
+      stderrWrites = [];
+      stderrSpy = spyOn(process.stderr, "write").mockImplementation(
+         (chunk: string | Uint8Array) => {
+            stderrWrites.push(String(chunk));
+            return true;
+         },
+      );
+   });
+
+   afterEach(() => {
+      stderrSpy.mockRestore();
+      rmSync(readinessRoot, { recursive: true, force: true });
+   });
+
+   it("emits exactly one line with counts after a successful boot", async () => {
+      const pkgA = writePackage("pkg-a");
+      const pkgB = writePackage("pkg-b");
+      writeFileSync(
+         path.join(readinessRoot, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: "readiness-env",
+                  packages: [
+                     { name: "pkg-a", location: pkgA },
+                     { name: "pkg-b", location: pkgB },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(readinessRoot);
+      await store.finishedInitialization;
+
+      const lines = readyLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("environments=1");
+      expect(lines[0]).toContain("packages=2");
+      expect(lines[0]).toContain("load_errors=0");
+      expect(lines[0]).toMatch(
+         /^PUBLISHER_READY url=http:\/\/\S+ mcp=http:\/\/\S+ environments=\d+ packages=\d+ load_errors=\d+$/,
+      );
+   });
+
+   it("counts a mount failure in load_errors and still emits", async () => {
+      // Post-#903 a bad location drops the package, not the boot; the line
+      // must report the failure rather than stay silent or claim a clean load.
+      const pkgA = writePackage("pkg-a");
+      writeFileSync(
+         path.join(readinessRoot, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: "readiness-env",
+                  packages: [
+                     { name: "pkg-a", location: pkgA },
+                     {
+                        name: "pkg-missing",
+                        location: path.join(readinessRoot, "does-not-exist"),
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(readinessRoot);
+      await store.finishedInitialization;
+
+      const lines = readyLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("environments=1");
+      // packages= is what the server actually serves: the boot-time database
+      // sync prunes a package whose load failed (environment.ts getPackage
+      // catch), so the failed one appears in load_errors, not in packages.
+      expect(lines[0]).toContain("packages=1");
+      expect(lines[0]).toContain("load_errors=1");
    });
 });

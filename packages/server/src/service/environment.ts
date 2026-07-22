@@ -1559,6 +1559,15 @@ export class Environment {
    }
 
    /**
+    * Packages registered in this environment, loaded or not. Cheap on
+    * purpose: counts statuses without triggering the load that
+    * listPackages() performs.
+    */
+   public getRegisteredPackageCount(): number {
+      return this.packageStatuses.size;
+   }
+
+   /**
     * Record why a configured package's location never mounted, so /status can
     * name the real cause instead of the missing-manifest fallout it produces.
     * Called by EnvironmentStore right after the environment is created.

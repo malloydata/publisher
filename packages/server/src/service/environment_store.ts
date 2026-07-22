@@ -6,7 +6,7 @@ import extract from "extract-zip";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import simpleGit from "simple-git";
+import simpleGit, { type SimpleGitProgressEvent } from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
@@ -149,6 +149,129 @@ export function resolvePackageLocation(
       expanded = path.join(home, location.slice(2));
    }
    return path.isAbsolute(expanded) ? expanded : path.join(anchorDir, expanded);
+}
+
+/**
+ * Options for every package git clone. Packages are served from the default
+ * branch's working tree only (no ref is ever checked out afterwards, and no
+ * later git operation touches the clone: a reload deletes and re-clones), so
+ * history is pure download cost. Exported for tests.
+ */
+export const GIT_CLONE_OPTIONS: Record<string, string | number | null> = {
+   "--depth": 1,
+   "--single-branch": null,
+};
+
+/**
+ * With a progress handler configured, simple-git forces `--progress`, and a
+ * failed clone's error message then carries every progress line git wrote to
+ * stderr. Those messages reach `/status` loadErrors and API error responses,
+ * so drop the noise and keep the lines that say what went wrong. Returns the
+ * input when everything matched, rather than an empty error.
+ */
+export function stripGitProgressNoise(message: string): string {
+   const kept = message
+      .split(/\r\n|\r|\n/)
+      .filter(
+         (line) =>
+            !/\d+% \(\d+\/\d+\)/.test(line) &&
+            !/^Cloning into /.test(line.trim()),
+      )
+      .join("\n")
+      .trim();
+   return kept.length > 0 ? kept : message.trim();
+}
+
+/** e.g. `[examples] cloning malloydata/publisher (storefront, +2 more)`. */
+export function cloneProgressLabel(
+   repo: string,
+   context?: { environmentName?: string; packageNames?: string[] },
+): string {
+   const env = context?.environmentName ? `[${context.environmentName}] ` : "";
+   const names = context?.packageNames ?? [];
+   const shown = names.length > 4 ? names.slice(0, 3) : names;
+   const more = names.length - shown.length;
+   const pkgs =
+      shown.length > 0
+         ? ` (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`
+         : "";
+   return `${env}cloning ${repo}${pkgs}`;
+}
+
+/**
+ * Streams git clone progress to stderr: off winston (whose format changes
+ * under OTEL and whose level can hide info lines) and off stdout (which an
+ * MCP stdio transport would own), and it is where git itself reports
+ * progress. A TTY gets one line rewritten in place; anything else (CI logs)
+ * gets a line per stage and per 25-point step, so a slow clone shows life
+ * without flooding. Exported for tests.
+ */
+export class CloneProgressReporter {
+   private lastStage: string | undefined;
+   private lastMilestone = -1;
+   private wroteInPlace = false;
+
+   constructor(
+      private readonly label: string,
+      private readonly out: NodeJS.WriteStream = process.stderr,
+   ) {}
+
+   onProgress(event: SimpleGitProgressEvent): void {
+      const { stage, progress, processed, total } = event;
+      const counts = total > 0 ? ` (${processed}/${total})` : "";
+      const text = `${this.label}: ${stage} ${progress}%${counts}`;
+      if (this.out.isTTY === true) {
+         // \x1b[K clears the tail of the previous, possibly longer, line.
+         this.out.write(`\r${text}\x1b[K`);
+         this.wroteInPlace = true;
+         return;
+      }
+      const milestone = Math.floor(progress / 25);
+      if (stage !== this.lastStage) {
+         this.lastStage = stage;
+         this.lastMilestone = milestone;
+      } else if (milestone > this.lastMilestone) {
+         this.lastMilestone = milestone;
+      } else {
+         return;
+      }
+      this.out.write(`${text}\n`);
+   }
+
+   done(): void {
+      if (this.wroteInPlace) {
+         this.out.write("\n");
+      }
+   }
+}
+
+/** `0.0.0.0`/`::` bind every interface; a script needs a host it can dial. */
+function displayHost(host: string): string {
+   return host === "0.0.0.0" || host === "::" ? "localhost" : host;
+}
+
+/**
+ * The one-line machine-readable boot signal. Scripts grep for the
+ * `PUBLISHER_READY` prefix instead of polling `/api/v0/status`, and the
+ * counts carry what `operationalState: "serving"` alone does not say: how
+ * much of the configured world actually loaded. Host and ports mirror
+ * server.ts's use-site defaults; parseArgs writes the flag values into
+ * process.env before the store is constructed. Exported for tests.
+ */
+export function formatReadinessLine(counts: {
+   environments: number;
+   packages: number;
+   loadErrors: number;
+}): string {
+   const host = displayHost(process.env.PUBLISHER_HOST || "0.0.0.0");
+   const port = Number(process.env.PUBLISHER_PORT || 4000);
+   const mcpPort = Number(process.env.MCP_PORT || 4040);
+   return (
+      `PUBLISHER_READY url=http://${host}:${port} ` +
+      `mcp=http://${host}:${mcpPort} ` +
+      `environments=${counts.environments} packages=${counts.packages} ` +
+      `load_errors=${counts.loadErrors}`
+   );
 }
 
 export class EnvironmentStore {
@@ -446,11 +569,36 @@ export class EnvironmentStore {
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
+         this.emitReadinessLine();
       } catch (error) {
          markNotReady();
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
       }
+   }
+
+   /**
+    * Printed exactly once, from initialize()'s success tail: markReady() has
+    * just flipped /api/v0/status to "serving", and both HTTP listeners bound
+    * long before the downloads finished, so this is the same moment every
+    * existing readiness consumer (CI status polls, MCP /health/readiness)
+    * fires on. The catch above swallows a failed boot after markNotReady(),
+    * so the line never prints for a server that is not actually serving.
+    */
+   private emitReadinessLine(): void {
+      let packages = 0;
+      let loadErrors = this.failedEnvironments.size;
+      for (const environment of this.environments.values()) {
+         packages += environment.getRegisteredPackageCount();
+         loadErrors += environment.getFailedPackages().size;
+      }
+      process.stderr.write(
+         formatReadinessLine({
+            environments: this.environments.size,
+            packages,
+            loadErrors,
+         }) + "\n",
+      );
    }
 
    public async addEnvironmentToDatabase(
@@ -1390,6 +1538,7 @@ export class EnvironmentStore {
                tempDownloadPath,
                environmentName,
                "shared",
+               packagesForLocation.map((p) => p.name),
             );
          } catch (error) {
             downloaded = false;
@@ -1590,6 +1739,7 @@ export class EnvironmentStore {
       targetPath: string,
       environmentName: string,
       packageName: string,
+      packageNames?: string[],
    ) {
       const isCompressedFile = location.endsWith(".zip");
       // Handle GCS paths
@@ -1623,7 +1773,10 @@ export class EnvironmentStore {
             logger.info(
                `Cloning GitHub repository from "${location}" to "${targetPath}"`,
             );
-            await this.downloadGitHubDirectory(location, targetPath);
+            await this.downloadGitHubDirectory(location, targetPath, {
+               environmentName,
+               packageNames,
+            });
             return;
          } catch (error) {
             const errorData = this.extractErrorDataFromError(error);
@@ -1900,7 +2053,11 @@ export class EnvironmentStore {
       return null;
    }
 
-   async downloadGitHubDirectory(githubUrl: string, absoluteDirPath: string) {
+   async downloadGitHubDirectory(
+      githubUrl: string,
+      absoluteDirPath: string,
+      progressContext?: { environmentName?: string; packageNames?: string[] },
+   ) {
       assertSafeEnvironmentPath(absoluteDirPath);
       // First we'll clone the repo without the additional path
       // E.g. we're removing `/tree/main/imdb` from https://github.com/credibledata/malloy-samples/tree/main/imdb
@@ -1923,17 +2080,25 @@ export class EnvironmentStore {
       });
       await fs.promises.mkdir(absoluteDirPath, { recursive: true });
       const repoUrl = `https://github.com/${owner}/${repoName}`;
+      const reporter = new CloneProgressReporter(
+         cloneProgressLabel(`${owner}/${repoName}`, progressContext),
+      );
 
       // We'll clone the repo into absoluteDirPath
       await new Promise<void>((resolve, reject) => {
-         simpleGit().clone(repoUrl, absoluteDirPath, {}, (err) => {
+         simpleGit({
+            progress: (event) => reporter.onProgress(event),
+         }).clone(repoUrl, absoluteDirPath, GIT_CLONE_OPTIONS, (err) => {
+            reporter.done();
             if (err) {
+               err.message = stripGitProgressNoise(err.message);
                const errorData = this.extractErrorDataFromError(err);
                logger.error(
                   `Failed to clone GitHub repository "${repoUrl}"`,
                   errorData,
                );
                reject(err);
+               return;
             }
             resolve();
          });
