@@ -1013,13 +1013,16 @@ export class EnvironmentStore {
          (environment?.packages && environment.packages.length > 0) ||
          (environmentConfig?.packages && environmentConfig.packages.length > 0);
       let absoluteEnvironmentPath: string;
+      let mountErrors: ReadonlyMap<string, string> = new Map();
       if (hasPackages) {
          const packagesToProcess =
             environment?.packages || environmentConfig?.packages || [];
-         absoluteEnvironmentPath = await this.loadEnvironmentIntoDisk(
+         const loaded = await this.loadEnvironmentIntoDisk(
             environmentName,
             packagesToProcess,
          );
+         absoluteEnvironmentPath = loaded.path;
+         mountErrors = loaded.mountErrors;
          if (absoluteEnvironmentPath.endsWith(".zip")) {
             absoluteEnvironmentPath = await this.unzipEnvironment(
                absoluteEnvironmentPath,
@@ -1037,6 +1040,12 @@ export class EnvironmentStore {
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
+
+      // Attach before the SERVING seeding below: those packages are configured
+      // but un-mounted, and this is the only record of why.
+      for (const [packageName, message] of mountErrors) {
+         newEnvironment.setPackageMountError(packageName, message);
+      }
 
       this.environments.set(environmentName, newEnvironment);
       // It loaded, so any earlier failure for this name is stale. A boot
@@ -1263,6 +1272,38 @@ export class EnvironmentStore {
       return location.startsWith("s3://");
    }
 
+   /**
+    * Isolate a location failure to the packages it actually affects instead of
+    * aborting the whole environment. The packages that mounted still serve;
+    * each one named here is left un-mounted, so its configured status entry
+    * (set in addEnvironment) resolves to a per-package load failure that
+    * getFailedPackages() -> /status loadErrors reports. A bad location now
+    * behaves like a bad manifest: those packages dropped, siblings unaffected.
+    *
+    * The message is kept rather than letting the lazy load speak for it. An
+    * un-mounted package fails later on the manifest that was never copied, and
+    * "Package manifest ... does not exist." points at publisher_data/ instead
+    * of the location that is actually wrong. Redacted because it reaches an
+    * HTTP response body.
+    */
+   private recordMountFailure(
+      error: unknown,
+      location: string,
+      packageNames: string[],
+      mountErrors: Map<string, string>,
+   ): void {
+      logger.error(
+         `Failed to download or mount location "${location}"`,
+         this.extractErrorDataFromError(error),
+      );
+      const message = redactPgSecrets(
+         error instanceof Error ? error.message : String(error),
+      );
+      for (const packageName of packageNames) {
+         mountErrors.set(packageName, message);
+      }
+   }
+
    private async loadEnvironmentIntoDisk(
       environmentName: string,
       packages: ApiEnvironment["packages"],
@@ -1273,6 +1314,10 @@ export class EnvironmentStore {
          PUBLISHER_DATA_DIR,
          environmentName,
       );
+      // Why each package's location failed, carried out to the Environment so
+      // /status can report the real cause rather than the missing manifest it
+      // leaves behind.
+      const mountErrors = new Map<string, string>();
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
@@ -1333,6 +1378,11 @@ export class EnvironmentStore {
          );
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
+         // Two failure scopes, deliberately separate. The download is shared by
+         // every package at this location, so losing it loses all of them. An
+         // extract is per package, so one bad sibling must not strand the ones
+         // after it in the loop.
+         let downloaded = true;
          try {
             // Use the existing download method for all locations
             await this.downloadOrMountLocation(
@@ -1341,11 +1391,28 @@ export class EnvironmentStore {
                environmentName,
                "shared",
             );
-            // Extract each package from the downloaded content
-            for (const _package of packagesForLocation) {
+         } catch (error) {
+            downloaded = false;
+            this.recordMountFailure(
+               error,
+               groupedLocation,
+               packagesForLocation.map((p) => p.name),
+               mountErrors,
+            );
+         }
+         // Extract each package from the downloaded content
+         for (const _package of downloaded ? packagesForLocation : []) {
+            // Declared out here so the catch can clean up the exact path this
+            // iteration created. Never re-derive it from the package name
+            // there: the name may be why we are in the catch at all, and
+            // safeJoinUnderRoot permits a name that resolves to the root, so a
+            // package called "." would hand the cleanup the whole environment
+            // directory. Undefined means nothing was created yet.
+            let absolutePackagePath: string | undefined;
+            try {
                const packageDir = _package.name;
                assertSafePackageName(packageDir);
-               const absolutePackagePath = safeJoinUnderRoot(
+               absolutePackagePath = safeJoinUnderRoot(
                   absoluteTargetPath,
                   packageDir,
                );
@@ -1481,16 +1548,23 @@ export class EnvironmentStore {
                      `Copied entire download as package "${packageDir}"`,
                   );
                }
+            } catch (error) {
+               this.recordMountFailure(
+                  error,
+                  groupedLocation,
+                  [_package.name],
+                  mountErrors,
+               );
+               // Leave nothing behind. A copy that threw part way through can
+               // leave a tree holding the manifest and models but not the data,
+               // which loads cleanly and therefore clears the very error
+               // recorded above, so the package serves incomplete content and
+               // /status says nothing. Continuing past the failure is what
+               // makes this reachable for more than one package per location.
+               if (absolutePackagePath) {
+                  await clearMountTarget(absolutePackagePath);
+               }
             }
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to download or mount location "${groupedLocation}"`,
-               errorData,
-            );
-            throw new PackageNotFoundError(
-               `Failed to download or mount location: ${groupedLocation}`,
-            );
          }
          try {
             // Clean up temporary download directory
@@ -1508,7 +1582,7 @@ export class EnvironmentStore {
          }
       }
 
-      return absoluteTargetPath;
+      return { path: absoluteTargetPath, mountErrors };
    }
 
    private async downloadOrMountLocation(

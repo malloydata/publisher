@@ -50,7 +50,7 @@ Hovering over a field or view in the Source Panel will show actions you can take
 
 The **Dimensions** section lists descriptive fields — such as IDs, dates, categories, and derived attributes — from both the primary model and any joined sources.
 
-Dimensions are grouped by their source. For example, in a query centered around `order_items` (the storefront fact table), you also see dimensions from its joined sources — `customers` and `products`.
+Dimensions are grouped by their source. For example, in a query centered around `order_items` (the storefront fact table), you also see dimensions from its joined sources: `customers`, `products`, and `regions`.
 
 Hovering over a dimension reveals contextual actions:
 
