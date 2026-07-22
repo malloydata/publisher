@@ -464,7 +464,9 @@ export function registerGetContextTool(
                      entities: Array.from(byId.values()),
                      query: query ?? sanitized,
                      limit: max,
-                     sourceName,
+                     // "" means no drill-down, matching the lexical
+                     // path's truthiness filter.
+                     sourceName: sourceName || undefined,
                   });
                   if ("hits" in semantic) {
                      const byKey = new Map(

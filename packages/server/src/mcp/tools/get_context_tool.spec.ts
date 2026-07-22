@@ -395,20 +395,30 @@ describe("get_context semantic retrieval", () => {
       ).toBe(false);
    });
 
-   it("falls back to lexical, marked, when the provider is down", async () => {
-      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
+   it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
+      // Index healthily first, so this pins the query-embed failure
+      // path, not just the cold start (which answers lexically anyway).
+      _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
-      const payload = parse(
-         await handler({
-            environmentName: "specs",
-            packageName: "failing-pkg",
-            query: "state",
-         }),
-      );
+      const params = {
+         environmentName: "specs",
+         packageName: "failing-pkg",
+         query: "where do customers live",
+      };
+      await callUntilSemantic(handler, params);
+
+      // Same model and config, but the endpoint now returns 500s: the
+      // per-call query embed fails and the call degrades to marked
+      // lexical with no scores.
+      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
+      const payload = parse(await handler({ ...params, query: "state" }));
       expect(payload.retrieval).toBe("lexical");
       expect(
          payload.results.some((r: { name: string }) => r.name === "state"),
       ).toBe(true);
+      for (const r of payload.results) {
+         expect(r.score).toBeUndefined();
+      }
    });
 
    it("degrades to lexical when the storage handle is unavailable", async () => {
