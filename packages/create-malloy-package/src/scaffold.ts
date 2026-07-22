@@ -104,7 +104,7 @@ export interface ScaffoldOptions {
    name?: string;
    /** Directory the workspace files are written to; also the server root. */
    cwd: string;
-   /** A CSV or Parquet file to seed the package from instead of the sample. */
+   /** A CSV, Parquet, or XLSX file to seed the package from instead of the sample. */
    dataFile?: string;
    host: Host;
    /** Overwrite existing workspace files instead of leaving them in place. */
@@ -1794,9 +1794,9 @@ function validateDataFile(dataFile: string): void {
       throw new ScaffoldError(`--data file not found: ${printable(dataFile)}`);
    }
    const ext = path.extname(dataFile).toLowerCase();
-   if (ext !== ".csv" && ext !== ".parquet") {
+   if (ext !== ".csv" && ext !== ".parquet" && ext !== ".xlsx") {
       throw new ScaffoldError(
-         `--data must be a .csv or .parquet file (got "${printable(
+         `--data must be a .csv, .parquet, or .xlsx file (got "${printable(
             path.basename(dataFile),
          )}").`,
       );

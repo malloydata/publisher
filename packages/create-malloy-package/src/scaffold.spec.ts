@@ -306,11 +306,23 @@ describe("scaffold: --data", () => {
       expect(model).toContain("duckdb.table('data/orders.csv')");
    });
 
-   test("rejects a non-CSV, non-Parquet file with nothing created", () => {
+   test("copies an xlsx file and points the model at it", () => {
+      // Scaffolding only validates the extension and copies the file; DuckDB
+      // reads the spreadsheet at serve time (see tests/e2e for that half).
+      const src = path.join(tmp, "budget.xlsx");
+      fs.writeFileSync(src, "PK not a real spreadsheet");
+      const result = run({ name: "shop", dataFile: src });
+      expect(result.packageCreated).toBe(true);
+      expect(exists("shop/data/budget.xlsx")).toBe(true);
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("duckdb.table('data/budget.xlsx')");
+   });
+
+   test("rejects an unsupported file type with nothing created", () => {
       const src = path.join(tmp, "notes.txt");
       fs.writeFileSync(src, "hello");
       expect(() => run({ name: "shop", dataFile: src })).toThrow(
-         /\.csv or \.parquet/i,
+         /\.csv, \.parquet, or \.xlsx/i,
       );
       expect(exists("shop")).toBe(false);
    });

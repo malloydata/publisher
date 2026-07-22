@@ -55,8 +55,9 @@ function resolveDataFile(cwd: string, data?: string): string | undefined {
    }
    if (data.trim() === "") {
       throw new ScaffoldError(
-         `--data was given an empty filename. Pass the CSV or Parquet file to ` +
-            `seed the package from, or leave --data off to use the sample data.`,
+         `--data was given an empty filename. Pass the CSV, Parquet, or XLSX ` +
+            `file to seed the package from, or leave --data off to use the ` +
+            `sample data.`,
       );
    }
    return path.resolve(cwd, data);
@@ -1029,7 +1030,10 @@ program
       "[name]",
       "package name to create; omit to only wire the agent workspace into the current directory",
    )
-   .option("--data <file>", "seed the package from a CSV or Parquet file")
+   .option(
+      "--data <file>",
+      "seed the package from a CSV, Parquet, or XLSX file",
+   )
    // Not --host: Publisher's own server takes `--host <address>` for the
    // interface it binds to, and the start command this tool writes now passes
    // one. Two meanings of --host in a single generated workspace is a trap, and

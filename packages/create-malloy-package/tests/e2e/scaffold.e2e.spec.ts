@@ -152,6 +152,21 @@ beforeAll(async () => {
 
    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-e2e-"));
    scaffold({ name: "sales", cwd: tmp, host: "claude-code", force: false });
+   // A second package seeded from a real spreadsheet, registered in the same
+   // config before the server boots: the only place the --data xlsx path is
+   // proven by execution (DuckDB's excel extension reads it at compile time).
+   // This server build does not bake the excel extension (that ships with the
+   // server-side xlsx PR); DuckDB autoinstalls it from extensions.duckdb.org on
+   // first read, so this test needs network. It runs Linux-only in CI, where
+   // the CDN is reachable, and mirrors how a real npx user's first xlsx query
+   // works. Once the server bake lands, the read is served from the disk cache.
+   scaffold({
+      name: "budget",
+      cwd: tmp,
+      host: "claude-code",
+      force: false,
+      dataFile: path.join(here, "..", "fixtures", "budget.xlsx"),
+   });
 
    publisherPort = await freePort();
    mcpPort = await freePort();
@@ -274,6 +289,38 @@ describe("generated project serves against a real server", () => {
          data: { array_value: unknown[] };
       };
       expect(result.data.array_value).toHaveLength(4);
+   });
+
+   test("an xlsx-seeded package mounts, compiles, and answers a query", async () => {
+      const packages = await getJson<{ name: string }[]>(
+         `${api()}/environments/default/packages`,
+      );
+      const names = packages.map((p) => p.name);
+      if (!names.includes("budget")) {
+         throw new Error(
+            `Server is serving but did not mount the xlsx-seeded "budget". ` +
+               `Packages: ${JSON.stringify(names)}. Log:\n${serverLog}`,
+         );
+      }
+
+      const models = await getJson<{ path: string; error?: string }[]>(
+         `${api()}/environments/default/packages/budget/models`,
+      );
+      const model = models.find((m) => m.path === "budget.malloy");
+      expect(model).toBeDefined();
+      expect(model?.error).toBeUndefined();
+
+      const response = await postJson<{ result: string }>(
+         `${api()}/environments/default/packages/budget/models/budget.malloy/query`,
+         { sourceName: "budget", queryName: "overview" },
+      );
+      const result = JSON.parse(response.result) as {
+         data: { array_value: { record_value: { number_value: number }[] }[] };
+      };
+      const rows = result.data.array_value;
+      expect(rows).toHaveLength(1);
+      // record_count over the 3-row fixture spreadsheet.
+      expect(rows[0].record_value[0].number_value).toBe(3);
    });
 
    test("the MCP endpoint lists the five malloy tools", async () => {
