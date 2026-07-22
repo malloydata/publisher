@@ -358,6 +358,47 @@ describe("trySemanticSearch", () => {
       expect(other.hits.map((h) => h.name)).toEqual(["beta"]);
    });
 
+   it("purges and re-syncs when the provider's dimensionality changes under the same model", async () => {
+      // Sync at 3 dims (EMBEDDING_DIMENSIONS unset everywhere here).
+      const first = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      await searchReady({
+         ...base,
+         provider: first.provider,
+         pkg: {} as unknown as Package,
+      });
+
+      // The same model name now returns 4-dim vectors (a different
+      // backend behind EMBEDDING_API_BASE). The hash diff cannot see
+      // this: a fresh instance's sync embeds nothing, and the search
+      // finds zero compatible rows. The empty-result heal must purge
+      // and re-sync instead of returning empty "semantic" results
+      // forever.
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const pkg = {} as unknown as Package;
+      const result = await searchReady({
+         ...base,
+         provider: wide.provider,
+         pkg,
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits.map((h) => h.name)).toEqual(["alpha"]);
+      const rows = await db.all<{ dims: number }>(
+         "SELECT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
+      );
+      expect(rows.map((r) => r.dims)).toEqual([4]);
+   });
+
    it("cools down after a provider failure instead of erroring every call", async () => {
       let failing = true;
       const { provider } = mapProvider(

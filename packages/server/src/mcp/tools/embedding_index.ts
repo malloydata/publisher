@@ -423,6 +423,47 @@ export async function trySemanticSearch(args: {
             limit,
          ],
       );
+      if (rows.length === 0) {
+         // An empty result is legitimate (nothing above the similarity
+         // floor) ONLY when compatible rows exist. If the package has
+         // rows but none at this model + dimensionality, the endpoint
+         // behind the model name changed what it returns (the diff
+         // cannot see a dims change when EMBEDDING_DIMENSIONS is unset,
+         // since the row hashes still match). Purge and re-sync rather
+         // than serving permanently empty "semantic" results.
+         const compatible = await db.get<{ n: number }>(
+            `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+             WHERE environment_name = ? AND package_name = ?
+               AND embedding_model = ? AND dims = ?`,
+            [environmentName, packageName, provider.model, queryVector.length],
+         );
+         if ((compatible?.n ?? 0) === 0) {
+            const total = await db.get<{ n: number }>(
+               `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+                WHERE environment_name = ? AND package_name = ?`,
+               [environmentName, packageName],
+            );
+            if ((total?.n ?? 0) > 0) {
+               logger.warn(
+                  "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging and re-syncing",
+                  {
+                     environmentName,
+                     packageName,
+                     model: provider.model,
+                     queryDims: queryVector.length,
+                  },
+               );
+               await db.run(
+                  `DELETE FROM entity_embeddings
+                   WHERE environment_name = ? AND package_name = ?`,
+                  [environmentName, packageName],
+               );
+               syncState.delete(pkg);
+               return { unavailable: "indexing" };
+            }
+         }
+      }
+
       return {
          hits: rows.map((row) => ({
             kind: row.entity_kind,
