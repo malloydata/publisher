@@ -364,6 +364,10 @@ export async function trySemanticSearch(args: {
 
    const providerKey = `${provider.model}\x00${provider.dimensions ?? ""}`;
    const meta = metaFor(environmentName, packageName);
+   // Captured at entry: if a concurrent heal purges rows while this call
+   // is searching, the generation moves and this call must not assert
+   // anything about the (now-changed) table; see the re-check below.
+   const entryGeneration = meta.generation;
    let state = syncState.get(pkg);
    if (
       !state ||
@@ -461,23 +465,30 @@ export async function trySemanticSearch(args: {
             limit,
          ],
       );
-      if (rows.length === 0) {
-         // An empty result is legitimate (nothing above the similarity
-         // floor) ONLY when compatible rows exist. If the package has
-         // rows but none at this model + dimensionality, the endpoint
-         // behind the model name changed what it returns (the sync diff
-         // cannot see a dims change, since the row hashes still match).
-         // Purge and re-sync rather than serving permanently empty
-         // "semantic" results. The whole check-and-purge runs under the
-         // package-name mutex so it cannot interleave with a sync, and
-         // the generation bump invalidates every instance's memo, not
-         // just this caller's.
+      // Invariant check, every call: no row may exist that does not
+      // match the provider's current (model, dims). The sync diff cannot
+      // see a dims change (row hashes still match), so stale-dims rows
+      // are detected here. Detecting STALE rows directly, rather than
+      // inferring from an empty result, also heals the mixed state where
+      // a partial sync wrote some rows at the new dimensionality and the
+      // rest are stranded at the old one (an empty-result trigger would
+      // never fire there, silently hiding the stranded entities forever).
+      const staleRows = await db.get<{ n: number }>(
+         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+          WHERE environment_name = ? AND package_name = ?
+            AND NOT (embedding_model = ? AND dims = ?)`,
+         [environmentName, packageName, provider.model, queryVector.length],
+      );
+      if ((staleRows?.n ?? 0) > 0) {
+         // The check-and-purge runs under the package-name mutex so it
+         // cannot interleave with a sync, and the generation bump
+         // invalidates every instance's memo, not just this caller's.
          const outcome: "none" | "purged" | "backoff" =
             await meta.mutex.runExclusive(async () => {
-               const compatible = await db.get<{ n: number }>(
+               const again = await db.get<{ n: number }>(
                   `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
                    WHERE environment_name = ? AND package_name = ?
-                     AND embedding_model = ? AND dims = ?`,
+                     AND NOT (embedding_model = ? AND dims = ?)`,
                   [
                      environmentName,
                      packageName,
@@ -485,13 +496,7 @@ export async function trySemanticSearch(args: {
                      queryVector.length,
                   ],
                );
-               if ((compatible?.n ?? 0) > 0) return "none";
-               const total = await db.get<{ n: number }>(
-                  `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
-                   WHERE environment_name = ? AND package_name = ?`,
-                  [environmentName, packageName],
-               );
-               if ((total?.n ?? 0) === 0) return "none";
+               if ((again?.n ?? 0) === 0) return "none";
                // Backoff: at most one purge per cool-down window. A
                // second mismatch inside the window means the endpoint is
                // serving inconsistent dimensionalities (e.g. mid-upgrade
@@ -512,18 +517,27 @@ export async function trySemanticSearch(args: {
                   return "backoff";
                }
                logger.warn(
-                  "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging and re-syncing",
+                  "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging stale rows and re-syncing",
                   {
                      environmentName,
                      packageName,
                      model: provider.model,
                      queryDims: queryVector.length,
+                     staleRows: again?.n,
                   },
                );
+               // Only the stale rows: current-dims rows stay, so the
+               // follow-up sync re-embeds just what was stranded.
                await db.run(
                   `DELETE FROM entity_embeddings
-                   WHERE environment_name = ? AND package_name = ?`,
-                  [environmentName, packageName],
+                   WHERE environment_name = ? AND package_name = ?
+                     AND NOT (embedding_model = ? AND dims = ?)`,
+                  [
+                     environmentName,
+                     packageName,
+                     provider.model,
+                     queryVector.length,
+                  ],
                );
                meta.lastPurgeAtMs = now;
                meta.generation++;
@@ -536,6 +550,15 @@ export async function trySemanticSearch(args: {
          if (outcome === "backoff") {
             return { unavailable: "cooldown" };
          }
+      }
+
+      // A purge moved the generation while this call was searching: the
+      // rows snapshot above is unreliable (possibly empty because a
+      // concurrent heal deleted mid-search), and an unreliable empty
+      // result must never be served as semantic "nothing relevant here".
+      // Answer as indexing (marked lexical); the next call is consistent.
+      if (meta.generation !== entryGeneration) {
+         return { unavailable: "indexing" };
       }
 
       return {
