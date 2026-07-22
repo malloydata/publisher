@@ -107,6 +107,8 @@ const SENSITIVE_KEY_NAMES = [
    "peakaKey",
    "token",
    "accessToken",
+   "apiKey",
+   "api_key",
    // credential-bearing HTTP headers
    "authorization",
    "proxy-authorization",
