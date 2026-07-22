@@ -1563,7 +1563,7 @@ export class Environment {
          // policy gate below (a rejection there fails the orchestrated run) or
          // reset the persisted policy. `manifestLocation` is deliberately
          // different — null there means "clear" (revert to live), which the
-         // orchestrator relies on.
+         // caller's orchestrated build path relies on.
          const scopeProvided = body.scope != null;
          const materializationProvided = body.materialization != null;
          const editingPolicy = scopeProvided || materializationProvided;
