@@ -1253,8 +1253,7 @@ export class MaterializationService {
          // manifest entry records it yet — so a refusal would strand it where
          // manifest-driven GC (which only drops names it recorded building) can
          // never see it. Best-effort drop of the just-built table so a refused
-         // generation doesn't leak (the operator convenience view, if any, is
-         // left dangling but is re-pointed on the next successful build).
+         // build doesn't leak an orphaned table.
          try {
             await dropStorageTable({
                destinationName,
