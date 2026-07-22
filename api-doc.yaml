@@ -4073,11 +4073,9 @@ components:
           type: boolean
           default: false
           description: >-
-            Escape hatch (dbt --full-refresh analog): rebuild every incremental
-            (refresh=incremental) persist source from scratch via the full
-            staging+rename path this run, instead of MERGE-ing new rows. Use
-            after a schema or logic migration. Independent of forceRefresh, which
-            only bypasses content-hash reuse for full-rebuild sources.
+            When true, incremental (refresh=incremental) persist sources are
+            fully rebuilt this run instead of applying only new or changed rows.
+            Use after a schema or definition change. Independent of forceRefresh.
         sourceNames:
           type: array
           items:

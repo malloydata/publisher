@@ -10,7 +10,7 @@ that have not changed.
 `refresh="incremental"` makes a source **build once, then update in place**: the first run seeds the
 whole table, and every subsequent run `MERGE`s only the rows the source produces into the existing
 table. Combined with the compile-safe self-reference construct below, the source can filter itself
-down to *new* rows before the expensive step runs, so the per-row cost is paid once per row for its
+down to _new_ rows before the expensive step runs, so the per-row cost is paid once per row for its
 lifetime.
 
 This is a deliberately small, publisher-side realization of the `refresh` knob: it merges **in
@@ -61,10 +61,10 @@ materialized" without a bootstrap problem. This is the dbt `is_incremental()` + 
 realized with no compiler change:
 
 - **At compile time and on the first run**, the author writes the CTE with an empty body (a `WHERE
-  false`, a `LIMIT 0` — anything that returns no rows). It compiles because it references no
+false`, a `LIMIT 0` — anything that returns no rows). It compiles because it references no
   not-yet-existent target, and it matches nothing, so the first-run seed processes every row.
 - **On an incremental run**, the publisher rewrites the CTE body to `SELECT <primary_key> FROM
-  <target>`. Because the filter sits **inside** the source SQL — before the expensive step — the
+<target>`. Because the filter sits **inside** the source SQL — before the expensive step — the
   expensive step only runs for rows not already present.
 
 Prefer a `NOT EXISTS` anti-join (as above) over `WHERE key NOT IN (SELECT key FROM
@@ -79,14 +79,20 @@ what turns that into "touch only new rows."
 
 ## Build behavior
 
-| Run | What the publisher does |
-| --- | --- |
-| **First run** (target absent) | `CREATE TABLE <target> AS (<source SQL>)`. The empty self-reference CTE means every row is seeded, and the warehouse infers the exact schema — the publisher never derives DDL from Malloy's intrinsic column types. |
-| **Subsequent runs** (target present) | Hydrate the self-reference CTE to the target, then `MERGE INTO <target> USING (<source SQL>) ON <primary_key>`, `WHEN MATCHED THEN UPDATE`, `WHEN NOT MATCHED THEN INSERT`. |
+| Run                                  | What the publisher does                                                                                                                                                                                              |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **First run** (target absent)        | `CREATE TABLE <target> AS (<source SQL>)`. The empty self-reference CTE means every row is seeded, and the warehouse infers the exact schema — the publisher never derives DDL from Malloy's intrinsic column types. |
+| **Subsequent runs** (target present) | Hydrate the self-reference CTE to the target, then `MERGE INTO <target> USING (<source SQL>) ON <primary_key>`, `WHEN MATCHED THEN UPDATE`, `WHEN NOT MATCHED THEN INSERT`.                                          |
 
-Existence is probed with a cheap `SELECT 1 FROM <target> LIMIT 0`. The MERGE runs **in place** (no
-staging table / rename) and is **idempotent under retry**: re-running the same MERGE is a no-op on
-rows already merged, unlike a raw `INSERT`, which would double-insert.
+The publisher decides seed-vs-MERGE, and derives the MERGE column set, from a single schema fetch
+against the target table (the connection's dialect-aware introspection). Because the **target table
+is the authority on its own columns**, the MERGE covers exactly what the first-run CTAS created —
+including non-atomic (struct / array / record) columns and any name normalization the warehouse
+applied. (A Malloy-side column derivation would drop non-atomic columns, silently diverging from the
+seeded table.) A missing table is the "first run" signal; a genuine connection failure fails the run
+rather than being misread as absent. The MERGE runs **in place** (no staging table / rename) and is
+**idempotent under retry**: re-running the same MERGE is a no-op on rows already merged, unlike a raw
+`INSERT`, which would double-insert.
 
 Append-only vs upsert is not a separate mode — it falls out of the candidate set. A classification
 source whose candidate set (via the CTE) is "items not yet classified" only ever inserts; a dedup
@@ -131,16 +137,24 @@ they stay incremental unless `forceFullRebuild` is explicitly requested.
 
 ## Dialect support
 
-The generated MERGE is standard ANSI SQL and its `SET` clause uses an **unqualified** target column
-(`SET col = S.col`, not `SET T.col = S.col`) for portability:
+Incremental emits a `MERGE INTO ...`, so it is **gated at publish** to MERGE-capable dialects:
+`refresh="incremental"` on any other dialect is rejected (rather than failing late with a raw
+warehouse syntax error). The generated MERGE is standard ANSI SQL and its `SET` clause uses an
+**unqualified** target column (`SET col = S.col`, not `SET T.col = S.col`) for portability.
 
-| Warehouse | Incremental MERGE |
-| --- | --- |
-| BigQuery | ✅ (requires the unqualified `SET` form — which is what is emitted) |
-| Snowflake | ✅ |
-| Postgres 15+ | ✅ |
-| Postgres < 15 | ❌ — no `MERGE` statement; use full rebuild |
-| DuckDB | ❌ — persistence is unsupported for DuckDB generally |
+| Warehouse                                   | Incremental MERGE                                                                                             |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| BigQuery                                    | ✅ allowed (requires the unqualified `SET` form — which is what is emitted)                                   |
+| Snowflake                                   | ✅ allowed — see caveat below                                                                                 |
+| Postgres 15+                                | ✅ allowed                                                                                                    |
+| Postgres < 15                               | ⚠️ not gated (the major version isn't visible from the dialect name) but has no `MERGE`; use `refresh="full"` |
+| MySQL / Trino / Databricks / DuckDB / other | ❌ rejected at publish — use `refresh="full"`                                                                 |
+
+> **Not yet warehouse-verified.** The generated SQL is unit-tested for shape but not yet executed
+> against a live engine. In particular the MERGE wraps a CTE-bearing source as `USING (WITH … SELECT
+…)`; BigQuery and Postgres accept a parenthesized leading `WITH`, but Snowflake acceptance should
+> be confirmed on a real connection before relying on it. (DuckDB does have `MERGE INTO` in recent
+> versions, but persistence is unsupported for DuckDB generally, so it is rejected here regardless.)
 
 ## Backward compatibility
 

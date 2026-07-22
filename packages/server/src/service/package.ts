@@ -68,6 +68,19 @@ type PackageConnectionInput =
    | (() => MalloyConfig);
 
 /**
+ * Malloy dialect names whose engines support the `MERGE INTO ...` the
+ * incremental persist path emits. Gated at publish (Rule 7 in
+ * {@link Package.persistencePolicyWarnings}). Postgres < 15 lacks MERGE, but the
+ * major version is not visible from the dialect name, so it remains a documented
+ * caveat rather than a hard gate. (`standardsql` is BigQuery's dialect name.)
+ */
+const INCREMENTAL_MERGE_DIALECTS = new Set([
+   "standardsql",
+   "snowflake",
+   "postgres",
+]);
+
+/**
  * Project the full wire entries down to the Malloy-runtime binding map
  * (`sourceEntityId -> { tableName }`) used to hydrate models. The freshness
  * fields are dropped here — they gate the serve path per query, not model
@@ -917,6 +930,27 @@ export class Package {
                   `freshness fallback "live", which is invalid: a live serve of an ` +
                   `incremental source returns only the delta, not the full dataset. ` +
                   `Use "stale_ok" or "fail".`,
+            );
+         }
+      }
+
+      // Rule 7: incremental builds emit a `MERGE INTO ...`, so the source's
+      // dialect must support that statement. Gate at publish, since dispatch
+      // otherwise keys only off `refresh=` and an unsupported dialect would fail
+      // late with a raw warehouse syntax error (possibly after the first-run
+      // CTAS already created a table). The supported set is the MERGE-capable
+      // dialects; Postgres < 15 lacks MERGE but the version isn't visible from
+      // the dialect name, so it stays a documented caveat rather than a gate.
+      for (const source of sources) {
+         if ((source.annotationFields ?? {}).refresh !== "incremental")
+            continue;
+         const dialect = source.dialect;
+         if (dialect && !INCREMENTAL_MERGE_DIALECTS.has(dialect)) {
+            warnings.push(
+               `Incremental #@ persist source "${source.name}" targets dialect ` +
+                  `"${dialect}", which does not support incremental materialization. ` +
+                  `Incremental requires a MERGE-capable engine (BigQuery, Snowflake, ` +
+                  `or Postgres 15+); use refresh="full" for this source.`,
             );
          }
       }

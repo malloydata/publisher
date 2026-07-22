@@ -38,7 +38,6 @@ import {
    compilePackageBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
-   deriveColumns,
    iterGraphSources,
 } from "./build_plan";
 import { EnvironmentStore } from "./environment_store";
@@ -110,7 +109,12 @@ const INCREMENTAL_KEYS_CTE = "__malloy_incremental_keys";
  * MERGE would then reprocess every row). Matching name+`AS` as a unit also
  * avoids anchoring on an `AS` substring inside an unrelated upstream identifier.
  * A column-list form (`<name> (cols) AS (...)`) is not recognized — the reserved
- * CTE needs no column list.
+ * CTE needs no column list. The anchor is a `\b`-bounded name match, so it does
+ * not fire on a longer identifier that merely contains the reserved name; but it
+ * is a textual scan, not a SQL parse, so the reserved name must appear ONLY as
+ * this CTE — the first textual occurrence (e.g. inside a comment or string
+ * literal) is what anchors the rewrite. Authors should not reference the name
+ * anywhere but the CTE definition and its filter.
  */
 export function hydrateIncrementalKeysCte(
    sql: string,
@@ -118,9 +122,10 @@ export function hydrateIncrementalKeysCte(
    primaryKey: string,
    dialect: string,
 ): string {
-   const anchor = new RegExp(`${INCREMENTAL_KEYS_CTE}\\s+AS\\s*\\(`, "i").exec(
-      sql,
-   );
+   const anchor = new RegExp(
+      `\\b${INCREMENTAL_KEYS_CTE}\\s+AS\\s*\\(`,
+      "i",
+   ).exec(sql);
    if (!anchor) return sql;
    const asOpen = anchor.index + anchor[0].length - 1; // index of the "("
    let depth = 0;
@@ -1055,8 +1060,19 @@ export class MaterializationService {
       const quotedPhysical = quoteTablePath(physicalTableName, dialect);
 
       const startTime = performance.now();
-      const exists = await this.tableExists(connection, quotedPhysical);
-      if (!exists) {
+      // The target table is the authority on its own columns. One schema fetch
+      // tells us both whether the table exists (seed vs MERGE) and its exact
+      // column set — including non-atomic (struct/array/record) columns that a
+      // Malloy-side derivation would drop, plus any name normalization the
+      // warehouse applied. This mirrors the first-run CTAS, which likewise lets
+      // the warehouse own the schema (we never derive DDL from Malloy types).
+      const targetColumns = await this.fetchTargetColumns(
+         connection,
+         physicalTableName,
+      );
+      const firstRun = targetColumns === null;
+
+      if (firstRun) {
          // First run: full seed. The self-reference CTE is empty, so the source
          // processes every row; the warehouse infers the target schema.
          await connection.runSQL(
@@ -1070,13 +1086,10 @@ export class MaterializationService {
                   `primary_key to MERGE on; declare one on the source.`,
             );
          }
-         const columns = deriveColumns(persistSource)
-            .map((c) => c.name)
-            .filter((n): n is string => n !== undefined);
-         if (columns.length === 0) {
+         if (targetColumns.length === 0) {
             throw new BadRequestError(
-               `Incremental persist source "${persistSource.name}" has no ` +
-                  `resolvable columns; cannot build a MERGE.`,
+               `Incremental persist source "${persistSource.name}": target table ` +
+                  `${physicalTableName} reported no columns; cannot build a MERGE.`,
             );
          }
          const hydrated = hydrateIncrementalKeysCte(
@@ -1090,7 +1103,7 @@ export class MaterializationService {
                quotedPhysical,
                hydrated,
                primaryKey,
-               columns,
+               targetColumns,
                dialect,
             ),
          );
@@ -1104,7 +1117,7 @@ export class MaterializationService {
       recordSourceBuildDuration(durationMs);
       logger.info(
          `Built incremental materialized source ${persistSource.name}`,
-         { physicalTableName, firstRun: !exists, durationMs },
+         { physicalTableName, firstRun, durationMs },
       );
 
       return {
@@ -1119,20 +1132,33 @@ export class MaterializationService {
    }
 
    /**
-    * Cheap, dialect-agnostic existence probe: `SELECT 1 FROM <t> LIMIT 0` scans
-    * nothing and throws if the table is absent. Distinguishes an incremental
-    * first-run seed from a MERGE.
+    * The target table's actual column names via the connection's dialect-aware
+    * schema introspection, or `null` if the table does not exist. On the
+    * incremental path this both decides seed-vs-MERGE (null => first run) and
+    * yields the MERGE column set from the physical table — the same authority the
+    * first-run CTAS used, so non-atomic columns and any warehouse name
+    * normalization are preserved. A missing table is reported as a keyed error
+    * (the expected first-run signal); a genuine connection failure rejects and
+    * fails the run loudly rather than being misread as "absent".
     */
-   private async tableExists(
+   private async fetchTargetColumns(
       connection: MalloyConnection,
-      quotedTable: string,
-   ): Promise<boolean> {
-      try {
-         await connection.runSQL(`SELECT 1 FROM ${quotedTable} LIMIT 0`);
-         return true;
-      } catch {
-         return false;
+      tableName: string,
+   ): Promise<string[] | null> {
+      const key = "__persist_target";
+      const { schemas, errors } = await connection.fetchSchemaForTables(
+         { [key]: tableName },
+         {},
+      );
+      const schema = schemas[key];
+      if (!schema) {
+         logger.debug(
+            "Incremental target schema not found; treating as first run",
+            { tableName, error: errors[key] },
+         );
+         return null;
       }
+      return schema.fields.map((f) => f.name);
    }
 
    // ==================== CANCELLATION ====================

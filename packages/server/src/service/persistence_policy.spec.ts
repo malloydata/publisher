@@ -284,18 +284,25 @@ source: i is duckdb.sql("SELECT 1 as x")
    );
 
    // ── Rule 5: refresh must be a supported value (full | incremental) ────
+   // ── Rule 7: incremental requires a MERGE-capable dialect ──────────────
 
    it(
-      "accepts refresh=incremental and surfaces it on the build plan",
+      "surfaces refresh=incremental to the wire plan and rejects it on a non-MERGE dialect (duckdb)",
       async () => {
+         // This harness compiles against duckdb, which is not a MERGE-capable
+         // dialect for incremental (Rule 7), so an incremental source here is
+         // rejected — and this doubles as the dialect-gate test. It also proves
+         // the pinned compiler carries `refresh` through to the wire plan
+         // (annotationFields), which the whole incremental path keys off.
          const pkg = await loadPackage(INCREMENTAL_MODEL, { scope: "package" });
-         expect(pkg.persistencePolicyWarnings()).toEqual([]);
-         // Proves the pinned compiler carries `refresh` through to the wire plan
-         // (annotationFields) — the publisher's whole incremental path keys off it.
          const source = sourceByName(pkg, "i") as Record<string, unknown>;
          expect(
             (source.annotationFields as Record<string, string>).refresh,
          ).toBe("incremental");
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain('"i"');
+         expect(joined).toContain("does not support incremental");
+         expect(joined).toContain("MERGE-capable");
       },
       { timeout: 30000 },
    );
@@ -333,15 +340,18 @@ source: i is duckdb.sql("SELECT 1 as x")
    );
 
    it(
-      "accepts an incremental source with freshness fallback stale_ok",
+      "does not flag freshness fallback stale_ok on an incremental source (Rule 6)",
       async () => {
+         // Rule 6 targets the "live" fallback only; stale_ok must not trip it.
+         // (A separate Rule 7 dialect warning is present because this harness is
+         // duckdb-only, so assert on Rule 6's signature rather than emptiness.)
          const pkg = await loadPackage(INCREMENTAL_MODEL, {
             scope: "package",
             materialization: {
                freshness: { window: "24h", fallback: "stale_ok" },
             },
          });
-         expect(pkg.persistencePolicyWarnings()).toEqual([]);
+         expect(pkg.formatInvalidPersistencePolicy()).not.toContain("delta");
       },
       { timeout: 30000 },
    );

@@ -68,7 +68,7 @@ describe("hydrateIncrementalKeysCte", () => {
    it("returns the SQL unchanged when the reserved CTE is absent", () => {
       const sql = "SELECT item_name FROM raw";
       expect(
-         hydrateIncrementalKeysCte(sql, '"ds"."t"', "item_name", "duckdb"),
+         hydrateIncrementalKeysCte(sql, '"ds"."t"', "item_name", "postgres"),
       ).toBe(sql);
    });
 
@@ -81,7 +81,7 @@ describe("hydrateIncrementalKeysCte", () => {
          sql,
          '"ds"."t"',
          "item_name",
-         "duckdb",
+         "postgres",
       );
       expect(out).toContain(
          'WITH __malloy_incremental_keys AS ( SELECT "item_name" FROM "ds"."t" )',
@@ -99,7 +99,7 @@ describe("hydrateIncrementalKeysCte", () => {
       const sql =
          "WITH __malloy_incremental_keys AS (SELECT x FROM (SELECT 1 AS x) z WHERE false) " +
          "SELECT * FROM src";
-      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "duckdb");
+      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "postgres");
       expect(out).toBe(
          'WITH __malloy_incremental_keys AS ( SELECT "id" FROM "t" ) SELECT * FROM src',
       );
@@ -124,7 +124,7 @@ describe("hydrateIncrementalKeysCte", () => {
       // hydration, leaving the filter inert and reprocessing every row.
       const sql =
          "WITH __malloy_incremental_keys as (SELECT 1 WHERE false) SELECT * FROM src";
-      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "duckdb");
+      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "postgres");
       expect(out).toBe(
          'WITH __malloy_incremental_keys as ( SELECT "id" FROM "t" ) SELECT * FROM src',
       );
@@ -136,7 +136,7 @@ describe("hydrateIncrementalKeysCte", () => {
       const sql =
          "WITH __malloy_incremental_keys AS (SELECT 1 WHERE false) " +
          "SELECT gross_sales AS revenue FROM src";
-      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "duckdb");
+      const out = hydrateIncrementalKeysCte(sql, '"t"', "id", "postgres");
       expect(out).toBe(
          'WITH __malloy_incremental_keys AS ( SELECT "id" FROM "t" ) ' +
             "SELECT gross_sales AS revenue FROM src",
@@ -153,7 +153,7 @@ describe("buildMergeSQL", () => {
          "SELECT * FROM staged",
          "order_id",
          ["order_id", "venue", "amount"],
-         "duckdb",
+         "postgres",
       );
       expect(sql).toBe(
          'MERGE INTO "ds"."t" T USING (SELECT * FROM staged) S ON T."order_id" = S."order_id" ' +
@@ -169,7 +169,7 @@ describe("buildMergeSQL", () => {
          "SELECT id FROM staged",
          "id",
          ["id"],
-         "duckdb",
+         "postgres",
       );
       expect(sql).not.toContain("WHEN MATCHED");
       expect(sql).toContain(
@@ -200,10 +200,37 @@ describe("buildOneSource incremental dispatch", () => {
       return new MaterializationService({} as unknown as EnvironmentStore);
    }
 
+   // A connection stub. `targetColumns`: null => the target table is absent, so
+   // fetchSchemaForTables reports a keyed error (first-run seed); a string[] =>
+   // the table exists with exactly those columns (MERGE). The incremental path
+   // reads the MERGE column set straight from this schema, so these ARE the
+   // columns the MERGE uses. The reserved lookup key is "__persist_target".
+   function conn(targetColumns: string[] | null): {
+      runSQL: sinon.SinonStub;
+      fetchSchemaForTables: sinon.SinonStub;
+   } {
+      const fetchSchemaForTables = sinon.stub().resolves(
+         targetColumns === null
+            ? { schemas: {}, errors: { __persist_target: "not found" } }
+            : {
+                 schemas: {
+                    __persist_target: {
+                       fields: targetColumns.map((name) => ({ name })),
+                    },
+                 },
+                 errors: {},
+              },
+      );
+      return { runSQL: sinon.stub().resolves(), fetchSchemaForTables };
+   }
+
    function callBuild(
       svc: MaterializationService,
       source: ReturnType<typeof fakeSource>,
-      connection: { runSQL: sinon.SinonStub },
+      connection: {
+         runSQL: sinon.SinonStub;
+         fetchSchemaForTables?: sinon.SinonStub;
+      },
       physicalTableName: string,
       manifest: Manifest = new Manifest(),
       forceFullRebuild = false,
@@ -229,84 +256,75 @@ describe("buildOneSource incremental dispatch", () => {
          source,
          instruction,
          connection,
-         { duckdb: "dig" },
+         { postgres: "dig" },
          manifest,
          forceFullRebuild,
       );
    }
 
    it("full (refresh unset) keeps the staging + atomic-rename path unchanged", async () => {
-      const runSQL = sinon.stub().resolves();
+      const connection = conn(null);
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "abcdef1234567890",
          sql: "SELECT * FROM t",
+         dialectName: "postgres",
       });
-      await callBuild(service(), source, { runSQL }, "orders_v1");
-      const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      await callBuild(service(), source, connection, "orders_v1");
+      const sql = connection.runSQL.getCalls().map((c) => c.args[0] as string);
       expect(sql).toEqual([
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          'DROP TABLE IF EXISTS "orders_v1"',
          'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
       ]);
+      // The full path never introspects the target schema.
+      expect(connection.fetchSchemaForTables.called).toBe(false);
    });
 
    it("incremental first run (target absent) seeds with a plain CTAS, no staging or rename", async () => {
-      // The existence probe throws when the table is absent; the seed is then a
-      // single CTAS of the source SQL directly into the target (no staging
-      // suffix, no rename), so the warehouse infers the schema.
-      const runSQL = sinon.stub().callsFake((s: string) => {
-         if (s.includes("LIMIT 0"))
-            return Promise.reject(new Error("no such table"));
-         return Promise.resolve();
-      });
+      // fetchSchemaForTables reports the target absent -> the seed is a single
+      // CTAS of the source SQL directly into the target (no staging suffix, no
+      // rename), so the warehouse infers the schema.
+      const connection = conn(null);
       const source = fakeSource({
          name: "classifications",
          sourceEntityId: "abcdef1234567890",
          sql: "SELECT item_name FROM raw",
+         dialectName: "postgres",
          annotationFields: { refresh: "incremental" },
-         explore: { primaryKey: "item_name", columns: [{ name: "item_name" }] },
+         explore: { primaryKey: "item_name" },
       });
-      const entry = await callBuild(service(), source, { runSQL }, "class_v1");
+      const entry = await callBuild(service(), source, connection, "class_v1");
 
-      const nonProbe = runSQL
-         .getCalls()
-         .map((c) => c.args[0] as string)
-         .filter((s) => !s.includes("LIMIT 0"));
-      expect(nonProbe).toEqual([
+      const sql = connection.runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(sql).toEqual([
          'CREATE TABLE "class_v1" AS (SELECT item_name FROM raw)',
       ]);
-      // First run does not stage or rename.
-      expect(nonProbe.some((s) => s.includes("RENAME"))).toBe(false);
-      expect(nonProbe.some((s) => s.includes("_abcdef123456"))).toBe(false);
+      expect(sql.some((s) => s.includes("RENAME"))).toBe(false);
+      expect(sql.some((s) => s.includes("_abcdef123456"))).toBe(false);
       expect(entry.physicalTableName).toBe("class_v1");
    });
 
    it("incremental subsequent run (target present) MERGEs on the primary key", async () => {
-      // Probe resolves -> table exists -> MERGE, not CTAS. The MERGE upserts on
-      // the source's primary_key. MERGE (never raw INSERT) is idempotent under
-      // retry: re-running the same statement is a no-op on already-merged rows.
-      const runSQL = sinon.stub().resolves();
+      // Table exists -> MERGE, not CTAS. The MERGE column set comes from the
+      // target table's schema (via fetchSchemaForTables), and it upserts on the
+      // source's primary_key. MERGE (never raw INSERT) is idempotent under retry.
+      const connection = conn(["order_id", "venue", "amount"]);
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "abcdef1234567890",
          sql: "SELECT order_id, venue, amount FROM raw",
+         dialectName: "postgres",
          annotationFields: { refresh: "incremental" },
-         explore: {
-            primaryKey: "order_id",
-            columns: [
-               { name: "order_id" },
-               { name: "venue" },
-               { name: "amount" },
-            ],
-         },
+         explore: { primaryKey: "order_id" },
       });
-      await callBuild(service(), source, { runSQL }, "orders_v1");
+      await callBuild(service(), source, connection, "orders_v1");
 
-      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      const statements = connection.runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string);
       const merge = statements.find((s) => s.startsWith("MERGE INTO"));
-      expect(merge).toBeDefined();
       expect(merge).toBe(
          'MERGE INTO "orders_v1" T USING (SELECT order_id, venue, amount FROM raw) S ' +
             'ON T."order_id" = S."order_id" ' +
@@ -319,27 +337,57 @@ describe("buildOneSource incremental dispatch", () => {
       expect(statements.some((s) => /^INSERT\b/.test(s))).toBe(false);
    });
 
+   it("carries NON-ATOMIC target columns (struct/array) into the MERGE", async () => {
+      // Regression guard for the deriveColumns bug: the MERGE column set is the
+      // target table's real columns, so a struct/array/record column present in
+      // the seeded table is upserted too — not silently dropped (which would
+      // diverge or fail a NOT NULL insert). Here `attrs` stands in for a
+      // non-atomic column the warehouse materialized on the first run.
+      const connection = conn(["item_name", "category", "attrs"]);
+      const source = fakeSource({
+         name: "classifications",
+         sourceEntityId: "abcdef1234567890",
+         sql: "SELECT item_name, category, attrs FROM raw",
+         dialectName: "postgres",
+         annotationFields: { refresh: "incremental" },
+         explore: { primaryKey: "item_name" },
+      });
+      await callBuild(service(), source, connection, "class_v1");
+
+      const merge = connection.runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string)
+         .find((s) => s.startsWith("MERGE INTO"))!;
+      expect(merge).toContain(
+         'UPDATE SET "category" = S."category", "attrs" = S."attrs"',
+      );
+      expect(merge).toContain(
+         'INSERT ("item_name", "category", "attrs") VALUES (S."item_name", S."category", S."attrs")',
+      );
+   });
+
    it("forceFullRebuild routes an incremental source through the full staging + rename path", async () => {
       // The escape hatch: forceFullRebuild bypasses the MERGE/seed path entirely
-      // and rebuilds via staging + atomic rename. No existence probe, no MERGE —
-      // the empty self-reference CTE means the full SQL reprocesses every row.
-      const runSQL = sinon.stub().resolves();
+      // and rebuilds via staging + atomic rename. No schema fetch, no MERGE — the
+      // empty self-reference CTE means the full SQL reprocesses every row.
+      const connection = conn(["item_name"]);
       const source = fakeSource({
          name: "classifications",
          sourceEntityId: "abcdef1234567890",
          sql: "SELECT item_name FROM raw",
+         dialectName: "postgres",
          annotationFields: { refresh: "incremental" },
-         explore: { primaryKey: "item_name", columns: [{ name: "item_name" }] },
+         explore: { primaryKey: "item_name" },
       });
       await callBuild(
          service(),
          source,
-         { runSQL },
+         connection,
          "class_v1",
          new Manifest(),
          true,
       );
-      const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      const sql = connection.runSQL.getCalls().map((c) => c.args[0] as string);
       expect(sql).toEqual([
          'DROP TABLE IF EXISTS "class_v1_abcdef123456"',
          'CREATE TABLE "class_v1_abcdef123456" AS (SELECT item_name FROM raw)',
@@ -347,20 +395,21 @@ describe("buildOneSource incremental dispatch", () => {
          'ALTER TABLE "class_v1_abcdef123456" RENAME TO "class_v1"',
       ]);
       expect(sql.some((s) => s.startsWith("MERGE"))).toBe(false);
-      expect(sql.some((s) => s.includes("LIMIT 0"))).toBe(false);
+      expect(connection.fetchSchemaForTables.called).toBe(false);
    });
 
    it("incremental MERGE without a primary_key is a BadRequestError", async () => {
-      const runSQL = sinon.stub().resolves(); // probe resolves -> table exists
+      const connection = conn(["order_id"]); // table exists
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "abcdef1234567890",
          sql: "SELECT order_id FROM raw",
+         dialectName: "postgres",
          annotationFields: { refresh: "incremental" },
-         explore: { columns: [{ name: "order_id" }] }, // no primaryKey
+         explore: {}, // no primaryKey
       });
       await expect(
-         callBuild(service(), source, { runSQL }, "orders_v1"),
+         callBuild(service(), source, connection, "orders_v1"),
       ).rejects.toThrow(BadRequestError);
    });
 
@@ -368,7 +417,7 @@ describe("buildOneSource incremental dispatch", () => {
       // End-to-end of the primitive: on an incremental run the source's empty
       // __malloy_incremental_keys CTE is rewritten to read the target, so the
       // MERGE's USING subquery only surfaces rows not already present.
-      const runSQL = sinon.stub().resolves();
+      const connection = conn(["item_name", "category"]);
       const source = fakeSource({
          name: "classifications",
          sourceEntityId: "abcdef1234567890",
@@ -376,15 +425,13 @@ describe("buildOneSource incremental dispatch", () => {
             "WITH __malloy_incremental_keys AS (SELECT NULL AS item_name WHERE false) " +
             "SELECT item_name, category FROM raw " +
             "WHERE item_name NOT IN (SELECT item_name FROM __malloy_incremental_keys)",
+         dialectName: "postgres",
          annotationFields: { refresh: "incremental" },
-         explore: {
-            primaryKey: "item_name",
-            columns: [{ name: "item_name" }, { name: "category" }],
-         },
+         explore: { primaryKey: "item_name" },
       });
-      await callBuild(service(), source, { runSQL }, "class_v1");
+      await callBuild(service(), source, connection, "class_v1");
 
-      const merge = runSQL
+      const merge = connection.runSQL
          .getCalls()
          .map((c) => c.args[0] as string)
          .find((s) => s.startsWith("MERGE INTO"))!;
