@@ -1,5 +1,6 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
+import { MalloyConfig } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Stats } from "fs";
 import fs from "fs/promises";
@@ -410,6 +411,105 @@ describe("service/package", () => {
                ],
                rowCount: 3,
             });
+         });
+
+         it("should probe an xlsx database file", async () => {
+            // Real committed fixture: DuckDB's excel extension reads it via the
+            // same duckdb.table() replacement scan the csv path uses.
+            await fs.copyFile(
+               join("tests", "fixtures", "xlsx", "database.xlsx"),
+               join(testPackageDirectory, "database.xlsx"),
+            );
+            const conn = new DuckDBConnection("duckdb");
+
+            // Unlike parquet/csv (statically linked), excel is downloaded from
+            // extensions.duckdb.org on demand. Some CI runners (notably the
+            // hosted macOS fleet, per bake-duckdb-extensions.js) cannot reach
+            // that CDN, so skip the read there rather than fail; the Linux e2e
+            // and the extension-independent specs still cover this path.
+            try {
+               await conn.runSQL("INSTALL excel; LOAD excel;");
+            } catch {
+               console.warn(
+                  "Skipping xlsx probe test: excel extension could not be installed (offline runner)",
+               );
+               await conn.close();
+               return;
+            }
+
+            // @ts-expect-error Accessing private static method for testing
+            const info = await Package.getDatabaseInfo(
+               testPackageDirectory,
+               "database.xlsx",
+               conn,
+            );
+
+            expect(info).toEqual({
+               name: "database.xlsx",
+               columns: [
+                  { name: "Name", type: "string" },
+                  // xlsx stores every number as a double, so numeric columns
+                  // always surface as Malloy `number`.
+                  { name: "Value", type: "number" },
+               ],
+               rowCount: 3,
+            });
+         });
+      });
+
+      describe("getDatabasePaths", () => {
+         it("should list xlsx files alongside parquet and csv", async () => {
+            await fs.copyFile(
+               join("tests", "fixtures", "xlsx", "database.xlsx"),
+               join(testPackageDirectory, "database.xlsx"),
+            );
+
+            // @ts-expect-error Accessing private static method for testing
+            const paths = await Package.getDatabasePaths(testPackageDirectory);
+
+            expect(paths.sort()).toEqual(["database.csv", "database.xlsx"]);
+         });
+
+         it("should skip Excel owner files (~$name.xlsx)", async () => {
+            // Excel creates this sibling while a workbook is open; it is not a
+            // valid zip, so probing it would throw and drop the package.
+            await fs.writeFile(
+               join(testPackageDirectory, "~$database.xlsx"),
+               "not a real xlsx",
+            );
+
+            // @ts-expect-error Accessing private static method for testing
+            const paths = await Package.getDatabasePaths(testPackageDirectory);
+
+            expect(paths).toEqual(["database.csv"]);
+         });
+      });
+
+      describe("readDatabases", () => {
+         it("should skip an unreadable database file instead of failing the package", async () => {
+            // A corrupt or partial spreadsheet must not take the whole package
+            // down: it is omitted from the listing while the valid files still
+            // load. Extension-independent: broken.xlsx throws whether excel
+            // loads or not, so this holds on runners without the CDN too.
+            await fs.writeFile(
+               join(testPackageDirectory, "broken.xlsx"),
+               "not a real xlsx",
+            );
+            const conn = new DuckDBConnection("duckdb");
+            const malloyConfig = {
+               connections: { lookupConnection: async () => conn },
+            } as unknown as MalloyConfig;
+
+            const databases =
+               // @ts-expect-error Accessing private static method for testing
+               (await Package.readDatabases(
+                  testPackageDirectory,
+                  malloyConfig,
+               )) as { path: string }[];
+            const paths = databases.map((d) => d.path);
+
+            expect(paths).toContain("database.csv");
+            expect(paths).not.toContain("broken.xlsx");
          });
       });
    });

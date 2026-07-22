@@ -10,7 +10,7 @@ For full setup details per connection type, see [docs.malloydata.dev/documentati
 
 ## Per-package DuckDB sandboxes
 
-Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the data files in each package without needing any user-defined connection. DuckDB reads Parquet and CSV in place, so `duckdb.table('data/customers.parquet')` and `duckdb.table('data/regions.csv')` both work with no conversion step (`storefront` uses both).
+Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the data files in each package without needing any user-defined connection. DuckDB reads Parquet, CSV, and Excel files in place, so `duckdb.table('data/customers.parquet')`, `duckdb.table('data/regions.csv')`, and `duckdb.table('data/budget.xlsx')` all work with no conversion step (`storefront` uses the first two). To select a sheet or pass other `read_xlsx` options, use a SQL source instead: `duckdb.sql("SELECT * FROM read_xlsx('data/budget.xlsx', sheet = 'Q2')")`.
 
 You do not have to declare these sandboxes; they're created on package load. For the rest of the
 package format, see [packages.md](packages.md).

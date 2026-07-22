@@ -1328,17 +1328,37 @@ export class Package {
       // we go from `databasePaths.length` separate DuckDBConnections
       // (each doing its own native init + extension load) to one.
       const conn = await malloyConfig.connections.lookupConnection("duckdb");
-      return await Promise.all(
-         databasePaths.map(async (databasePath) => ({
-            path: databasePath,
-            info: await Package.getDatabaseInfo(
-               packagePath,
-               databasePath,
-               conn,
-            ),
-            type: "embedded" as const,
-         })),
+      const databases = await Promise.all(
+         databasePaths.map(
+            async (databasePath): Promise<ApiDatabase | null> => {
+               try {
+                  return {
+                     path: databasePath,
+                     info: await Package.getDatabaseInfo(
+                        packagePath,
+                        databasePath,
+                        conn,
+                     ),
+                     type: "embedded" as const,
+                  };
+               } catch (error) {
+                  // One unreadable data file (a partial or corrupt spreadsheet,
+                  // an interrupted download) must not drop the whole package.
+                  // Omit it from the listing; a model that actually references
+                  // it still fails the package load loudly via the worker
+                  // compile path, so a genuinely-needed file is never hidden.
+                  logger.warn("Skipping unreadable package database", {
+                     packagePath,
+                     databasePath,
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  });
+                  return null;
+               }
+            },
+         ),
       );
+      return databases.filter((db): db is ApiDatabase => db !== null);
    }
 
    private static async getDatabasePaths(
@@ -1349,10 +1369,19 @@ export class Package {
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");
          })
-         .filter(
-            (modelPath: string) =>
-               modelPath.endsWith(".parquet") || modelPath.endsWith(".csv"),
-         );
+         .filter((modelPath: string) => {
+            // Excel writes a sibling owner file (~$name.xlsx) whenever the
+            // workbook is open. It is not real data and is not a valid zip, so
+            // skip it before the extension match rather than fail to probe it.
+            if (path.basename(modelPath).startsWith("~$")) {
+               return false;
+            }
+            return (
+               modelPath.endsWith(".parquet") ||
+               modelPath.endsWith(".csv") ||
+               modelPath.endsWith(".xlsx")
+            );
+         });
    }
 
    private static async getDatabaseInfo(
