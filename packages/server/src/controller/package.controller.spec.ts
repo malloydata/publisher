@@ -19,6 +19,7 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const deletePackage = sinon.stub().resolves(undefined);
@@ -56,6 +57,7 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
       };
       // installPackage mimics the real contract: invoke the validator and, if it
       // returns a message, throw BadRequestError (after its internal rollback).
@@ -105,6 +107,7 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
       const getEnvironment = sinon.stub().resolves({ addPackage });
@@ -143,6 +146,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -172,6 +176,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
          .stub()
@@ -226,6 +231,7 @@ describe("PackageController.updatePackage explores validation", () => {
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
          formatInvalidPersistencePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
          .stub()

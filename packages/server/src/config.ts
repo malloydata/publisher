@@ -497,8 +497,8 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
  *    cannot yet serve.
  *
  * The publisher NEVER hard-fails a package on `storage=` in any mode; any
- * stricter "refuse a new package that uses storage= while off" policy lives in
- * the orchestrator, not here (the mechanism/policy split).
+ * stricter "refuse a new package that uses storage= while off" policy is the
+ * caller's, not here (the mechanism/policy split).
  */
 export type PersistStorageMode = "off" | "write-only" | "on";
 
@@ -525,6 +525,24 @@ export const getPersistStorageMode = (): PersistStorageMode => {
          " | ",
       )} (got ${JSON.stringify(raw)})`,
    );
+};
+
+/**
+ * Whether a within-package persist-target COLLISION (two distinct persist
+ * sources resolving to the same physical table in the same destination) is a
+ * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).
+ *
+ * Staged on purpose: a package published BEFORE this check existed may carry a
+ * latent collision, so the check ships warn-only — surfaced at load and publish
+ * (so operators can find and remediate) but NOT blocking a re-publish. Flip this
+ * to `true` only after auditing and remediating known collisions, so the
+ * transition to reject-at-publish is deliberate and doesn't break routine
+ * re-publishes of existing packages. Load is ALWAYS warn-only regardless — the
+ * flag only governs whether publish rejects.
+ */
+export const getPersistCollisionEnforce = (): boolean => {
+   const raw = process.env.PERSIST_COLLISION_ENFORCE;
+   return raw !== undefined && raw.trim().toLowerCase() === "true";
 };
 
 function substituteEnvVars(value: string): string {

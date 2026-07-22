@@ -47,7 +47,7 @@ import {
    ManifestEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
-import { getPersistStorageMode } from "../config";
+import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
 import { computePackageBuildPlan } from "./build_plan";
 import { CronEvaluator } from "./cron_evaluator";
@@ -585,6 +585,17 @@ export class Package {
             },
          );
       }
+      // Persist-target collisions are ALWAYS warn-only at load (never fail an
+      // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
+      // the flag only governs whether they REJECT a publish (see
+      // package.controller). Surface them so an operator can remediate.
+      const collisions = pkg.persistenceCollisionWarnings();
+      if (collisions.length > 0) {
+         logger.warn(`Package ${packageName} has persist-target collisions`, {
+            packageName,
+            detail: collisions.join("\n"),
+         });
+      }
       pkg.logEmptyDiscoveryWarnings();
 
       return pkg;
@@ -981,6 +992,89 @@ export class Package {
     */
    public formatInvalidPersistencePolicy(): string {
       return this.persistencePolicyWarnings().join("\n");
+   }
+
+   /**
+    * Within-package persist-target COLLISION warnings: two DISTINCT persist
+    * sources (different `sourceEntityId`) that resolve to the same physical
+    * table — the same resolved `name=` (or source-name fallback) in the same
+    * destination connection. The publisher self-assigns a materialized table's
+    * physical name from `name=` verbatim, so two such sources would clobber each
+    * other: the second build's `CREATE OR REPLACE` overwrites the first, two
+    * manifest entries point at one table, and a GC drop of one takes out the
+    * other. Two IMPORTS of the SAME source (identical `sourceEntityId`) are
+    * intentional dedup and NOT flagged.
+    *
+    * The destination is resolved from the DECLARED annotation, independent of
+    * {@link getPersistStorageMode}, so the kill switch never changes whether a
+    * package has a latent collision.
+    *
+    * Deliberately SEPARATE from {@link persistencePolicyWarnings} because the
+    * rollout is staged: these are surfaced warn-only at load AND publish, and
+    * only block a publish once `PERSIST_COLLISION_ENFORCE` is set (see
+    * {@link getPersistCollisionEnforce}) — a package published before this check
+    * existed may carry a latent collision, so an un-gated reject would break a
+    * routine re-publish. This is a WITHIN-package/version check only: a `name=`
+    * change ACROSS versions, or a cross-package collision, needs the
+    * cross-version/global view the host (control plane) has and the publisher
+    * does not.
+    */
+   public persistenceCollisionWarnings(): string[] {
+      const sources = this.buildPlan?.sources
+         ? Object.values(this.buildPlan.sources)
+         : [];
+      const targets = new Map<
+         string,
+         { name: string; destination: string; sources: Map<string, string> }
+      >();
+      for (const source of sources) {
+         const fields = source.annotationFields ?? {};
+         const physicalName = (fields.name || source.name).trim();
+         const storage = fields.storage?.trim();
+         // storage= into a real destination lands there; otherwise (path C, or
+         // the reserved `storage=source`) it lands in the source's own warehouse.
+         const destination =
+            storage && storage !== "source" ? storage : source.connectionName;
+         const key = `${destination} ${physicalName}`;
+         const bucket = targets.get(key) ?? {
+            name: physicalName,
+            destination,
+            sources: new Map<string, string>(),
+         };
+         // Keyed by sourceEntityId so identical-content imports collapse to one.
+         bucket.sources.set(source.sourceEntityId, source.name);
+         targets.set(key, bucket);
+      }
+      const warnings: string[] = [];
+      for (const {
+         name,
+         destination,
+         sources: colliding,
+      } of targets.values()) {
+         if (colliding.size < 2) continue;
+         const names = [...colliding.values()].sort();
+         warnings.push(
+            `#@ persist sources ${names
+               .map((n) => `"${n}"`)
+               .join(", ")} all resolve to the same materialized table ` +
+               `"${name}" in destination "${destination}". Distinct sources ` +
+               `must not share a physical target — the second build would ` +
+               `overwrite the first, and a serve binding or GC drop for one ` +
+               `would affect the other. Give each a distinct #@ persist name=.`,
+         );
+      }
+      return warnings;
+   }
+
+   /**
+    * Collision warnings joined for the publish gate: the string is non-empty
+    * (and thus a publish rejection) only when `PERSIST_COLLISION_ENFORCE` is set;
+    * otherwise collisions are surfaced warn-only (at load and publish) without
+    * blocking. See {@link persistenceCollisionWarnings}.
+    */
+   public formatPersistenceCollisionRejections(): string {
+      if (!getPersistCollisionEnforce()) return "";
+      return this.persistenceCollisionWarnings().join("\n");
    }
 
    /**
