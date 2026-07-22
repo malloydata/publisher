@@ -171,6 +171,16 @@ export function _resetEmbeddingIndexStateForTests(): void {
    syncMeta.clear();
 }
 
+/** Test seam: clear only the provider cool-down, keeping sync metas. */
+export function _clearProviderCooldownForTests(): void {
+   providerFailureAtMs = 0;
+}
+
+/** Test seam: observe syncMeta growth (the churn-leak pin). */
+export function _syncMetaSizeForTests(): number {
+   return syncMeta.size;
+}
+
 interface ExistingRow {
    entity_kind: string;
    entity_source: string;
@@ -201,12 +211,16 @@ export async function deletePackageEmbeddings(
          [environmentName, packageName],
       );
       meta.generation = ++generationCounter;
+      // Removing the entry keeps package churn from growing the map for
+      // the process lifetime; it is safe because generations are
+      // globally unique (a re-minted meta can never match a memo issued
+      // under this one). It MUST happen inside the mutexed section: the
+      // mutex hands off to the next queued waiter the moment this
+      // callback returns, before any outer continuation runs, and a
+      // queued sync's orphan guard has to see the entry already gone or
+      // it will re-embed rows for the deleted package.
+      syncMeta.delete(metaKey(environmentName, packageName));
    });
-   // Safe only because generations are globally unique (see the counter
-   // comment): a re-minted meta can never match a memo issued under the
-   // deleted one. Removing the entry keeps package churn from growing
-   // the map for the process lifetime.
-   syncMeta.delete(metaKey(environmentName, packageName));
 }
 
 /**
@@ -256,6 +270,23 @@ async function syncPackageEmbeddings(
 ): Promise<number> {
    const meta = metaFor(environmentName, packageName);
    return meta.mutex.runExclusive(async () => {
+      // The meta may have been orphaned while this sync waited on the
+      // mutex (deletePackageEmbeddings removes the map entry, e.g. the
+      // package was deleted with this call already in flight). A sync
+      // under an orphaned meta is no longer serialized against syncs
+      // under a re-minted meta for the same name, so it must not write.
+      // Aborting is safe: the caller's memo records this orphaned
+      // generation, which can never match a fresh meta's (generations
+      // are globally unique), so the next call re-syncs under the fresh
+      // meta.
+      if (syncMeta.get(metaKey(environmentName, packageName)) !== meta) {
+         logger.debug(
+            "[MCP Tool getContext] Skipping embedding sync for a deleted package",
+            { environmentName, packageName },
+         );
+         return meta.generation;
+      }
+
       // Everything here runs under the package mutex: a purge (same
       // mutex) either finished before this sync started or starts after
       // it ends, so the generation moves mid-sync only via the bump at
@@ -582,6 +613,13 @@ export async function trySemanticSearch(args: {
          // invalidates every instance's memo, not just this caller's.
          const outcome: "none" | "purged" | "backoff" =
             await meta.mutex.runExclusive(async () => {
+               // Same orphaned-meta guard as the sync: never write under
+               // a meta that deletePackageEmbeddings removed.
+               if (
+                  syncMeta.get(metaKey(environmentName, packageName)) !== meta
+               ) {
+                  return "none";
+               }
                const again = await db.get<{ n: number }>(
                   `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
                    WHERE environment_name = ? AND package_name = ?
