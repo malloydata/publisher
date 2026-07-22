@@ -88,6 +88,9 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Low-water mark (fraction of `PUBLISHER_MAX_MEMORY_BYTES`). Hysteresis: back-pressure clears when RSS dips below this value. |
 | `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | RSS sampling interval (ms). Minimum 100. |
 | `PUBLISHER_MEMORY_BACKPRESSURE` | — | `true` | Set to `false` to disable the 503 behavior while keeping RSS monitoring — useful for a metrics-only rollout before enabling enforcement. |
+| `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` | — | `false` | Opt-in: enable the standalone materialization scheduler, which fires each loaded package's `materialization.schedule` cron so a self-hosted Publisher rebuilds on a cadence with no control plane. **Never set this on a control-plane-driven (orchestrated) worker** — it is the primary guard against double-driving refresh. See [materialization.md](materialization.md). |
+| `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS` | — | `60000` (1 min) | How often the scheduler sweeps for due schedules, in ms. Minimum `1000`. Only read when the scheduler is enabled. |
+| `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | — | `10` | Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer. |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
 PostgreSQL and other database-specific connections may also honor their respective driver env vars
