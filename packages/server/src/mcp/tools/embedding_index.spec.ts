@@ -102,6 +102,10 @@ async function searchReady(
    throw new Error("sync never completed");
 }
 
+function isCooldown(result: SemanticSearchResult): boolean {
+   return "unavailable" in result && result.unavailable === "cooldown";
+}
+
 const QUERY_VECTORS = {
    "find alpha": [1, 0, 0],
 };
@@ -399,6 +403,109 @@ describe("trySemanticSearch", () => {
       expect(rows.map((r) => r.dims)).toEqual([4]);
    });
 
+   it("a purge invalidates every instance's memo, not just the caller's", async () => {
+      // Instance A syncs at 3 dims and stays around with done=true.
+      const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      const pkgA = {} as unknown as Package;
+      await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
+
+      // Instance B (a reload) triggers the dims heal with a 4-dim
+      // provider: the purge deletes ALL rows and bumps the generation.
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const pkgB = {} as unknown as Package;
+      const healed = await searchReady({
+         ...base,
+         provider: wide.provider,
+         pkg: pkgB,
+      });
+      if (!("hits" in healed)) throw new Error("expected hits");
+
+      // A's memo says done, but the rows it synced are gone (B's heal
+      // purged and re-synced at 4 dims). Without generation tracking, A
+      // would trust its memo and serve empty "semantic" hits forever.
+      // With it, A re-syncs; its 3-dim queries against the now-4-dim
+      // rows then hit the purge backoff (two dimensionalities inside one
+      // window = inconsistent endpoint) and report cooldown, which the
+      // tool serves as marked lexical. The pin: never silently-empty
+      // hits.
+      const back = await searchReady({
+         ...base,
+         provider: narrow.provider,
+         pkg: pkgA,
+      });
+      expect(back).toEqual({ unavailable: "cooldown" });
+   });
+
+   it("backs off instead of purging twice within the cool-down window", async () => {
+      const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      await searchReady({
+         ...base,
+         provider: narrow.provider,
+         pkg: {} as unknown as Package,
+      });
+
+      // First dims flip: heals via one purge + re-sync at 4 dims.
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const healed = await searchReady({
+         ...base,
+         provider: wide.provider,
+         pkg: {} as unknown as Package,
+      });
+      if (!("hits" in healed)) throw new Error("expected hits");
+
+      // Second flip inside the window (back to 3 dims): the endpoint is
+      // inconsistent; the heal must NOT purge again but cool down, and
+      // the 4-dim rows must survive. One instance throughout, so the
+      // poll passes its cold start and reaches the heal check.
+      const pkgC = {} as unknown as Package;
+      let result = await trySemanticSearch({
+         ...base,
+         provider: narrow.provider,
+         pkg: pkgC,
+      });
+      for (
+         let i = 0;
+         i < 200 &&
+         "unavailable" in result &&
+         result.unavailable === "indexing";
+         i++
+      ) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         result = await trySemanticSearch({
+            ...base,
+            provider: narrow.provider,
+            pkg: pkgC,
+         });
+      }
+      expect(result).toEqual({ unavailable: "cooldown" });
+      const rows = await db.all<{ dims: number }>(
+         "SELECT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
+      );
+      expect(rows.map((r) => r.dims)).toEqual([4]);
+   });
+
    it("cools down after a provider failure instead of erroring every call", async () => {
       let failing = true;
       const { provider } = mapProvider(
@@ -418,9 +525,13 @@ describe("trySemanticSearch", () => {
 
       const first = await trySemanticSearch(args);
       expect(first).toEqual({ unavailable: "indexing" });
-      // Let the background sync fail.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      const second = await trySemanticSearch(args);
+      // Poll until the background sync failure lands and starts the
+      // cool-down; a fixed sleep would race the rejection handler.
+      let second = await trySemanticSearch(args);
+      for (let i = 0; i < 200 && !isCooldown(second); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         second = await trySemanticSearch(args);
+      }
       expect(second).toEqual({ unavailable: "cooldown" });
 
       // After the cool-down clears (test reset) the path recovers.

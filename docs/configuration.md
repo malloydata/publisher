@@ -109,24 +109,26 @@ By default, `malloy_getContext`'s question retrieval is lexical (lunr/BM25) over
 text, so a query only matches entities that share tokens with it (`departure delay` never finds a
 field named `dep_delay`). Setting `EMBEDDING_API_KEY` switches ranking to embedding similarity:
 each package's entities (source, view, named query, dimension, and measure names plus their
-`#(doc)` text) are embedded once and searched by cosine similarity, so synonyms and `snake_case`
+annotation text) are embedded once and searched by cosine similarity, so synonyms and `snake_case`
 names match by meaning.
 
 What to know before turning it on:
 
-- **What leaves the machine.** Entity names, their `#(doc)` annotation text, and the query strings
-  agents pass to `malloy_getContext` are sent to the configured embedding endpoint. Model source
-  code, data, and query results are never sent. Point `EMBEDDING_API_BASE` at a local
-  OpenAI-compatible server (Ollama, vLLM) to keep everything on-machine.
-- **Storage.** Vectors are cached in the server's own `publisher.db` (keyed by a content hash, so
-  only new or changed entities re-embed, across restarts too). `--init` wipes the cache along with
-  the rest of persisted storage; the only cost of a wipe is re-embedding.
-- **First query per package.** The first question against a package kicks off the embedding sync in
-  the background and answers lexically; questions after that are semantic. Responses carry a
-  `retrieval` field (`"semantic"` or `"lexical"`) whenever the provider is configured.
-- **Failure behavior.** If the endpoint is down, times out, or rejects the key, retrieval falls
-  back to lexical (with a warning in the server log) and retries after a cool-down. A package with
-  more than 5,000 entities stays lexical.
+- What leaves the machine: entity names, their annotation text (the `#(doc)` docs, or an entity's
+  other `#` annotation lines when it has no `#(doc)`), and the query strings agents pass to
+  `malloy_getContext`. Model source code, data, and query results are never sent. Point
+  `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM) to keep everything
+  on-machine; with a local server, also set `EMBEDDING_MODEL` to a model that server actually
+  serves, since the default names an OpenAI model.
+- Storage: vectors are cached in the server's own `publisher.db`, keyed by a content hash, so only
+  new or changed entities re-embed, across restarts too. `--init` wipes the cache along with the
+  rest of persisted storage; the only cost of a wipe is re-embedding.
+- First query per package: the first question kicks off the embedding sync in the background and
+  answers lexically; once the sync lands, later questions are ranked semantically. Responses carry
+  a `retrieval` field (`"semantic"` or `"lexical"`) whenever the provider is configured.
+- Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
+  to lexical (with a warning in the server log) and retries after a cool-down. A package with more
+  than 5,000 entities stays lexical.
 - To measure the difference on your own models, see the eval script header in
   `packages/server/src/mcp/tools/get_context_eval.ts`.
 

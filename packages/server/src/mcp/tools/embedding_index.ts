@@ -96,24 +96,51 @@ function entityRowKey(kind: string, source: string, name: string): string {
    return `${kind}|${source}|${name}`;
 }
 
-// Sync state. The WeakMap memoizes "this Package instance is synced"
-// (reload swaps the instance, so staleness clears itself, same contract
-// as the tool's lunr cache); the per-package-NAME mutex serializes the
-// read-diff-write section so a reload racing an in-flight sync cannot
-// tear rows for the same (environment, package). A rejected sync promise
-// is evicted so one transient failure is not permanent. `providerKey`
-// records which model/dims the sync used, so switching EMBEDDING_MODEL
-// or EMBEDDING_DIMENSIONS re-syncs instead of silently matching zero
-// rows against the new model's filter.
+// Sync state, two layers.
+//
+// Per package NAME (`syncMeta`): a mutex serializing every read-diff-write
+// section (sync AND the heal's purge) so a reload racing an in-flight sync
+// cannot tear rows; a `generation` counter bumped by every purge, so a
+// purge invalidates the memo of EVERY Package instance, not just the
+// caller's (a reloaded instance's `done` memo must not survive a purge
+// over a now-empty table); and `lastPurgeAtMs`, which bounds how often the
+// heal may purge (a backend serving inconsistent dimensionalities
+// otherwise causes an unbounded purge / full-re-embed loop).
+//
+// Per package INSTANCE (`syncState`, WeakMap): memoizes "this instance is
+// synced" (reload swaps the instance, so entity-set staleness clears
+// itself, same contract as the tool's lunr cache). A rejected sync
+// promise is evicted so one transient failure is not permanent.
+// `providerKey` records which model/dims request-config the sync used, so
+// switching EMBEDDING_MODEL or EMBEDDING_DIMENSIONS re-syncs promptly.
+interface PackageSyncMeta {
+   mutex: Mutex;
+   generation: number;
+   lastPurgeAtMs: number;
+}
 interface SyncState {
    promise: Promise<void>;
    done: boolean;
    providerKey: string;
+   generation: number;
 }
 const syncState = new WeakMap<Package, SyncState>();
-const syncMutexes = new Map<string, Mutex>();
+const syncMeta = new Map<string, PackageSyncMeta>();
 let providerFailureAtMs = 0;
 const oversizeWarned = new Set<string>();
+
+function metaFor(
+   environmentName: string,
+   packageName: string,
+): PackageSyncMeta {
+   const key = `${environmentName}\x00${packageName}`;
+   let meta = syncMeta.get(key);
+   if (!meta) {
+      meta = { mutex: new Mutex(), generation: 0, lastPurgeAtMs: 0 };
+      syncMeta.set(key, meta);
+   }
+   return meta;
+}
 
 function markProviderFailure(): void {
    providerFailureAtMs = Date.now();
@@ -123,11 +150,11 @@ function inCooldown(): boolean {
    return Date.now() - providerFailureAtMs < PROVIDER_FAILURE_COOLDOWN_MS;
 }
 
-/** Test seam: forget cool-down and oversize-warning state. */
+/** Test seam: forget cool-down, purge, and oversize-warning state. */
 export function _resetEmbeddingIndexStateForTests(): void {
    providerFailureAtMs = 0;
    oversizeWarned.clear();
-   syncMutexes.clear();
+   syncMeta.clear();
 }
 
 interface ExistingRow {
@@ -144,8 +171,9 @@ interface ExistingRow {
  * current entity set: embed new/changed entities (content-hash diff, so
  * unchanged entities never re-embed, across restarts too), upsert them,
  * and delete rows for entities that no longer exist. Runs under the
- * package-name mutex. Throws on provider or storage failure; partial
- * writes are safe because the hash diff self-heals on the next sync.
+ * package-name mutex. Returns the package generation the sync ran under.
+ * Throws on provider or storage failure; partial writes are safe because
+ * the hash diff self-heals on the next sync.
  */
 async function syncPackageEmbeddings(
    db: DuckDBConnection,
@@ -153,14 +181,13 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
-): Promise<void> {
-   const key = `${environmentName}\x00${packageName}`;
-   let mutex = syncMutexes.get(key);
-   if (!mutex) {
-      mutex = new Mutex();
-      syncMutexes.set(key, mutex);
-   }
-   await mutex.runExclusive(async () => {
+): Promise<number> {
+   const meta = metaFor(environmentName, packageName);
+   return meta.mutex.runExclusive(async () => {
+      // Captured under the mutex: a purge (which also runs under this
+      // mutex) either finished before this sync started or starts after
+      // it ends, so the generation cannot move mid-sync.
+      const generation = meta.generation;
       const existingRows = await db.all<ExistingRow>(
          `SELECT entity_kind, entity_source, entity_name, content_hash,
                  embedding_model, CAST(dims AS INTEGER) AS dims
@@ -189,9 +216,14 @@ async function syncPackageEmbeddings(
          ),
       );
 
-      // A row is current only when text, model, AND requested dimensions
-      // all match; a model or dims switch re-embeds in place (upsert)
-      // rather than colliding on the primary key.
+      // A row is current when its text hash and model match; a model
+      // switch re-embeds in place (upsert) rather than colliding on the
+      // primary key. Dimensionality is deliberately NOT part of this
+      // check: `dims` stores the ACTUAL response vector length, and a
+      // provider that ignores the `dimensions` request parameter (e.g.
+      // Ollama) would otherwise mismatch the configured value forever
+      // and re-embed the whole package on every instance swap. A real
+      // dims change is caught at query time by the empty-search heal.
       const toEmbed = desired.filter((d) => {
          const row = existing.get(
             entityRowKey(
@@ -203,11 +235,6 @@ async function syncPackageEmbeddings(
          if (!row) return true;
          if (row.content_hash !== d.hash) return true;
          if (row.embedding_model !== provider.model) return true;
-         if (
-            provider.dimensions !== undefined &&
-            row.dims !== provider.dimensions
-         )
-            return true;
          return false;
       });
 
@@ -277,6 +304,7 @@ async function syncPackageEmbeddings(
          embedded: toEmbed.length,
          deleted,
       });
+      return generation;
    });
 }
 
@@ -335,8 +363,15 @@ export async function trySemanticSearch(args: {
    }
 
    const providerKey = `${provider.model}\x00${provider.dimensions ?? ""}`;
+   const meta = metaFor(environmentName, packageName);
    let state = syncState.get(pkg);
-   if (!state || state.providerKey !== providerKey) {
+   if (
+      !state ||
+      state.providerKey !== providerKey ||
+      // A purge bumped the generation after this instance synced: its
+      // rows are gone, so a `done` memo must not be trusted.
+      (state.done && state.generation !== meta.generation)
+   ) {
       // No await between the get above and the set below: single-threaded
       // JS therefore guarantees concurrent calls cannot both kick a sync
       // for the same instance. (The per-name mutex still guards the
@@ -344,16 +379,18 @@ export async function trySemanticSearch(args: {
       const tracked: SyncState = {
          done: false,
          providerKey,
-         promise: syncPackageEmbeddings(
-            db,
-            provider,
-            environmentName,
-            packageName,
-            entities,
-         ),
+         generation: meta.generation,
+         promise: undefined as unknown as Promise<void>,
       };
-      tracked.promise.then(
-         () => {
+      const run = syncPackageEmbeddings(
+         db,
+         provider,
+         environmentName,
+         packageName,
+         entities,
+      ).then(
+         (generation) => {
+            tracked.generation = generation;
             tracked.done = true;
          },
          (error: unknown) => {
@@ -371,6 +408,7 @@ export async function trySemanticSearch(args: {
             );
          },
       );
+      tracked.promise = run;
       syncState.set(pkg, tracked);
       state = tracked;
    }
@@ -427,23 +465,52 @@ export async function trySemanticSearch(args: {
          // An empty result is legitimate (nothing above the similarity
          // floor) ONLY when compatible rows exist. If the package has
          // rows but none at this model + dimensionality, the endpoint
-         // behind the model name changed what it returns (the diff
-         // cannot see a dims change when EMBEDDING_DIMENSIONS is unset,
-         // since the row hashes still match). Purge and re-sync rather
-         // than serving permanently empty "semantic" results.
-         const compatible = await db.get<{ n: number }>(
-            `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
-             WHERE environment_name = ? AND package_name = ?
-               AND embedding_model = ? AND dims = ?`,
-            [environmentName, packageName, provider.model, queryVector.length],
-         );
-         if ((compatible?.n ?? 0) === 0) {
-            const total = await db.get<{ n: number }>(
-               `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
-                WHERE environment_name = ? AND package_name = ?`,
-               [environmentName, packageName],
-            );
-            if ((total?.n ?? 0) > 0) {
+         // behind the model name changed what it returns (the sync diff
+         // cannot see a dims change, since the row hashes still match).
+         // Purge and re-sync rather than serving permanently empty
+         // "semantic" results. The whole check-and-purge runs under the
+         // package-name mutex so it cannot interleave with a sync, and
+         // the generation bump invalidates every instance's memo, not
+         // just this caller's.
+         const outcome: "none" | "purged" | "backoff" =
+            await meta.mutex.runExclusive(async () => {
+               const compatible = await db.get<{ n: number }>(
+                  `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+                   WHERE environment_name = ? AND package_name = ?
+                     AND embedding_model = ? AND dims = ?`,
+                  [
+                     environmentName,
+                     packageName,
+                     provider.model,
+                     queryVector.length,
+                  ],
+               );
+               if ((compatible?.n ?? 0) > 0) return "none";
+               const total = await db.get<{ n: number }>(
+                  `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+                   WHERE environment_name = ? AND package_name = ?`,
+                  [environmentName, packageName],
+               );
+               if ((total?.n ?? 0) === 0) return "none";
+               // Backoff: at most one purge per cool-down window. A
+               // second mismatch inside the window means the endpoint is
+               // serving inconsistent dimensionalities (e.g. mid-upgrade
+               // replicas); purging again would loop full re-embeds
+               // indefinitely, so treat it as provider instability.
+               const now = Date.now();
+               if (now - meta.lastPurgeAtMs < PROVIDER_FAILURE_COOLDOWN_MS) {
+                  markProviderFailure();
+                  logger.warn(
+                     "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
+                     {
+                        environmentName,
+                        packageName,
+                        model: provider.model,
+                        queryDims: queryVector.length,
+                     },
+                  );
+                  return "backoff";
+               }
                logger.warn(
                   "[MCP Tool getContext] Cached embeddings do not match the provider's current model/dimensions; purging and re-syncing",
                   {
@@ -458,9 +525,16 @@ export async function trySemanticSearch(args: {
                    WHERE environment_name = ? AND package_name = ?`,
                   [environmentName, packageName],
                );
-               syncState.delete(pkg);
-               return { unavailable: "indexing" };
-            }
+               meta.lastPurgeAtMs = now;
+               meta.generation++;
+               return "purged";
+            });
+         if (outcome === "purged") {
+            syncState.delete(pkg);
+            return { unavailable: "indexing" };
+         }
+         if (outcome === "backoff") {
+            return { unavailable: "cooldown" };
          }
       }
 

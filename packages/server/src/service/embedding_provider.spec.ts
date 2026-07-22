@@ -174,7 +174,7 @@ describe("EmbeddingProvider", () => {
                ),
          ),
       );
-      expect(provider.embedBatch(["a", "b"], 1000)).rejects.toThrow(
+      await expect(provider.embedBatch(["a", "b"], 1000)).rejects.toThrow(
          "malformed",
       );
    });

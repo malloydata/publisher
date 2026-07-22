@@ -111,7 +111,12 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       }
       process.env.EMBEDDING_API_KEY = "integration-test-key";
       process.env.EMBEDDING_API_BASE = `http://127.0.0.1:${port}/v1`;
-      delete process.env.EMBEDDING_MODEL;
+      // A stub-distinct model name: the suite shares publisher.db with
+      // local manual runs, and rows cached under the real default model
+      // name would poison a later real-provider run (the stub's bigram
+      // vectors are not text-embedding-3-small's). Under this name the
+      // leftovers are inert; a real run's model diff replaces them.
+      process.env.EMBEDDING_MODEL = "integration-test-bigram-stub";
       delete process.env.EMBEDDING_DIMENSIONS;
 
       env = await setupE2ETestEnvironment();
@@ -193,7 +198,10 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
             sourceName: "order_items",
          });
          expect(payload.retrieval).toBe("semantic");
-         for (const r of payload.results ?? []) {
+         const results = payload.results ?? [];
+         // Non-empty, or the per-result loop below pins nothing.
+         expect(results.length).toBeGreaterThan(0);
+         for (const r of results) {
             expect(r.source).toBe("order_items");
          }
       },
