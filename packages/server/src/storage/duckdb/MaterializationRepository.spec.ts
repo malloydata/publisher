@@ -165,6 +165,11 @@ describe("MaterializationRepository.getLatestScheduledFireAt (real DuckDB)", () 
 // record when an environment or package is deleted. Locking that in guards the
 // contract against a future refactor that "helpfully" adds a DROP here (which
 // would fire against a possibly-already-torn-down connection on env delete).
+//
+// This pins DDL out of the low-level record deletes; it does not close the
+// standalone GC gap (#901: nothing drops those tables today, so they accumulate
+// in the warehouse). #901's best-effort drop-before-teardown lives ABOVE these
+// methods, so adding it completes the design and leaves this test green.
 describe("MaterializationRepository cascade deletes are records-only", () => {
    it("deleteByEnvironmentId issues a single DELETE and no DDL", async () => {
       const { repo, runCalls } = fakeRepo();
