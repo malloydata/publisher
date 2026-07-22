@@ -53,6 +53,7 @@
     "upgrade-malloy": "./scripts/upgrade-malloy.sh",
     "validate-duckdb-sync": "bun scripts/sync-duckdb-version.js",
     "validate-pg-sync": "bun scripts/sync-pg-version.js",
+    "validate-ducklake-catalog-range": "bun scripts/validate-ducklake-catalog-range.ts",
     "generate:example-data": "node scripts/generate-example-data.mjs",
     "docs:screenshots": "node scripts/capture-screenshots.mjs",
     "docs:recordings": "node scripts/capture-recordings.mjs"

@@ -149,6 +149,17 @@ export class Environment {
     * the only lasting record. Read by EnvironmentStore.getStatus.
     */
    private failedPackages: Map<string, string> = new Map();
+   /**
+    * Why a configured package never reached the disk, keyed by package name.
+    *
+    * Separate from {@link failedPackages} because it is the more specific
+    * answer and has to win. A package whose location failed to mount is still
+    * seeded SERVING by addEnvironment, so its later lazy load fails on the
+    * manifest that was never copied and `listPackages` records that instead.
+    * Reporting "Package manifest ... does not exist." for what was really a
+    * typo'd `location` sends the reader hunting in the wrong place.
+    */
+   private mountErrors: Map<string, string> = new Map();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -923,7 +934,7 @@ export class Environment {
          this.setPackageStatus(packageName, PackageStatus.SERVING);
          // It loaded, so any earlier failure is stale. A package that failed at
          // boot can be fixed on disk and reloaded without a restart.
-         this.failedPackages.delete(packageName);
+         this.clearPackageLoadFailure(packageName);
          logger.debug(`Successfully loaded package ${packageName}`);
 
          return _package;
@@ -1008,7 +1019,7 @@ export class Environment {
       // Same reasoning as the load and install paths: it is serving now, so an
       // earlier boot failure is stale. Without this, a package fixed on disk
       // and re-added keeps its loadError for the life of the process.
-      this.failedPackages.delete(packageName);
+      this.clearPackageLoadFailure(packageName);
       return this.packages.get(packageName);
    }
 
@@ -1198,7 +1209,7 @@ export class Environment {
          this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
          // Publishing a fixed package clears the boot failure it replaces.
-         this.failedPackages.delete(packageName);
+         this.clearPackageLoadFailure(packageName);
 
          if (oldPackage) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
@@ -1547,9 +1558,27 @@ export class Environment {
       return this.packageStatuses.get(packageName);
    }
 
+   /**
+    * Record why a configured package's location never mounted, so /status can
+    * name the real cause instead of the missing-manifest fallout it produces.
+    * Called by EnvironmentStore right after the environment is created.
+    */
+   public setPackageMountError(packageName: string, message: string): void {
+      this.mountErrors.set(packageName, message);
+   }
+
+   /** Forget any recorded failure for a package, whatever its cause. */
+   private clearPackageLoadFailure(packageName: string): void {
+      this.failedPackages.delete(packageName);
+      this.mountErrors.delete(packageName);
+   }
+
    /** Packages configured for this environment that did not load, and why. */
    public getFailedPackages(): ReadonlyMap<string, string> {
-      return this.failedPackages;
+      if (this.mountErrors.size === 0) return this.failedPackages;
+      // Mount errors last, so the specific cause overwrites the generic
+      // manifest error that the un-mounted package produces on its lazy load.
+      return new Map([...this.failedPackages, ...this.mountErrors]);
    }
 
    public setPackageStatus(packageName: string, status: PackageStatus): void {
@@ -1574,7 +1603,7 @@ export class Environment {
          // the controller still drops its config row. Leaving the entry would
          // make getStatus report a loadError for a package that is no longer
          // configured, which is the one thing that channel must not do.
-         this.failedPackages.delete(packageName);
+         this.clearPackageLoadFailure(packageName);
 
          const _package = this.packages.get(packageName);
          if (!_package) {

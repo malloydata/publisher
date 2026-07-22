@@ -46,6 +46,7 @@ there for the primitive, then follow the application you need.
 | [deployment.md](deployment.md) | Run a built server via npx, Docker, or Docker Compose. |
 | [configuration.md](configuration.md) | Look up an env var / CLI flag, or tune the OOM guards. |
 | [connections.md](connections.md) | Connect BigQuery, Snowflake, Postgres, DuckDB, and more. |
+| [ducklake.md](ducklake.md) | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped. |
 | [theming.md](theming.md) | Customize colors, fonts, and light/dark mode. |
 
 ## Understand & build
