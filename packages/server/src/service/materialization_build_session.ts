@@ -5,6 +5,8 @@ import {
    type PersistSource,
    Runtime,
 } from "@malloydata/malloy";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
@@ -87,6 +89,61 @@ export function passthroughSourceType(
    );
 }
 
+/**
+ * A build-scoped DuckDB session on its OWN in-memory instance, plus a disposer
+ * that closes it and removes the throwaway working directory that pins its
+ * instance identity.
+ *
+ * Isolation is load-bearing for multi-tenant safety. `@malloydata/db-duckdb`
+ * pools DuckDB instances in a process-global cache keyed by a "share key" that
+ * deliberately EXCLUDES the connection name, and it never gives a `:memory:`
+ * primary a private instance — so build sessions built with identical default
+ * config get pooled onto ONE shared in-memory instance whenever their lifetimes
+ * overlap (notably with the long-lived serve connection). Pooled together, they
+ * collide on their transient ATTACH aliases: two builds (or two environments
+ * with same-named-but-different-credential source/destination connections) both
+ * `ATTACH … AS orders_pg` / `AS lake` on the shared instance and one clobbers
+ * the other — a cross-tenant read (source) or WRITE (read-write destination).
+ * DuckDB itself isolates SEPARATE instances cleanly; the collision is purely an
+ * artifact of the shared pool.
+ *
+ * Fix: give each session a UNIQUE `workingDirectory`, which is part of the share
+ * key, so it lands its OWN in-memory instance — its own catalog, secrets, and
+ * attaches, torn down on close. Crucially `databasePath` stays exactly
+ * `:memory:` (NOT a temp file): a `:memory:` primary lets a DuckLake attach
+ * auto-initialize a fresh catalog, whereas a file primary does not. The working
+ * directory is only there to make the share key unique — nothing is written to
+ * it (every real path the build uses is absolute), so it stays empty and is
+ * removed on dispose (best-effort; a leftover empty dir is benign).
+ */
+export function createIsolatedBuildSession(sessionName: string): {
+   session: DuckDBConnection;
+   dispose: () => Promise<void>;
+} {
+   const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
+   const session = new DuckDBConnection(sessionName, ":memory:", workDir);
+   const dispose = async () => {
+      try {
+         await session.close();
+      } catch (err) {
+         logger.warn("Failed to close build session (leaked session)", {
+            sessionName,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+      try {
+         rmSync(workDir, { recursive: true, force: true });
+      } catch (err) {
+         logger.warn("Failed to remove build session working directory", {
+            sessionName,
+            workDir,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   };
+   return { session, dispose };
+}
+
 /** Result of building one source into a storage destination. */
 export interface StorageBuildResult {
    /** The connection the physical table now lives in (the destination). */
@@ -102,7 +159,7 @@ export interface StorageBuildResult {
  * credential federation exist ONLY for the build's duration and NEVER on the
  * serve connection (the least-privilege boundary the design requires).
  *
- * Steps: create an in-memory DuckDB session → attach the destination read-write
+ * Steps: create a private build session → attach the destination read-write
  * → federate the source's credentials on demand → `CREATE OR REPLACE TABLE`
  * (qualified with the destination catalog) whose FROM is the source passthrough
  * → capture the built table's authoritative schema (DESCRIBE) → dispose the
@@ -135,9 +192,13 @@ export async function buildSourceIntoStorage(params: {
    assertSupportedDestination(destinationName, destinationConnection);
    const sourceType = passthroughSourceType(sourceConnection);
 
-   // A dedicated, disposable build session. Credentials and the read-write
-   // destination attach live only here, only for this build.
-   const session = new DuckDBConnection(`build_${destinationName}`, ":memory:");
+   // A dedicated, disposable build session on its OWN in-memory instance, so its
+   // read-write destination attach and federated source credentials cannot be
+   // pooled onto — or collide with — any other build/serve connection (see
+   // createIsolatedBuildSession).
+   const { session, dispose } = createIsolatedBuildSession(
+      `build_${destinationName}`,
+   );
    try {
       await attachDestinationReadWrite(
          session,
@@ -164,8 +225,9 @@ export async function buildSourceIntoStorage(params: {
 
       // The CTAS target MUST be qualified with the destination catalog (the
       // attach alias) — an unqualified name lands in the build session's own
-      // in-memory catalog, not the DuckLake/DuckDB store, so the rows would be
-      // captured for the schema and then vanish with the session. DuckLake's
+      // (private, throwaway) in-memory catalog, not the DuckLake/DuckDB store,
+      // so the rows would be captured for the schema and then vanish with the
+      // session. DuckLake's
       // catalog swap is transactional, so CREATE OR REPLACE is atomic — no
       // staging/rename dance needed on this path.
       const target = quoteTablePath(
@@ -188,19 +250,10 @@ export async function buildSourceIntoStorage(params: {
 
       return { storageConnectionName: destinationName, schema };
    } finally {
-      // Dispose releases the session's secrets and attaches — nothing federated
-      // or read-write survives the build.
-      try {
-         await session.close();
-      } catch (err) {
-         logger.warn(
-            "Failed to close build session (leaked in-memory session)",
-            {
-               destinationName,
-               error: err instanceof Error ? err.message : String(err),
-            },
-         );
-      }
+      // Dispose closes the private instance (releasing every secret + attach —
+      // nothing federated or read-write survives the build) and removes its
+      // throwaway working directory.
+      await dispose();
    }
 }
 
@@ -253,7 +306,9 @@ export async function buildDownstreamIntoStorage(params: {
 
    assertSupportedDestination(destinationName, destinationConnection);
 
-   const session = new DuckDBConnection(`build_${destinationName}`, ":memory:");
+   const { session, dispose } = createIsolatedBuildSession(
+      `build_${destinationName}`,
+   );
    try {
       await attachDestinationReadWrite(
          session,
@@ -314,17 +369,7 @@ export async function buildDownstreamIntoStorage(params: {
 
       return { storageConnectionName: destinationName, schema };
    } finally {
-      try {
-         await session.close();
-      } catch (err) {
-         logger.warn(
-            "Failed to close chained build session (leaked in-memory session)",
-            {
-               destinationName,
-               error: err instanceof Error ? err.message : String(err),
-            },
-         );
-      }
+      await dispose();
    }
 }
 
@@ -396,14 +441,15 @@ export function dropStorageTableSql(
 
 /**
  * Drop one materialized table from a `storage=` destination, on a build-scoped
- * read-write session (the SERVE attach is read-only, so GC cannot run there).
- * Mirrors {@link buildSourceIntoStorage}'s session lifecycle: attach read-write
- * → drop → dispose, so no read-write attach survives the GC.
+ * read-write session with its OWN in-memory instance (the SERVE attach is
+ * read-only, so GC cannot run there; and an isolated instance keeps this GC's
+ * read-write destination attach from colliding with another tenant's same-named
+ * destination — see {@link createIsolatedBuildSession}). Mirrors
+ * {@link buildSourceIntoStorage}'s lifecycle: attach read-write → drop → dispose.
  *
- * Only the content-addressed physical table is dropped; the convenience view is
- * left alone. The view is `CREATE OR REPLACE`d to the latest generation on every
- * build, so reclaiming a SUPERSEDED generation's table never dangles it (it
- * points at the current table, not this one).
+ * Only the recorded physical table (`physicalTableName`) is dropped — a
+ * destination-aware drop of a name the publisher recorded building, never a
+ * catalog scan — so GC can never take out a table it did not create.
  */
 export async function dropStorageTable(params: {
    destinationName: string;
@@ -420,7 +466,9 @@ export async function dropStorageTable(params: {
    // Fail fast (pre-session, pre-attach) on a destination the build can't target.
    assertSupportedDestination(destinationName, destinationConnection);
 
-   const session = new DuckDBConnection(`gc_${destinationName}`, ":memory:");
+   const { session, dispose } = createIsolatedBuildSession(
+      `gc_${destinationName}`,
+   );
    try {
       await attachDestinationReadWrite(
          session,
@@ -432,14 +480,7 @@ export async function dropStorageTable(params: {
          dropStorageTableSql(destinationName, physicalTableName),
       );
    } finally {
-      try {
-         await session.close();
-      } catch (err) {
-         logger.warn("Failed to close GC session (leaked in-memory session)", {
-            destinationName,
-            error: err instanceof Error ? err.message : String(err),
-         });
-      }
+      await dispose();
    }
 }
 

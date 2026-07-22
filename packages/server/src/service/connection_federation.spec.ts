@@ -89,12 +89,11 @@ describe("federateSourceForPassthrough", () => {
       expect(result).toEqual({ handle: "src_pg", sourceType: "postgres" });
       const attach = sql.find((s) => s.startsWith("ATTACH"));
       expect(attach).toBeDefined();
-      // OR REPLACE for idempotency: build sessions share one in-memory DuckDB
-      // instance (the db-duckdb instance cache keys on config, not the connection
-      // name, and never gives a :memory: primary a private instance), so a plain
-      // ATTACH throws "already exists" once a prior build's postgres attach
-      // lingers on that shared instance. The alias→source mapping is fixed, so
-      // replacing re-attaches to the identical source.
+      // OR REPLACE for within-session idempotency (a re-attach of the identical
+      // source on one session is a no-op rebind). Cross-build/cross-tenant alias
+      // collisions are prevented upstream by each build running on its OWN
+      // private DuckDB instance (createIsolatedBuildSession); this is just
+      // belt-and-suspenders.
       expect(attach).toStartWith("ATTACH OR REPLACE ");
       // The ATTACH alias is dialect-quoted; the handle stays the raw name (it
       // becomes the postgres_query string literal, which matches the catalog).
@@ -102,12 +101,10 @@ describe("federateSourceForPassthrough", () => {
    });
 
    it("postgres: re-federating the same source on one session is idempotent (no 'already exists')", async () => {
-      // Regression: build sessions share a process-global in-memory DuckDB
-      // instance, so a second build's postgres attach would collide with the
-      // first's unless the attach is idempotent. Two federations of the same
-      // source on one connection must both issue an OR REPLACE attach and not
-      // throw. (A real DuckDB would raise "database ... already exists" on a
-      // plain re-ATTACH; here runSQL is stubbed, so we pin the SQL contract.)
+      // Within one session, federating the same source twice must not throw:
+      // both attaches use OR REPLACE (a no-op rebind to the identical source).
+      // (A real DuckDB would raise "database ... already exists" on a plain
+      // re-ATTACH; here runSQL is stubbed, so we pin the SQL contract.)
       const { conn, sql } = stubbedConnection();
       const cfg = {
          name: "src_pg",

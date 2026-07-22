@@ -9,6 +9,7 @@ import {
    assertStorageServeShapeCompiles,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
+   createIsolatedBuildSession,
    dropStorageTable,
    dropStorageTableSql,
    passthroughSourceType,
@@ -21,6 +22,41 @@ import {
 } from "./materialization_serve_transform";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+describe("createIsolatedBuildSession (per-build instance isolation)", () => {
+   // Multi-tenant safety regression guard. @malloydata/db-duckdb pools :memory:
+   // DuckDB instances in a process-global cache keyed by a share key that
+   // EXCLUDES the connection name, so build sessions built with identical config
+   // would otherwise be pooled onto ONE shared instance and collide on their
+   // transient ATTACH aliases (cross-tenant read/write). createIsolatedBuildSession
+   // gives each session a unique workingDirectory so it lands its OWN instance.
+   // If a library change ever re-pools them (drops workingDirectory from the
+   // share key), this test fails LOUD rather than letting a silent cross-tenant
+   // leak ship. No warehouse needed: a plain table proves catalog isolation.
+   it("gives each session its own catalog (a table in one is invisible to another)", async () => {
+      const a = createIsolatedBuildSession("build_lake");
+      const b = createIsolatedBuildSession("build_lake");
+      try {
+         await a.session.runSQL("CREATE TABLE isolated_probe(x INT)");
+         await a.session.runSQL("INSERT INTO isolated_probe VALUES (1)");
+         // b must NOT see a's table — separate instances, separate catalogs.
+         await expect(
+            b.session.runSQL("SELECT * FROM isolated_probe"),
+         ).rejects.toThrow();
+      } finally {
+         await a.dispose();
+         await b.dispose();
+      }
+   });
+
+   it("stays in-memory (dispose leaves no primary DB file) and is idempotent", async () => {
+      const { session, dispose } = createIsolatedBuildSession("build_lake");
+      await session.runSQL("CREATE TABLE t(x INT)");
+      await dispose();
+      // Second dispose must not throw (idempotent teardown).
+      await dispose();
+   });
+});
 
 describe("assertStorageServeShapeCompiles (build-time servability gate)", () => {
    it("passes for a well-formed captured schema (compiles the serve shape in DuckDB)", async () => {

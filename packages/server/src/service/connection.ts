@@ -895,18 +895,16 @@ async function federatePostgres(
    logger.info(
       `Federating Postgres source for passthrough as alias '${alias}': ${redactPgSecrets(attachString)}`,
    );
-   // OR REPLACE for idempotency: a build session is created as an in-memory
-   // DuckDBConnection, and @malloydata/db-duckdb keys its process-global instance
-   // cache (`activeDBs`) purely on config — the connection NAME is not part of the
-   // key and a `:memory:` primary is never given a private instance — so every
-   // build session with the same config shares one underlying DuckDB instance.
-   // A plain ATTACH would therefore throw "database with name '<alias>' already
-   // exists" once a prior build's postgres attach is still registered on that
-   // shared instance. Since the alias is the connection name and the config is
-   // that connection's, a re-attach is to the identical source, so replacing is
-   // safe. (bigquery/snowflake federate via CREATE OR REPLACE SECRET with no
-   // ATTACH, and the DuckLake destination attach already uses ATTACH OR REPLACE,
-   // so postgres was the only non-idempotent source attach.)
+   // OR REPLACE for within-session idempotency. The cross-build/cross-tenant
+   // alias-collision boundary is the build session's PRIVATE DuckDB instance
+   // (see createIsolatedBuildSession): each build runs on its own instance, so
+   // its postgres attach cannot collide with another build's or another tenant's
+   // on a shared instance. OR REPLACE is kept as belt-and-suspenders for a
+   // re-attach of the identical source within one session (the alias is the
+   // connection name, the config is that connection's, so replacing is a no-op
+   // rebind to the same source). (bigquery/snowflake federate via CREATE OR
+   // REPLACE SECRET with no ATTACH; secrets are instance-scoped, so isolation
+   // covers them too.)
    await connection.runSQL(
       `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
    );
