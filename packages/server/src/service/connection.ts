@@ -9,6 +9,7 @@ import "@malloydata/db-postgres";
 import {
    PooledPostgresConnection,
    type PostgresConnection,
+   type PostgresSSLConfig,
 } from "@malloydata/db-postgres";
 // Registers the "publisher" connection type (proxies SQL to a remote Publisher
 // dataplane). No live-class branch is needed in lookupConnection — the default
@@ -1174,13 +1175,14 @@ function buildSnowflakePrivateKeyConnection(
 }
 
 // TLS mode for a proxied postgres connection, as `pg` connectionString query
-// params. @malloydata/db-postgres exposes no ssl config, but it forwards a
-// connectionString straight to pg — which parses sslmode. The tunnel terminates
-// at 127.0.0.1, so pg's hostname check can't apply: `verify-ca` validates the
-// cert chain against the trusted CA bundle (NODE_EXTRA_CA_CERTS, e.g. the baked
+// params. @malloydata/db-postgres forwards a connectionString straight to pg —
+// which parses sslmode. The tunnel terminates at 127.0.0.1, so pg's hostname
+// check can't apply from the connectionString: `verify-ca` validates the cert
+// chain against the trusted CA bundle (NODE_EXTRA_CA_CERTS, e.g. the baked
 // Amazon RDS roots) WITHOUT the hostname; `no-verify` encrypts without checking;
-// `disable` uses no TLS. Full verify-full through a tunnel needs a servername
-// override (a raw ssl object) — awaits an upstream passthrough (malloydata/malloy#2960).
+// `disable` uses no TLS. `verify-full` (chain + hostname) can't be expressed as
+// a connectionString param through a tunnel — it needs a raw `ssl` object with
+// `servername` set to the real host; see resolveProxiedTls below.
 export function buildProxiedSslQuery(name: string, sslmode?: string): string {
    const caBundle = process.env.NODE_EXTRA_CA_CERTS;
    // Default: encrypt (no-verify) so a force-SSL target (the common RDS case)
@@ -1206,9 +1208,37 @@ export function buildProxiedSslQuery(name: string, sslmode?: string): string {
          return `?uselibpqcompat=true&sslmode=verify-ca&sslrootcert=${encodeURIComponent(caBundle)}`;
       default:
          throw new Error(
-            `Connection proxy on '${name}' has unsupported sslmode '${mode}' (expected disable | no-verify | verify-ca).`,
+            `Connection proxy on '${name}' has unsupported sslmode '${mode}' (expected disable | no-verify | verify-ca; verify-full is applied via the ssl object in resolveProxiedTls, not this query).`,
          );
    }
+}
+
+// Resolve a proxied connection's TLS mode into either a connectionString query
+// suffix (disable/no-verify/verify-ca — parsed by pg from the connectionString)
+// or a raw `ssl` object. `verify-full` takes the ssl path: full verification
+// (chain + hostname) through a tunnel needs `servername` set to the real DB host,
+// which a connectionString sslmode param can't carry. The socket targets the
+// 127.0.0.1 IP literal, so pg preserves our `servername` (it only overwrites it
+// with `host` when host is a DNS name), verifying the cert's SAN against the real
+// host. Verification runs against Node's ambient trust anchors — its bundled
+// Mozilla CA roots plus NODE_EXTRA_CA_CERTS (e.g. the baked Amazon RDS roots) —
+// not the OS system store (unless Node is run with --use-system-ca).
+export function resolveProxiedTls(
+   name: string,
+   host: string | undefined,
+   sslmode?: string,
+): { query: string; ssl?: PostgresSSLConfig } {
+   if (sslmode === "verify-full") {
+      if (!host) {
+         // validateConnectionShape requires host on a proxied connection, so this
+         // is unreachable in practice — guard so servername is never undefined.
+         throw new Error(
+            `Connection proxy on '${name}' uses sslmode 'verify-full' but has no host to verify against.`,
+         );
+      }
+      return { query: "", ssl: { servername: host, rejectUnauthorized: true } };
+   }
+   return { query: buildProxiedSslQuery(name, sslmode) };
 }
 
 function buildProxiedPostgresConnection(
@@ -1231,11 +1261,12 @@ function buildProxiedPostgresConnection(
       ? `${enc(pg.userName)}${pg.password ? `:${enc(pg.password)}` : ""}@`
       : "";
    const db = pg.databaseName ? `/${enc(pg.databaseName)}` : "";
-   const ssl = buildProxiedSslQuery(name, pg.sslmode);
-   const connectionString = `postgresql://${auth}${endpoint.host}:${endpoint.port}${db}${ssl}`;
+   const { query, ssl } = resolveProxiedTls(name, pg.host, pg.sslmode);
+   const connectionString = `postgresql://${auth}${endpoint.host}:${endpoint.port}${db}${query}`;
    return new PooledPostgresConnection({
       name,
       connectionString,
+      ...(ssl ? { ssl } : {}),
       // Pool sizing mirrors buildSnowflakePrivateKeyConnection.
       poolMin: 1,
       poolMax: 20,

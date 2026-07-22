@@ -11,7 +11,12 @@ type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 // than in connection.ts, which imports this module) so both the config-load
 // validator and the connect-time builder derive from one list. Mirrors the
 // `sslmode` enum in api-doc.yaml.
-export const PROXIED_SSLMODES = ["disable", "no-verify", "verify-ca"] as const;
+export const PROXIED_SSLMODES = [
+   "disable",
+   "no-verify",
+   "verify-ca",
+   "verify-full",
+] as const;
 
 export type CoreConnectionEntry = {
    is: string;
@@ -356,6 +361,15 @@ function validateConnectionShape(connection: ApiConnection): void {
                );
             }
          }
+         // No precondition for `verify-full`: unlike `verify-ca` (which passes an
+         // explicit `sslrootcert` path), it verifies against Node's ambient trust
+         // anchors (its bundled Mozilla CA roots + NODE_EXTRA_CA_CERTS), so
+         // requiring a bundle here would wrongly reject targets with a
+         // publicly-trusted CA. An untrusted CA surfaces as a clear pg error at
+         // connect time instead. This means verify-full's CA trust is broader
+         // than verify-ca's pinned bundle — intentional (it adds the hostname
+         // check without narrowing trust), so unlike libpq, verify-full here is
+         // not a strict superset of verify-ca.
       }
 
       // The proxied path builds a connectionString to the local tunnel endpoint;
