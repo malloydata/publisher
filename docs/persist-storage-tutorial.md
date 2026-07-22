@@ -606,6 +606,23 @@ can't be evaluated on the served table. Until that refusal lands (alongside the
 upstream transitive-`#(authorize)` enforcement it reuses), do not materialize an
 authorize-gated source; serve it live.
 
+### Field-level hiding and the materialized table
+
+Field visibility is preserved on the **serve** path: the serve shape declares
+only the source's publicly visible columns, so a field hidden with `except:` (or
+a `private`/`internal` access modifier) is dropped from the virtual source — a
+query that references it falls back to serving live, where the source's own
+visibility applies, exactly as it would un-materialized.
+
+But be aware of the table **at rest**: the build materializes whatever the
+source's compiled SQL projects, so an `except:`-ed column is still physically
+written into the destination store (the in-warehouse path does the same, but
+there the table lives in your own warehouse; a `storage=` destination may be a
+separate, shared store). If a column is genuinely sensitive, **don't rely on
+`except:` for a `storage=` source — filter it out in the SQL** so it never lands
+in the store. This is the same "sensitive data crossing into the tier's store"
+concern as the `#(authorize)` note above.
+
 ---
 
 ## 8. Observability recap

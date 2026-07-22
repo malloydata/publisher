@@ -62,6 +62,7 @@ import {
    extractJoins,
    extractRefinements,
    extractViews,
+   narrowSchemaToPublic,
    sliceSourceRange,
    type ServeBinding,
    type SourceLocation,
@@ -1958,6 +1959,13 @@ export class Model {
       };
       return this.serveBindings.map((b) => {
          const fields = contents?.[b.sourceName]?.fields;
+         // Narrow the declared ::Shape to the source's PUBLIC columns: the build
+         // materializes every projected column (incl. `except:`-ed / access-
+         // restricted ones), so the captured schema can be wider than the
+         // source's public surface. Declaring a hidden column would expose it
+         // over storage when live hides it — always applied (even with no
+         // refinements), so the serve surface never widens the source's.
+         const schema = narrowSchemaToPublic(b.schema, fields);
          const refinements = [
             ...extractJoins(fields, {
                sourceNameById,
@@ -1967,7 +1975,7 @@ export class Model {
             ...extractRefinements(fields),
             ...extractViews(fields, liftText),
          ];
-         return refinements.length > 0 ? { ...b, refinements } : b;
+         return { ...b, schema, refinements };
       });
    }
 

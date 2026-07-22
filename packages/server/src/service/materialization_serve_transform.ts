@@ -489,6 +489,40 @@ function isAccessRestricted(field: unknown): boolean {
    return am != null && am !== "public";
 }
 
+/**
+ * Narrow a binding's captured DESCRIBE schema to the columns the source
+ * PUBLICLY exposes, dropping any physical column the source hides.
+ *
+ * The build's `getSQL` projects the source's underlying columns, so a column
+ * hidden at the source level — removed by `except:`, or carrying a non-public
+ * access modifier — is still materialized into the table and captured by
+ * `DESCRIBE`. Declaring it on the serve shape would make it reachable through
+ * the virtual source even though the live path hides it (v0 never does this: it
+ * recompiles the original source definition with only the base table swapped, so
+ * the source's own visibility always applies). A column is kept only if it names
+ * a publicly-visible field of the compiled source; an `except:`-ed column is
+ * absent from the field list, and an access-restricted one is caught by
+ * {@link isAccessRestricted} — both are dropped. Dropped columns stay physically
+ * in the table but become unreachable through the source: a query that
+ * references one fails the shape compile and falls back to live, where the
+ * source's visibility rules are enforced (fail-safe). This mirrors the
+ * refinement/join/view access filtering — the serve surface must reproduce the
+ * source's PUBLIC surface exactly, never widen it.
+ */
+export function narrowSchemaToPublic(
+   schema: { name: string; type: string }[],
+   fields: readonly unknown[] | undefined,
+): { name: string; type: string }[] {
+   const publicNames = new Set<string>();
+   for (const f of fields ?? []) {
+      const name = (f as { name?: unknown }).name;
+      if (typeof name === "string" && !isAccessRestricted(f)) {
+         publicNames.add(name);
+      }
+   }
+   return schema.filter((c) => publicNames.has(c.name));
+}
+
 export function extractRefinements(
    fields: readonly unknown[] | undefined,
 ): FieldRefinement[] {
