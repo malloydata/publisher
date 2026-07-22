@@ -126,9 +126,20 @@ export function fakeSource(opts: {
     * assert what physical name a downstream build sees for its upstream.
     */
    onGetSQL?: (sqlOpts: unknown) => void;
+   /**
+    * The source's compiled `_explore` shape the incremental build path reads:
+    * `primaryKey` (the MERGE key) and `columns` (fed through `deriveColumns`,
+    * which filters to atomic fields). Omit for the full-rebuild path, which
+    * touches neither — keeping `_explore` undefined preserves today's behavior
+    * for every existing caller.
+    */
+   explore?: {
+      primaryKey?: string;
+      columns?: Array<{ name: string; type?: string }>;
+   };
 }): PersistSource {
    const fields = opts.annotationFields;
-   return {
+   const source: Record<string, unknown> = {
       name: opts.name,
       sourceID: opts.name,
       connectionName: opts.connectionName ?? "duckdb",
@@ -148,7 +159,18 @@ export function fakeSource(opts: {
             tag: fakeTag(undefined, opts.modelFreshnessSchedule),
          }),
       },
-   } as unknown as PersistSource;
+   };
+   if (opts.explore) {
+      source._explore = {
+         primaryKey: opts.explore.primaryKey,
+         intrinsicFields: (opts.explore.columns ?? []).map((c) => ({
+            name: c.name,
+            type: c.type ?? "string",
+            isAtomicField: () => true,
+         })),
+      };
+   }
+   return source as unknown as PersistSource;
 }
 
 /**

@@ -4069,6 +4069,15 @@ components:
           default: false
           description:
             Build a new table even when a source's sourceEntityId is unchanged.
+        forceFullRebuild:
+          type: boolean
+          default: false
+          description: >-
+            Escape hatch (dbt --full-refresh analog): rebuild every incremental
+            (refresh=incremental) persist source from scratch via the full
+            staging+rename path this run, instead of MERGE-ing new rows. Use
+            after a schema or logic migration. Independent of forceRefresh, which
+            only bypasses content-hash reuse for full-rebuild sources.
         sourceNames:
           type: array
           items:

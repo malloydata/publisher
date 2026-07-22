@@ -54,6 +54,21 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).rejects.toThrow(BadRequestError);
    });
 
+   it("passes through forceFullRebuild (the incremental escape hatch)", async () => {
+      expect(await parse({ forceFullRebuild: true })).toEqual({
+         forceFullRebuild: true,
+      });
+   });
+
+   it("rejects a non-boolean forceFullRebuild", async () => {
+      const { controller } = build();
+      await expect(
+         controller.createMaterialization("env", "pkg", {
+            forceFullRebuild: "yes",
+         }),
+      ).rejects.toThrow(BadRequestError);
+   });
+
    it("rejects sourceNames that is not an array of strings", async () => {
       const { controller } = build();
       await expect(
