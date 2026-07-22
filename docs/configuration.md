@@ -42,6 +42,9 @@ my-data/
 }
 ```
 
+The package directory format itself (`publisher.json` fields, models, data files) is documented in
+[packages.md](packages.md).
+
 Do not author packages under `publisher_data/`. That is storage Publisher manages for itself: it
 copies each configured package in (or symlinks it, under `--watch-env`), and `--init` deletes the
 whole tree.

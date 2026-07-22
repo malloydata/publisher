@@ -18,14 +18,15 @@ every doc below points back to one of them, and each example's README points bac
 
 ## Use it
 
-| Doc                                            | Read it when you want to…                                                 |
-| ---------------------------------------------- | ------------------------------------------------------------------------- |
-| [publisher-app.md](publisher-app.md)           | Navigate the built-in web app and see how the constructs surface.         |
-| [ai-agents.md](ai-agents.md)                   | Connect an AI agent over MCP and ground it in your models.                |
-| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                      |
-| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher. |
-| [api-overview.md](api-overview.md)             | Understand the REST + MCP surfaces and the resource hierarchy.            |
-| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the App is built from.                 |
+| Doc                                            | Read it when you want to…                                                                           |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| [publisher-app.md](publisher-app.md)           | Navigate the built-in web app and see how the constructs surface.                                   |
+| [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models.              |
+| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                                |
+| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.                           |
+| [packages.md](packages.md)                     | Understand the package format: `publisher.json`, models, data files, and how a package gets served. |
+| [api-overview.md](api-overview.md)             | Understand the REST + MCP surfaces and the resource hierarchy.                                      |
+| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the App is built from.                                           |
 
 ## Model & govern
 
@@ -41,14 +42,14 @@ there for the primitive, then follow the application you need.
 
 ## Deploy & operate
 
-| Doc | Read it when you want to… |
-| --- | --- |
-| [deployment.md](deployment.md) | Run a built server via npx, Docker, or Docker Compose. |
-| [configuration.md](configuration.md) | Look up an env var / CLI flag, or tune the OOM guards. |
+| Doc                                      | Read it when you want to…                                                                                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [deployment.md](deployment.md)           | Run a built server via npx, Docker, or Docker Compose.                                                                                              |
+| [configuration.md](configuration.md)     | Look up an env var / CLI flag, or tune the OOM guards.                                                                                              |
 | [materialization.md](materialization.md) | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior. |
-| [connections.md](connections.md) | Connect BigQuery, Snowflake, Postgres, DuckDB, and more. |
-| [ducklake.md](ducklake.md) | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped. |
-| [theming.md](theming.md) | Customize colors, fonts, and light/dark mode. |
+| [connections.md](connections.md)         | Connect BigQuery, Snowflake, Postgres, DuckDB, and more.                                                                                            |
+| [ducklake.md](ducklake.md)               | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped.                                       |
+| [theming.md](theming.md)                 | Customize colors, fonts, and light/dark mode.                                                                                                       |
 
 ## Understand & build
 
