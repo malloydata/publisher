@@ -24,6 +24,8 @@ reload, embeddable iframe, no build step. See
   `Publisher.query()` to talk to the Publisher API.
 - `public/embed-test.html`: host page that demonstrates `Publisher.embed()`
   iframing the dashboard.
+- `public/vendor/chart.umd.js`: Chart.js v4.5.0 (MIT), vendored rather than
+  loaded from a CDN so the dashboard renders on a network that blocks one.
 
 ## Try it
 
