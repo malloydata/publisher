@@ -428,7 +428,7 @@ export async function assertStorageServeShapeCompiles(params: {
    }
 }
 
-/** DDL to drop a content-addressed storage table, catalog-qualified for DuckDB. */
+/** DDL to drop a storage table by its recorded name, catalog-qualified for DuckDB. */
 export function dropStorageTableSql(
    destinationName: string,
    physicalTableName: string,
