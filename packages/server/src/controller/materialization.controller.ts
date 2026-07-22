@@ -27,6 +27,7 @@ export class MaterializationController {
    // `trigger` to this parser, or an API caller could forge a scheduled run.
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
+      forceFullRebuild?: boolean;
       sourceNames?: string[];
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
@@ -34,6 +35,7 @@ export class MaterializationController {
    } {
       const result: {
          forceRefresh?: boolean;
+         forceFullRebuild?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
@@ -57,6 +59,12 @@ export class MaterializationController {
             throw new BadRequestError("forceRefresh must be a boolean");
          }
          result.forceRefresh = body.forceRefresh;
+      }
+      if (body.forceFullRebuild !== undefined) {
+         if (typeof body.forceFullRebuild !== "boolean") {
+            throw new BadRequestError("forceFullRebuild must be a boolean");
+         }
+         result.forceFullRebuild = body.forceFullRebuild;
       }
       if (body.sourceNames !== undefined) {
          if (

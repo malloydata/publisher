@@ -87,6 +87,18 @@ source: s is duckdb.sql("SELECT 1 as x")
 source: f is duckdb.sql("SELECT 1 as x")
 `;
 
+   const INCREMENTAL_MODEL = `##! experimental.persistence
+
+#@ persist name="i_table" refresh=incremental
+source: i is duckdb.sql("SELECT 1 as x")
+`;
+
+   const BAD_REFRESH_MODEL = `##! experimental.persistence
+
+#@ persist name="b_table" refresh=weekly
+source: b is duckdb.sql("SELECT 1 as x")
+`;
+
    // ── scope parsing + surfacing ─────────────────────────────────────────
 
    it(
@@ -259,6 +271,69 @@ source: f is duckdb.sql("SELECT 1 as x")
          });
          expect(pkg.persistencePolicyWarnings()).toEqual([]);
          expect(sourceByName(pkg, "f").freshness).toEqual({ window: "1h" });
+      },
+      { timeout: 30000 },
+   );
+
+   // ── Rule 5: refresh must be a supported value (full | incremental) ────
+
+   it(
+      "accepts refresh=incremental and surfaces it on the build plan",
+      async () => {
+         const pkg = await loadPackage(INCREMENTAL_MODEL, { scope: "package" });
+         expect(pkg.persistencePolicyWarnings()).toEqual([]);
+         // Proves the pinned compiler carries `refresh` through to the wire plan
+         // (annotationFields) — the publisher's whole incremental path keys off it.
+         const source = sourceByName(pkg, "i") as Record<string, unknown>;
+         expect(
+            (source.annotationFields as Record<string, string>).refresh,
+         ).toBe("incremental");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "rejects an unsupported refresh value, naming the allowed set",
+      async () => {
+         const pkg = await loadPackage(BAD_REFRESH_MODEL, { scope: "package" });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain('"b"');
+         expect(joined).toContain("weekly");
+         expect(joined).toContain("full");
+         expect(joined).toContain("incremental");
+      },
+      { timeout: 30000 },
+   );
+
+   // ── Rule 6: incremental + freshness fallback "live" is invalid ────────
+
+   it(
+      "rejects an incremental source with freshness fallback live",
+      async () => {
+         // A live serve recomputes the source, which for an incremental
+         // definition returns only the delta, not the full dataset.
+         const pkg = await loadPackage(INCREMENTAL_MODEL, {
+            scope: "package",
+            materialization: { freshness: { window: "24h", fallback: "live" } },
+         });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain("incremental");
+         expect(joined).toContain("live");
+         expect(joined).toContain("delta");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "accepts an incremental source with freshness fallback stale_ok",
+      async () => {
+         const pkg = await loadPackage(INCREMENTAL_MODEL, {
+            scope: "package",
+            materialization: {
+               freshness: { window: "24h", fallback: "stale_ok" },
+            },
+         });
+         expect(pkg.persistencePolicyWarnings()).toEqual([]);
       },
       { timeout: 30000 },
    );

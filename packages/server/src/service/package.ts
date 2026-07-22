@@ -884,6 +884,38 @@ export class Package {
          );
       }
 
+      // Rule 5: refresh must be a supported value (persistence.md §3:
+      // refresh ∈ {"full", "incremental"}). An unknown value would otherwise be
+      // dropped silently, degrading incremental to full.
+      for (const source of sources) {
+         const refresh = (source.annotationFields ?? {}).refresh;
+         if (
+            refresh !== undefined &&
+            refresh !== "full" &&
+            refresh !== "incremental"
+         ) {
+            warnings.push(
+               `#@ persist source "${source.name}" declares refresh="${refresh}" ` +
+                  `which is not supported: use "full" or "incremental".`,
+            );
+         }
+      }
+
+      // Rule 6: an incremental source with freshness fallback "live" is invalid.
+      // A live serve recomputes the source, which for an incremental definition
+      // returns only the delta, not the full dataset. Require stale_ok or fail.
+      const hasIncremental = sources.some(
+         (s) => (s.annotationFields ?? {}).refresh === "incremental",
+      );
+      if (hasIncremental && packageFreshness?.fallback === "live") {
+         warnings.push(
+            `An incremental #@ persist source with materialization.freshness.` +
+               `fallback "live" is invalid: a live serve of an incremental source ` +
+               `returns only the delta, not the full dataset. Use "stale_ok" or ` +
+               `"fail".`,
+         );
+      }
+
       return warnings;
    }
 

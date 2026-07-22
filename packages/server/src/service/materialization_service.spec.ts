@@ -164,6 +164,7 @@ describe("MaterializationService", () => {
             "PENDING",
             {
                forceRefresh: true,
+               forceFullRebuild: false,
                sourceNames: ["orders"],
                mode: "auto",
                trigger: "ON_DEMAND",
@@ -182,6 +183,7 @@ describe("MaterializationService", () => {
          expect(ctx.repository.createMaterialization.firstCall.args[3]).toEqual(
             {
                forceRefresh: false,
+               forceFullRebuild: false,
                sourceNames: null,
                mode: "auto",
                trigger: "ON_DEMAND",
