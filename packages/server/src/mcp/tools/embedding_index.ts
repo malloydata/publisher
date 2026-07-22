@@ -126,17 +126,31 @@ interface SyncState {
 }
 const syncState = new WeakMap<Package, SyncState>();
 const syncMeta = new Map<string, PackageSyncMeta>();
+// Every generation value ever issued is globally unique (drawn from this
+// counter, never incremented locally). That makes deleting a syncMeta
+// entry safe: a re-minted meta for the same name can never coincide with
+// a generation some live memo recorded under the old meta, which would
+// let that memo be trusted over a table the deletion just emptied.
+let generationCounter = 0;
 let providerFailureAtMs = 0;
 const oversizeWarned = new Set<string>();
+
+function metaKey(environmentName: string, packageName: string): string {
+   return `${environmentName}\x00${packageName}`;
+}
 
 function metaFor(
    environmentName: string,
    packageName: string,
 ): PackageSyncMeta {
-   const key = `${environmentName}\x00${packageName}`;
+   const key = metaKey(environmentName, packageName);
    let meta = syncMeta.get(key);
    if (!meta) {
-      meta = { mutex: new Mutex(), generation: 0, lastPurgeAtMs: 0 };
+      meta = {
+         mutex: new Mutex(),
+         generation: ++generationCounter,
+         lastPurgeAtMs: 0,
+      };
       syncMeta.set(key, meta);
    }
    return meta;
@@ -186,15 +200,24 @@ export async function deletePackageEmbeddings(
           WHERE environment_name = ? AND package_name = ?`,
          [environmentName, packageName],
       );
-      meta.generation++;
+      meta.generation = ++generationCounter;
    });
+   // Safe only because generations are globally unique (see the counter
+   // comment): a re-minted meta can never match a memo issued under the
+   // deleted one. Removing the entry keeps package churn from growing
+   // the map for the process lifetime.
+   syncMeta.delete(metaKey(environmentName, packageName));
 }
 
 /**
  * Remove a deleted environment's cached embeddings. Packages with live
- * sync state are cleaned under their mutex (so an in-flight sync cannot
- * resurrect rows); a final environment-wide sweep covers packages never
- * queried in this process, which by construction have no sync to race.
+ * sync state are cleaned under their mutex; a final environment-wide
+ * sweep covers packages never queried in this process. The mutex gives
+ * mutual exclusion, not ordering: a getContext call already in flight at
+ * deletion time can cold-kick a sync that lands after the cleanup and
+ * rewrites its package's rows. Accepted: such rows are inert (the
+ * package is gone from every serving path), are reconciled if the name
+ * returns, and are reclaimed by --init.
  */
 export async function deleteEnvironmentEmbeddings(
    db: DuckDBConnection,
@@ -287,72 +310,79 @@ async function syncPackageEmbeddings(
          return false;
       });
 
-      if (toEmbed.length > 0) {
-         const vectors = await provider.embedBatch(
-            toEmbed.map((d) => d.text),
-            EMBEDDING_BATCH_TIMEOUT_MS,
-         );
-         const now = new Date().toISOString();
-         for (let i = 0; i < toEmbed.length; i++) {
-            const d = toEmbed[i];
-            const vector = vectors[i];
-            await db.run(
-               `INSERT INTO entity_embeddings (
-                  environment_name, package_name, entity_kind, entity_source,
-                  entity_name, model_path, content_hash, embedding_model,
-                  dims, embedding, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)
-                ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name)
-                DO UPDATE SET
-                  model_path = EXCLUDED.model_path,
-                  content_hash = EXCLUDED.content_hash,
-                  embedding_model = EXCLUDED.embedding_model,
-                  dims = EXCLUDED.dims,
-                  embedding = EXCLUDED.embedding,
-                  updated_at = EXCLUDED.updated_at`,
-               [
-                  environmentName,
-                  packageName,
-                  d.entity.kind,
-                  sourceColumn(d.entity.source),
-                  d.entity.name,
-                  d.entity.modelPath,
-                  d.hash,
-                  provider.model,
-                  vector.length,
-                  JSON.stringify(vector),
-                  now,
-               ],
-            );
-         }
-      }
-
-      let deleted = 0;
-      for (const [rowKey, row] of existing) {
-         if (!desiredKeys.has(rowKey)) {
-            await db.run(
-               `DELETE FROM entity_embeddings
-                WHERE environment_name = ? AND package_name = ?
-                  AND entity_kind = ? AND entity_source = ? AND entity_name = ?`,
-               [
-                  environmentName,
-                  packageName,
-                  row.entity_kind,
-                  row.entity_source,
-                  row.entity_name,
-               ],
-            );
-            deleted++;
-         }
-      }
-
       // A sync that CHANGED rows invalidates every other instance's
-      // snapshot the same way a purge does: without this bump, a call
-      // blocked behind this sync on the mutex could return its pre-sync
-      // cosine snapshot (possibly empty) marked semantic. The bumped
-      // generation is returned, so this sync's own memo stays valid.
-      if (toEmbed.length > 0 || deleted > 0) {
-         meta.generation++;
+      // snapshot the same way a purge does: without the bump below, a
+      // call blocked behind this sync on the mutex could return its
+      // pre-sync cosine snapshot (possibly empty) marked semantic. The
+      // bump runs in a finally: a write failure mid-loop (disk full)
+      // has already changed rows, and those torn writes must invalidate
+      // snapshots too, even though this sync rejects.
+      let rowsChanged = false;
+      let deleted = 0;
+      try {
+         if (toEmbed.length > 0) {
+            const vectors = await provider.embedBatch(
+               toEmbed.map((d) => d.text),
+               EMBEDDING_BATCH_TIMEOUT_MS,
+            );
+            const now = new Date().toISOString();
+            for (let i = 0; i < toEmbed.length; i++) {
+               const d = toEmbed[i];
+               const vector = vectors[i];
+               await db.run(
+                  `INSERT INTO entity_embeddings (
+                     environment_name, package_name, entity_kind, entity_source,
+                     entity_name, model_path, content_hash, embedding_model,
+                     dims, embedding, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)
+                   ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name)
+                   DO UPDATE SET
+                     model_path = EXCLUDED.model_path,
+                     content_hash = EXCLUDED.content_hash,
+                     embedding_model = EXCLUDED.embedding_model,
+                     dims = EXCLUDED.dims,
+                     embedding = EXCLUDED.embedding,
+                     updated_at = EXCLUDED.updated_at`,
+                  [
+                     environmentName,
+                     packageName,
+                     d.entity.kind,
+                     sourceColumn(d.entity.source),
+                     d.entity.name,
+                     d.entity.modelPath,
+                     d.hash,
+                     provider.model,
+                     vector.length,
+                     JSON.stringify(vector),
+                     now,
+                  ],
+               );
+               rowsChanged = true;
+            }
+         }
+
+         for (const [rowKey, row] of existing) {
+            if (!desiredKeys.has(rowKey)) {
+               await db.run(
+                  `DELETE FROM entity_embeddings
+                   WHERE environment_name = ? AND package_name = ?
+                     AND entity_kind = ? AND entity_source = ? AND entity_name = ?`,
+                  [
+                     environmentName,
+                     packageName,
+                     row.entity_kind,
+                     row.entity_source,
+                     row.entity_name,
+                  ],
+               );
+               rowsChanged = true;
+               deleted++;
+            }
+         }
+      } finally {
+         if (rowsChanged) {
+            meta.generation = ++generationCounter;
+         }
       }
 
       logger.debug("[MCP Tool getContext] Synced entity embeddings", {
@@ -607,7 +637,7 @@ export async function trySemanticSearch(args: {
                   ],
                );
                meta.lastPurgeAtMs = now;
-               meta.generation++;
+               meta.generation = ++generationCounter;
                return "purged";
             });
          if (outcome === "purged") {
